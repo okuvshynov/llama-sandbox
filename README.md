@@ -5,3 +5,4 @@ A collection of experiments related to LLM inference.
 ## Projects
 
 * [llama-duo](llama-duo/) - asynchronous/distributed speculative decoding for llama3
+* [moe-inspect](moe-inspect/) - estimate per-token bytes read for GGUF models (MoE-aware)
