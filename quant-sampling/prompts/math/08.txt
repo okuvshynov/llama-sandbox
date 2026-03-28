@@ -1,0 +1,1 @@
+Explain Euler's identity e^(i*pi) + 1 = 0. Derive it from the Taylor series of e^x, sin(x), and cos(x). Discuss why mathematicians consider it beautiful and what it reveals about the deep connections between exponential and trigonometric functions.

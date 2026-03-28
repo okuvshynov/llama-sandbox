@@ -1,0 +1,1 @@
+Explain the fundamental theorem of calculus, both parts. Provide intuition for why differentiation and integration are inverse operations, work through examples of each part, and discuss how this connects to the concept of accumulation functions.

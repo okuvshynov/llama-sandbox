@@ -89,7 +89,7 @@ static std::vector<std::string> load_prompts(const ref_params & params) {
 
     namespace fs = std::filesystem;
     std::vector<fs::path> files;
-    for (const auto & entry : fs::directory_iterator(params.prompt_dir)) {
+    for (const auto & entry : fs::recursive_directory_iterator(params.prompt_dir)) {
         if (entry.is_regular_file() && entry.path().extension() == ".txt") {
             files.push_back(entry.path());
         }

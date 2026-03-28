@@ -1,0 +1,1 @@
+Explain Bayes' theorem with a detailed medical testing example. A disease affects 1 in 10,000 people, and a test has 99% sensitivity and 95% specificity. Calculate the probability that a positive test result is a true positive, and explain why the result is counterintuitive.

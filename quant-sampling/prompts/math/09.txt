@@ -1,0 +1,1 @@
+Explain the concept of countable vs uncountable infinity. Prove that the rational numbers are countable and the real numbers are uncountable using Cantor's diagonal argument. Discuss the continuum hypothesis and its independence from ZFC set theory.

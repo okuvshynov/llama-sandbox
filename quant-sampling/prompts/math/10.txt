@@ -1,0 +1,1 @@
+Solve and explain the Monty Hall problem. Present the problem clearly, give the correct solution with conditional probability, explain why switching is better, and discuss the common variations (e.g., what changes if Monty opens a door randomly).

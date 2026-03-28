@@ -1,0 +1,1 @@
+Derive the formula for the sum of an infinite geometric series. Then use it to prove that 0.999... equals 1. Discuss common misconceptions students have about this result and how to address them.

@@ -1,0 +1,1 @@
+Explain the relationship between eigenvalues and eigenvectors of a matrix. Derive the characteristic equation, work through a concrete 3x3 example, and describe applications in principal component analysis.

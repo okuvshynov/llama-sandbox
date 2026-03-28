@@ -1,0 +1,1 @@
+Prove that the square root of 2 is irrational. Present the proof step by step, explain the contradiction, and discuss why this result was historically significant in mathematics.
