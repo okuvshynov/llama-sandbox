@@ -216,6 +216,15 @@ int cmd_compare(int argc, char ** argv) {
     // per_prompt_kl[p][ti]
     std::vector<std::vector<double>> per_prompt_kl(n_prompts, std::vector<double>(n_temps, 0.0));
 
+    // total work = n_temps * sum(n_logits per prompt)
+    long long total_logits = 0;
+    for (int p = 0; p < n_prompts; p++) {
+        total_logits += fa.prompts[p].n_tokens - 1;
+    }
+    long long total_work = (long long)n_temps * total_logits;
+    std::atomic<long long> work_done{0};
+    std::atomic<int> last_pct{-1};
+
     // parallelize across temperature indices
     std::atomic<int> temp_ctr{0};
     auto temp_worker = [&]() {
@@ -223,17 +232,24 @@ int cmd_compare(int argc, char ** argv) {
             int ti = temp_ctr.fetch_add(1);
             if (ti >= n_temps) break;
             for (int p = 0; p < n_prompts; p++) {
+                int n_logits_p = fa.prompts[p].n_tokens - 1;
                 per_prompt_kl[p][ti] = compute_kl_at_temp(
                     fa.prompts[p], fb.prompts[p], n_vocab, temp_vals[ti], ref_temp);
+                long long done = work_done.fetch_add(n_logits_p) + n_logits_p;
+                int pct = (int)(100 * done / total_work);
+                int prev = last_pct.load();
+                if (pct > prev && last_pct.compare_exchange_strong(prev, pct)) {
+                    fprintf(stderr, "  %3d%%\r", pct);
+                    fflush(stderr);
+                }
             }
-            fprintf(stderr, "  T=%.2f\n", temp_vals[ti]);
         }
     };
 
     std::vector<std::thread> threads;
     for (int t = 0; t < n_threads; t++) threads.emplace_back(temp_worker);
     for (auto & t : threads) t.join();
-    fprintf(stderr, "\n");
+    fprintf(stderr, "  100%%\n");
 
     // per-prompt best temperature
     printf("  %6s  %6s  %10s\n", "Prompt", "Best T", "KL at best");
