@@ -12,13 +12,15 @@
 #include <thread>
 #include <vector>
 
+static constexpr double UNSET = -1.0;
+
 struct compare_params {
     std::string path_a;
     std::string path_b;
     bool        optimize  = false;
-    double      temp_min  = 0.0;
-    double      temp_max  = 2.0;
-    double      temp_step = 0.05;
+    double      temp_min  = UNSET;
+    double      temp_max  = UNSET;
+    double      temp_step = UNSET;
 };
 
 static bool parse_args(int argc, char ** argv, compare_params & params) {
@@ -43,9 +45,9 @@ static bool parse_args(int argc, char ** argv, compare_params & params) {
     }
     if (params.path_a.empty() || params.path_b.empty()) {
         fprintf(stderr, "Usage: quant-sampling compare -a <ref.bin> -b <target.bin> [--optimize]\n"
-                        "  --temp-min <val>   temperature scan start (default 0.0)\n"
-                        "  --temp-max <val>   temperature scan end   (default 2.0)\n"
-                        "  --temp-step <val>  temperature scan step  (default 0.05)\n");
+                        "  --temp-min <val>   temperature scan start (default: ref_temp * 0.5)\n"
+                        "  --temp-max <val>   temperature scan end   (default: ref_temp * 1.5)\n"
+                        "  --temp-step <val>  temperature scan step  (default: 0.01)\n");
         return false;
     }
     return true;
@@ -189,11 +191,27 @@ int cmd_compare(int argc, char ** argv) {
     // === Temperature optimization across all prompts ===
     printf("\n=== Temperature Optimization ===\n");
 
+    // derive defaults from ref_temp, let user overrides take precedence
+    double t_min  = (params.temp_min  != UNSET) ? params.temp_min  : ref_temp * 0.5;
+    double t_max  = (params.temp_max  != UNSET) ? params.temp_max  : ref_temp * 1.5;
+    double t_step = (params.temp_step != UNSET) ? params.temp_step : 0.01;
+
+    printf("  ref_temp=%.2f  scan: min=%.2f%s  max=%.2f%s  step=%.2f%s\n",
+           ref_temp,
+           t_min,  (params.temp_min  != UNSET) ? " (override)" : "",
+           t_max,  (params.temp_max  != UNSET) ? " (override)" : "",
+           t_step, (params.temp_step != UNSET) ? " (override)" : "");
+
     std::vector<double> temp_vals;
-    for (double T = params.temp_min + params.temp_step; T <= params.temp_max + 1e-9; T += params.temp_step) {
+    for (double T = t_min + t_step; T <= t_max + 1e-9; T += t_step) {
         temp_vals.push_back(T);
     }
     const int n_temps = (int)temp_vals.size();
+
+    if (n_temps == 0) {
+        printf("  (empty scan range, nothing to do)\n");
+        return 0;
+    }
 
     // per_prompt_kl[p][ti]
     std::vector<std::vector<double>> per_prompt_kl(n_prompts, std::vector<double>(n_temps, 0.0));
