@@ -1,120 +1,112 @@
-# quant-sampling — Quantized Model Sampling Parameter Matcher
+# quant-sampling — Sampling Parameter Matcher
 
 When quantizing LLMs, the output distribution shifts. The default sampling parameters (temp, top\_p, top\_k) recommended for the full-precision model may no longer be optimal. **quant-sampling** compares logit distributions between a reference model and a target model (e.g. a quantized variant), computes KL divergence, and searches for the temperature that minimizes divergence — helping the target model behave more like the original.
 
 ## Core workflow
 
 ```
-quant-sampling ref     →  ref.qmlog              (run reference model, sample continuation, save tokens + logits)
-quant-sampling target  →  target.qmlog           (run target model on same tokens, save logits)
-quant-sampling compare   -a ref.qmlog -b target.qmlog [--optimize]   (KL divergence + temperature search)
+quant-sampling ref     -m ref_model.gguf (-p "prompt" | -P prompts/) -o ref.bin
+quant-sampling target  -m target_model.gguf -i ref.bin -o target.bin
+quant-sampling compare -a ref.bin -b target.bin [--optimize]
 ```
+
+A single .bin file can contain one or many prompts. The workflow is always the same regardless of prompt count.
 
 ## Build
 
 Requires a local checkout of [llama.cpp](https://github.com/ggml-org/llama.cpp).
 
 ```bash
-cmake -B build -DLLAMA_CPP_DIR=/path/to/llama.cpp
+export LLAMA_CPP_DIR=/path/to/llama.cpp
+cmake -B build
 cmake --build build
 ```
 
-If you want to build llama.cpp with your preferred accelerator, make sure to use corresponding options, for example:
+For CUDA:
 ```bash
-cmake -B build -DLLAMA_CPP_DIR=/path/to/llama.cpp -DGGML_CUDA=ON
+cmake -B build -DGGML_CUDA=ON
 ```
 
-for CUDA build.
-
-## Single-pair usage
+## Usage
 
 ### Step 1: Run reference model
 
+Single prompt:
 ```bash
 ./build/quant-sampling ref \
   -m model_fp16.gguf \
   -p "Your prompt here" \
-  -n 256 --temp 1.0 --top-p 0.95 --top-k 40 --seed 42 \
+  -n 256 --temp 0.6 --top-p 0.95 --top-k 40 --seed 42 \
   -ngl 99 -c 2048 \
-  -o ref.qmlog
+  -o ref.bin
 ```
+
+Multiple prompts (directory of .txt files, one prompt per file):
+```bash
+./build/quant-sampling ref \
+  -m model_fp16.gguf \
+  -P prompts/ \
+  -n 256 --temp 0.6 \
+  -ngl 99 \
+  -o ref.bin
+```
+
+Files in the directory are sorted alphabetically and each .txt file becomes one prompt (multiline supported).
 
 ### Step 2: Run target model
 
 ```bash
 ./build/quant-sampling target \
   -m model_q4.gguf \
-  -i ref.qmlog \
-  -o target.qmlog \
+  -i ref.bin \
+  -o target.bin \
   -ngl 99
+```
+
+Run this once per target model variant — the ref.bin is reused:
+```bash
+./build/quant-sampling target -m model_q2.gguf -i ref.bin -o target_q2.bin -ngl 99
+./build/quant-sampling target -m model_q4.gguf -i ref.bin -o target_q4.bin -ngl 99
 ```
 
 ### Step 3: Compare and optimize
 
 ```bash
-./build/quant-sampling compare -a ref.qmlog -b target.qmlog --optimize
+./build/quant-sampling compare -a ref.bin -b target.bin --optimize
 ```
 
-Output includes:
+For single-prompt files, output includes:
 - Mean/std KL divergence
 - Top-1 token agreement percentage
 - Per-position KL for identifying high-divergence regions
-- Temperature scan with recommended value for the target model
+- Temperature scan with recommended value
 
-Temperature scan range is configurable (default: 0.05 to 2.0, step 0.05):
+For multi-prompt files, output includes:
+- Per-prompt summary table (KL, top-1 agreement)
+- Aggregate statistics across prompts
+- Per-prompt optimal temperature + global recommendation
+
+Temperature scan range is configurable:
 ```bash
-./build/quant-sampling compare -a ref.qmlog -b target.qmlog --optimize \
-  --temp-min 1.0 --temp-max 1.5 --temp-step 0.01
+./build/quant-sampling compare -a ref.bin -b target.bin --optimize \
+  --temp-min 0.5 --temp-max 1.2 --temp-step 0.01
 ```
 
-## Batch workflow (multiple prompts, multiple target variants)
+### Diff (optional)
 
-The three batch scripts separate reference generation from target model
-runs, so the expensive reference pass runs only once even when comparing
-multiple quant levels (Q2, Q4, Q5, …).
-
-### Step 1: Run reference model for all prompts (once)
-
+Show detailed token-level disagreements:
 ```bash
-./ref_batch.sh <ref_model.gguf> [outdir] [n_predict] [prompts_file]
-
-# Example:
-./ref_batch.sh ~/models/model-Q8_K.gguf
+./build/quant-sampling diff -a ref.bin -b target.bin -m model.gguf
 ```
 
-Writes `batch_run/ref_01.qmlog`, `ref_02.qmlog`, … (one per line in `prompts.txt`).
+## Prompt directory format
 
-### Step 2: Run target model for each variant
-
-```bash
-./target_batch.sh <target_model.gguf> <tag> [outdir]
-
-# Example — run once per quant level:
-./target_batch.sh ~/models/model-Q2_K.gguf q2
-./target_batch.sh ~/models/model-Q4_K.gguf q4
-./target_batch.sh ~/models/model-Q5_K.gguf q5
+Create a directory with `.txt` files:
+```
+prompts/
+  01_coding.txt
+  02_math.txt
+  03_creative.txt
 ```
 
-Writes `batch_run/<tag>_01.qmlog`, … and `batch_run/manifest_<tag>.txt`.
-
-### Step 3: Optimize temperature for each variant
-
-```bash
-./compare_batch.sh <tag> [outdir] [extra compare-batch flags]
-
-# Example:
-./compare_batch.sh q2
-./compare_batch.sh q4 batch_run --temp-min 1.0 --temp-max 1.5 --temp-step 0.01
-```
-
-Reads `batch_run/manifest_<tag>.txt`, reports per-prompt optimal temperature
-and aggregate mean ± std across all prompts.
-
-## prompts.txt format
-
-One prompt per line, blank lines ignored:
-```
-Implement quicksort in C++
-Write a Python function to parse JSON from a URL
-...
-```
+Each file contains one prompt (can be multiline). Files are processed in alphabetical order.

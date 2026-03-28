@@ -1,0 +1,1 @@
+Implement a basic HTTP server in Go that serves static files and has a /health endpoint returning JSON.

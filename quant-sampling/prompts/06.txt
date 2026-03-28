@@ -1,0 +1,1 @@
+Implement a red-black tree insert operation in C++ with proper rebalancing after insertion.

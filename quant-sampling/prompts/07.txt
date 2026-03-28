@@ -1,0 +1,1 @@
+Write a SQL query to find the second highest salary in each department, handling ties and departments with fewer than two employees.

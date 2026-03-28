@@ -1,6 +1,5 @@
 _build/
 build/
 *.log
-*.qmlog
 .vscode/
 tags

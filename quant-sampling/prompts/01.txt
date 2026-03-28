@@ -1,0 +1,1 @@
+Write a Python function that implements the merge sort algorithm. Include type hints and handle edge cases like empty lists.

@@ -1,0 +1,1 @@
+Fix this TypeScript React component that has a stale closure bug in its useEffect cleanup: const Timer = () => { const [count, setCount] = useState(0); useEffect(() => { const id = setInterval(() => setCount(count + 1), 1000); return () => clearInterval(id); }, []); return <div>{count}</div>; }

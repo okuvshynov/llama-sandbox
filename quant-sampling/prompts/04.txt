@@ -1,0 +1,1 @@
+Write a JavaScript class that implements a least-recently-used (LRU) cache with O(1) get and put operations.

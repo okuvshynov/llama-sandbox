@@ -1,0 +1,1 @@
+Write a Bash script that finds all duplicate files in a directory tree by comparing SHA-256 hashes, handling filenames with spaces.

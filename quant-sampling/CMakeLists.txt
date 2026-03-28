@@ -25,7 +25,6 @@ add_executable(quant-sampling
     src/ref.cpp
     src/target.cpp
     src/compare.cpp
-    src/compare_batch.cpp
     src/diff.cpp
 )
 
