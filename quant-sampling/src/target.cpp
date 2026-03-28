@@ -1,4 +1,4 @@
-#include "collect.h"
+#include "target.h"
 #include "logits_io.h"
 
 #include "llama.h"
@@ -10,15 +10,15 @@
 #include <string>
 #include <vector>
 
-struct collect_params {
+struct target_params {
     std::string model_path;
     std::string input_path;
-    std::string output_path = "quant.qmlog";
+    std::string output_path = "target.qmlog";
     int         n_gpu_layers = 99;
     int         n_ctx        = 0; // 0 = auto from input
 };
 
-static bool parse_args(int argc, char ** argv, collect_params & params) {
+static bool parse_args(int argc, char ** argv, target_params & params) {
     for (int i = 1; i < argc; i++) {
         const char * arg = argv[i];
         if (strcmp(arg, "-m") == 0 && i + 1 < argc) {
@@ -32,13 +32,13 @@ static bool parse_args(int argc, char ** argv, collect_params & params) {
         } else if (strcmp(arg, "-c") == 0 && i + 1 < argc) {
             params.n_ctx = atoi(argv[++i]);
         } else {
-            fprintf(stderr, "collect: unknown argument '%s'\n", arg);
+            fprintf(stderr, "target: unknown argument '%s'\n", arg);
             return false;
         }
     }
     if (params.model_path.empty() || params.input_path.empty()) {
-        fprintf(stderr, "Usage: quant-sampling collect -m <model> -i <ref.qmlog> [options]\n"
-                        "  -o <path>    output file (default: quant.qmlog)\n"
+        fprintf(stderr, "Usage: quant-sampling target -m <model> -i <ref.qmlog> [options]\n"
+                        "  -o <path>    output file (default: target.qmlog)\n"
                         "  -ngl <int>   GPU layers (default: 99)\n"
                         "  -c <int>     context size (default: auto)\n");
         return false;
@@ -46,8 +46,8 @@ static bool parse_args(int argc, char ** argv, collect_params & params) {
     return true;
 }
 
-int cmd_collect(int argc, char ** argv) {
-    collect_params params;
+int cmd_target(int argc, char ** argv) {
+    target_params params;
     if (!parse_args(argc, argv, params)) {
         return 1;
     }
@@ -55,12 +55,12 @@ int cmd_collect(int argc, char ** argv) {
     // read tokens from reference file
     qmlog_file ref;
     if (!qmlog_read_tokens(params.input_path, ref)) {
-        fprintf(stderr, "collect: failed to read '%s'\n", params.input_path.c_str());
+        fprintf(stderr, "target: failed to read '%s'\n", params.input_path.c_str());
         return 1;
     }
 
     const int n_tokens = ref.header.n_tokens;
-    fprintf(stderr, "collect: read %d tokens from '%s'\n", n_tokens, params.input_path.c_str());
+    fprintf(stderr, "target: read %d tokens from '%s'\n", n_tokens, params.input_path.c_str());
 
     // init backends
     ggml_backend_load_all();
@@ -71,7 +71,7 @@ int cmd_collect(int argc, char ** argv) {
 
     llama_model * model = llama_model_load_from_file(params.model_path.c_str(), model_params);
     if (!model) {
-        fprintf(stderr, "collect: failed to load model '%s'\n", params.model_path.c_str());
+        fprintf(stderr, "target: failed to load model '%s'\n", params.model_path.c_str());
         return 1;
     }
 
@@ -80,7 +80,7 @@ int cmd_collect(int argc, char ** argv) {
 
     // verify vocab matches
     if (n_vocab != ref.header.n_vocab) {
-        fprintf(stderr, "collect: vocab mismatch: model has %d, reference has %d\n",
+        fprintf(stderr, "target: vocab mismatch: model has %d, reference has %d\n",
                 n_vocab, ref.header.n_vocab);
         llama_model_free(model);
         return 1;
@@ -93,14 +93,14 @@ int cmd_collect(int argc, char ** argv) {
 
     llama_context * ctx = llama_init_from_model(model, ctx_params);
     if (!ctx) {
-        fprintf(stderr, "collect: failed to create context\n");
+        fprintf(stderr, "target: failed to create context\n");
         llama_model_free(model);
         return 1;
     }
 
     const int n_batch = llama_n_batch(ctx);
 
-    fprintf(stderr, "collect: n_vocab=%d, n_tokens=%d, n_batch=%d\n", n_vocab, n_tokens, n_batch);
+    fprintf(stderr, "target: n_vocab=%d, n_tokens=%d, n_batch=%d\n", n_vocab, n_tokens, n_batch);
 
     // allocate logit storage: (n_tokens - 1) logit vectors
     std::vector<float> all_logits;
@@ -120,7 +120,7 @@ int cmd_collect(int argc, char ** argv) {
         }
 
         if (llama_decode(ctx, batch) != 0) {
-            fprintf(stderr, "collect: decode failed at position %d\n", n_processed);
+            fprintf(stderr, "target: decode failed at position %d\n", n_processed);
             llama_batch_free(batch);
             llama_free(ctx);
             llama_model_free(model);
@@ -136,7 +136,7 @@ int cmd_collect(int argc, char ** argv) {
 
         n_processed = batch_end;
 
-        fprintf(stderr, "collect: processed %d / %d tokens\r", n_processed, n_tokens);
+        fprintf(stderr, "target: processed %d / %d tokens\r", n_processed, n_tokens);
     }
     fprintf(stderr, "\n");
 
@@ -154,14 +154,14 @@ int cmd_collect(int argc, char ** argv) {
     out.logits          = std::move(all_logits);
 
     if (!qmlog_write(params.output_path, out)) {
-        fprintf(stderr, "collect: failed to write '%s'\n", params.output_path.c_str());
+        fprintf(stderr, "target: failed to write '%s'\n", params.output_path.c_str());
         llama_batch_free(batch);
         llama_free(ctx);
         llama_model_free(model);
         return 1;
     }
 
-    fprintf(stderr, "collect: wrote %s (%.1f MB)\n",
+    fprintf(stderr, "target: wrote %s (%.1f MB)\n",
             params.output_path.c_str(),
             (double)(QMLOG_HEADER_SZ + n_tokens * 4 +
                      (size_t)(n_tokens - 1) * n_vocab * 4) / (1024 * 1024));

@@ -22,8 +22,8 @@ find_package(Threads REQUIRED)
 add_executable(quant-sampling
     src/main.cpp
     src/logits_io.cpp
-    src/generate.cpp
-    src/collect.cpp
+    src/ref.cpp
+    src/target.cpp
     src/compare.cpp
     src/compare_batch.cpp
     src/diff.cpp

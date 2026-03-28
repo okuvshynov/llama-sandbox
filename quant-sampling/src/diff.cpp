@@ -40,7 +40,7 @@ static bool parse_args(int argc, char ** argv, diff_params & params) {
         }
     }
     if (params.path_a.empty() || params.path_b.empty()) {
-        fprintf(stderr, "Usage: quant-sampling diff -a <ref.qmlog> -b <quant.qmlog> [-m <model>] [--top-n 10]\n"
+        fprintf(stderr, "Usage: quant-sampling diff -a <ref.qmlog> -b <target.qmlog> [-m <model>] [--top-n 10]\n"
                         "  -m <model>    model file for token decoding (optional)\n"
                         "  --top-n <int> show top N tokens per side (default: 10)\n"
                         "  -ngl <int>    GPU layers for model loading (default: 0)\n");

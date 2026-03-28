@@ -1,4 +1,4 @@
-#include "generate.h"
+#include "ref.h"
 #include "logits_io.h"
 
 #include "llama.h"
@@ -10,7 +10,7 @@
 #include <string>
 #include <vector>
 
-struct generate_params {
+struct ref_params {
     std::string model_path;
     std::string prompt;
     std::string output_path = "ref.qmlog";
@@ -24,7 +24,7 @@ struct generate_params {
     bool        no_chat      = false;
 };
 
-static bool parse_args(int argc, char ** argv, generate_params & params) {
+static bool parse_args(int argc, char ** argv, ref_params & params) {
     for (int i = 1; i < argc; i++) {
         const char * arg = argv[i];
         if (strcmp(arg, "-m") == 0 && i + 1 < argc) {
@@ -50,12 +50,12 @@ static bool parse_args(int argc, char ** argv, generate_params & params) {
         } else if (strcmp(arg, "--no-chat") == 0) {
             params.no_chat = true;
         } else {
-            fprintf(stderr, "generate: unknown argument '%s'\n", arg);
+            fprintf(stderr, "ref: unknown argument '%s'\n", arg);
             return false;
         }
     }
     if (params.model_path.empty() || params.prompt.empty()) {
-        fprintf(stderr, "Usage: quant-sampling generate -m <model> -p <prompt> [options]\n"
+        fprintf(stderr, "Usage: quant-sampling ref -m <model> -p <prompt> [options]\n"
                         "  -o <path>     output file (default: ref.qmlog)\n"
                         "  -n <int>      tokens to generate (default: 256)\n"
                         "  --temp <f>    temperature (default: 1.0)\n"
@@ -70,8 +70,8 @@ static bool parse_args(int argc, char ** argv, generate_params & params) {
     return true;
 }
 
-int cmd_generate(int argc, char ** argv) {
-    generate_params params;
+int cmd_ref(int argc, char ** argv) {
+    ref_params params;
     if (!parse_args(argc, argv, params)) {
         return 1;
     }
@@ -85,7 +85,7 @@ int cmd_generate(int argc, char ** argv) {
 
     llama_model * model = llama_model_load_from_file(params.model_path.c_str(), model_params);
     if (!model) {
-        fprintf(stderr, "generate: failed to load model '%s'\n", params.model_path.c_str());
+        fprintf(stderr, "ref: failed to load model '%s'\n", params.model_path.c_str());
         return 1;
     }
 
@@ -104,12 +104,12 @@ int cmd_generate(int argc, char ** argv) {
                 std::vector<char> buf(len + 1);
                 llama_chat_apply_template(tmpl, &msg, 1, true, buf.data(), buf.size());
                 formatted_prompt.assign(buf.data(), len);
-                fprintf(stderr, "generate: applied chat template (%d chars)\n", len);
+                fprintf(stderr, "ref: applied chat template (%d chars)\n", len);
             } else {
-                fprintf(stderr, "generate: warning: chat template failed, using raw prompt\n");
+                fprintf(stderr, "ref: warning: chat template failed, using raw prompt\n");
             }
         } else {
-            fprintf(stderr, "generate: no chat template in model, using raw prompt\n");
+            fprintf(stderr, "ref: no chat template in model, using raw prompt\n");
         }
     }
 
@@ -117,7 +117,7 @@ int cmd_generate(int argc, char ** argv) {
     std::vector<llama_token> prompt_tokens = common_tokenize(vocab, formatted_prompt, true, true);
     const int n_prompt = (int)prompt_tokens.size();
 
-    fprintf(stderr, "generate: n_vocab=%d, n_prompt=%d, n_predict=%d\n",
+    fprintf(stderr, "ref: n_vocab=%d, n_prompt=%d, n_predict=%d\n",
             n_vocab, n_prompt, params.n_predict);
 
     const int total_tokens = n_prompt + params.n_predict;
@@ -129,7 +129,7 @@ int cmd_generate(int argc, char ** argv) {
 
     llama_context * ctx = llama_init_from_model(model, ctx_params);
     if (!ctx) {
-        fprintf(stderr, "generate: failed to create context\n");
+        fprintf(stderr, "ref: failed to create context\n");
         llama_model_free(model);
         return 1;
     }
@@ -167,7 +167,7 @@ int cmd_generate(int argc, char ** argv) {
         }
 
         if (llama_decode(ctx, batch) != 0) {
-            fprintf(stderr, "generate: decode failed at prompt position %d\n", n_decoded);
+            fprintf(stderr, "ref: decode failed at prompt position %d\n", n_decoded);
             llama_batch_free(batch);
             llama_sampler_free(smpl);
             llama_free(ctx);
@@ -185,7 +185,7 @@ int cmd_generate(int argc, char ** argv) {
         n_decoded = batch_end;
     }
 
-    fprintf(stderr, "generate: prompt decoded (%d tokens), starting generation...\n", n_prompt);
+    fprintf(stderr, "ref: prompt decoded (%d tokens), starting generation...\n", n_prompt);
 
     // --- autoregressive generation ---
     for (int i = 0; i < params.n_predict; i++) {
@@ -193,7 +193,7 @@ int cmd_generate(int argc, char ** argv) {
         llama_token new_token = llama_sampler_sample(smpl, ctx, -1);
 
         if (llama_vocab_is_eog(vocab, new_token)) {
-            fprintf(stderr, "\ngenerate: EOS at step %d\n", i);
+            fprintf(stderr, "\nref: EOS at step %d\n", i);
             break;
         }
 
@@ -209,7 +209,7 @@ int cmd_generate(int argc, char ** argv) {
         common_batch_add(batch, new_token, n_prompt + i, {0}, true);
 
         if (llama_decode(ctx, batch) != 0) {
-            fprintf(stderr, "\ngenerate: decode failed at generation step %d\n", i);
+            fprintf(stderr, "\nref: decode failed at generation step %d\n", i);
             break;
         }
 
@@ -222,7 +222,7 @@ int cmd_generate(int argc, char ** argv) {
 
     const int final_n_tokens = (int)all_tokens.size();
 
-    fprintf(stderr, "generate: total tokens = %d, logit vectors = %d\n",
+    fprintf(stderr, "ref: total tokens = %d, logit vectors = %d\n",
             final_n_tokens, (int)(all_logits.size() / n_vocab));
 
     // --- write .qmlog ---
@@ -239,7 +239,7 @@ int cmd_generate(int argc, char ** argv) {
     out.logits          = std::move(all_logits);
 
     if (!qmlog_write(params.output_path, out)) {
-        fprintf(stderr, "generate: failed to write '%s'\n", params.output_path.c_str());
+        fprintf(stderr, "ref: failed to write '%s'\n", params.output_path.c_str());
         llama_batch_free(batch);
         llama_sampler_free(smpl);
         llama_free(ctx);
@@ -247,7 +247,7 @@ int cmd_generate(int argc, char ** argv) {
         return 1;
     }
 
-    fprintf(stderr, "generate: wrote %s (%.1f MB)\n",
+    fprintf(stderr, "ref: wrote %s (%.1f MB)\n",
             params.output_path.c_str(),
             (double)(QMLOG_HEADER_SZ + final_n_tokens * 4 +
                      (size_t)(final_n_tokens - 1) * n_vocab * 4) / (1024 * 1024));

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # compare_batch.sh — compute KL divergence and optimize temperature for a
-# quantized model variant previously collected by collect_batch.sh.
+# target model variant previously run by target_batch.sh.
 #
 # Usage: ./compare_batch.sh <tag> [outdir] [extra compare-batch args...]
-#   tag     the tag used in collect_batch.sh (e.g. "q2", "q4", "q5")
+#   tag     the tag used in target_batch.sh (e.g. "q2", "q4", "q5")
 #   outdir  directory containing the manifest (default: batch_run)
 #   extra args are forwarded to quant-sampling compare-batch
 #           e.g. --optimize --temp-min 1.0 --temp-max 1.5 --temp-step 0.01
@@ -31,7 +31,7 @@ MANIFEST="$OUTDIR/manifest_${TAG}.txt"
 
 if [[ ! -f "$MANIFEST" ]]; then
     echo "error: manifest not found: $MANIFEST" >&2
-    echo "       run collect_batch.sh first with tag '$TAG'" >&2
+    echo "       run target_batch.sh first with tag '$TAG'" >&2
     exit 1
 fi
 

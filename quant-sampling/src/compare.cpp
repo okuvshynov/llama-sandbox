@@ -88,7 +88,7 @@ int cmd_compare(int argc, char ** argv) {
     // --- basic statistics ---
     const int n_threads = std::max(1, (int)std::thread::hardware_concurrency());
 
-    // use reference temperature from the generate step (e.g. 0.6)
+    // use reference temperature from the ref step (e.g. 0.6)
     // so we compare distributions at the actual sampling temperature
     const double ref_temp = (fa.header.temp > 0.0f) ? (double)fa.header.temp : 1.0;
 
@@ -260,7 +260,7 @@ int cmd_compare(int argc, char ** argv) {
         }
     }
 
-    printf("\nRecommended temperature for quantized model:  --temp %.2f\n", best_temp->temp);
+    printf("\nRecommended temperature for target model:  --temp %.2f\n", best_temp->temp);
 
     return 0;
 }

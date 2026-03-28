@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# generate_batch.sh — run the reference model on all prompts, save logits.
+# ref_batch.sh — run the reference model on all prompts, save logits.
 # Run this once per reference model. The output .qmlog files are then reused
-# by collect_batch.sh for any number of quantized model variants.
+# by target_batch.sh for any number of target model variants.
 #
-# Usage: ./generate_batch.sh <ref_model.gguf> [outdir] [n_predict] [prompts_file]
+# Usage: ./ref_batch.sh <ref_model.gguf> [outdir] [n_predict] [prompts_file]
 #   ref_model     path to the reference model (e.g. Q8_K or fp16)
 #   outdir        output directory            (default: batch_run)
 #   n_predict     tokens to generate          (default: 512)
@@ -50,7 +50,7 @@ for ((i=0; i<N_PROMPTS; i++)); do
     num=$(printf "%02d" "$((i+1))")
     out="$OUTDIR/ref_${num}.qmlog"
     echo "--- Prompt $((i+1)) / $N_PROMPTS ---"
-    $QMATCH generate \
+    $QMATCH ref \
         -m "$REF_MODEL" \
         -p "${PROMPTS[$i]}" \
         -o "$out" \

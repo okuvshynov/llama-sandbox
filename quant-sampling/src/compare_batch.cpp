@@ -199,7 +199,7 @@ int cmd_compare_batch(int argc, char ** argv) {
 
     const int n_threads = std::max(1, (int)std::thread::hardware_concurrency());
 
-    // use reference temperature from the generate step
+    // use reference temperature from the ref step
     const double ref_temp = (refs[0].header.temp > 0.0f) ? (double)refs[0].header.temp : 1.0;
     fprintf(stderr, "compare-batch: using reference temperature = %.2f\n", ref_temp);
 
@@ -308,7 +308,7 @@ int cmd_compare_batch(int argc, char ** argv) {
         : 0.0;
 
     printf("\n  Mean optimal T: %.2f +/- %.2f\n", T_mean, T_std);
-    printf("\nRecommended temperature for quantized model:  --temp %.2f\n", T_mean);
+    printf("\nRecommended temperature for target model:  --temp %.2f\n", T_mean);
 
     return 0;
 }

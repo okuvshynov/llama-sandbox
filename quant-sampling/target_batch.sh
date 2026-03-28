@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# collect_batch.sh — run a quantized model on the reference token sequences,
-# collect logits, and write a manifest for compare_batch.sh.
-# Run this once per quantized model variant.
+# target_batch.sh — run a target model on the reference token sequences,
+# save logits, and write a manifest for compare_batch.sh.
+# Run this once per target model variant.
 #
-# Usage: ./collect_batch.sh <quant_model.gguf> <tag> [outdir]
+# Usage: ./target_batch.sh <target_model.gguf> <tag> [outdir]
 #   quant_model   path to the quantized model (e.g. Q2_K, Q4_K, Q5_K)
 #   tag           short label for this variant, used in filenames
 #                 (e.g. "q2", "q4", "q5") — must be unique per variant
@@ -13,24 +13,24 @@ set -euo pipefail
 QMATCH=./build/quant-sampling
 
 if [[ $# -lt 2 ]]; then
-    echo "Usage: $0 <quant_model.gguf> <tag> [outdir]" >&2
+    echo "Usage: $0 <target_model.gguf> <tag> [outdir]" >&2
     exit 1
 fi
 
-QUANT_MODEL="$1"
+TARGET_MODEL="$1"
 TAG="$2"
 OUTDIR="${3:-batch_run}"
 
-if [[ ! -f "$QUANT_MODEL" ]]; then
-    echo "error: quant model not found: $QUANT_MODEL" >&2
+if [[ ! -f "$TARGET_MODEL" ]]; then
+    echo "error: target model not found: $TARGET_MODEL" >&2
     exit 1
 fi
 if [[ ! -d "$OUTDIR" ]]; then
-    echo "error: outdir not found: $OUTDIR (run generate_batch.sh first)" >&2
+    echo "error: outdir not found: $OUTDIR (run ref_batch.sh first)" >&2
     exit 1
 fi
 
-# Discover reference files produced by generate_batch.sh
+# Discover reference files produced by ref_batch.sh
 REF_FILES=()
 for f in "$OUTDIR"/ref_*.qmlog; do
     [[ -f "$f" ]] && REF_FILES+=("$f")
@@ -42,8 +42,8 @@ if [[ $N_PROMPTS -eq 0 ]]; then
     exit 1
 fi
 
-echo "=== Collect [$TAG]: $N_PROMPTS prompts ==="
-echo "    quant model: $QUANT_MODEL"
+echo "=== Target [$TAG]: $N_PROMPTS prompts ==="
+echo "    target model: $TARGET_MODEL"
 echo "    output:      $OUTDIR/${TAG}_NN.qmlog"
 echo ""
 
@@ -52,8 +52,8 @@ for ((i=0; i<N_PROMPTS; i++)); do
     ref="$OUTDIR/ref_${num}.qmlog"
     out="$OUTDIR/${TAG}_${num}.qmlog"
     echo "--- Prompt $((i+1)) / $N_PROMPTS ---"
-    $QMATCH collect \
-        -m "$QUANT_MODEL" \
+    $QMATCH target \
+        -m "$TARGET_MODEL" \
         -i "$ref" \
         -o "$out" \
         -ngl 99
