@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>quant-sampling results</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace; background: #1a1a2e; color: #e0e0e0; padding: 24px; }
+  h1 { font-size: 1.4em; margin-bottom: 4px; color: #fff; }
+  .subtitle { color: #888; margin-bottom: 20px; font-size: 0.9em; }
+  .controls { margin-bottom: 16px; display: flex; gap: 16px; align-items: center; }
+  .controls label { font-size: 0.85em; color: #aaa; }
+  .controls select, .controls input[type=file] { background: #2a2a4a; color: #e0e0e0; border: 1px solid #444; padding: 4px 8px; border-radius: 4px; font-size: 0.85em; }
+  .section { margin-bottom: 24px; }
+  .section h2 { font-size: 1.1em; margin-bottom: 8px; color: #ccc; border-bottom: 1px solid #333; padding-bottom: 4px; }
+  .summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 20px; }
+  .summary-card { background: #2a2a4a; border-radius: 8px; padding: 14px; }
+  .summary-card .label { font-size: 0.75em; color: #888; text-transform: uppercase; letter-spacing: 0.5px; }
+  .summary-card .value { font-size: 1.5em; font-weight: bold; margin-top: 4px; }
+  .summary-card .detail { font-size: 0.8em; color: #888; margin-top: 2px; }
+  .heatmap-container { overflow-x: auto; }
+  table.heatmap { border-collapse: collapse; font-size: 0.75em; }
+  table.heatmap th, table.heatmap td { padding: 3px 6px; text-align: center; white-space: nowrap; }
+  table.heatmap th { background: #2a2a4a; color: #aaa; position: sticky; top: 0; }
+  table.heatmap th.row-header { text-align: left; position: sticky; left: 0; background: #2a2a4a; z-index: 1; }
+  table.heatmap td.row-header { text-align: left; position: sticky; left: 0; background: #1a1a2e; font-weight: bold; z-index: 1; }
+  table.heatmap td.kl-cell { cursor: default; min-width: 42px; }
+  table.heatmap tr.cat-row td { border-top: 2px solid #555; }
+  .legend { display: flex; align-items: center; gap: 8px; margin: 8px 0; font-size: 0.8em; color: #888; }
+  .legend .bar { height: 12px; width: 200px; border-radius: 3px; }
+  .best-marker { font-weight: bold; }
+</style>
+</head>
+<body>
+
+<h1>quant-sampling temperature scan</h1>
+<div class="subtitle" id="subtitle">Load a CSV file to view results</div>
+
+<div class="controls">
+  <label>CSV file: <input type="file" id="file-input" accept=".csv"></label>
+</div>
+
+<div id="content" style="display:none">
+  <div class="section">
+    <h2>Recommended temperature by category</h2>
+    <div class="summary-grid" id="summary-cards"></div>
+  </div>
+
+  <div class="section">
+    <h2>KL divergence heatmap (prompt x temperature)</h2>
+    <div class="legend">
+      <span>Low KL</span>
+      <div class="bar" id="legend-bar"></div>
+      <span>High KL</span>
+    </div>
+    <div class="heatmap-container" id="heatmap-container"></div>
+  </div>
+</div>
+
+<script>
+function parseCSV(text) {
+  const lines = text.trim().split('\n');
+  const header = lines[0].split(',');
+  return lines.slice(1).map(line => {
+    const cols = line.split(',');
+    return {
+      prompt: parseInt(cols[0]),
+      path: cols[1],
+      temp: parseFloat(cols[2]),
+      kl: parseFloat(cols[3]),
+    };
+  });
+}
+
+function getCategory(path) {
+  const slash = path.indexOf('/');
+  return slash >= 0 ? path.substring(0, slash) : 'other';
+}
+
+function buildVisualization(rows) {
+  // extract unique prompts (ordered) and temps
+  const promptMap = new Map();
+  for (const r of rows) {
+    if (!promptMap.has(r.prompt)) promptMap.set(r.prompt, r.path);
+  }
+  const prompts = [...promptMap.entries()]; // [[id, path], ...]
+  const temps = [...new Set(rows.map(r => r.temp))].sort((a, b) => a - b);
+
+  // build lookup: kl[promptId][temp] = kl
+  const kl = {};
+  for (const r of rows) {
+    if (!kl[r.prompt]) kl[r.prompt] = {};
+    kl[r.prompt][r.temp] = r.kl;
+  }
+
+  // per-prompt best temp
+  const bestPerPrompt = {};
+  for (const [pid] of prompts) {
+    let bestT = temps[0], bestKL = Infinity;
+    for (const t of temps) {
+      if (kl[pid][t] < bestKL) { bestKL = kl[pid][t]; bestT = t; }
+    }
+    bestPerPrompt[pid] = { temp: bestT, kl: bestKL };
+  }
+
+  // categories
+  const categories = new Map();
+  for (const [pid, path] of prompts) {
+    const cat = getCategory(path);
+    if (!categories.has(cat)) categories.set(cat, []);
+    categories.get(cat).push(pid);
+  }
+
+  // per-category best temp (average of per-prompt bests)
+  const catStats = {};
+  for (const [cat, pids] of categories) {
+    const bestTemps = pids.map(p => bestPerPrompt[p].temp);
+    const bestKLs = pids.map(p => bestPerPrompt[p].kl);
+    const meanT = bestTemps.reduce((a, b) => a + b, 0) / bestTemps.length;
+    const meanKL = bestKLs.reduce((a, b) => a + b, 0) / bestKLs.length;
+    catStats[cat] = { meanTemp: meanT, meanKL: meanKL, count: pids.length };
+  }
+
+  // overall
+  const allBestTemps = prompts.map(([pid]) => bestPerPrompt[pid].temp);
+  const allBestKLs = prompts.map(([pid]) => bestPerPrompt[pid].kl);
+  const overallMeanT = allBestTemps.reduce((a, b) => a + b, 0) / allBestTemps.length;
+  const overallMeanKL = allBestKLs.reduce((a, b) => a + b, 0) / allBestKLs.length;
+
+  // --- Summary cards ---
+  const cardsDiv = document.getElementById('summary-cards');
+  cardsDiv.innerHTML = '';
+
+  // overall card
+  cardsDiv.innerHTML += `<div class="summary-card">
+    <div class="label">Overall (${prompts.length} prompts)</div>
+    <div class="value">T = ${overallMeanT.toFixed(3)}</div>
+    <div class="detail">mean KL = ${overallMeanKL.toFixed(4)}</div>
+  </div>`;
+
+  for (const [cat, stats] of Object.entries(catStats).sort()) {
+    cardsDiv.innerHTML += `<div class="summary-card">
+      <div class="label">${cat} (${stats.count} prompts)</div>
+      <div class="value">T = ${stats.meanTemp.toFixed(3)}</div>
+      <div class="detail">mean KL = ${stats.meanKL.toFixed(4)}</div>
+    </div>`;
+  }
+
+  // --- Heatmap ---
+  // color scale: green (low KL) to red (high KL)
+  const allKL = rows.map(r => r.kl);
+  const klMin = Math.min(...allKL);
+  const klMax = Math.max(...allKL);
+
+  function klColor(val) {
+    const t = (val - klMin) / (klMax - klMin || 1);
+    // dark green -> yellow -> red
+    const r = Math.round(t < 0.5 ? t * 2 * 255 : 255);
+    const g = Math.round(t < 0.5 ? 255 : (1 - (t - 0.5) * 2) * 255);
+    const b = 40;
+    return `rgb(${r},${g},${b})`;
+  }
+
+  // legend gradient
+  const legendBar = document.getElementById('legend-bar');
+  const stops = [];
+  for (let i = 0; i <= 10; i++) {
+    const t = i / 10;
+    const val = klMin + t * (klMax - klMin);
+    stops.push(klColor(val));
+  }
+  legendBar.style.background = `linear-gradient(to right, ${stops.join(', ')})`;
+
+  // build table
+  let html = '<table class="heatmap"><thead><tr><th class="row-header">Prompt</th>';
+  for (const t of temps) {
+    html += `<th>${t.toFixed(2)}</th>`;
+  }
+  html += '</tr></thead><tbody>';
+
+  let prevCat = '';
+  for (const [pid, path] of prompts) {
+    const cat = getCategory(path);
+    const isNewCat = cat !== prevCat;
+    prevCat = cat;
+
+    const best = bestPerPrompt[pid];
+    const rowClass = isNewCat ? ' class="cat-row"' : '';
+    html += `<tr${rowClass}>`;
+    html += `<td class="row-header">${path}</td>`;
+    for (const t of temps) {
+      const val = kl[pid][t];
+      const bg = klColor(val);
+      const textColor = val !== undefined ? '#000' : '#666';
+      const isBest = Math.abs(t - best.temp) < 0.001;
+      const cls = isBest ? 'kl-cell best-marker' : 'kl-cell';
+      const display = val !== undefined ? val.toFixed(3) : '';
+      const marker = isBest ? ' *' : '';
+      html += `<td class="${cls}" style="background:${bg};color:${textColor}" title="${path} T=${t.toFixed(2)} KL=${display}">${display}${marker}</td>`;
+    }
+    html += '</tr>';
+  }
+  html += '</tbody></table>';
+
+  document.getElementById('heatmap-container').innerHTML = html;
+}
+
+document.getElementById('file-input').addEventListener('change', function(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+
+  document.getElementById('subtitle').textContent = file.name;
+
+  const reader = new FileReader();
+  reader.onload = function(ev) {
+    const rows = parseCSV(ev.target.result);
+    document.getElementById('content').style.display = 'block';
+    buildVisualization(rows);
+  };
+  reader.readAsText(file);
+});
+
+// auto-load if CSV is in same directory (for local serving)
+fetch('qwen3.5-122b-a10b-iq1_m.csv').then(r => {
+  if (r.ok) return r.text();
+  throw new Error('no default CSV');
+}).then(text => {
+  document.getElementById('subtitle').textContent = 'qwen3.5-122b-a10b-iq1_m.csv';
+  document.getElementById('content').style.display = 'block';
+  buildVisualization(parseCSV(text));
+}).catch(() => {});
+</script>
+</body>
+</html>

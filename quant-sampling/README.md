@@ -131,3 +131,18 @@ prompts/
 ```
 
 Each `.txt` file is one prompt (multiline supported). Files are discovered recursively and sorted by full path, so ordering is deterministic: knowledge/, then math/, then swe/.
+
+## Viewing results
+
+The `results/` directory contains CSV output files and an interactive HTML viewer (`results/view.html`). To use it, serve the directory over HTTP:
+
+```bash
+cd results
+python3 -m http.server 8080 --bind 0.0.0.0
+```
+
+Then open `http://<your-ip>:8080/view.html`. The viewer auto-loads any CSV in the same directory, or you can use the file picker. It shows:
+
+- Per-category recommended temperature (knowledge, math, swe, overall)
+- Heatmap of KL divergence across all prompt x temperature pairs
+- Best temperature per prompt highlighted
