@@ -106,8 +106,9 @@ static std::vector<std::string> load_prompts(const ref_params & params) {
         long sz = ftell(fp);
         fseek(fp, 0, SEEK_SET);
         std::string content(sz, '\0');
-        fread(&content[0], 1, sz, fp);
+        size_t n_read = fread(&content[0], 1, sz, fp);
         fclose(fp);
+        content.resize(n_read);
 
         // trim trailing whitespace
         while (!content.empty() && (content.back() == '\n' || content.back() == '\r' || content.back() == ' ')) {
