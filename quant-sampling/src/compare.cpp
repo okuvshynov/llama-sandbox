@@ -88,6 +88,12 @@ int cmd_compare(int argc, char ** argv) {
     // --- basic statistics ---
     const int n_threads = std::max(1, (int)std::thread::hardware_concurrency());
 
+    // use reference temperature from the generate step (e.g. 0.6)
+    // so we compare distributions at the actual sampling temperature
+    const double ref_temp = (fa.header.temp > 0.0f) ? (double)fa.header.temp : 1.0;
+
+    fprintf(stderr, "compare: using reference temperature = %.2f\n", ref_temp);
+
     std::vector<double> kl_per_pos(n_logits);
     std::atomic<int>    top1_agree{0};
     std::vector<double> prob_diff(n_logits);
@@ -105,12 +111,13 @@ int cmd_compare(int argc, char ** argv) {
             const float * logits_a = fa.logits.data() + (size_t)i * n_vocab;
             const float * logits_b = fb.logits.data() + (size_t)i * n_vocab;
 
-            log_softmax(logits_a, n_vocab, log_p_ref);
-            log_softmax(logits_b, n_vocab, log_p_quant);
+            log_softmax_temp(logits_a, n_vocab, ref_temp, log_p_ref);
+            log_softmax_temp(logits_b, n_vocab, ref_temp, log_p_quant);
 
             kl_per_pos[i] = kl_divergence(log_p_ref, log_p_quant, n_vocab);
 
-            // top-1 agreement
+            // top-1 agreement (at reference temperature)
+            // argmax is temperature-invariant, so raw logits are fine
             if (argmax(logits_a, n_vocab) == argmax(logits_b, n_vocab)) {
                 local_agree++;
             }
@@ -209,7 +216,7 @@ int cmd_compare(int argc, char ** argv) {
                 const float * logits_a = fa.logits.data() + (size_t)i * n_vocab;
                 const float * logits_b = fb.logits.data() + (size_t)i * n_vocab;
 
-                log_softmax(logits_a, n_vocab, log_p_ref);
+                log_softmax_temp(logits_a, n_vocab, ref_temp, log_p_ref);
                 log_softmax_temp(logits_b, n_vocab, tr.temp, log_p_quant);
 
                 local_sum += kl_divergence(log_p_ref, log_p_quant, n_vocab);
@@ -236,7 +243,7 @@ int cmd_compare(int argc, char ** argv) {
                                       });
 
     printf("Scanned %zu temperatures:\n", temp_results.size());
-    printf("  Baseline (T=1.0):   KL = %.6f\n", kl_mean);
+    printf("  Baseline (T=%.2f):  KL = %.6f\n", ref_temp, kl_mean);
     printf("  Best temperature:   T = %.2f, KL = %.6f\n", best_temp->temp, best_temp->kl_mean);
     printf("  KL reduction:       %.1f%%\n",
            100.0 * (1.0 - best_temp->kl_mean / kl_mean));

@@ -92,7 +92,8 @@ static bool parse_manifest(const std::string & path, std::vector<prompt_pair> & 
 
 // Compute basic stats (KL mean, top-1 agreement) for one prompt pair.
 static prompt_stats compute_prompt_stats(const qmlog_file & fa, const qmlog_file & fb,
-                                         int n_vocab, int n_logits, int n_threads) {
+                                         int n_vocab, int n_logits, int n_threads,
+                                         double ref_temp) {
     std::vector<double> kl_per_pos(n_logits);
     std::atomic<int> top1_agree{0};
     std::atomic<int> counter{0};
@@ -108,8 +109,8 @@ static prompt_stats compute_prompt_stats(const qmlog_file & fa, const qmlog_file
             const float * logits_a = fa.logits.data() + (size_t)i * n_vocab;
             const float * logits_b = fb.logits.data() + (size_t)i * n_vocab;
 
-            log_softmax(logits_a, n_vocab, log_p_ref);
-            log_softmax(logits_b, n_vocab, log_p_quant);
+            log_softmax_temp(logits_a, n_vocab, ref_temp, log_p_ref);
+            log_softmax_temp(logits_b, n_vocab, ref_temp, log_p_quant);
 
             kl_per_pos[i] = kl_divergence(log_p_ref, log_p_quant, n_vocab);
 
@@ -137,14 +138,15 @@ static prompt_stats compute_prompt_stats(const qmlog_file & fa, const qmlog_file
 
 // Compute mean KL for a single prompt pair at a given temperature.
 static double compute_kl_at_temp(const qmlog_file & fa, const qmlog_file & fb,
-                                 int n_vocab, int n_logits, double temp) {
+                                 int n_vocab, int n_logits, double temp,
+                                 double ref_temp) {
     std::vector<double> log_p_ref, log_p_quant;
     double total_kl = 0.0;
     for (int i = 0; i < n_logits; i++) {
         const float * logits_a = fa.logits.data() + (size_t)i * n_vocab;
         const float * logits_b = fb.logits.data() + (size_t)i * n_vocab;
 
-        log_softmax(logits_a, n_vocab, log_p_ref);
+        log_softmax_temp(logits_a, n_vocab, ref_temp, log_p_ref);
         log_softmax_temp(logits_b, n_vocab, temp, log_p_quant);
 
         total_kl += kl_divergence(log_p_ref, log_p_quant, n_vocab);
@@ -197,11 +199,15 @@ int cmd_compare_batch(int argc, char ** argv) {
 
     const int n_threads = std::max(1, (int)std::thread::hardware_concurrency());
 
+    // use reference temperature from the generate step
+    const double ref_temp = (refs[0].header.temp > 0.0f) ? (double)refs[0].header.temp : 1.0;
+    fprintf(stderr, "compare-batch: using reference temperature = %.2f\n", ref_temp);
+
     // --- Per-Prompt Statistics ---
     std::vector<prompt_stats> stats(n_prompts);
     for (int p = 0; p < n_prompts; p++) {
         int n_logits = refs[p].header.n_tokens - 1;
-        stats[p] = compute_prompt_stats(refs[p], quants[p], n_vocab, n_logits, n_threads);
+        stats[p] = compute_prompt_stats(refs[p], quants[p], n_vocab, n_logits, n_threads, ref_temp);
     }
 
     printf("\n=== Per-Prompt Statistics ===\n");
@@ -261,7 +267,8 @@ int cmd_compare_batch(int argc, char ** argv) {
             for (int p = 0; p < n_prompts; p++) {
                 int n_logits = refs[p].header.n_tokens - 1;
                 per_prompt_kl[p][ti] = compute_kl_at_temp(refs[p], quants[p],
-                                                          n_vocab, n_logits, T);
+                                                          n_vocab, n_logits, T,
+                                                          ref_temp);
             }
 
             if (ti % 10 == 0) {
