@@ -19,6 +19,13 @@ cmake -B build -DLLAMA_CPP_DIR=/path/to/llama.cpp
 cmake --build build
 ```
 
+If you want to build llama.cpp with your preferred accelerator, make sure to use corresponding options, for example:
+```bash
+cmake -B build -DLLAMA_CPP_DIR=/path/to/llama.cpp -DGGML_CUDA=ON
+```
+
+for CUDA build.
+
 ## Single-pair usage
 
 ### Step 1: Generate reference logits
