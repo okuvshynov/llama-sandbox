@@ -18,6 +18,7 @@ struct compare_params {
     std::string path_a;
     std::string path_b;
     std::string csv_path;
+    std::string rank_csv_path;
     bool        optimize  = false;
     double      temp_min  = UNSET;
     double      temp_max  = UNSET;
@@ -41,6 +42,8 @@ static bool parse_args(int argc, char ** argv, compare_params & params) {
             params.temp_step = atof(argv[++i]);
         } else if (strcmp(arg, "--csv") == 0 && i + 1 < argc) {
             params.csv_path = argv[++i];
+        } else if (strcmp(arg, "--rank-csv") == 0 && i + 1 < argc) {
+            params.rank_csv_path = argv[++i];
         } else {
             fprintf(stderr, "compare: unknown argument '%s'\n", arg);
             return false;
@@ -51,7 +54,8 @@ static bool parse_args(int argc, char ** argv, compare_params & params) {
                         "  --temp-min <val>   temperature scan start (default: ref_temp * 0.5)\n"
                         "  --temp-max <val>   temperature scan end   (default: ref_temp * 1.5)\n"
                         "  --temp-step <val>  temperature scan step  (default: 0.01)\n"
-                        "  --csv <path>       export full prompt x temperature KL data to CSV\n");
+                        "  --csv <path>       export full prompt x temperature KL data to CSV\n"
+                        "  --rank-csv <path>  export KL contribution by logit rank bucket\n");
         return false;
     }
     return true;
@@ -190,6 +194,114 @@ int cmd_compare(int argc, char ** argv) {
     printf("\n=== Aggregate ===\n");
     printf("  KL divergence: %.6f +/- %.6f\n", kl_agg_mean, kl_agg_std);
     printf("  Top-1 agree:   %.1f%% +/- %.1f%%\n", t1_agg_mean, t1_agg_std);
+
+    // === Rank analysis ===
+    if (!params.rank_csv_path.empty()) {
+        fprintf(stderr, "compare: computing rank-stratified KL...\n");
+
+        // bucket boundaries: top-1, top-2–10, top-11–100, tail (101+)
+        static const int32_t BUCKET_BOUNDS[] = {1, 10, 100};
+        static const int32_t N_BUCKETS = 4;
+        static const char * BUCKET_NAMES[] = {"top1", "top2_10", "top11_100", "tail"};
+
+        struct rank_stats {
+            double kl_contribution[4] = {};  // sum of per-token KL contributions
+            double prob_ref[4]        = {};  // sum of ref probability mass
+            double prob_tgt[4]        = {};  // sum of target probability mass
+            int32_t count             = 0;   // number of positions averaged over
+        };
+
+        std::vector<rank_stats> per_prompt_rank(n_prompts);
+
+        for (int32_t p = 0; p < n_prompts; p++) {
+            const auto & pa = fa.prompts[p];
+            const auto & pb = fb.prompts[p];
+            const int32_t n_logits = pa.n_tokens - 1;
+
+            rank_stats & rs = per_prompt_rank[p];
+            rs.count = n_logits;
+
+            std::vector<double> log_p_ref, log_p_tgt;
+            std::vector<int32_t> rank_order(n_vocab);
+
+            for (int32_t i = 0; i < n_logits; i++) {
+                const float * la = pa.logits.data() + (size_t)i * n_vocab;
+                const float * lb = pb.logits.data() + (size_t)i * n_vocab;
+
+                log_softmax_temp(la, n_vocab, ref_temp, log_p_ref);
+                log_softmax_temp(lb, n_vocab, ref_temp, log_p_tgt);
+
+                // sort by ref probability (descending)
+                std::iota(rank_order.begin(), rank_order.end(), 0);
+                std::partial_sort(rank_order.begin(), rank_order.begin() + std::min((int32_t)100, n_vocab),
+                                  rank_order.end(),
+                                  [&](int32_t a, int32_t b) { return log_p_ref[a] > log_p_ref[b]; });
+
+                // accumulate into buckets
+                int32_t bucket = 0;
+                for (int32_t rank = 0; rank < n_vocab; rank++) {
+                    // advance bucket if needed
+                    while (bucket < N_BUCKETS - 1 && rank >= BUCKET_BOUNDS[bucket]) bucket++;
+
+                    int32_t tok = rank_order[rank];
+                    double p_r = exp(log_p_ref[tok]);
+                    double p_t = exp(log_p_tgt[tok]);
+                    double kl_tok = (p_r > 1e-30) ? p_r * (log_p_ref[tok] - log_p_tgt[tok]) : 0.0;
+
+                    rs.kl_contribution[bucket] += kl_tok;
+                    rs.prob_ref[bucket]        += p_r;
+                    rs.prob_tgt[bucket]        += p_t;
+                }
+            }
+
+            // average over positions
+            for (int32_t b = 0; b < N_BUCKETS; b++) {
+                rs.kl_contribution[b] /= n_logits;
+                rs.prob_ref[b]        /= n_logits;
+                rs.prob_tgt[b]        /= n_logits;
+            }
+
+            fprintf(stderr, "  rank analysis: prompt %d / %d\r", p + 1, n_prompts);
+            fflush(stderr);
+        }
+        fprintf(stderr, "\n");
+
+        // print summary
+        printf("\n=== Rank Analysis (averaged across positions) ===\n");
+        printf("  %3s  %-20s  %-10s  %10s  %8s  %8s  %8s\n",
+               "#", "Path", "Bucket", "KL contrib", "P(ref)", "P(tgt)", "P shift");
+        for (int32_t p = 0; p < n_prompts; p++) {
+            const char * path = fa.prompts[p].path.empty() ? "" : fa.prompts[p].path.c_str();
+            const rank_stats & rs = per_prompt_rank[p];
+            for (int32_t b = 0; b < N_BUCKETS; b++) {
+                double shift = rs.prob_tgt[b] - rs.prob_ref[b];
+                printf("  %3d  %-20s  %-10s  %10.6f  %8.4f  %8.4f  %+8.4f\n",
+                       p + 1, path, BUCKET_NAMES[b],
+                       rs.kl_contribution[b], rs.prob_ref[b], rs.prob_tgt[b], shift);
+            }
+        }
+
+        // write CSV
+        FILE * csv = fopen(params.rank_csv_path.c_str(), "w");
+        if (!csv) {
+            fprintf(stderr, "compare: cannot open rank CSV '%s'\n", params.rank_csv_path.c_str());
+            return 1;
+        }
+        fprintf(csv, "prompt,path,bucket,kl_contribution,prob_ref,prob_target,prob_shift\n");
+        for (int32_t p = 0; p < n_prompts; p++) {
+            const char * path = fa.prompts[p].path.empty() ? "" : fa.prompts[p].path.c_str();
+            const rank_stats & rs = per_prompt_rank[p];
+            for (int32_t b = 0; b < N_BUCKETS; b++) {
+                double shift = rs.prob_tgt[b] - rs.prob_ref[b];
+                fprintf(csv, "%d,%s,%s,%.6f,%.4f,%.4f,%+.4f\n",
+                        p + 1, path, BUCKET_NAMES[b],
+                        rs.kl_contribution[b], rs.prob_ref[b], rs.prob_tgt[b], shift);
+            }
+        }
+        fclose(csv);
+        fprintf(stderr, "compare: wrote %s (%d prompts x %d buckets)\n",
+                params.rank_csv_path.c_str(), n_prompts, N_BUCKETS);
+    }
 
     if (!params.optimize) return 0;
 
