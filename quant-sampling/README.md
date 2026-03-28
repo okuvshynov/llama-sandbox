@@ -7,7 +7,7 @@ When quantizing LLMs, the output distribution shifts. The default sampling param
 ```
 quant-sampling ref     -m ref_model.gguf (-p "prompt" | -P prompts/) -o ref.bin
 quant-sampling target  -m target_model.gguf -i ref.bin -o target.bin
-quant-sampling compare -a ref.bin -b target.bin [--optimize]
+quant-sampling compare -a ref.bin -b target.bin --optimize [--csv scan.csv]
 ```
 
 A single .bin file can contain one or many prompts. The workflow is always the same regardless of prompt count.
@@ -41,7 +41,7 @@ Single prompt:
   -o ref.bin
 ```
 
-Multiple prompts (directory of .txt files, one prompt per file):
+Multiple prompts from a directory:
 ```bash
 ./build/quant-sampling ref \
   -m model_fp16.gguf \
@@ -51,7 +51,7 @@ Multiple prompts (directory of .txt files, one prompt per file):
   -o ref.bin
 ```
 
-Files in the directory are sorted alphabetically and each .txt file becomes one prompt (multiline supported).
+The directory is scanned recursively — subdirectories are used to organize prompts by topic. Paths relative to the prompt directory (e.g. `math/01.txt`) are stored in the .bin file and appear in compare output.
 
 ### Step 2: Run target model
 
@@ -75,22 +75,34 @@ Run this once per target model variant — the ref.bin is reused:
 ./build/quant-sampling compare -a ref.bin -b target.bin --optimize
 ```
 
-For single-prompt files, output includes:
-- Mean/std KL divergence
-- Top-1 token agreement percentage
-- Per-position KL for identifying high-divergence regions
-- Temperature scan with recommended value
-
-For multi-prompt files, output includes:
-- Per-prompt summary table (KL, top-1 agreement)
+Output includes:
+- Per-prompt summary table (path, KL divergence, top-1 agreement)
 - Aggregate statistics across prompts
-- Per-prompt optimal temperature + global recommendation
+- Temperature optimization: per-prompt best temperature and KL at that temperature
 
-Temperature scan range is configurable:
+Temperature scan defaults are derived from the reference temperature used during generation (e.g. for ref\_temp=0.6: scans 0.30–0.90 at 0.01 steps). Override with:
 ```bash
 ./build/quant-sampling compare -a ref.bin -b target.bin --optimize \
   --temp-min 0.5 --temp-max 1.2 --temp-step 0.01
 ```
+
+### CSV export
+
+Export the full prompt x temperature KL matrix for analysis in Python/JS:
+```bash
+./build/quant-sampling compare -a ref.bin -b target.bin --optimize --csv scan.csv
+```
+
+Output format:
+```csv
+prompt,path,temp,kl
+1,knowledge/01.txt,0.31,0.045123
+1,knowledge/01.txt,0.32,0.043456
+...
+30,swe/10.txt,0.90,0.072001
+```
+
+The `path` column enables grouping by topic (e.g. aggregate math vs knowledge vs swe prompts).
 
 ### Diff (optional)
 
@@ -99,14 +111,23 @@ Show detailed token-level disagreements:
 ./build/quant-sampling diff -a ref.bin -b target.bin -m model.gguf
 ```
 
-## Prompt directory format
+## Prompt directory
 
-Create a directory with `.txt` files:
+Prompts are organized by topic in subdirectories:
 ```
 prompts/
-  01_coding.txt
-  02_math.txt
-  03_creative.txt
+  knowledge/
+    01.txt    — Paris in the 16th century
+    02.txt    — Byzantine knowledge transmission
+    ...
+  math/
+    01.txt    — sqrt(2) irrationality proof
+    02.txt    — eigenvalues and eigenvectors
+    ...
+  swe/
+    01.txt    — merge sort in Python
+    02.txt    — HTTP server in Go
+    ...
 ```
 
-Each file contains one prompt (can be multiline). Files are processed in alphabetical order.
+Each `.txt` file is one prompt (multiline supported). Files are discovered recursively and sorted by full path, so ordering is deterministic: knowledge/, then math/, then swe/.
