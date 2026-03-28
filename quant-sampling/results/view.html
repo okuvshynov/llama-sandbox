@@ -40,7 +40,7 @@
 <div class="subtitle" id="subtitle">Load a CSV file to view results</div>
 
 <div class="controls">
-  <label>CSV file: <input type="file" id="file-input" accept=".csv"></label>
+  <label>Dataset: <select id="csv-select"><option value="">Loading...</option></select></label>
   <label>Ref temp: <input type="number" id="ref-temp" value="0.6" step="0.01" min="0.01"></label>
 </div>
 
@@ -186,18 +186,20 @@ function buildVisualization(rows) {
 
   function ratioColor(val) {
     if (val <= 1.0) {
-      // green (better) to neutral
+      // green (better) -> gray (neutral at 1.0)
       const t = Math.max(0, (val - ratioMin) / (1.0 - ratioMin || 1));
-      const r = Math.round(40 + t * 180);
-      const g = Math.round(200 - t * 60);
-      const b = Math.round(40 + t * 120);
+      // t=0: green (#2d9a2d), t=1: gray (#999)
+      const r = Math.round(45 + t * 108);
+      const g = Math.round(154 - t * 1);
+      const b = Math.round(45 + t * 108);
       return `rgb(${r},${g},${b})`;
     } else {
-      // neutral to red (worse)
+      // gray (neutral at 1.0) -> red (worse)
       const t = Math.min(1, (val - 1.0) / (ratioMax - 1.0 || 1));
-      const r = Math.round(220 + t * 35);
-      const g = Math.round(140 - t * 100);
-      const b = Math.round(160 - t * 120);
+      // t=0: gray (#999), t=1: red (#cc3333)
+      const r = Math.round(153 + t * 51);
+      const g = Math.round(153 - t * 102);
+      const b = Math.round(153 - t * 102);
       return `rgb(${r},${g},${b})`;
     }
   }
@@ -257,27 +259,57 @@ function onDataReady(rows) {
   buildVisualization(rows);
 }
 
-document.getElementById('file-input').addEventListener('change', function(e) {
-  const file = e.target.files[0];
-  if (!file) return;
-  document.getElementById('subtitle').textContent = file.name;
-  const reader = new FileReader();
-  reader.onload = function(ev) { onDataReady(parseCSV(ev.target.result)); };
-  reader.readAsText(file);
+function loadCSV(filename) {
+  document.getElementById('subtitle').textContent = filename;
+  fetch(filename).then(r => {
+    if (!r.ok) throw new Error('fetch failed');
+    return r.text();
+  }).then(text => {
+    onDataReady(parseCSV(text));
+  }).catch(err => {
+    document.getElementById('subtitle').textContent = 'Error loading ' + filename;
+  });
+}
+
+document.getElementById('csv-select').addEventListener('change', function() {
+  if (this.value) loadCSV(this.value);
 });
 
 document.getElementById('ref-temp').addEventListener('change', function() {
   if (currentRows) buildVisualization(currentRows);
 });
 
-// auto-load if CSV is in same directory
-fetch('qwen3.5-122b-a10b-iq1_m.csv').then(r => {
-  if (r.ok) return r.text();
-  throw new Error('no default CSV');
-}).then(text => {
-  document.getElementById('subtitle').textContent = 'qwen3.5-122b-a10b-iq1_m.csv';
-  onDataReady(parseCSV(text));
-}).catch(() => {});
+// discover CSV files from directory listing
+fetch('./').then(r => r.text()).then(html => {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(html, 'text/html');
+  const links = [...doc.querySelectorAll('a')];
+  const csvFiles = links
+    .map(a => a.getAttribute('href'))
+    .filter(href => href && href.endsWith('.csv'))
+    .sort();
+
+  const select = document.getElementById('csv-select');
+  select.innerHTML = '';
+
+  if (csvFiles.length === 0) {
+    select.innerHTML = '<option value="">No CSV files found</option>';
+    return;
+  }
+
+  for (const f of csvFiles) {
+    const opt = document.createElement('option');
+    opt.value = f;
+    opt.textContent = decodeURIComponent(f);
+    select.appendChild(opt);
+  }
+
+  // auto-load first
+  loadCSV(csvFiles[0]);
+}).catch(() => {
+  const select = document.getElementById('csv-select');
+  select.innerHTML = '<option value="">Could not list directory</option>';
+});
 </script>
 </body>
 </html>
