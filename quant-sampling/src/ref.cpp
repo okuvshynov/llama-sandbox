@@ -79,27 +79,33 @@ static bool parse_args(int argc, char ** argv, ref_params & params) {
     return true;
 }
 
-static std::vector<std::string> load_prompts(const ref_params & params) {
-    std::vector<std::string> prompts;
+struct prompt_input {
+    std::string text;
+    std::string path;  // relative path label (e.g. "math/01.txt") or "inline"
+};
+
+static std::vector<prompt_input> load_prompts(const ref_params & params) {
+    std::vector<prompt_input> prompts;
 
     if (!params.prompt.empty()) {
-        prompts.push_back(params.prompt);
+        prompts.push_back({params.prompt, "inline"});
         return prompts;
     }
 
     namespace fs = std::filesystem;
+    fs::path base_dir = params.prompt_dir;
     std::vector<fs::path> files;
-    for (const auto & entry : fs::recursive_directory_iterator(params.prompt_dir)) {
+    for (const auto & entry : fs::recursive_directory_iterator(base_dir)) {
         if (entry.is_regular_file() && entry.path().extension() == ".txt") {
             files.push_back(entry.path());
         }
     }
     std::sort(files.begin(), files.end());
 
-    for (const auto & path : files) {
-        FILE * fp = fopen(path.c_str(), "r");
+    for (const auto & fpath : files) {
+        FILE * fp = fopen(fpath.c_str(), "r");
         if (!fp) {
-            fprintf(stderr, "ref: warning: cannot open '%s', skipping\n", path.c_str());
+            fprintf(stderr, "ref: warning: cannot open '%s', skipping\n", fpath.c_str());
             continue;
         }
         fseek(fp, 0, SEEK_END);
@@ -115,7 +121,9 @@ static std::vector<std::string> load_prompts(const ref_params & params) {
             content.pop_back();
         }
         if (!content.empty()) {
-            prompts.push_back(std::move(content));
+            // store relative path from the prompt directory
+            std::string rel = fs::relative(fpath, base_dir).string();
+            prompts.push_back({std::move(content), std::move(rel)});
         }
     }
 
@@ -247,7 +255,7 @@ int cmd_ref(int argc, char ** argv) {
     ref_params params;
     if (!parse_args(argc, argv, params)) return 1;
 
-    std::vector<std::string> prompts = load_prompts(params);
+    std::vector<prompt_input> prompts = load_prompts(params);
     if (prompts.empty()) {
         fprintf(stderr, "ref: no prompts found\n");
         return 1;
@@ -279,8 +287,9 @@ int cmd_ref(int argc, char ** argv) {
     out.prompts.resize(prompts.size());
 
     for (size_t pi = 0; pi < prompts.size(); pi++) {
-        fprintf(stderr, "\n=== Prompt %zu / %zu ===\n", pi + 1, prompts.size());
-        if (!process_one_prompt(model, vocab, prompts[pi], params, n_vocab, out.prompts[pi])) {
+        fprintf(stderr, "\n=== Prompt %zu / %zu [%s] ===\n", pi + 1, prompts.size(), prompts[pi].path.c_str());
+        out.prompts[pi].path = prompts[pi].path;
+        if (!process_one_prompt(model, vocab, prompts[pi].text, params, n_vocab, out.prompts[pi])) {
             llama_model_free(model);
             return 1;
         }

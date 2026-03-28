@@ -3,7 +3,7 @@
 #include <cstdio>
 #include <cstring>
 
-// --- v2 writer ---
+// --- v3 writer ---
 
 bool qmlog_write(const std::string & path, const qmlog_file & f) {
     FILE * fp = fopen(path.c_str(), "wb");
@@ -21,7 +21,7 @@ bool qmlog_write(const std::string & path, const qmlog_file & f) {
     fwrite(&f.n_prompts,  4, 1, fp);
 
     int32_t unused = 0;
-    fwrite(&unused,       4, 1, fp);  // was n_prompt in v1
+    fwrite(&unused,       4, 1, fp);
 
     fwrite(&f.temp,       4, 1, fp);
     fwrite(&f.top_p,      4, 1, fp);
@@ -33,6 +33,13 @@ bool qmlog_write(const std::string & path, const qmlog_file & f) {
 
     // prompt sections
     for (const auto & p : f.prompts) {
+        // v3: path string
+        int32_t path_len = (int32_t)p.path.size();
+        fwrite(&path_len, 4, 1, fp);
+        if (path_len > 0) {
+            fwrite(p.path.data(), 1, path_len, fp);
+        }
+
         fwrite(&p.n_tokens, 4, 1, fp);
         fwrite(&p.n_prompt, 4, 1, fp);
         fwrite(p.tokens.data(), 4, p.n_tokens, fp);
@@ -50,8 +57,8 @@ bool qmlog_write(const std::string & path, const qmlog_file & f) {
 struct raw_header {
     uint32_t version;
     int32_t  n_vocab;
-    int32_t  field_16;  // n_tokens (v1) or n_prompts (v2)
-    int32_t  field_20;  // n_prompt (v1) or unused (v2)
+    int32_t  field_16;  // n_tokens (v1) or n_prompts (v2/v3)
+    int32_t  field_20;  // n_prompt (v1) or unused (v2/v3)
     float    temp;
     float    top_p;
     int32_t  top_k;
@@ -65,7 +72,7 @@ static bool read_global_header(FILE * fp, raw_header & rh) {
         return false;
     }
     if (fread(&rh.version,  4, 1, fp) != 1) return false;
-    if (rh.version != 1 && rh.version != 2) {
+    if (rh.version < 1 || rh.version > 3) {
         fprintf(stderr, "qmlog_read: unsupported version %u\n", rh.version);
         return false;
     }
@@ -77,7 +84,6 @@ static bool read_global_header(FILE * fp, raw_header & rh) {
     if (fread(&rh.top_k,    4, 1, fp) != 1) return false;
     if (fread(&rh.seed,     4, 1, fp) != 1) return false;
 
-    // skip reserved (v1: 32 bytes, v2: 28 bytes — but field_20 already consumed the 4-byte difference)
     int32_t skip = (rh.version == 1) ? 32 : 28;
     if (fseek(fp, skip, SEEK_CUR) != 0) return false;
 
@@ -101,8 +107,8 @@ static bool read_v1_full(FILE * fp, const raw_header & rh, qmlog_file & f) {
     f.prompts.resize(1);
 
     auto & p = f.prompts[0];
-    p.n_tokens = rh.field_16;  // n_tokens in v1
-    p.n_prompt = rh.field_20;  // n_prompt in v1
+    p.n_tokens = rh.field_16;
+    p.n_prompt = rh.field_20;
 
     p.tokens.resize(p.n_tokens);
     if ((int32_t)fread(p.tokens.data(), 4, p.n_tokens, fp) != p.n_tokens) {
@@ -136,11 +142,11 @@ static bool read_v1_tokens(FILE * fp, const raw_header & rh, qmlog_file & f) {
     return true;
 }
 
-// --- v2 readers ---
+// --- v2 readers (no path field) ---
 
 static bool read_v2_full(FILE * fp, const raw_header & rh, qmlog_file & f) {
     fill_global(f, rh);
-    f.n_prompts = rh.field_16;  // n_prompts in v2
+    f.n_prompts = rh.field_16;
     f.prompts.resize(f.n_prompts);
 
     for (int32_t i = 0; i < f.n_prompts; i++) {
@@ -180,7 +186,70 @@ static bool read_v2_tokens(FILE * fp, const raw_header & rh, qmlog_file & f) {
             return false;
         }
 
-        // skip logits
+        const size_t logit_bytes = (size_t)(p.n_tokens - 1) * rh.n_vocab * 4;
+        if (fseek(fp, (long)logit_bytes, SEEK_CUR) != 0) return false;
+    }
+    return true;
+}
+
+// --- v3 readers (with path field) ---
+
+static bool read_path(FILE * fp, std::string & path) {
+    int32_t path_len = 0;
+    if (fread(&path_len, 4, 1, fp) != 1) return false;
+    if (path_len > 0) {
+        path.resize(path_len);
+        if ((int32_t)fread(&path[0], 1, path_len, fp) != path_len) return false;
+    } else {
+        path.clear();
+    }
+    return true;
+}
+
+static bool read_v3_full(FILE * fp, const raw_header & rh, qmlog_file & f) {
+    fill_global(f, rh);
+    f.n_prompts = rh.field_16;
+    f.prompts.resize(f.n_prompts);
+
+    for (int32_t i = 0; i < f.n_prompts; i++) {
+        auto & p = f.prompts[i];
+        if (!read_path(fp, p.path)) return false;
+        if (fread(&p.n_tokens, 4, 1, fp) != 1) return false;
+        if (fread(&p.n_prompt, 4, 1, fp) != 1) return false;
+
+        p.tokens.resize(p.n_tokens);
+        if ((int32_t)fread(p.tokens.data(), 4, p.n_tokens, fp) != p.n_tokens) {
+            fprintf(stderr, "qmlog_read: truncated tokens in prompt %d\n", i);
+            return false;
+        }
+
+        const size_t n_logit_floats = (size_t)(p.n_tokens - 1) * rh.n_vocab;
+        p.logits.resize(n_logit_floats);
+        if (fread(p.logits.data(), 4, n_logit_floats, fp) != n_logit_floats) {
+            fprintf(stderr, "qmlog_read: truncated logits in prompt %d\n", i);
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool read_v3_tokens(FILE * fp, const raw_header & rh, qmlog_file & f) {
+    fill_global(f, rh);
+    f.n_prompts = rh.field_16;
+    f.prompts.resize(f.n_prompts);
+
+    for (int32_t i = 0; i < f.n_prompts; i++) {
+        auto & p = f.prompts[i];
+        if (!read_path(fp, p.path)) return false;
+        if (fread(&p.n_tokens, 4, 1, fp) != 1) return false;
+        if (fread(&p.n_prompt, 4, 1, fp) != 1) return false;
+
+        p.tokens.resize(p.n_tokens);
+        if ((int32_t)fread(p.tokens.data(), 4, p.n_tokens, fp) != p.n_tokens) {
+            fprintf(stderr, "qmlog_read_tokens: truncated tokens in prompt %d\n", i);
+            return false;
+        }
+
         const size_t logit_bytes = (size_t)(p.n_tokens - 1) * rh.n_vocab * 4;
         if (fseek(fp, (long)logit_bytes, SEEK_CUR) != 0) return false;
     }
@@ -199,7 +268,11 @@ bool qmlog_read(const std::string & path, qmlog_file & f) {
     raw_header rh;
     if (!read_global_header(fp, rh)) { fclose(fp); return false; }
 
-    bool ok = (rh.version == 1) ? read_v1_full(fp, rh, f) : read_v2_full(fp, rh, f);
+    bool ok;
+    if (rh.version == 1)      ok = read_v1_full(fp, rh, f);
+    else if (rh.version == 2) ok = read_v2_full(fp, rh, f);
+    else                      ok = read_v3_full(fp, rh, f);
+
     fclose(fp);
     return ok;
 }
@@ -214,7 +287,11 @@ bool qmlog_read_tokens(const std::string & path, qmlog_file & f) {
     raw_header rh;
     if (!read_global_header(fp, rh)) { fclose(fp); return false; }
 
-    bool ok = (rh.version == 1) ? read_v1_tokens(fp, rh, f) : read_v2_tokens(fp, rh, f);
+    bool ok;
+    if (rh.version == 1)      ok = read_v1_tokens(fp, rh, f);
+    else if (rh.version == 2) ok = read_v2_tokens(fp, rh, f);
+    else                      ok = read_v3_tokens(fp, rh, f);
+
     fclose(fp);
     return ok;
 }

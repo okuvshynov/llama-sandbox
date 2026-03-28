@@ -94,6 +94,7 @@ static bool process_one_prompt(
     }
     fprintf(stderr, "\n");
 
+    out.path     = ref_prompt.path;
     out.n_tokens = n_tokens;
     out.n_prompt = ref_prompt.n_prompt;
     out.tokens.assign(ref_prompt.tokens.begin(), ref_prompt.tokens.end());

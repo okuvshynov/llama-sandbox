@@ -17,6 +17,7 @@ static constexpr double UNSET = -1.0;
 struct compare_params {
     std::string path_a;
     std::string path_b;
+    std::string csv_path;
     bool        optimize  = false;
     double      temp_min  = UNSET;
     double      temp_max  = UNSET;
@@ -38,6 +39,8 @@ static bool parse_args(int argc, char ** argv, compare_params & params) {
             params.temp_max = atof(argv[++i]);
         } else if (strcmp(arg, "--temp-step") == 0 && i + 1 < argc) {
             params.temp_step = atof(argv[++i]);
+        } else if (strcmp(arg, "--csv") == 0 && i + 1 < argc) {
+            params.csv_path = argv[++i];
         } else {
             fprintf(stderr, "compare: unknown argument '%s'\n", arg);
             return false;
@@ -47,7 +50,8 @@ static bool parse_args(int argc, char ** argv, compare_params & params) {
         fprintf(stderr, "Usage: quant-sampling compare -a <ref.bin> -b <target.bin> [--optimize]\n"
                         "  --temp-min <val>   temperature scan start (default: ref_temp * 0.5)\n"
                         "  --temp-max <val>   temperature scan end   (default: ref_temp * 1.5)\n"
-                        "  --temp-step <val>  temperature scan step  (default: 0.01)\n");
+                        "  --temp-step <val>  temperature scan step  (default: 0.01)\n"
+                        "  --csv <path>       export full prompt x temperature KL data to CSV\n");
         return false;
     }
     return true;
@@ -162,10 +166,11 @@ int cmd_compare(int argc, char ** argv) {
     }
 
     printf("\n=== Per-Prompt Statistics ===\n");
-    printf("  %3s  %6s  %9s  %7s\n", "#", "Tokens", "KL mean", "Top-1%");
+    printf("  %3s  %-20s  %6s  %9s  %7s\n", "#", "Path", "Tokens", "KL mean", "Top-1%");
     for (int32_t p = 0; p < n_prompts; p++) {
-        printf("  %3d  %6d  %9.6f  %6.1f%%\n",
-               p + 1, stats[p].n_logits, stats[p].kl_mean, stats[p].top1_pct);
+        const char * path = fa.prompts[p].path.empty() ? "" : fa.prompts[p].path.c_str();
+        printf("  %3d  %-20s  %6d  %9.6f  %6.1f%%\n",
+               p + 1, path, stats[p].n_logits, stats[p].kl_mean, stats[p].top1_pct);
     }
 
     // aggregate
@@ -252,13 +257,33 @@ int cmd_compare(int argc, char ** argv) {
     fprintf(stderr, "  100%%\n");
 
     // per-prompt best temperature
-    printf("  %6s  %6s  %10s\n", "Prompt", "Best T", "KL at best");
+    printf("  %6s  %-20s  %6s  %10s\n", "Prompt", "Path", "Best T", "KL at best");
     for (int32_t p = 0; p < n_prompts; p++) {
         int32_t best_ti = 0;
         for (int32_t ti = 1; ti < n_temps; ti++) {
             if (per_prompt_kl[p][ti] < per_prompt_kl[p][best_ti]) best_ti = ti;
         }
-        printf("  %6d  %6.2f  %10.6f\n", p + 1, temp_vals[best_ti], per_prompt_kl[p][best_ti]);
+        const char * path = fa.prompts[p].path.empty() ? "" : fa.prompts[p].path.c_str();
+        printf("  %6d  %-20s  %6.2f  %10.6f\n", p + 1, path, temp_vals[best_ti], per_prompt_kl[p][best_ti]);
+    }
+
+    // CSV export
+    if (!params.csv_path.empty()) {
+        FILE * csv = fopen(params.csv_path.c_str(), "w");
+        if (!csv) {
+            fprintf(stderr, "compare: cannot open CSV file '%s'\n", params.csv_path.c_str());
+            return 1;
+        }
+        fprintf(csv, "prompt,path,temp,kl\n");
+        for (int32_t p = 0; p < n_prompts; p++) {
+            const char * path = fa.prompts[p].path.empty() ? "" : fa.prompts[p].path.c_str();
+            for (int32_t ti = 0; ti < n_temps; ti++) {
+                fprintf(csv, "%d,%s,%.4f,%.6f\n", p + 1, path, temp_vals[ti], per_prompt_kl[p][ti]);
+            }
+        }
+        fclose(csv);
+        fprintf(stderr, "compare: wrote %s (%d prompts x %d temps)\n",
+                params.csv_path.c_str(), n_prompts, n_temps);
     }
 
     return 0;
