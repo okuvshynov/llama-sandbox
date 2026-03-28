@@ -105,7 +105,7 @@ static bool read_v1_full(FILE * fp, const raw_header & rh, qmlog_file & f) {
     p.n_prompt = rh.field_20;  // n_prompt in v1
 
     p.tokens.resize(p.n_tokens);
-    if ((int)fread(p.tokens.data(), 4, p.n_tokens, fp) != p.n_tokens) {
+    if ((int32_t)fread(p.tokens.data(), 4, p.n_tokens, fp) != p.n_tokens) {
         fprintf(stderr, "qmlog_read: truncated tokens\n");
         return false;
     }
@@ -129,7 +129,7 @@ static bool read_v1_tokens(FILE * fp, const raw_header & rh, qmlog_file & f) {
     p.n_prompt = rh.field_20;
 
     p.tokens.resize(p.n_tokens);
-    if ((int)fread(p.tokens.data(), 4, p.n_tokens, fp) != p.n_tokens) {
+    if ((int32_t)fread(p.tokens.data(), 4, p.n_tokens, fp) != p.n_tokens) {
         fprintf(stderr, "qmlog_read_tokens: truncated tokens\n");
         return false;
     }
@@ -143,13 +143,13 @@ static bool read_v2_full(FILE * fp, const raw_header & rh, qmlog_file & f) {
     f.n_prompts = rh.field_16;  // n_prompts in v2
     f.prompts.resize(f.n_prompts);
 
-    for (int i = 0; i < f.n_prompts; i++) {
+    for (int32_t i = 0; i < f.n_prompts; i++) {
         auto & p = f.prompts[i];
         if (fread(&p.n_tokens, 4, 1, fp) != 1) return false;
         if (fread(&p.n_prompt, 4, 1, fp) != 1) return false;
 
         p.tokens.resize(p.n_tokens);
-        if ((int)fread(p.tokens.data(), 4, p.n_tokens, fp) != p.n_tokens) {
+        if ((int32_t)fread(p.tokens.data(), 4, p.n_tokens, fp) != p.n_tokens) {
             fprintf(stderr, "qmlog_read: truncated tokens in prompt %d\n", i);
             return false;
         }
@@ -169,13 +169,13 @@ static bool read_v2_tokens(FILE * fp, const raw_header & rh, qmlog_file & f) {
     f.n_prompts = rh.field_16;
     f.prompts.resize(f.n_prompts);
 
-    for (int i = 0; i < f.n_prompts; i++) {
+    for (int32_t i = 0; i < f.n_prompts; i++) {
         auto & p = f.prompts[i];
         if (fread(&p.n_tokens, 4, 1, fp) != 1) return false;
         if (fread(&p.n_prompt, 4, 1, fp) != 1) return false;
 
         p.tokens.resize(p.n_tokens);
-        if ((int)fread(p.tokens.data(), 4, p.n_tokens, fp) != p.n_tokens) {
+        if ((int32_t)fread(p.tokens.data(), 4, p.n_tokens, fp) != p.n_tokens) {
             fprintf(stderr, "qmlog_read_tokens: truncated tokens in prompt %d\n", i);
             return false;
         }

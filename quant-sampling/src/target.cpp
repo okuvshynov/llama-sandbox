@@ -14,8 +14,8 @@ struct target_params {
     std::string model_path;
     std::string input_path;
     std::string output_path = "target.bin";
-    int         n_gpu_layers = 99;
-    int         n_ctx        = 0; // 0 = auto from input
+    int32_t     n_gpu_layers = 99;
+    int32_t     n_ctx        = 0; // 0 = auto from input
 };
 
 static bool parse_args(int argc, char ** argv, target_params & params) {
@@ -50,10 +50,10 @@ static bool process_one_prompt(
     llama_model * model,
     const qmlog_prompt & ref_prompt,
     const target_params & params,
-    int n_vocab,
+    int32_t n_vocab,
     qmlog_prompt & out
 ) {
-    const int n_tokens = ref_prompt.n_tokens;
+    const int32_t n_tokens = ref_prompt.n_tokens;
 
     llama_context_params ctx_params = llama_context_default_params();
     ctx_params.n_ctx   = params.n_ctx > 0 ? params.n_ctx : n_tokens;
@@ -65,18 +65,18 @@ static bool process_one_prompt(
         return false;
     }
 
-    const int n_batch = llama_n_batch(ctx);
+    const int32_t n_batch = llama_n_batch(ctx);
 
     std::vector<float> all_logits;
     all_logits.reserve((size_t)(n_tokens - 1) * n_vocab);
 
     llama_batch batch = llama_batch_init(n_batch, 0, 1);
 
-    int n_processed = 0;
+    int32_t n_processed = 0;
     while (n_processed < n_tokens) {
         common_batch_clear(batch);
-        int batch_end = std::min(n_tokens, n_processed + n_batch);
-        for (int i = n_processed; i < batch_end; i++) {
+        int32_t batch_end = std::min(n_tokens, n_processed + n_batch);
+        for (int32_t i = n_processed; i < batch_end; i++) {
             common_batch_add(batch, ref_prompt.tokens[i], i, {0}, i > 0);
         }
         if (llama_decode(ctx, batch) != 0) {
@@ -84,7 +84,7 @@ static bool process_one_prompt(
             llama_batch_free(batch); llama_free(ctx);
             return false;
         }
-        for (int i = n_processed; i < batch_end; i++) {
+        for (int32_t i = n_processed; i < batch_end; i++) {
             if (i == 0) continue;
             const float * logits = llama_get_logits_ith(ctx, i - n_processed);
             all_logits.insert(all_logits.end(), logits, logits + n_vocab);
@@ -129,7 +129,7 @@ int cmd_target(int argc, char ** argv) {
     }
 
     const llama_vocab * vocab = llama_model_get_vocab(model);
-    const int n_vocab = llama_vocab_n_tokens(vocab);
+    const int32_t n_vocab = llama_vocab_n_tokens(vocab);
 
     if (n_vocab != ref.n_vocab) {
         fprintf(stderr, "target: vocab mismatch: model has %d, reference has %d\n", n_vocab, ref.n_vocab);
@@ -146,7 +146,7 @@ int cmd_target(int argc, char ** argv) {
     out.seed      = 0;
     out.prompts.resize(ref.n_prompts);
 
-    for (int pi = 0; pi < ref.n_prompts; pi++) {
+    for (int32_t pi = 0; pi < ref.n_prompts; pi++) {
         fprintf(stderr, "\n=== Prompt %d / %d (%d tokens) ===\n",
                 pi + 1, ref.n_prompts, ref.prompts[pi].n_tokens);
         if (!process_one_prompt(model, ref.prompts[pi], params, n_vocab, out.prompts[pi])) {

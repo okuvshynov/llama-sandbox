@@ -17,8 +17,8 @@ struct diff_params {
     std::string path_a;
     std::string path_b;
     std::string model_path;
-    int         top_n        = 10;
-    int         n_gpu_layers = 0;
+    int32_t     top_n        = 10;
+    int32_t     n_gpu_layers = 0;
 };
 
 static bool parse_args(int argc, char ** argv, diff_params & params) {
@@ -61,13 +61,13 @@ static std::string escape(const std::string & s) {
 }
 
 // Process disagreements for a single prompt pair. Returns number of disagreements.
-static int diff_one_prompt(
+static int32_t diff_one_prompt(
     const qmlog_prompt & pa, const qmlog_prompt & pb,
-    int n_vocab, int top_n,
+    int32_t n_vocab, int32_t top_n,
     const llama_vocab * vocab
 ) {
-    const int n_logits = pa.n_tokens - 1;
-    int n_disagree = 0;
+    const int32_t n_logits = pa.n_tokens - 1;
+    int32_t n_disagree = 0;
 
     auto tok_str = [&](int32_t tok) -> std::string {
         if (vocab) return escape(common_token_to_piece(vocab, tok));
@@ -75,14 +75,14 @@ static int diff_one_prompt(
     };
 
     std::vector<double> log_p_ref, log_p_tgt;
-    std::vector<int> idx_ref(n_vocab), idx_tgt(n_vocab);
+    std::vector<int32_t> idx_ref(n_vocab), idx_tgt(n_vocab);
 
-    for (int i = 0; i < n_logits; i++) {
+    for (int32_t i = 0; i < n_logits; i++) {
         const float * la = pa.logits.data() + (size_t)i * n_vocab;
         const float * lb = pb.logits.data() + (size_t)i * n_vocab;
 
-        int top1_a = argmax(la, n_vocab);
-        int top1_b = argmax(lb, n_vocab);
+        int32_t top1_a = argmax(la, n_vocab);
+        int32_t top1_b = argmax(lb, n_vocab);
 
         if (top1_a == top1_b) continue;
         n_disagree++;
@@ -95,9 +95,9 @@ static int diff_one_prompt(
         std::iota(idx_ref.begin(), idx_ref.end(), 0);
         std::iota(idx_tgt.begin(), idx_tgt.end(), 0);
         std::partial_sort(idx_ref.begin(), idx_ref.begin() + top_n, idx_ref.end(),
-                          [&](int a, int b) { return log_p_ref[a] > log_p_ref[b]; });
+                          [&](int32_t a, int32_t b) { return log_p_ref[a] > log_p_ref[b]; });
         std::partial_sort(idx_tgt.begin(), idx_tgt.begin() + top_n, idx_tgt.end(),
-                          [&](int a, int b) { return log_p_tgt[a] > log_p_tgt[b]; });
+                          [&](int32_t a, int32_t b) { return log_p_tgt[a] > log_p_tgt[b]; });
 
         printf("--- pos %d  |  context: '%s' -> actual next: '%s'  |  KL=%.4f ---\n",
                i, tok_str(pa.tokens[i]).c_str(), tok_str(pa.tokens[i + 1]).c_str(), kl);
@@ -113,9 +113,9 @@ static int diff_one_prompt(
                "----", "--------------------", "--------", "--------",
                "--------------------", "--------", "--------");
 
-        for (int k = 0; k < top_n; k++) {
-            int ti_a = idx_ref[k];
-            int ti_b = idx_tgt[k];
+        for (int32_t k = 0; k < top_n; k++) {
+            int32_t ti_a = idx_ref[k];
+            int32_t ti_b = idx_tgt[k];
 
             std::string tok_a = tok_str(ti_a);
             std::string tok_b = tok_str(ti_b);
@@ -154,8 +154,8 @@ int cmd_diff(int argc, char ** argv) {
         return 1;
     }
 
-    const int n_vocab  = fa.n_vocab;
-    const int top_n    = std::min(params.top_n, n_vocab);
+    const int32_t n_vocab  = fa.n_vocab;
+    const int32_t top_n    = std::min(params.top_n, n_vocab);
 
     // optionally load model for token text
     llama_model * model = nullptr;
@@ -174,10 +174,10 @@ int cmd_diff(int argc, char ** argv) {
         }
     }
 
-    int total_disagree = 0;
-    int total_logits   = 0;
+    int32_t total_disagree = 0;
+    int32_t total_logits   = 0;
 
-    for (int p = 0; p < fa.n_prompts; p++) {
+    for (int32_t p = 0; p < fa.n_prompts; p++) {
         if (fa.prompts[p].n_tokens != fb.prompts[p].n_tokens) {
             fprintf(stderr, "diff: token count mismatch in prompt %d (%d vs %d)\n",
                     p + 1, fa.prompts[p].n_tokens, fb.prompts[p].n_tokens);
@@ -185,14 +185,14 @@ int cmd_diff(int argc, char ** argv) {
             return 1;
         }
 
-        const int n_logits = fa.prompts[p].n_tokens - 1;
+        const int32_t n_logits = fa.prompts[p].n_tokens - 1;
 
         if (fa.n_prompts > 1) {
             printf("========== Prompt %d / %d (%d tokens) ==========\n\n",
                    p + 1, fa.n_prompts, fa.prompts[p].n_tokens);
         }
 
-        int nd = diff_one_prompt(fa.prompts[p], fb.prompts[p], n_vocab, top_n, vocab);
+        int32_t nd = diff_one_prompt(fa.prompts[p], fb.prompts[p], n_vocab, top_n, vocab);
         total_disagree += nd;
         total_logits   += n_logits;
 

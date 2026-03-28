@@ -17,18 +17,18 @@ struct ref_params {
     std::string prompt;       // single prompt via -p
     std::string prompt_dir;   // directory of .txt files via -P
     std::string output_path = "ref.bin";
-    int         n_predict   = 256;
+    int32_t     n_predict   = 256;
     float       temp        = 1.0f;
     float       top_p       = 0.95f;
-    int         top_k       = 40;
+    int32_t     top_k       = 40;
     uint32_t    seed        = 42;
-    int         n_gpu_layers = 99;
-    int         n_ctx        = 2048;
+    int32_t     n_gpu_layers = 99;
+    int32_t     n_ctx        = 2048;
     bool        no_chat      = false;
 };
 
 static bool parse_args(int argc, char ** argv, ref_params & params) {
-    for (int i = 1; i < argc; i++) {
+    for (int32_t i = 1; i < argc; i++) {
         const char * arg = argv[i];
         if (strcmp(arg, "-m") == 0 && i + 1 < argc) {
             params.model_path = argv[++i];
@@ -148,14 +148,14 @@ static bool process_one_prompt(
     const llama_vocab * vocab,
     const std::string & raw_prompt,
     const ref_params & params,
-    int n_vocab,
+    int32_t n_vocab,
     qmlog_prompt & out
 ) {
     std::string formatted = apply_chat_template(model, raw_prompt, params.no_chat);
 
     std::vector<llama_token> prompt_tokens = common_tokenize(vocab, formatted, true, true);
-    const int n_prompt = (int)prompt_tokens.size();
-    const int total_tokens = n_prompt + params.n_predict;
+    const int32_t n_prompt = (int32_t)prompt_tokens.size();
+    const int32_t total_tokens = n_prompt + params.n_predict;
 
     fprintf(stderr, "ref: n_prompt=%d, n_predict=%d\n", n_prompt, params.n_predict);
 
@@ -169,7 +169,7 @@ static bool process_one_prompt(
         return false;
     }
 
-    const int n_batch = llama_n_batch(ctx);
+    const int32_t n_batch = llama_n_batch(ctx);
 
     std::vector<int32_t> all_tokens(prompt_tokens.begin(), prompt_tokens.end());
     all_tokens.reserve(total_tokens);
@@ -186,11 +186,11 @@ static bool process_one_prompt(
 
     llama_batch batch = llama_batch_init(n_batch, 0, 1);
 
-    int n_decoded = 0;
+    int32_t n_decoded = 0;
     while (n_decoded < n_prompt) {
         common_batch_clear(batch);
-        int batch_end = std::min(n_prompt, n_decoded + n_batch);
-        for (int i = n_decoded; i < batch_end; i++) {
+        int32_t batch_end = std::min(n_prompt, n_decoded + n_batch);
+        for (int32_t i = n_decoded; i < batch_end; i++) {
             common_batch_add(batch, prompt_tokens[i], i, {0}, i > 0);
         }
         if (llama_decode(ctx, batch) != 0) {
@@ -198,7 +198,7 @@ static bool process_one_prompt(
             llama_batch_free(batch); llama_sampler_free(smpl); llama_free(ctx);
             return false;
         }
-        for (int i = n_decoded; i < batch_end; i++) {
+        for (int32_t i = n_decoded; i < batch_end; i++) {
             if (i == 0) continue;
             const float * logits = llama_get_logits_ith(ctx, i - n_decoded);
             all_logits.insert(all_logits.end(), logits, logits + n_vocab);
@@ -208,7 +208,7 @@ static bool process_one_prompt(
 
     fprintf(stderr, "ref: prompt decoded, generating...\n");
 
-    for (int i = 0; i < params.n_predict; i++) {
+    for (int32_t i = 0; i < params.n_predict; i++) {
         llama_token new_token = llama_sampler_sample(smpl, ctx, -1);
         if (llama_vocab_is_eog(vocab, new_token)) {
             fprintf(stderr, "\nref: EOS at step %d\n", i);
@@ -232,7 +232,7 @@ static bool process_one_prompt(
 
     fprintf(stdout, "\n");
 
-    out.n_tokens = (int)all_tokens.size();
+    out.n_tokens = (int32_t)all_tokens.size();
     out.n_prompt = n_prompt;
     out.tokens   = std::move(all_tokens);
     out.logits   = std::move(all_logits);
@@ -267,11 +267,11 @@ int cmd_ref(int argc, char ** argv) {
     }
 
     const llama_vocab * vocab = llama_model_get_vocab(model);
-    const int n_vocab = llama_vocab_n_tokens(vocab);
+    const int32_t n_vocab = llama_vocab_n_tokens(vocab);
 
     qmlog_file out;
     out.n_vocab   = n_vocab;
-    out.n_prompts = (int)prompts.size();
+    out.n_prompts = (int32_t)prompts.size();
     out.temp      = params.temp;
     out.top_p     = params.top_p;
     out.top_k     = params.top_k;

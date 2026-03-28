@@ -54,7 +54,7 @@ static bool parse_args(int argc, char ** argv, compare_params & params) {
 }
 
 struct prompt_stats {
-    int    n_logits;
+    int32_t n_logits;
     double kl_mean;
     double top1_pct;
 };
@@ -62,19 +62,19 @@ struct prompt_stats {
 // Compute KL stats for a single prompt pair.
 static prompt_stats compute_prompt_stats(
     const qmlog_prompt & pa, const qmlog_prompt & pb,
-    int n_vocab, double ref_temp, int n_threads
+    int32_t n_vocab, double ref_temp, int32_t n_threads
 ) {
-    const int n_logits = pa.n_tokens - 1;
+    const int32_t n_logits = pa.n_tokens - 1;
 
     std::vector<double> kl_per_pos(n_logits);
-    std::atomic<int> top1_agree{0};
-    std::atomic<int> counter{0};
+    std::atomic<int32_t> top1_agree{0};
+    std::atomic<int32_t> counter{0};
 
     auto worker = [&]() {
         std::vector<double> log_p_ref, log_p_tgt;
-        int local_agree = 0;
+        int32_t local_agree = 0;
         while (true) {
-            int i = counter.fetch_add(1);
+            int32_t i = counter.fetch_add(1);
             if (i >= n_logits) break;
 
             const float * la = pa.logits.data() + (size_t)i * n_vocab;
@@ -91,11 +91,11 @@ static prompt_stats compute_prompt_stats(
     };
 
     std::vector<std::thread> threads;
-    for (int t = 0; t < n_threads; t++) threads.emplace_back(worker);
+    for (int32_t t = 0; t < n_threads; t++) threads.emplace_back(worker);
     for (auto & t : threads) t.join();
 
     double kl_sum = 0.0;
-    for (int i = 0; i < n_logits; i++) kl_sum += kl_per_pos[i];
+    for (int32_t i = 0; i < n_logits; i++) kl_sum += kl_per_pos[i];
 
     return { n_logits, kl_sum / n_logits, 100.0 * top1_agree.load() / n_logits };
 }
@@ -103,12 +103,12 @@ static prompt_stats compute_prompt_stats(
 // Compute mean KL for a prompt pair at a given target temperature.
 static double compute_kl_at_temp(
     const qmlog_prompt & pa, const qmlog_prompt & pb,
-    int n_vocab, double target_temp, double ref_temp
+    int32_t n_vocab, double target_temp, double ref_temp
 ) {
-    const int n_logits = pa.n_tokens - 1;
+    const int32_t n_logits = pa.n_tokens - 1;
     std::vector<double> log_p_ref, log_p_tgt;
     double total_kl = 0.0;
-    for (int i = 0; i < n_logits; i++) {
+    for (int32_t i = 0; i < n_logits; i++) {
         const float * la = pa.logits.data() + (size_t)i * n_vocab;
         const float * lb = pb.logits.data() + (size_t)i * n_vocab;
         log_softmax_temp(la, n_vocab, ref_temp, log_p_ref);
@@ -139,7 +139,7 @@ int cmd_compare(int argc, char ** argv) {
         fprintf(stderr, "compare: prompt count mismatch (%d vs %d)\n", fa.n_prompts, fb.n_prompts);
         return 1;
     }
-    for (int p = 0; p < fa.n_prompts; p++) {
+    for (int32_t p = 0; p < fa.n_prompts; p++) {
         if (fa.prompts[p].n_tokens != fb.prompts[p].n_tokens) {
             fprintf(stderr, "compare: token count mismatch in prompt %d (%d vs %d)\n",
                     p + 1, fa.prompts[p].n_tokens, fb.prompts[p].n_tokens);
@@ -147,9 +147,9 @@ int cmd_compare(int argc, char ** argv) {
         }
     }
 
-    const int n_vocab   = fa.n_vocab;
-    const int n_prompts = fa.n_prompts;
-    const int n_threads = std::max(1, (int)std::thread::hardware_concurrency());
+    const int32_t n_vocab   = fa.n_vocab;
+    const int32_t n_prompts = fa.n_prompts;
+    const int32_t n_threads = std::max(1, (int32_t)std::thread::hardware_concurrency());
 
     const double ref_temp = (fa.temp > 0.0f) ? (double)fa.temp : 1.0;
     fprintf(stderr, "compare: n_vocab=%d, n_prompts=%d, ref_temp=%.2f\n",
@@ -157,13 +157,13 @@ int cmd_compare(int argc, char ** argv) {
 
     // === Per-prompt statistics ===
     std::vector<prompt_stats> stats(n_prompts);
-    for (int p = 0; p < n_prompts; p++) {
+    for (int32_t p = 0; p < n_prompts; p++) {
         stats[p] = compute_prompt_stats(fa.prompts[p], fb.prompts[p], n_vocab, ref_temp, n_threads);
     }
 
     printf("\n=== Per-Prompt Statistics ===\n");
     printf("  %3s  %6s  %9s  %7s\n", "#", "Tokens", "KL mean", "Top-1%");
-    for (int p = 0; p < n_prompts; p++) {
+    for (int32_t p = 0; p < n_prompts; p++) {
         printf("  %3d  %6d  %9.6f  %6.1f%%\n",
                p + 1, stats[p].n_logits, stats[p].kl_mean, stats[p].top1_pct);
     }
@@ -171,7 +171,7 @@ int cmd_compare(int argc, char ** argv) {
     // aggregate
     double kl_sum = 0.0, kl_sq = 0.0;
     double t1_sum = 0.0, t1_sq = 0.0;
-    for (int p = 0; p < n_prompts; p++) {
+    for (int32_t p = 0; p < n_prompts; p++) {
         kl_sum += stats[p].kl_mean;
         kl_sq  += stats[p].kl_mean * stats[p].kl_mean;
         t1_sum += stats[p].top1_pct;
@@ -206,7 +206,7 @@ int cmd_compare(int argc, char ** argv) {
     for (double T = t_min + t_step; T <= t_max + 1e-9; T += t_step) {
         temp_vals.push_back(T);
     }
-    const int n_temps = (int)temp_vals.size();
+    const int32_t n_temps = (int32_t)temp_vals.size();
 
     if (n_temps == 0) {
         printf("  (empty scan range, nothing to do)\n");
@@ -217,27 +217,27 @@ int cmd_compare(int argc, char ** argv) {
     std::vector<std::vector<double>> per_prompt_kl(n_prompts, std::vector<double>(n_temps, 0.0));
 
     // total work = n_temps * sum(n_logits per prompt)
-    long long total_logits = 0;
-    for (int p = 0; p < n_prompts; p++) {
+    int64_t total_logits = 0;
+    for (int32_t p = 0; p < n_prompts; p++) {
         total_logits += fa.prompts[p].n_tokens - 1;
     }
-    long long total_work = (long long)n_temps * total_logits;
-    std::atomic<long long> work_done{0};
-    std::atomic<int> last_pct{-1};
+    int64_t total_work = (int64_t)n_temps * total_logits;
+    std::atomic<int64_t> work_done{0};
+    std::atomic<int32_t> last_pct{-1};
 
     // parallelize across temperature indices
-    std::atomic<int> temp_ctr{0};
+    std::atomic<int32_t> temp_ctr{0};
     auto temp_worker = [&]() {
         while (true) {
-            int ti = temp_ctr.fetch_add(1);
+            int32_t ti = temp_ctr.fetch_add(1);
             if (ti >= n_temps) break;
-            for (int p = 0; p < n_prompts; p++) {
-                int n_logits_p = fa.prompts[p].n_tokens - 1;
+            for (int32_t p = 0; p < n_prompts; p++) {
+                int32_t n_logits_p = fa.prompts[p].n_tokens - 1;
                 per_prompt_kl[p][ti] = compute_kl_at_temp(
                     fa.prompts[p], fb.prompts[p], n_vocab, temp_vals[ti], ref_temp);
-                long long done = work_done.fetch_add(n_logits_p) + n_logits_p;
-                int pct = (int)(100 * done / total_work);
-                int prev = last_pct.load();
+                int64_t done = work_done.fetch_add(n_logits_p) + n_logits_p;
+                int32_t pct = (int32_t)(100 * done / total_work);
+                int32_t prev = last_pct.load();
                 if (pct > prev && last_pct.compare_exchange_strong(prev, pct)) {
                     fprintf(stderr, "  %3d%%\r", pct);
                     fflush(stderr);
@@ -247,15 +247,15 @@ int cmd_compare(int argc, char ** argv) {
     };
 
     std::vector<std::thread> threads;
-    for (int t = 0; t < n_threads; t++) threads.emplace_back(temp_worker);
+    for (int32_t t = 0; t < n_threads; t++) threads.emplace_back(temp_worker);
     for (auto & t : threads) t.join();
     fprintf(stderr, "  100%%\n");
 
     // per-prompt best temperature
     printf("  %6s  %6s  %10s\n", "Prompt", "Best T", "KL at best");
-    for (int p = 0; p < n_prompts; p++) {
-        int best_ti = 0;
-        for (int ti = 1; ti < n_temps; ti++) {
+    for (int32_t p = 0; p < n_prompts; p++) {
+        int32_t best_ti = 0;
+        for (int32_t ti = 1; ti < n_temps; ti++) {
             if (per_prompt_kl[p][ti] < per_prompt_kl[p][best_ti]) best_ti = ti;
         }
         printf("  %6d  %6.2f  %10.6f\n", p + 1, temp_vals[best_ti], per_prompt_kl[p][best_ti]);
