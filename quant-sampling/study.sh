@@ -38,6 +38,8 @@ REF_SHARD="Qwen3.5-2B-BF16.gguf"
 # Format: "tag:pattern:first_shard" or "tag:filename" for single-file
 TARGETS=(
     "iq2_xxs:Qwen3.5-2B-UD-IQ2_XXS.gguf"
+    "q2_k_xl:Qwen3.5-2B-UD-Q2_K_XL.gguf"
+    "q3_k_xl:Qwen3.5-2B-UD-Q3_K_XL.gguf"
     "q4_k_xl:Qwen3.5-2B-UD-Q4_K_XL.gguf"
     "q5_k_xl:Qwen3.5-2B-UD-Q5_K_XL.gguf"
     "q6_k_xl:Qwen3.5-2B-UD-Q6_K_XL.gguf"
