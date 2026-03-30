@@ -12,9 +12,17 @@ quant-sampling compare -a ref.bin -b target.bin --optimize [--csv scan.csv]
 
 A single .bin file can contain one or many prompts. The workflow is always the same regardless of prompt count.
 
+## Prerequisites
+
+- **C++17 compiler** (GCC 8+, Clang 7+, MSVC 2017+)
+- **CMake** >= 3.14
+- **[llama.cpp](https://github.com/ggml-org/llama.cpp)** — built from source. Only the source tree is needed; quant-sampling builds llama.cpp as a subdirectory via CMake
+- **[huggingface-cli](https://huggingface.co/docs/huggingface_hub/en/guides/cli)** — for downloading models (`pip install huggingface-hub`). Only needed if using `study.sh`
+- **Python 3** — for `python3 -m http.server` when viewing results. Not needed for building or running the tool itself
+
 ## Build
 
-Requires a local checkout of [llama.cpp](https://github.com/ggml-org/llama.cpp).
+Set `LLAMA_CPP_DIR` to your llama.cpp source checkout (or pass via `-D`):
 
 ```bash
 export LLAMA_CPP_DIR=/path/to/llama.cpp
@@ -144,5 +152,28 @@ python3 -m http.server 8080 --bind 0.0.0.0
 Then open `http://<your-ip>:8080/view.html`. The viewer auto-loads any CSV in the same directory, or you can use the file picker. It shows:
 
 - Per-category recommended temperature (knowledge, math, swe, overall)
-- Heatmap of KL divergence across all prompt x temperature pairs
+- Heatmap of KL ratio vs baseline across all prompt x temperature pairs
 - Best temperature per prompt highlighted
+
+The viewer discovers CSV files from the server's directory listing — just drop new CSVs in and they appear in the dropdown.
+
+## Automated study
+
+`study.sh` automates the full pipeline: download models, run ref, run all targets, compare. Edit the configuration section at the top for each model family.
+
+```bash
+./study.sh                    # run everything
+./study.sh --skip-download    # skip model downloads (models already present)
+./study.sh --skip-ref         # skip ref generation (reuse existing ref.bin)
+```
+
+The script is resume-friendly: it skips downloads and target runs for files that already exist, so you can re-run after a crash.
+
+Supports both single-file and split GGUF models:
+```bash
+# single file
+"iq2_m:Qwen3.5-2B-UD-IQ2_M.gguf"
+
+# split model (pattern for download, first shard for inference)
+"iq1_m:Qwen3.5-397B*UD-IQ1_M*:Qwen3.5-397B-A17B-UD-IQ1_M-00001-of-00004.gguf"
+```
