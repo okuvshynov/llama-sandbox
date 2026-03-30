@@ -17,7 +17,7 @@ A single .bin file can contain one or many prompts. The workflow is always the s
 - **C++17 compiler** (GCC 8+, Clang 7+, MSVC 2017+)
 - **CMake** >= 3.14
 - **[llama.cpp](https://github.com/ggml-org/llama.cpp)** — built from source. Only the source tree is needed; quant-sampling builds llama.cpp as a subdirectory via CMake
-- **[huggingface-cli](https://huggingface.co/docs/huggingface_hub/en/guides/cli)** — for downloading models (`pip install huggingface-hub`). Only needed if using `study.sh`
+- **[hf CLI](https://huggingface.co/docs/huggingface_hub/guides/cli)** — for downloading models. Install: `curl -LsSf https://hf.co/cli/install.sh | bash`. Only needed if using `study.sh`
 - **Python 3** — for `python3 -m http.server` when viewing results. Not needed for building or running the tool itself
 
 ## Build

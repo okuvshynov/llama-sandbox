@@ -9,7 +9,7 @@ set -euo pipefail
 #
 # Prerequisites:
 #   - quant-sampling binary built (cmake --build build)
-#   - huggingface-cli installed (pip install huggingface-hub)
+#   - hf CLI installed (https://huggingface.co/docs/huggingface_hub/guides/cli)
 #   - Enough disk space for the models
 #
 # Usage:
@@ -131,8 +131,8 @@ download_model() {
     fi
 
     echo "  [download] $pattern"
-    huggingface-cli download "$HF_REPO" --include "$pattern" \
-        --local-dir "$MODELS_DIR" --local-dir-use-symlinks False
+    hf download "$HF_REPO" --include "$pattern" \
+        --local-dir "$MODELS_DIR"
 }
 
 # --- Download models ---------------------------------------------------------
