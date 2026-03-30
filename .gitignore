@@ -1,7 +1,10 @@
 _build/
 build/
-*.log
 *.bin
 *.gguf
 .vscode/
 tags
+
+# build/runtime logs from llama-duo and moe-inspect
+llama-duo/*.log
+moe-inspect/*.log
