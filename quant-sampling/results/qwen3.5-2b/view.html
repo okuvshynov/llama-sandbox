@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>quant-sampling results</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace; background: #1a1a2e; color: #e0e0e0; padding: 24px; }
+  h1 { font-size: 1.4em; margin-bottom: 4px; color: #fff; }
+  .subtitle { color: #888; margin-bottom: 20px; font-size: 0.9em; }
+  .controls { margin-bottom: 16px; display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+  .controls label { font-size: 0.85em; color: #aaa; }
+  .controls select, .controls input { background: #2a2a4a; color: #e0e0e0; border: 1px solid #444; padding: 4px 8px; border-radius: 4px; font-size: 0.85em; }
+  .controls input[type=number] { width: 70px; }
+  .section { margin-bottom: 24px; }
+  .section h2 { font-size: 1.1em; margin-bottom: 8px; color: #ccc; border-bottom: 1px solid #333; padding-bottom: 4px; }
+  .summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-bottom: 20px; }
+  .summary-card { background: #2a2a4a; border-radius: 8px; padding: 14px; }
+  .summary-card .label { font-size: 0.75em; color: #888; text-transform: uppercase; letter-spacing: 0.5px; }
+  .summary-card .value { font-size: 1.5em; font-weight: bold; margin-top: 4px; }
+  .summary-card .detail { font-size: 0.8em; color: #888; margin-top: 2px; }
+  .heatmap-container { overflow-x: auto; }
+  table.heatmap { border-collapse: collapse; font-size: 0.75em; }
+  table.heatmap th, table.heatmap td { padding: 3px 6px; text-align: center; white-space: nowrap; }
+  table.heatmap th { background: #2a2a4a; color: #aaa; position: sticky; top: 0; }
+  table.heatmap th.row-header { text-align: left; position: sticky; left: 0; background: #2a2a4a; z-index: 2; }
+  table.heatmap th.ref-col { background: #3a3a5a; }
+  table.heatmap td.row-header { text-align: left; position: sticky; left: 0; background: #1a1a2e; font-weight: bold; z-index: 1; }
+  table.heatmap td.kl-cell { cursor: default; min-width: 48px; }
+  table.heatmap td.ref-col { border-left: 2px solid #888; border-right: 2px solid #888; }
+  table.heatmap tr.cat-row td { border-top: 2px solid #555; }
+  .legend { display: flex; align-items: center; gap: 8px; margin: 8px 0; font-size: 0.8em; color: #888; }
+  .legend .bar { height: 12px; width: 200px; border-radius: 3px; }
+  .best-marker { font-weight: bold; }
+</style>
+</head>
+<body>
+
+<h1>quant-sampling temperature scan</h1>
+<div class="subtitle" id="subtitle">Load a CSV file to view results</div>
+
+<div class="controls">
+  <label>Dataset: <select id="csv-select"><option value="">Loading...</option></select></label>
+  <label>Ref temp: <input type="number" id="ref-temp" value="0.6" step="0.01" min="0.01"></label>
+</div>
+
+<div id="content" style="display:none">
+  <div class="section">
+    <h2>Recommended temperature by category</h2>
+    <div class="summary-grid" id="summary-cards"></div>
+  </div>
+
+  <div class="section">
+    <h2>KL ratio vs baseline (prompt x temperature)</h2>
+    <p style="font-size:0.8em; color:#888; margin-bottom:8px">
+      Values show KL(T) / KL(ref_temp). Below 1.0 = better than baseline, above 1.0 = worse. Best per prompt marked with *.
+    </p>
+    <div class="legend">
+      <span>Better (&lt;1.0)</span>
+      <div class="bar" id="legend-bar"></div>
+      <span>Worse (&gt;1.0)</span>
+    </div>
+    <div class="heatmap-container" id="heatmap-container"></div>
+  </div>
+</div>
+
+<script>
+let currentRows = null;
+
+function parseCSV(text) {
+  const lines = text.trim().split('\n');
+  return lines.slice(1).map(line => {
+    const cols = line.split(',');
+    return {
+      prompt: parseInt(cols[0]),
+      path: cols[1],
+      temp: parseFloat(cols[2]),
+      kl: parseFloat(cols[3]),
+    };
+  });
+}
+
+function getCategory(path) {
+  const slash = path.indexOf('/');
+  return slash >= 0 ? path.substring(0, slash) : 'other';
+}
+
+function findClosestTemp(temps, target) {
+  let best = temps[0], bestDist = Math.abs(temps[0] - target);
+  for (const t of temps) {
+    const d = Math.abs(t - target);
+    if (d < bestDist) { bestDist = d; best = t; }
+  }
+  return best;
+}
+
+function buildVisualization(rows) {
+  const refTemp = parseFloat(document.getElementById('ref-temp').value) || 0.6;
+
+  const promptMap = new Map();
+  for (const r of rows) {
+    if (!promptMap.has(r.prompt)) promptMap.set(r.prompt, r.path);
+  }
+  const prompts = [...promptMap.entries()];
+  const temps = [...new Set(rows.map(r => r.temp))].sort((a, b) => a - b);
+  const refT = findClosestTemp(temps, refTemp);
+
+  // build lookup: kl[promptId][temp] = kl
+  const kl = {};
+  for (const r of rows) {
+    if (!kl[r.prompt]) kl[r.prompt] = {};
+    kl[r.prompt][r.temp] = r.kl;
+  }
+
+  // per-prompt baseline KL (at ref temp) and ratios
+  const baseline = {};
+  const ratio = {};
+  for (const [pid] of prompts) {
+    baseline[pid] = kl[pid][refT] || 1;
+    ratio[pid] = {};
+    for (const t of temps) {
+      ratio[pid][t] = kl[pid][t] / baseline[pid];
+    }
+  }
+
+  // per-prompt best temp
+  const bestPerPrompt = {};
+  for (const [pid] of prompts) {
+    let bestT = temps[0], bestKL = Infinity;
+    for (const t of temps) {
+      if (kl[pid][t] < bestKL) { bestKL = kl[pid][t]; bestT = t; }
+    }
+    bestPerPrompt[pid] = { temp: bestT, kl: bestKL, ratio: ratio[pid][bestT] };
+  }
+
+  // categories
+  const categories = new Map();
+  for (const [pid, path] of prompts) {
+    const cat = getCategory(path);
+    if (!categories.has(cat)) categories.set(cat, []);
+    categories.get(cat).push(pid);
+  }
+
+  const catStats = {};
+  for (const [cat, pids] of categories) {
+    const bestTemps = pids.map(p => bestPerPrompt[p].temp);
+    const bestRatios = pids.map(p => bestPerPrompt[p].ratio);
+    const meanT = bestTemps.reduce((a, b) => a + b, 0) / bestTemps.length;
+    const meanRatio = bestRatios.reduce((a, b) => a + b, 0) / bestRatios.length;
+    catStats[cat] = { meanTemp: meanT, meanRatio: meanRatio, count: pids.length };
+  }
+
+  const allBestTemps = prompts.map(([pid]) => bestPerPrompt[pid].temp);
+  const allBestRatios = prompts.map(([pid]) => bestPerPrompt[pid].ratio);
+  const overallMeanT = allBestTemps.reduce((a, b) => a + b, 0) / allBestTemps.length;
+  const overallMeanRatio = allBestRatios.reduce((a, b) => a + b, 0) / allBestRatios.length;
+
+  // --- Summary cards ---
+  const cardsDiv = document.getElementById('summary-cards');
+  cardsDiv.innerHTML = '';
+
+  const pctStr = (r) => ((1 - r) * 100).toFixed(1);
+
+  cardsDiv.innerHTML += `<div class="summary-card">
+    <div class="label">Overall (${prompts.length} prompts)</div>
+    <div class="value">T = ${overallMeanT.toFixed(3)}</div>
+    <div class="detail">${pctStr(overallMeanRatio)}% KL reduction vs T=${refT.toFixed(2)}</div>
+  </div>`;
+
+  for (const [cat, stats] of Object.entries(catStats).sort()) {
+    cardsDiv.innerHTML += `<div class="summary-card">
+      <div class="label">${cat} (${stats.count} prompts)</div>
+      <div class="value">T = ${stats.meanTemp.toFixed(3)}</div>
+      <div class="detail">${pctStr(stats.meanRatio)}% KL reduction vs T=${refT.toFixed(2)}</div>
+    </div>`;
+  }
+
+  // --- Heatmap with ratios ---
+  // color scale: green (<1.0) -> white (1.0) -> red (>1.0)
+  const allRatios = [];
+  for (const [pid] of prompts) {
+    for (const t of temps) allRatios.push(ratio[pid][t]);
+  }
+  const ratioMin = Math.min(...allRatios);
+  const ratioMax = Math.max(...allRatios);
+
+  function ratioColor(val) {
+    if (val <= 1.0) {
+      // green (better) -> gray (neutral at 1.0)
+      const t = Math.max(0, (val - ratioMin) / (1.0 - ratioMin || 1));
+      // t=0: green (#2d9a2d), t=1: gray (#999)
+      const r = Math.round(45 + t * 108);
+      const g = Math.round(154 - t * 1);
+      const b = Math.round(45 + t * 108);
+      return `rgb(${r},${g},${b})`;
+    } else {
+      // gray (neutral at 1.0) -> red (worse)
+      const t = Math.min(1, (val - 1.0) / (ratioMax - 1.0 || 1));
+      // t=0: gray (#999), t=1: red (#cc3333)
+      const r = Math.round(153 + t * 51);
+      const g = Math.round(153 - t * 102);
+      const b = Math.round(153 - t * 102);
+      return `rgb(${r},${g},${b})`;
+    }
+  }
+
+  // legend
+  const legendBar = document.getElementById('legend-bar');
+  const stops = [];
+  for (let i = 0; i <= 20; i++) {
+    const v = ratioMin + (i / 20) * (ratioMax - ratioMin);
+    stops.push(ratioColor(v));
+  }
+  legendBar.style.background = `linear-gradient(to right, ${stops.join(', ')})`;
+
+  // build table
+  let html = '<table class="heatmap"><thead><tr><th class="row-header">Prompt</th>';
+  for (const t of temps) {
+    const isRef = Math.abs(t - refT) < 0.001;
+    const cls = isRef ? 'ref-col' : '';
+    const label = isRef ? t.toFixed(2) + ' (ref)' : t.toFixed(2);
+    html += `<th class="${cls}">${label}</th>`;
+  }
+  html += '</tr></thead><tbody>';
+
+  let prevCat = '';
+  for (const [pid, path] of prompts) {
+    const cat = getCategory(path);
+    const isNewCat = cat !== prevCat;
+    prevCat = cat;
+
+    const best = bestPerPrompt[pid];
+    const rowClass = isNewCat ? ' class="cat-row"' : '';
+    html += `<tr${rowClass}>`;
+    html += `<td class="row-header">${path}</td>`;
+    for (const t of temps) {
+      const val = ratio[pid][t];
+      const rawKL = kl[pid][t];
+      const bg = ratioColor(val);
+      const isRef = Math.abs(t - refT) < 0.001;
+      const isBest = Math.abs(t - best.temp) < 0.001;
+      let cls = 'kl-cell';
+      if (isRef) cls += ' ref-col';
+      if (isBest) cls += ' best-marker';
+      const display = val.toFixed(2);
+      const marker = isBest ? ' *' : '';
+      html += `<td class="${cls}" style="background:${bg};color:#000" title="${path} T=${t.toFixed(2)} ratio=${display} KL=${rawKL.toFixed(6)}">${display}${marker}</td>`;
+    }
+    html += '</tr>';
+  }
+  html += '</tbody></table>';
+
+  document.getElementById('heatmap-container').innerHTML = html;
+}
+
+function onDataReady(rows) {
+  currentRows = rows;
+  document.getElementById('content').style.display = 'block';
+  buildVisualization(rows);
+}
+
+function loadCSV(filename) {
+  document.getElementById('subtitle').textContent = filename;
+  fetch(filename).then(r => {
+    if (!r.ok) throw new Error('fetch failed');
+    return r.text();
+  }).then(text => {
+    onDataReady(parseCSV(text));
+  }).catch(err => {
+    document.getElementById('subtitle').textContent = 'Error loading ' + filename;
+  });
+}
+
+document.getElementById('csv-select').addEventListener('change', function() {
+  if (this.value) loadCSV(this.value);
+});
+
+document.getElementById('ref-temp').addEventListener('change', function() {
+  if (currentRows) buildVisualization(currentRows);
+});
+
+// discover CSV files from directory listing
+fetch('./').then(r => r.text()).then(html => {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(html, 'text/html');
+  const links = [...doc.querySelectorAll('a')];
+  const csvFiles = links
+    .map(a => a.getAttribute('href'))
+    .filter(href => href && href.endsWith('.csv'))
+    .sort();
+
+  const select = document.getElementById('csv-select');
+  select.innerHTML = '';
+
+  if (csvFiles.length === 0) {
+    select.innerHTML = '<option value="">No CSV files found</option>';
+    return;
+  }
+
+  for (const f of csvFiles) {
+    const opt = document.createElement('option');
+    opt.value = f;
+    opt.textContent = decodeURIComponent(f);
+    select.appendChild(opt);
+  }
+
+  // auto-load first
+  loadCSV(csvFiles[0]);
+}).catch(() => {
+  const select = document.getElementById('csv-select');
+  select.innerHTML = '<option value="">Could not list directory</option>';
+});
+</script>
+</body>
+</html>

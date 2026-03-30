@@ -38,13 +38,7 @@ REF_SHARD="Qwen3.5-2B-BF16.gguf"
 # Format: "tag:pattern:first_shard" or "tag:filename" for single-file
 TARGETS=(
     "iq2_xxs:Qwen3.5-2B-UD-IQ2_XXS.gguf"
-    "iq2_m:Qwen3.5-2B-UD-IQ2_M.gguf"
-    "q2_k_xl:Qwen3.5-2B-UD-Q2_K_XL.gguf"
-    "iq3_xxs:Qwen3.5-2B-UD-IQ3_XXS.gguf"
-    "q3_k_xl:Qwen3.5-2B-UD-Q3_K_XL.gguf"
-    "iq4_xs:Qwen3.5-2B-IQ4_XS.gguf"
     "q4_k_xl:Qwen3.5-2B-UD-Q4_K_XL.gguf"
-    "q5_k_xl:Qwen3.5-2B-UD-Q5_K_XL.gguf"
     "q6_k_xl:Qwen3.5-2B-UD-Q6_K_XL.gguf"
     "q8_k_xl:Qwen3.5-2B-UD-Q8_K_XL.gguf"
 )
@@ -151,6 +145,11 @@ fi
 
 REF_BIN="${OUTPUT_DIR}/ref.bin"
 
+if [ "$SKIP_REF" = false ] && [ -f "$REF_BIN" ]; then
+    echo "=== Skipping ref (${REF_BIN} already exists, use --force-ref to regenerate) ==="
+    SKIP_REF=true
+fi
+
 if [ "$SKIP_REF" = false ]; then
     echo "=== Running reference model ==="
     "$BINARY" ref \
@@ -202,6 +201,11 @@ for entry in "${TARGETS[@]}"; do
 
     if [ ! -f "$target_bin" ]; then
         echo "  [skip] $tag (no target bin)"
+        continue
+    fi
+
+    if [ -f "$csv_file" ]; then
+        echo "  [skip] $tag (${csv_file} already exists)"
         continue
     fi
 

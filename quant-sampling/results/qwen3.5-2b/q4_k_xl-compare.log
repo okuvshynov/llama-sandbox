@@ -1,0 +1,202 @@
+compare: loading '/Users/oleksandr/projects/llama-sandbox/quant-sampling/results/qwen3.5-2b/ref.bin'...
+compare: loading '/Users/oleksandr/projects/llama-sandbox/quant-sampling/results/qwen3.5-2b/target-q4_k_xl.bin'...
+compare: n_vocab=248320, n_prompts=30, ref_temp=0.60
+compare: computing rank-stratified KL...
+  rank analysis: prompt 1 / 30  rank analysis: prompt 2 / 30  rank analysis: prompt 3 / 30  rank analysis: prompt 4 / 30  rank analysis: prompt 5 / 30  rank analysis: prompt 6 / 30  rank analysis: prompt 7 / 30  rank analysis: prompt 8 / 30  rank analysis: prompt 9 / 30  rank analysis: prompt 10 / 30  rank analysis: prompt 11 / 30  rank analysis: prompt 12 / 30  rank analysis: prompt 13 / 30  rank analysis: prompt 14 / 30  rank analysis: prompt 15 / 30  rank analysis: prompt 16 / 30  rank analysis: prompt 17 / 30  rank analysis: prompt 18 / 30  rank analysis: prompt 19 / 30  rank analysis: prompt 20 / 30  rank analysis: prompt 21 / 30  rank analysis: prompt 22 / 30  rank analysis: prompt 23 / 30  rank analysis: prompt 24 / 30  rank analysis: prompt 25 / 30  rank analysis: prompt 26 / 30  rank analysis: prompt 27 / 30  rank analysis: prompt 28 / 30  rank analysis: prompt 29 / 30  rank analysis: prompt 30 / 30
+compare: wrote /Users/oleksandr/projects/llama-sandbox/quant-sampling/results/qwen3.5-2b/q4_k_xl-rank.csv (30 prompts x 4 buckets)
+    0%    1%    2%    3%    4%    5%    6%    7%    8%    9%   10%   11%   12%   13%   14%   15%   16%   17%   18%   19%   20%   21%   22%   23%   24%   25%   26%   27%   28%   29%   30%   31%   32%   33%   34%   35%   36%   37%   38%   39%   40%   41%   42%   43%   44%   45%   46%   47%   48%   49%   50%   51%   52%   53%   54%   55%   56%   57%   58%   59%   60%   61%   62%   63%   64%   65%   66%   67%   68%   69%   70%   71%   72%   73%   74%   75%   76%   77%   78%   79%   80%   81%   82%   83%   84%   85%   86%   87%   88%   89%   90%   91%   92%   93%   94%   95%   96%   97%   98%   99%  100%  100%
+compare: wrote /Users/oleksandr/projects/llama-sandbox/quant-sampling/results/qwen3.5-2b/q4_k_xl.csv (30 prompts x 60 temps)
+
+=== Per-Prompt Statistics ===
+    #  Path                  Tokens    KL mean   Top-1%
+    1  knowledge/01.txt        1085   0.023989    95.1%
+    2  knowledge/02.txt        1076   0.025951    92.8%
+    3  knowledge/03.txt        1079   0.036772    94.1%
+    4  knowledge/04.txt        1075   0.035939    92.2%
+    5  knowledge/05.txt        1083   0.025227    94.0%
+    6  knowledge/06.txt        1084   0.036194    93.5%
+    7  knowledge/07.txt        1085   0.028724    92.4%
+    8  knowledge/08.txt        1088   0.049844    93.7%
+    9  knowledge/09.txt        1098   0.015967    95.7%
+   10  knowledge/10.txt        1084   0.022556    96.7%
+   11  math/01.txt             1065   0.014835    96.7%
+   12  math/02.txt             1070   0.013163    98.0%
+   13  math/03.txt             1076   0.018888    96.5%
+   14  math/04.txt             1072   0.025867    94.8%
+   15  math/05.txt             1098   0.014128    97.8%
+   16  math/06.txt             1071   0.027620    95.6%
+   17  math/07.txt             1076   0.025512    94.4%
+   18  math/08.txt             1090   0.015753    97.0%
+   19  math/09.txt             1080   0.019422    96.9%
+   20  math/10.txt             1079   0.034458    95.5%
+   21  swe/01.txt               750   0.015456    98.0%
+   22  swe/02.txt              1051   0.013680    96.7%
+   23  swe/03.txt              1073   0.018452    95.2%
+   24  swe/04.txt              1058   0.016580    96.2%
+   25  swe/05.txt              1057   0.019755    95.8%
+   26  swe/06.txt              1049   0.016227    96.1%
+   27  swe/07.txt              1055   0.013374    97.7%
+   28  swe/08.txt              1106   0.022658    93.7%
+   29  swe/09.txt              1050   0.014979    96.5%
+   30  swe/10.txt              1058   0.019174    96.8%
+
+=== Aggregate ===
+  KL divergence: 0.022705 +/- 0.008702
+  Top-1 agree:   95.5% +/- 1.6%
+
+=== Rank Analysis (averaged across positions) ===
+    #  Path                  Bucket      KL contrib    P(ref)    P(tgt)   P shift
+    1  knowledge/01.txt      top1          0.012901    0.8465    0.8386   -0.0079
+    1  knowledge/01.txt      top2_10       0.010159    0.1438    0.1510   +0.0072
+    1  knowledge/01.txt      top11_100     0.000876    0.0091    0.0098   +0.0007
+    1  knowledge/01.txt      tail          0.000052    0.0006    0.0006   +0.0000
+    2  knowledge/02.txt      top1          0.017505    0.7947    0.7825   -0.0122
+    2  knowledge/02.txt      top2_10       0.007441    0.1932    0.2045   +0.0113
+    2  knowledge/02.txt      top11_100     0.000981    0.0115    0.0123   +0.0008
+    2  knowledge/02.txt      tail          0.000024    0.0006    0.0007   +0.0000
+    3  knowledge/03.txt      top1          0.012822    0.8045    0.7996   -0.0049
+    3  knowledge/03.txt      top2_10       0.022827    0.1861    0.1902   +0.0041
+    3  knowledge/03.txt      top11_100     0.001116    0.0090    0.0099   +0.0008
+    3  knowledge/03.txt      tail          0.000007    0.0003    0.0004   +0.0000
+    4  knowledge/04.txt      top1          0.024199    0.8296    0.8139   -0.0157
+    4  knowledge/04.txt      top2_10       0.011453    0.1653    0.1799   +0.0146
+    4  knowledge/04.txt      top11_100     0.000283    0.0049    0.0061   +0.0011
+    4  knowledge/04.txt      tail          0.000004    0.0001    0.0001   +0.0000
+    5  knowledge/05.txt      top1          0.014462    0.8398    0.8308   -0.0090
+    5  knowledge/05.txt      top2_10       0.009439    0.1497    0.1581   +0.0084
+    5  knowledge/05.txt      top11_100     0.001245    0.0100    0.0106   +0.0006
+    5  knowledge/05.txt      tail          0.000080    0.0006    0.0006   +0.0000
+    6  knowledge/06.txt      top1          0.021746    0.8559    0.8432   -0.0127
+    6  knowledge/06.txt      top2_10       0.014077    0.1399    0.1519   +0.0119
+    6  knowledge/06.txt      top11_100     0.000365    0.0041    0.0049   +0.0008
+    6  knowledge/06.txt      tail          0.000006    0.0001    0.0001   +0.0000
+    7  knowledge/07.txt      top1          0.016910    0.8165    0.8062   -0.0104
+    7  knowledge/07.txt      top2_10       0.011213    0.1668    0.1748   +0.0080
+    7  knowledge/07.txt      top11_100     0.000623    0.0159    0.0180   +0.0022
+    7  knowledge/07.txt      tail         -0.000022    0.0009    0.0010   +0.0002
+    8  knowledge/08.txt      top1          0.032171    0.8437    0.8249   -0.0188
+    8  knowledge/08.txt      top2_10       0.017156    0.1523    0.1699   +0.0176
+    8  knowledge/08.txt      top11_100     0.000506    0.0039    0.0051   +0.0011
+    8  knowledge/08.txt      tail          0.000011    0.0001    0.0001   +0.0000
+    9  knowledge/09.txt      top1          0.008583    0.8566    0.8513   -0.0052
+    9  knowledge/09.txt      top2_10       0.007111    0.1363    0.1408   +0.0045
+    9  knowledge/09.txt      top11_100     0.000261    0.0067    0.0074   +0.0007
+    9  knowledge/09.txt      tail          0.000012    0.0005    0.0005   +0.0000
+   10  knowledge/10.txt      top1          0.011067    0.8577    0.8517   -0.0060
+   10  knowledge/10.txt      top2_10       0.010946    0.1340    0.1390   +0.0050
+   10  knowledge/10.txt      top11_100     0.000544    0.0079    0.0089   +0.0010
+   10  knowledge/10.txt      tail         -0.000001    0.0004    0.0004   +0.0000
+   11  math/01.txt           top1          0.008719    0.8929    0.8879   -0.0050
+   11  math/01.txt           top2_10       0.005866    0.1034    0.1081   +0.0046
+   11  math/01.txt           top11_100     0.000239    0.0035    0.0039   +0.0004
+   11  math/01.txt           tail          0.000010    0.0002    0.0002   +0.0000
+   12  math/02.txt           top1          0.009085    0.9380    0.9316   -0.0064
+   12  math/02.txt           top2_10       0.004015    0.0610    0.0673   +0.0063
+   12  math/02.txt           top11_100     0.000057    0.0010    0.0011   +0.0001
+   12  math/02.txt           tail          0.000005    0.0001    0.0000   -0.0000
+   13  math/03.txt           top1          0.013039    0.9067    0.8984   -0.0083
+   13  math/03.txt           top2_10       0.005771    0.0915    0.0994   +0.0079
+   13  math/03.txt           top11_100     0.000077    0.0017    0.0020   +0.0003
+   13  math/03.txt           tail          0.000001    0.0001    0.0001   +0.0000
+   14  math/04.txt           top1          0.016892    0.8578    0.8485   -0.0094
+   14  math/04.txt           top2_10       0.008563    0.1387    0.1476   +0.0089
+   14  math/04.txt           top11_100     0.000394    0.0033    0.0039   +0.0005
+   14  math/04.txt           tail          0.000017    0.0001    0.0001   -0.0000
+   15  math/05.txt           top1          0.011456    0.9273    0.9197   -0.0076
+   15  math/05.txt           top2_10       0.002514    0.0713    0.0788   +0.0075
+   15  math/05.txt           top11_100     0.000152    0.0013    0.0014   +0.0001
+   15  math/05.txt           tail          0.000007    0.0001    0.0001   -0.0000
+   16  math/06.txt           top1          0.018245    0.8857    0.8742   -0.0115
+   16  math/06.txt           top2_10       0.009161    0.1117    0.1226   +0.0109
+   16  math/06.txt           top11_100     0.000210    0.0025    0.0030   +0.0005
+   16  math/06.txt           tail          0.000004    0.0002    0.0002   +0.0000
+   17  math/07.txt           top1          0.020548    0.8576    0.8432   -0.0144
+   17  math/07.txt           top2_10       0.004701    0.1388    0.1526   +0.0138
+   17  math/07.txt           top11_100     0.000257    0.0035    0.0041   +0.0006
+   17  math/07.txt           tail          0.000007    0.0001    0.0001   +0.0000
+   18  math/08.txt           top1          0.009507    0.9252    0.9196   -0.0057
+   18  math/08.txt           top2_10       0.006035    0.0729    0.0783   +0.0054
+   18  math/08.txt           top11_100     0.000208    0.0018    0.0020   +0.0003
+   18  math/08.txt           tail          0.000004    0.0000    0.0000   +0.0000
+   19  math/09.txt           top1          0.013037    0.8980    0.8893   -0.0086
+   19  math/09.txt           top2_10       0.006248    0.1003    0.1086   +0.0083
+   19  math/09.txt           top11_100     0.000130    0.0017    0.0020   +0.0003
+   19  math/09.txt           tail          0.000008    0.0001    0.0001   -0.0000
+   20  math/10.txt           top1          0.022578    0.8659    0.8521   -0.0139
+   20  math/10.txt           top2_10       0.011495    0.1305    0.1437   +0.0133
+   20  math/10.txt           top11_100     0.000378    0.0035    0.0041   +0.0006
+   20  math/10.txt           tail          0.000007    0.0001    0.0001   +0.0000
+   21  swe/01.txt            top1          0.012477    0.9268    0.9194   -0.0075
+   21  swe/01.txt            top2_10       0.002884    0.0717    0.0791   +0.0074
+   21  swe/01.txt            top11_100     0.000097    0.0014    0.0014   +0.0001
+   21  swe/01.txt            tail         -0.000002    0.0001    0.0001   +0.0000
+   22  swe/02.txt            top1          0.013287    0.9238    0.9141   -0.0098
+   22  swe/02.txt            top2_10       0.000398    0.0736    0.0830   +0.0094
+   22  swe/02.txt            top11_100     0.000023    0.0024    0.0027   +0.0003
+   22  swe/02.txt            tail         -0.000028    0.0002    0.0002   +0.0000
+   23  swe/03.txt            top1          0.007733    0.8269    0.8231   -0.0039
+   23  swe/03.txt            top2_10       0.010414    0.1699    0.1735   +0.0036
+   23  swe/03.txt            top11_100     0.000303    0.0031    0.0034   +0.0003
+   23  swe/03.txt            tail          0.000002    0.0001    0.0001   +0.0000
+   24  swe/04.txt            top1          0.011721    0.8911    0.8829   -0.0081
+   24  swe/04.txt            top2_10       0.004748    0.1059    0.1136   +0.0077
+   24  swe/04.txt            top11_100     0.000118    0.0029    0.0033   +0.0004
+   24  swe/04.txt            tail         -0.000006    0.0001    0.0002   +0.0000
+   25  swe/05.txt            top1          0.007811    0.8246    0.8206   -0.0040
+   25  swe/05.txt            top2_10       0.011421    0.1693    0.1728   +0.0035
+   25  swe/05.txt            top11_100     0.000513    0.0060    0.0065   +0.0005
+   25  swe/05.txt            tail          0.000010    0.0001    0.0001   +0.0000
+   26  swe/06.txt            top1          0.012118    0.9006    0.8929   -0.0077
+   26  swe/06.txt            top2_10       0.003696    0.0957    0.1032   +0.0076
+   26  swe/06.txt            top11_100     0.000411    0.0036    0.0038   +0.0002
+   26  swe/06.txt            tail          0.000002    0.0001    0.0002   +0.0000
+   27  swe/07.txt            top1          0.010935    0.9126    0.9048   -0.0078
+   27  swe/07.txt            top2_10       0.002375    0.0854    0.0930   +0.0076
+   27  swe/07.txt            top11_100     0.000061    0.0019    0.0021   +0.0002
+   27  swe/07.txt            tail          0.000003    0.0001    0.0001   +0.0000
+   28  swe/08.txt            top1          0.012247    0.8180    0.8111   -0.0069
+   28  swe/08.txt            top2_10       0.010093    0.1771    0.1836   +0.0065
+   28  swe/08.txt            top11_100     0.000328    0.0047    0.0051   +0.0004
+   28  swe/08.txt            tail         -0.000009    0.0001    0.0002   +0.0000
+   29  swe/09.txt            top1          0.013595    0.9032    0.8936   -0.0096
+   29  swe/09.txt            top2_10       0.001320    0.0934    0.1024   +0.0090
+   29  swe/09.txt            top11_100     0.000069    0.0033    0.0039   +0.0006
+   29  swe/09.txt            tail         -0.000005    0.0001    0.0001   +0.0000
+   30  swe/10.txt            top1          0.012256    0.8946    0.8871   -0.0075
+   30  swe/10.txt            top2_10       0.006777    0.1020    0.1091   +0.0071
+   30  swe/10.txt            top11_100     0.000138    0.0032    0.0037   +0.0004
+   30  swe/10.txt            tail          0.000002    0.0001    0.0001   +0.0000
+
+=== Temperature Optimization ===
+  ref_temp=0.60  scan: min=0.30  max=0.90  step=0.01
+  Prompt  Path                  Best T  KL at best
+       1  knowledge/01.txt        0.62    0.023662
+       2  knowledge/02.txt        0.61    0.025733
+       3  knowledge/03.txt        0.63    0.035761
+       4  knowledge/04.txt        0.62    0.035551
+       5  knowledge/05.txt        0.62    0.024814
+       6  knowledge/06.txt        0.64    0.035239
+       7  knowledge/07.txt        0.62    0.028433
+       8  knowledge/08.txt        0.63    0.048896
+       9  knowledge/09.txt        0.62    0.015783
+      10  knowledge/10.txt        0.62    0.022195
+      11  math/01.txt             0.62    0.014695
+      12  math/02.txt             0.62    0.013066
+      13  math/03.txt             0.62    0.018688
+      14  math/04.txt             0.63    0.025188
+      15  math/05.txt             0.61    0.014070
+      16  math/06.txt             0.63    0.027088
+      17  math/07.txt             0.62    0.025344
+      18  math/08.txt             0.63    0.015362
+      19  math/09.txt             0.62    0.019245
+      20  math/10.txt             0.63    0.033896
+      21  swe/01.txt              0.62    0.015349
+      22  swe/02.txt              0.61    0.013666
+      23  swe/03.txt              0.62    0.018036
+      24  swe/04.txt              0.61    0.016498
+      25  swe/05.txt              0.62    0.019458
+      26  swe/06.txt              0.62    0.015949
+      27  swe/07.txt              0.61    0.013359
+      28  swe/08.txt              0.62    0.022225
+      29  swe/09.txt              0.61    0.014915
+      30  swe/10.txt              0.62    0.018995
