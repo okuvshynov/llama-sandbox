@@ -39,6 +39,7 @@ REF_SHARD="Qwen3.5-2B-BF16.gguf"
 TARGETS=(
     "iq2_xxs:Qwen3.5-2B-UD-IQ2_XXS.gguf"
     "q4_k_xl:Qwen3.5-2B-UD-Q4_K_XL.gguf"
+    "q5_k_xl:Qwen3.5-2B-UD-Q5_K_XL.gguf"
     "q6_k_xl:Qwen3.5-2B-UD-Q6_K_XL.gguf"
     "q8_k_xl:Qwen3.5-2B-UD-Q8_K_XL.gguf"
 )
