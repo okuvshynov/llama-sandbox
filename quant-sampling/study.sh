@@ -201,6 +201,7 @@ for entry in "${TARGETS[@]}"; do
     target_bin="${OUTPUT_DIR}/target-${tag}.bin"
     csv_file="${OUTPUT_DIR}/${tag}.csv"
     rank_file="${OUTPUT_DIR}/${tag}-rank.csv"
+    shape_file="${OUTPUT_DIR}/${tag}-shape.csv"
 
     if [ ! -f "$target_bin" ]; then
         echo "  [skip] $tag (no target bin)"
@@ -219,13 +220,16 @@ for entry in "${TARGETS[@]}"; do
         --optimize \
         --csv "$csv_file" \
         --rank-csv "$rank_file" \
+        --shape-csv "$shape_file" \
         2>&1 | tee "${OUTPUT_DIR}/${tag}-compare.log"
     echo ""
 done
 
 # --- Copy viewer -------------------------------------------------------------
 
-cp "${SCRIPT_DIR}/results/view.html" "$OUTPUT_DIR/" 2>/dev/null || true
+for html in view.html overview.html shape.html; do
+    cp "${SCRIPT_DIR}/results/${html}" "$OUTPUT_DIR/" 2>/dev/null || true
+done
 
 echo "=== Done ==="
 echo "Results in: $OUTPUT_DIR"

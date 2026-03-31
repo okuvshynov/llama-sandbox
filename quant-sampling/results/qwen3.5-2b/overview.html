@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>quant-sampling overview</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace; background: #1a1a2e; color: #e0e0e0; padding: 24px; }
+  h1 { font-size: 1.4em; margin-bottom: 4px; color: #fff; }
+  .subtitle { color: #888; margin-bottom: 24px; font-size: 0.9em; }
+  .section { margin-bottom: 32px; }
+  .section h2 { font-size: 1.1em; margin-bottom: 12px; color: #ccc; border-bottom: 1px solid #333; padding-bottom: 4px; }
+  .section p { font-size: 0.85em; color: #888; margin-bottom: 12px; }
+  .chart-row { display: flex; gap: 24px; flex-wrap: wrap; }
+  .chart-box { background: #2a2a4a; border-radius: 8px; padding: 16px; flex: 1; min-width: 300px; }
+  .chart-box h3 { font-size: 0.9em; color: #aaa; margin-bottom: 8px; }
+  table { border-collapse: collapse; font-size: 0.8em; width: 100%; }
+  th, td { padding: 5px 10px; text-align: right; }
+  th { color: #aaa; border-bottom: 1px solid #444; text-align: right; }
+  th:first-child, td:first-child { text-align: left; }
+  td { border-bottom: 1px solid #2a2a4a; }
+  .bar-container { display: flex; height: 22px; border-radius: 3px; overflow: hidden; margin: 2px 0; }
+  .bar-segment { display: flex; align-items: center; justify-content: center; font-size: 0.7em; color: #000; min-width: 1px; }
+  .legend { display: flex; gap: 16px; margin: 8px 0; font-size: 0.8em; }
+  .legend-item { display: flex; align-items: center; gap: 4px; }
+  .legend-swatch { width: 14px; height: 14px; border-radius: 2px; }
+  .quant-label { font-weight: bold; white-space: nowrap; min-width: 70px; }
+  .shift-pos { color: #e07050; }
+  .shift-neg { color: #50b050; }
+  .loading { color: #888; font-style: italic; }
+</style>
+</head>
+<body>
+
+<h1>quant-sampling cross-quant overview</h1>
+<div class="subtitle" id="subtitle">Loading...</div>
+
+<div id="content">
+  <div class="section" id="sec-mass">
+    <h2>1. Probability mass distribution by rank bucket</h2>
+    <p>How probability mass shifts across logit ranks as quantization gets more aggressive.
+       Reference (BF16) distribution shown on top, each quant below.</p>
+    <div class="legend" id="legend-mass"></div>
+    <div id="mass-chart"></div>
+  </div>
+
+  <div class="section" id="sec-topic">
+    <h2>2. KL divergence by topic</h2>
+    <p>Mean KL at reference temperature, grouped by prompt category. Shows how different topics are affected by quantization.</p>
+    <div id="topic-table"></div>
+  </div>
+
+  <div class="section" id="sec-temp">
+    <h2>3. Optimal temperature by quant level</h2>
+    <p>Mean best temperature across prompts for each quantization level, with per-topic breakdown.</p>
+    <div id="temp-table"></div>
+  </div>
+</div>
+
+<script>
+const BUCKET_COLORS = {
+  top1:       '#4a9eff',
+  top2_10:    '#50c878',
+  top11_100:  '#f0a040',
+  tail:       '#e05050',
+};
+const BUCKET_LABELS = {
+  top1:       'Top 1',
+  top2_10:    'Top 2–10',
+  top11_100:  'Top 11–100',
+  tail:       'Tail (101+)',
+};
+const BUCKETS = ['top1', 'top2_10', 'top11_100', 'tail'];
+
+// desired display order (most aggressive first)
+const QUANT_ORDER = [
+  'iq2_xxs', 'q2_k_xl', 'iq3_xxs', 'q3_k_xl',
+  'iq4_xs', 'q4_k_xl', 'q5_k_xl', 'q6_k_xl', 'q8_k_xl',
+];
+
+function parseCSV(text) {
+  const lines = text.trim().split('\n');
+  const header = lines[0].split(',');
+  return lines.slice(1).map(line => {
+    const obj = {};
+    const cols = line.split(',');
+    header.forEach((h, i) => obj[h.trim()] = cols[i]?.trim());
+    return obj;
+  });
+}
+
+function getCategory(path) {
+  const slash = path.indexOf('/');
+  return slash >= 0 ? path.substring(0, slash) : 'other';
+}
+
+function sortQuants(tags) {
+  return tags.sort((a, b) => {
+    const ai = QUANT_ORDER.indexOf(a);
+    const bi = QUANT_ORDER.indexOf(b);
+    const av = ai >= 0 ? ai : 999;
+    const bv = bi >= 0 ? bi : 999;
+    return av - bv || a.localeCompare(b);
+  });
+}
+
+async function discoverFiles() {
+  const html = await (await fetch('./')).text();
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(html, 'text/html');
+  const links = [...doc.querySelectorAll('a')].map(a => a.getAttribute('href'));
+
+  const rankFiles = {};
+  const scanFiles = {};
+
+  for (const href of links) {
+    if (href.endsWith('-rank.csv')) {
+      const tag = href.replace('-rank.csv', '');
+      rankFiles[tag] = href;
+    } else if (href.endsWith('.csv') && !href.includes('-rank')) {
+      const tag = href.replace('.csv', '');
+      scanFiles[tag] = href;
+    }
+  }
+
+  return { rankFiles, scanFiles };
+}
+
+async function loadAll() {
+  const { rankFiles, scanFiles } = await discoverFiles();
+  const tags = sortQuants(Object.keys(rankFiles));
+
+  if (tags.length === 0) {
+    document.getElementById('subtitle').textContent = 'No rank CSV files found';
+    return;
+  }
+
+  document.getElementById('subtitle').textContent =
+    `${tags.length} quant levels: ${tags.join(', ')}`;
+
+  // load all rank data
+  const rankData = {};
+  for (const tag of tags) {
+    const text = await (await fetch(rankFiles[tag])).text();
+    rankData[tag] = parseCSV(text);
+  }
+
+  // load all scan data
+  const scanData = {};
+  for (const tag of tags) {
+    if (scanFiles[tag]) {
+      const text = await (await fetch(scanFiles[tag])).text();
+      scanData[tag] = parseCSV(text);
+    }
+  }
+
+  renderMassChart(tags, rankData);
+  renderTopicTable(tags, rankData, scanData);
+  renderTempTable(tags, scanData);
+}
+
+function renderMassChart(tags, rankData) {
+  // build legend
+  const legendDiv = document.getElementById('legend-mass');
+  legendDiv.innerHTML = BUCKETS.map(b =>
+    `<div class="legend-item"><div class="legend-swatch" style="background:${BUCKET_COLORS[b]}"></div>${BUCKET_LABELS[b]}</div>`
+  ).join('');
+
+  // compute average prob_ref and prob_target per bucket across all prompts
+  function avgBuckets(rows) {
+    const sums = {};
+    const counts = {};
+    for (const b of BUCKETS) { sums[b] = 0; counts[b] = 0; }
+    for (const r of rows) {
+      const b = r.bucket;
+      if (BUCKETS.includes(b)) {
+        sums[b] += parseFloat(r.prob_target);
+        counts[b]++;
+      }
+    }
+    const result = {};
+    for (const b of BUCKETS) result[b] = counts[b] > 0 ? sums[b] / counts[b] : 0;
+    return result;
+  }
+
+  function avgRefBuckets(rows) {
+    const sums = {};
+    const counts = {};
+    for (const b of BUCKETS) { sums[b] = 0; counts[b] = 0; }
+    for (const r of rows) {
+      const b = r.bucket;
+      if (BUCKETS.includes(b)) {
+        sums[b] += parseFloat(r.prob_ref);
+        counts[b]++;
+      }
+    }
+    const result = {};
+    for (const b of BUCKETS) result[b] = counts[b] > 0 ? sums[b] / counts[b] : 0;
+    return result;
+  }
+
+  // reference distribution (from first quant's ref columns — same for all)
+  const refBuckets = avgRefBuckets(rankData[tags[0]]);
+
+  function makeBar(label, buckets, refBuckets) {
+    const total = BUCKETS.reduce((s, b) => s + buckets[b], 0);
+    let bar = `<div style="display:flex;align-items:center;margin:4px 0;">`;
+    bar += `<div class="quant-label">${label}</div>`;
+    bar += `<div class="bar-container" style="flex:1">`;
+    for (const b of BUCKETS) {
+      const pct = (buckets[b] / total * 100);
+      if (pct < 0.5) continue;
+      bar += `<div class="bar-segment" style="background:${BUCKET_COLORS[b]};width:${pct}%" title="${BUCKET_LABELS[b]}: ${(buckets[b]*100).toFixed(1)}%">${pct > 5 ? pct.toFixed(0) + '%' : ''}</div>`;
+    }
+    bar += `</div>`;
+    // show shift from ref
+    if (refBuckets) {
+      const shift = buckets['top1'] - refBuckets['top1'];
+      const cls = shift >= 0 ? 'shift-pos' : 'shift-neg';
+      bar += `<div style="width:90px;text-align:right;font-size:0.8em" class="${cls}">top1: ${shift >= 0 ? '+' : ''}${(shift*100).toFixed(1)}%</div>`;
+    }
+    bar += `</div>`;
+    return bar;
+  }
+
+  let html = makeBar('BF16 (ref)', refBuckets, null);
+  html += '<div style="border-top:1px solid #444;margin:4px 0"></div>';
+  for (const tag of tags) {
+    const tgtBuckets = avgBuckets(rankData[tag]);
+    html += makeBar(tag, tgtBuckets, refBuckets);
+  }
+
+  document.getElementById('mass-chart').innerHTML = html;
+}
+
+function renderTopicTable(tags, rankData, scanData) {
+  // from rank data: average KL contribution (sum of all buckets) per topic per quant
+  const categories = new Set();
+  const klByTopicQuant = {}; // {topic: {quant: meanKL}}
+
+  for (const tag of tags) {
+    // group by prompt, sum KL buckets, then group by topic
+    const promptKL = {};
+    const promptCat = {};
+    for (const r of rankData[tag]) {
+      const pid = r.prompt;
+      if (!promptKL[pid]) promptKL[pid] = 0;
+      promptKL[pid] += parseFloat(r.kl_contribution);
+      promptCat[pid] = getCategory(r.path);
+      categories.add(promptCat[pid]);
+    }
+
+    // aggregate by category
+    const catSums = {};
+    const catCounts = {};
+    for (const pid of Object.keys(promptKL)) {
+      const cat = promptCat[pid];
+      if (!catSums[cat]) { catSums[cat] = 0; catCounts[cat] = 0; }
+      catSums[cat] += promptKL[pid];
+      catCounts[cat]++;
+    }
+
+    for (const cat of categories) {
+      if (!klByTopicQuant[cat]) klByTopicQuant[cat] = {};
+      klByTopicQuant[cat][tag] = catCounts[cat] > 0 ? catSums[cat] / catCounts[cat] : 0;
+    }
+  }
+
+  // also compute overall
+  klByTopicQuant['OVERALL'] = {};
+  for (const tag of tags) {
+    let sum = 0, n = 0;
+    for (const cat of categories) {
+      if (klByTopicQuant[cat][tag] !== undefined) {
+        sum += klByTopicQuant[cat][tag];
+        n++;
+      }
+    }
+    klByTopicQuant['OVERALL'][tag] = n > 0 ? sum / n : 0;
+  }
+
+  const allCats = [...categories].sort();
+  allCats.push('OVERALL');
+
+  let html = '<table><thead><tr><th>Topic</th>';
+  for (const tag of tags) html += `<th>${tag}</th>`;
+  html += '</tr></thead><tbody>';
+
+  for (const cat of allCats) {
+    const isSummary = cat === 'OVERALL';
+    html += `<tr${isSummary ? ' style="border-top:2px solid #555;font-weight:bold"' : ''}>`;
+    html += `<td>${cat}</td>`;
+    for (const tag of tags) {
+      const val = klByTopicQuant[cat]?.[tag] || 0;
+      html += `<td>${val.toFixed(4)}</td>`;
+    }
+    html += '</tr>';
+  }
+  html += '</tbody></table>';
+
+  document.getElementById('topic-table').innerHTML = html;
+}
+
+function renderTempTable(tags, scanData) {
+  if (Object.keys(scanData).length === 0) {
+    document.getElementById('temp-table').innerHTML = '<p class="loading">No temperature scan data found</p>';
+    return;
+  }
+
+  // for each quant, find best temp per prompt, then average by category
+  const categories = new Set();
+  const bestTByTopicQuant = {}; // {topic: {quant: meanBestT}}
+
+  for (const tag of tags) {
+    if (!scanData[tag]) continue;
+    const rows = scanData[tag];
+
+    // group by prompt
+    const promptTemps = {}; // {pid: [{temp, kl}]}
+    const promptCat = {};
+    for (const r of rows) {
+      const pid = r.prompt;
+      if (!promptTemps[pid]) promptTemps[pid] = [];
+      promptTemps[pid].push({ temp: parseFloat(r.temp), kl: parseFloat(r.kl) });
+      promptCat[pid] = getCategory(r.path);
+      categories.add(promptCat[pid]);
+    }
+
+    // find best temp per prompt
+    const promptBest = {};
+    for (const pid of Object.keys(promptTemps)) {
+      let best = promptTemps[pid][0];
+      for (const pt of promptTemps[pid]) {
+        if (pt.kl < best.kl) best = pt;
+      }
+      promptBest[pid] = best.temp;
+    }
+
+    // average by category
+    const catSums = {};
+    const catCounts = {};
+    for (const pid of Object.keys(promptBest)) {
+      const cat = promptCat[pid];
+      if (!catSums[cat]) { catSums[cat] = 0; catCounts[cat] = 0; }
+      catSums[cat] += promptBest[pid];
+      catCounts[cat]++;
+    }
+
+    for (const cat of categories) {
+      if (!bestTByTopicQuant[cat]) bestTByTopicQuant[cat] = {};
+      bestTByTopicQuant[cat][tag] = catCounts[cat] > 0 ? catSums[cat] / catCounts[cat] : 0;
+    }
+
+    // overall
+    if (!bestTByTopicQuant['OVERALL']) bestTByTopicQuant['OVERALL'] = {};
+    const allBest = Object.values(promptBest);
+    bestTByTopicQuant['OVERALL'][tag] = allBest.reduce((a, b) => a + b, 0) / allBest.length;
+  }
+
+  const allCats = [...categories].sort();
+  allCats.push('OVERALL');
+
+  let html = '<table><thead><tr><th>Topic</th>';
+  for (const tag of tags) html += `<th>${tag}</th>`;
+  html += '</tr></thead><tbody>';
+
+  for (const cat of allCats) {
+    const isSummary = cat === 'OVERALL';
+    html += `<tr${isSummary ? ' style="border-top:2px solid #555;font-weight:bold"' : ''}>`;
+    html += `<td>${cat}</td>`;
+    for (const tag of tags) {
+      const val = bestTByTopicQuant[cat]?.[tag] || 0;
+      html += `<td>${val.toFixed(3)}</td>`;
+    }
+    html += '</tr>';
+  }
+  html += '</tbody></table>';
+
+  document.getElementById('temp-table').innerHTML = html;
+}
+
+loadAll();
+</script>
+</body>
+</html>

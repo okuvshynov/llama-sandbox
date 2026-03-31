@@ -1,6 +1,6 @@
 compare: loading '/Users/oleksandr/projects/llama-sandbox/quant-sampling/results/qwen3.5-2b/ref.bin'...
 compare: loading '/Users/oleksandr/projects/llama-sandbox/quant-sampling/results/qwen3.5-2b/target-q3_k_xl.bin'...
-compare: n_vocab=248320, n_prompts=30, ref_temp=0.60
+compare: n_vocab=248320, n_prompts=30, ref_temp=0.60, top_k=40, top_p=0.95
 compare: computing rank-stratified KL...
   rank analysis: prompt 1 / 30  rank analysis: prompt 2 / 30  rank analysis: prompt 3 / 30  rank analysis: prompt 4 / 30  rank analysis: prompt 5 / 30  rank analysis: prompt 6 / 30  rank analysis: prompt 7 / 30  rank analysis: prompt 8 / 30  rank analysis: prompt 9 / 30  rank analysis: prompt 10 / 30  rank analysis: prompt 11 / 30  rank analysis: prompt 12 / 30  rank analysis: prompt 13 / 30  rank analysis: prompt 14 / 30  rank analysis: prompt 15 / 30  rank analysis: prompt 16 / 30  rank analysis: prompt 17 / 30  rank analysis: prompt 18 / 30  rank analysis: prompt 19 / 30  rank analysis: prompt 20 / 30  rank analysis: prompt 21 / 30  rank analysis: prompt 22 / 30  rank analysis: prompt 23 / 30  rank analysis: prompt 24 / 30  rank analysis: prompt 25 / 30  rank analysis: prompt 26 / 30  rank analysis: prompt 27 / 30  rank analysis: prompt 28 / 30  rank analysis: prompt 29 / 30  rank analysis: prompt 30 / 30
 compare: wrote /Users/oleksandr/projects/llama-sandbox/quant-sampling/results/qwen3.5-2b/q3_k_xl-rank.csv (30 prompts x 4 buckets)
@@ -9,39 +9,39 @@ compare: wrote /Users/oleksandr/projects/llama-sandbox/quant-sampling/results/qw
 
 === Per-Prompt Statistics ===
     #  Path                  Tokens    KL mean   Top-1%
-    1  knowledge/01.txt        1085   0.084149    90.8%
-    2  knowledge/02.txt        1076   0.090649    87.6%
-    3  knowledge/03.txt        1079   0.125125    87.2%
-    4  knowledge/04.txt        1075   0.114674    87.8%
-    5  knowledge/05.txt        1083   0.093596    91.5%
-    6  knowledge/06.txt        1084   0.112474    88.4%
-    7  knowledge/07.txt        1085   0.097399    87.6%
-    8  knowledge/08.txt        1088   0.165984    86.9%
-    9  knowledge/09.txt        1098   0.062616    91.3%
-   10  knowledge/10.txt        1084   0.090014    91.2%
-   11  math/01.txt             1065   0.053905    93.1%
-   12  math/02.txt             1070   0.052731    95.5%
-   13  math/03.txt             1076   0.076769    92.2%
-   14  math/04.txt             1072   0.097881    91.3%
-   15  math/05.txt             1098   0.036532    95.7%
-   16  math/06.txt             1071   0.094378    90.8%
-   17  math/07.txt             1076   0.096765    90.4%
-   18  math/08.txt             1090   0.057426    94.2%
-   19  math/09.txt             1080   0.089350    90.8%
-   20  math/10.txt             1079   0.112314    90.0%
-   21  swe/01.txt               750   0.041001    95.3%
-   22  swe/02.txt              1051   0.042888    95.2%
-   23  swe/03.txt              1073   0.052359    92.0%
-   24  swe/04.txt              1058   0.056232    93.7%
-   25  swe/05.txt              1057   0.071093    90.8%
-   26  swe/06.txt              1049   0.058358    94.6%
-   27  swe/07.txt              1055   0.049485    95.3%
-   28  swe/08.txt              1106   0.079223    89.4%
-   29  swe/09.txt              1050   0.052363    94.2%
-   30  swe/10.txt              1058   0.051798    93.2%
+    1  knowledge/01.txt        1085   0.068830    90.8%
+    2  knowledge/02.txt        1076   0.079974    87.6%
+    3  knowledge/03.txt        1079   0.106421    87.2%
+    4  knowledge/04.txt        1075   0.094011    87.8%
+    5  knowledge/05.txt        1083   0.079197    91.5%
+    6  knowledge/06.txt        1084   0.090080    88.4%
+    7  knowledge/07.txt        1085   0.081348    87.6%
+    8  knowledge/08.txt        1088   0.133354    86.9%
+    9  knowledge/09.txt        1098   0.051788    91.3%
+   10  knowledge/10.txt        1084   0.075662    91.2%
+   11  math/01.txt             1065   0.044880    93.1%
+   12  math/02.txt             1070   0.033790    95.5%
+   13  math/03.txt             1076   0.062838    92.2%
+   14  math/04.txt             1072   0.078992    91.3%
+   15  math/05.txt             1098   0.029311    95.7%
+   16  math/06.txt             1071   0.075281    90.8%
+   17  math/07.txt             1076   0.080425    90.4%
+   18  math/08.txt             1090   0.044711    94.2%
+   19  math/09.txt             1080   0.075615    90.8%
+   20  math/10.txt             1079   0.088969    90.0%
+   21  swe/01.txt               750   0.033710    95.3%
+   22  swe/02.txt              1051   0.033716    95.2%
+   23  swe/03.txt              1073   0.042986    92.0%
+   24  swe/04.txt              1058   0.044318    93.7%
+   25  swe/05.txt              1057   0.058859    90.8%
+   26  swe/06.txt              1049   0.048968    94.6%
+   27  swe/07.txt              1055   0.037307    95.3%
+   28  swe/08.txt              1106   0.069871    89.4%
+   29  swe/09.txt              1050   0.042254    94.2%
+   30  swe/10.txt              1058   0.042763    93.2%
 
 === Aggregate ===
-  KL divergence: 0.078651 +/- 0.029264
+  KL divergence: 0.064341 +/- 0.024566
   Top-1 agree:   91.6% +/- 2.7%
 
 === Rank Analysis (averaged across positions) ===
@@ -170,33 +170,33 @@ compare: wrote /Users/oleksandr/projects/llama-sandbox/quant-sampling/results/qw
 === Temperature Optimization ===
   ref_temp=0.60  scan: min=0.30  max=0.90  step=0.01
   Prompt  Path                  Best T  KL at best
-       1  knowledge/01.txt        0.65    0.081464
-       2  knowledge/02.txt        0.66    0.086582
-       3  knowledge/03.txt        0.67    0.118658
-       4  knowledge/04.txt        0.67    0.109535
-       5  knowledge/05.txt        0.67    0.087766
-       6  knowledge/06.txt        0.69    0.105176
-       7  knowledge/07.txt        0.65    0.094026
-       8  knowledge/08.txt        0.71    0.153511
-       9  knowledge/09.txt        0.65    0.060880
-      10  knowledge/10.txt        0.67    0.085681
-      11  math/01.txt             0.66    0.052005
-      12  math/02.txt             0.68    0.050718
-      13  math/03.txt             0.71    0.071645
-      14  math/04.txt             0.70    0.089997
-      15  math/05.txt             0.66    0.035156
-      16  math/06.txt             0.69    0.089368
-      17  math/07.txt             0.69    0.090464
-      18  math/08.txt             0.69    0.054177
-      19  math/09.txt             0.70    0.083839
-      20  math/10.txt             0.69    0.105969
-      21  swe/01.txt              0.65    0.040056
-      22  swe/02.txt              0.65    0.041624
-      23  swe/03.txt              0.63    0.051645
-      24  swe/04.txt              0.64    0.055335
-      25  swe/05.txt              0.66    0.067331
-      26  swe/06.txt              0.67    0.055286
-      27  swe/07.txt              0.64    0.048873
-      28  swe/08.txt              0.67    0.075285
-      29  swe/09.txt              0.67    0.049985
-      30  swe/10.txt              0.65    0.050263
+       1  knowledge/01.txt        0.80    0.057828
+       2  knowledge/02.txt        0.79    0.066641
+       3  knowledge/03.txt        0.88    0.082035
+       4  knowledge/04.txt        0.89    0.073884
+       5  knowledge/05.txt        0.84    0.062261
+       6  knowledge/06.txt        0.90    0.065182
+       7  knowledge/07.txt        0.81    0.067162
+       8  knowledge/08.txt        0.90    0.094851
+       9  knowledge/09.txt        0.79    0.043701
+      10  knowledge/10.txt        0.86    0.059580
+      11  math/01.txt             0.84    0.036129
+      12  math/02.txt             0.90    0.026784
+      13  math/03.txt             0.90    0.044384
+      14  math/04.txt             0.90    0.055524
+      15  math/05.txt             0.84    0.023064
+      16  math/06.txt             0.90    0.056147
+      17  math/07.txt             0.90    0.058959
+      18  math/08.txt             0.90    0.032217
+      19  math/09.txt             0.90    0.056079
+      20  math/10.txt             0.90    0.066002
+      21  swe/01.txt              0.82    0.028498
+      22  swe/02.txt              0.83    0.027531
+      23  swe/03.txt              0.73    0.038348
+      24  swe/04.txt              0.80    0.037543
+      25  swe/05.txt              0.80    0.047475
+      26  swe/06.txt              0.85    0.038027
+      27  swe/07.txt              0.82    0.031246
+      28  swe/08.txt              0.83    0.056528
+      29  swe/09.txt              0.85    0.033476
+      30  swe/10.txt              0.83    0.034185

@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>quant-sampling distribution shape</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace; background: #1a1a2e; color: #e0e0e0; padding: 24px; }
+  h1 { font-size: 1.4em; margin-bottom: 4px; color: #fff; }
+  .subtitle { color: #888; margin-bottom: 20px; font-size: 0.9em; }
+  .controls { margin-bottom: 12px; display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+  .controls label { font-size: 0.85em; color: #aaa; }
+  .controls select, .controls input { background: #2a2a4a; color: #e0e0e0; border: 1px solid #444; padding: 4px 8px; border-radius: 4px; font-size: 0.85em; }
+  .controls input[type=range] { width: 300px; }
+  .temp-display { font-size: 1.2em; font-weight: bold; color: #fff; min-width: 60px; }
+  .stats { font-size: 0.85em; color: #aaa; margin-bottom: 8px; line-height: 1.6; }
+  canvas { display: block; margin-bottom: 8px; }
+  .legend { display: flex; gap: 24px; margin-top: 8px; margin-bottom: 24px; font-size: 0.85em; }
+  .legend-item { display: flex; align-items: center; gap: 6px; }
+  .legend-swatch { width: 16px; height: 16px; border-radius: 2px; }
+  .group-tabs { display: flex; gap: 0; margin-bottom: 16px; }
+  .group-tab { padding: 6px 16px; background: #2a2a4a; color: #888; border: 1px solid #444; cursor: pointer; font-size: 0.85em; }
+  .group-tab:first-child { border-radius: 4px 0 0 4px; }
+  .group-tab:last-child { border-radius: 0 4px 4px 0; }
+  .group-tab.active { background: #4a4a6a; color: #fff; border-color: #666; }
+</style>
+</head>
+<body>
+
+<h1>Distribution shape: reference vs target</h1>
+<div class="subtitle">Average probability by logit rank, split by top-1 agreement</div>
+
+<div class="controls">
+  <label>Dataset: <select id="csv-select"><option value="">Loading...</option></select></label>
+  <label>Target T: <input type="range" id="temp-slider" min="0" max="1" step="1" value="0"></label>
+  <span class="temp-display" id="temp-display">—</span>
+</div>
+
+<div class="group-tabs" id="group-tabs">
+  <div class="group-tab active" data-group="all">All positions</div>
+  <div class="group-tab" data-group="agree">Top-1 agree</div>
+  <div class="group-tab" data-group="disagree">Top-1 disagree</div>
+</div>
+
+<div class="stats" id="stats"></div>
+<canvas id="chart" width="900" height="400"></canvas>
+
+<div class="legend">
+  <div class="legend-item"><div class="legend-swatch" style="background:#4a9eff"></div>Reference (BF16 @ ref_temp)</div>
+  <div class="legend-item"><div class="legend-swatch" style="background:#e05050"></div>Target @ selected T</div>
+</div>
+
+<script>
+let shapeData = null;
+let currentGroup = 'all';
+
+function parseShapeCSV(text) {
+  const lines = text.trim().split('\n');
+  const data = { temps: new Set(), ranks: 0, groups: {}, counts: {} };
+
+  // parse metadata comment
+  if (lines[0].startsWith('#')) {
+    const m = lines[0].match(/n_all=(\d+)\s+n_agree=(\d+)\s+n_disagree=(\d+)/);
+    if (m) {
+      data.counts = { all: parseInt(m[1]), agree: parseInt(m[2]), disagree: parseInt(m[3]) };
+    }
+    lines.shift(); // remove comment line
+  }
+
+  for (let i = 1; i < lines.length; i++) {
+    const cols = lines[i].split(',');
+    const temp = parseFloat(cols[0]);
+    const rank = parseInt(cols[1]);
+    const group = cols[2];
+    const probRef = parseFloat(cols[3]);
+    const probTgt = parseFloat(cols[4]);
+
+    data.temps.add(temp);
+    if (rank > data.ranks) data.ranks = rank;
+
+    if (!data.groups[group]) data.groups[group] = { ref: {}, target: {} };
+    const g = data.groups[group];
+
+    g.ref[rank] = probRef; // same across temps, last write wins
+    if (!g.target[temp]) g.target[temp] = {};
+    g.target[temp][rank] = probTgt;
+  }
+
+  data.temps = [...data.temps].sort((a, b) => a - b);
+  return data;
+}
+
+function getGroupData(group, temp) {
+  const g = shapeData.groups[group];
+  if (!g) return null;
+
+  const n = Math.min(shapeData.ranks, 40);
+  const ref = [];
+  const tgt = [];
+  for (let r = 1; r <= n; r++) {
+    ref.push(g.ref[r] || 0);
+    tgt.push(g.target[temp]?.[r] || 0);
+  }
+  return { ref, tgt, n };
+}
+
+function drawChart() {
+  if (!shapeData) return;
+
+  const tempIdx = parseInt(document.getElementById('temp-slider').value);
+  const temp = shapeData.temps[tempIdx];
+
+  document.getElementById('temp-display').textContent = `T = ${temp.toFixed(2)}`;
+
+  const d = getGroupData(currentGroup, temp);
+  if (!d) return;
+
+  // compute approx KL on displayed ranks
+  let kl = 0;
+  for (let i = 0; i < d.n; i++) {
+    if (d.ref[i] > 1e-10) {
+      const q = Math.max(d.tgt[i], 1e-30);
+      kl += d.ref[i] * Math.log(d.ref[i] / q);
+    }
+  }
+
+  const cnt = shapeData.counts[currentGroup] || 0;
+  const cntStr = cnt > 0 ? ` (${cnt.toLocaleString()} positions)` : '';
+  const groupLabel = currentGroup === 'all' ? 'all positions' + cntStr :
+    currentGroup === 'agree' ? 'top-1 agree' + cntStr : 'top-1 disagree' + cntStr;
+
+  document.getElementById('stats').innerHTML =
+    `<b>${groupLabel}</b> | top ${d.n} ranks | ` +
+    `KL ≈ ${kl.toFixed(6)} | ` +
+    `Ref top-1: ${(d.ref[0]*100).toFixed(1)}% | ` +
+    `Target top-1: ${(d.tgt[0]*100).toFixed(1)}%`;
+
+  const canvas = document.getElementById('chart');
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width;
+  const H = canvas.height;
+  const pad = { top: 20, right: 20, bottom: 40, left: 60 };
+  const cw = W - pad.left - pad.right;
+  const ch = H - pad.top - pad.bottom;
+
+  ctx.clearRect(0, 0, W, H);
+
+  let maxProb = 0;
+  for (let i = 0; i < d.n; i++) {
+    maxProb = Math.max(maxProb, d.ref[i], d.tgt[i]);
+  }
+  maxProb = Math.ceil(maxProb * 20) / 20;
+  if (maxProb < 0.05) maxProb = 0.05;
+
+  // y-axis
+  ctx.strokeStyle = '#333';
+  ctx.lineWidth = 0.5;
+  ctx.fillStyle = '#666';
+  ctx.font = '11px monospace';
+  ctx.textAlign = 'right';
+  const nGridY = 5;
+  for (let i = 0; i <= nGridY; i++) {
+    const v = maxProb * i / nGridY;
+    const y = pad.top + ch - (v / maxProb) * ch;
+    ctx.beginPath();
+    ctx.moveTo(pad.left, y);
+    ctx.lineTo(W - pad.right, y);
+    ctx.stroke();
+    ctx.fillText((v * 100).toFixed(0) + '%', pad.left - 6, y + 4);
+  }
+
+  // bars
+  const barGroupWidth = cw / d.n;
+  const barWidth = barGroupWidth * 0.35;
+  const gap = barGroupWidth * 0.05;
+
+  for (let i = 0; i < d.n; i++) {
+    const x0 = pad.left + i * barGroupWidth;
+
+    const hRef = (d.ref[i] / maxProb) * ch;
+    ctx.fillStyle = '#4a9eff';
+    ctx.fillRect(x0 + gap, pad.top + ch - hRef, barWidth, hRef);
+
+    const hTgt = (d.tgt[i] / maxProb) * ch;
+    ctx.fillStyle = '#e05050';
+    ctx.fillRect(x0 + gap + barWidth + 1, pad.top + ch - hTgt, barWidth, hTgt);
+
+    if (i < 10 || i % 5 === 4) {
+      ctx.fillStyle = '#666';
+      ctx.font = '10px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(String(i + 1), x0 + barGroupWidth / 2, pad.top + ch + 16);
+    }
+  }
+
+  ctx.fillStyle = '#888';
+  ctx.font = '12px monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText('Logit rank', pad.left + cw / 2, H - 4);
+}
+
+// group tabs
+document.querySelectorAll('.group-tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.group-tab').forEach(t => t.classList.remove('active'));
+    tab.classList.add('active');
+    currentGroup = tab.dataset.group;
+    drawChart();
+  });
+});
+
+document.getElementById('temp-slider').addEventListener('input', drawChart);
+
+// discover and load
+async function init() {
+  const html = await (await fetch('./')).text();
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(html, 'text/html');
+  const links = [...doc.querySelectorAll('a')].map(a => a.getAttribute('href'));
+  const shapeFiles = links.filter(h => h && h.endsWith('-shape.csv')).sort();
+
+  const select = document.getElementById('csv-select');
+  select.innerHTML = '';
+
+  if (shapeFiles.length === 0) {
+    select.innerHTML = '<option value="">No shape CSVs found</option>';
+    return;
+  }
+
+  for (const f of shapeFiles) {
+    const opt = document.createElement('option');
+    opt.value = f;
+    opt.textContent = f.replace('-shape.csv', '');
+    select.appendChild(opt);
+  }
+
+  select.addEventListener('change', () => loadShape(select.value));
+  loadShape(shapeFiles[0]);
+}
+
+async function loadShape(filename) {
+  const text = await (await fetch(filename)).text();
+  shapeData = parseShapeCSV(text);
+
+  const slider = document.getElementById('temp-slider');
+  slider.max = shapeData.temps.length - 1;
+
+  let defaultIdx = 0;
+  for (let i = 0; i < shapeData.temps.length; i++) {
+    if (Math.abs(shapeData.temps[i] - 0.6) < Math.abs(shapeData.temps[defaultIdx] - 0.6)) {
+      defaultIdx = i;
+    }
+  }
+  slider.value = defaultIdx;
+
+  // update tab labels with counts
+  document.querySelectorAll('.group-tab').forEach(tab => {
+    const g = tab.dataset.group;
+    const cnt = shapeData.counts[g];
+    const base = g === 'all' ? 'All' : g === 'agree' ? 'Top-1 agree' : 'Top-1 disagree';
+    if (cnt !== undefined) {
+      const pct = g !== 'all' ? ` (${(100 * cnt / shapeData.counts.all).toFixed(1)}%)` : '';
+      tab.textContent = `${base}: ${cnt.toLocaleString()}${pct}`;
+    } else {
+      tab.textContent = base;
+    }
+  });
+
+  drawChart();
+}
+
+init();
+</script>
+</body>
+</html>

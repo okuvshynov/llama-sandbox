@@ -19,6 +19,7 @@ struct compare_params {
     std::string path_b;
     std::string csv_path;
     std::string rank_csv_path;
+    std::string shape_csv_path;
     bool        optimize  = false;
     double      temp_min  = UNSET;
     double      temp_max  = UNSET;
@@ -44,6 +45,8 @@ static bool parse_args(int argc, char ** argv, compare_params & params) {
             params.csv_path = argv[++i];
         } else if (strcmp(arg, "--rank-csv") == 0 && i + 1 < argc) {
             params.rank_csv_path = argv[++i];
+        } else if (strcmp(arg, "--shape-csv") == 0 && i + 1 < argc) {
+            params.shape_csv_path = argv[++i];
         } else {
             fprintf(stderr, "compare: unknown argument '%s'\n", arg);
             return false;
@@ -55,7 +58,8 @@ static bool parse_args(int argc, char ** argv, compare_params & params) {
                         "  --temp-max <val>   temperature scan end   (default: ref_temp * 1.5)\n"
                         "  --temp-step <val>  temperature scan step  (default: 0.01)\n"
                         "  --csv <path>       export full prompt x temperature KL data to CSV\n"
-                        "  --rank-csv <path>  export KL contribution by logit rank bucket\n");
+                        "  --rank-csv <path>  export KL contribution by logit rank bucket\n"
+                        "  --shape-csv <path> export avg probability per rank at each temperature\n");
         return false;
     }
     return true;
@@ -67,10 +71,16 @@ struct prompt_stats {
     double top1_pct;
 };
 
+struct sampling_params {
+    double  ref_temp;
+    int32_t top_k;
+    double  top_p;
+};
+
 // Compute KL stats for a single prompt pair.
 static prompt_stats compute_prompt_stats(
     const qmlog_prompt & pa, const qmlog_prompt & pb,
-    int32_t n_vocab, double ref_temp, int32_t n_threads
+    int32_t n_vocab, const sampling_params & sp, int32_t n_threads
 ) {
     const int32_t n_logits = pa.n_tokens - 1;
 
@@ -80,6 +90,8 @@ static prompt_stats compute_prompt_stats(
 
     auto worker = [&]() {
         std::vector<double> log_p_ref, log_p_tgt;
+        std::vector<int32_t> idx_buf;
+        std::vector<bool> mask;
         int32_t local_agree = 0;
         while (true) {
             int32_t i = counter.fetch_add(1);
@@ -88,8 +100,13 @@ static prompt_stats compute_prompt_stats(
             const float * la = pa.logits.data() + (size_t)i * n_vocab;
             const float * lb = pb.logits.data() + (size_t)i * n_vocab;
 
-            log_softmax_temp(la, n_vocab, ref_temp, log_p_ref);
-            log_softmax_temp(lb, n_vocab, ref_temp, log_p_tgt);
+            // truncation mask from reference distribution
+            compute_truncation_mask(la, n_vocab, sp.ref_temp, sp.top_k, sp.top_p, mask, idx_buf);
+
+            log_softmax_temp(la, n_vocab, sp.ref_temp, log_p_ref);
+            log_softmax_temp(lb, n_vocab, sp.ref_temp, log_p_tgt);
+            apply_mask_and_renorm(log_p_ref, n_vocab, mask);
+            apply_mask_and_renorm(log_p_tgt, n_vocab, mask);
 
             kl_per_pos[i] = kl_divergence(log_p_ref, log_p_tgt, n_vocab);
 
@@ -111,16 +128,25 @@ static prompt_stats compute_prompt_stats(
 // Compute mean KL for a prompt pair at a given target temperature.
 static double compute_kl_at_temp(
     const qmlog_prompt & pa, const qmlog_prompt & pb,
-    int32_t n_vocab, double target_temp, double ref_temp
+    int32_t n_vocab, double target_temp, const sampling_params & sp
 ) {
     const int32_t n_logits = pa.n_tokens - 1;
     std::vector<double> log_p_ref, log_p_tgt;
+    std::vector<int32_t> idx_buf;
+    std::vector<bool> mask;
     double total_kl = 0.0;
     for (int32_t i = 0; i < n_logits; i++) {
         const float * la = pa.logits.data() + (size_t)i * n_vocab;
         const float * lb = pb.logits.data() + (size_t)i * n_vocab;
-        log_softmax_temp(la, n_vocab, ref_temp, log_p_ref);
+
+        // mask from reference, apply to both
+        compute_truncation_mask(la, n_vocab, sp.ref_temp, sp.top_k, sp.top_p, mask, idx_buf);
+
+        log_softmax_temp(la, n_vocab, sp.ref_temp, log_p_ref);
         log_softmax_temp(lb, n_vocab, target_temp, log_p_tgt);
+        apply_mask_and_renorm(log_p_ref, n_vocab, mask);
+        apply_mask_and_renorm(log_p_tgt, n_vocab, mask);
+
         total_kl += kl_divergence(log_p_ref, log_p_tgt, n_vocab);
     }
     return total_kl / n_logits;
@@ -159,14 +185,19 @@ int cmd_compare(int argc, char ** argv) {
     const int32_t n_prompts = fa.n_prompts;
     const int32_t n_threads = std::max(1, (int32_t)std::thread::hardware_concurrency());
 
-    const double ref_temp = (fa.temp > 0.0f) ? (double)fa.temp : 1.0;
-    fprintf(stderr, "compare: n_vocab=%d, n_prompts=%d, ref_temp=%.2f\n",
-            n_vocab, n_prompts, ref_temp);
+    const sampling_params sp = {
+        (fa.temp  > 0.0f) ? (double)fa.temp : 1.0,
+        fa.top_k,
+        (double)fa.top_p,
+    };
+
+    fprintf(stderr, "compare: n_vocab=%d, n_prompts=%d, ref_temp=%.2f, top_k=%d, top_p=%.2f\n",
+            n_vocab, n_prompts, sp.ref_temp, sp.top_k, sp.top_p);
 
     // === Per-prompt statistics ===
     std::vector<prompt_stats> stats(n_prompts);
     for (int32_t p = 0; p < n_prompts; p++) {
-        stats[p] = compute_prompt_stats(fa.prompts[p], fb.prompts[p], n_vocab, ref_temp, n_threads);
+        stats[p] = compute_prompt_stats(fa.prompts[p], fb.prompts[p], n_vocab, sp, n_threads);
     }
 
     printf("\n=== Per-Prompt Statistics ===\n");
@@ -228,8 +259,8 @@ int cmd_compare(int argc, char ** argv) {
                 const float * la = pa.logits.data() + (size_t)i * n_vocab;
                 const float * lb = pb.logits.data() + (size_t)i * n_vocab;
 
-                log_softmax_temp(la, n_vocab, ref_temp, log_p_ref);
-                log_softmax_temp(lb, n_vocab, ref_temp, log_p_tgt);
+                log_softmax_temp(la, n_vocab, sp.ref_temp, log_p_ref);
+                log_softmax_temp(lb, n_vocab, sp.ref_temp, log_p_tgt);
 
                 // sort by ref probability (descending)
                 std::iota(rank_order.begin(), rank_order.end(), 0);
@@ -309,12 +340,12 @@ int cmd_compare(int argc, char ** argv) {
     printf("\n=== Temperature Optimization ===\n");
 
     // derive defaults from ref_temp, let user overrides take precedence
-    double t_min  = (params.temp_min  != UNSET) ? params.temp_min  : ref_temp * 0.5;
-    double t_max  = (params.temp_max  != UNSET) ? params.temp_max  : ref_temp * 1.5;
+    double t_min  = (params.temp_min  != UNSET) ? params.temp_min  : sp.ref_temp * 0.5;
+    double t_max  = (params.temp_max  != UNSET) ? params.temp_max  : sp.ref_temp * 1.5;
     double t_step = (params.temp_step != UNSET) ? params.temp_step : 0.01;
 
     printf("  ref_temp=%.2f  scan: min=%.2f%s  max=%.2f%s  step=%.2f%s\n",
-           ref_temp,
+           sp.ref_temp,
            t_min,  (params.temp_min  != UNSET) ? " (override)" : "",
            t_max,  (params.temp_max  != UNSET) ? " (override)" : "",
            t_step, (params.temp_step != UNSET) ? " (override)" : "");
@@ -351,7 +382,7 @@ int cmd_compare(int argc, char ** argv) {
             for (int32_t p = 0; p < n_prompts; p++) {
                 int32_t n_logits_p = fa.prompts[p].n_tokens - 1;
                 per_prompt_kl[p][ti] = compute_kl_at_temp(
-                    fa.prompts[p], fb.prompts[p], n_vocab, temp_vals[ti], ref_temp);
+                    fa.prompts[p], fb.prompts[p], n_vocab, temp_vals[ti], sp);
                 int64_t done = work_done.fetch_add(n_logits_p) + n_logits_p;
                 int32_t pct = (int32_t)(100 * done / total_work);
                 int32_t prev = last_pct.load();
@@ -377,6 +408,136 @@ int cmd_compare(int argc, char ** argv) {
         }
         const char * path = fa.prompts[p].path.empty() ? "" : fa.prompts[p].path.c_str();
         printf("  %6d  %-20s  %6.2f  %10.6f\n", p + 1, path, temp_vals[best_ti], per_prompt_kl[p][best_ti]);
+    }
+
+    // Shape CSV: average probability per rank at each temperature,
+    // split by top-1 agree/disagree between ref and target.
+    if (!params.shape_csv_path.empty()) {
+        fprintf(stderr, "compare: computing shape data...\n");
+
+        const int32_t n_ranks = (sp.top_k > 0 && sp.top_k < n_vocab) ? sp.top_k : 40;
+
+        // first pass: classify each position as agree/disagree and compute ref shapes
+        // agree_mask[p][i] = true if top-1 matches at position i
+        std::vector<std::vector<bool>> agree_mask(n_prompts);
+        int64_t n_agree = 0, n_disagree = 0;
+
+        // ref shapes split by agree/disagree
+        std::vector<double> ref_shape_agree(n_ranks, 0.0);
+        std::vector<double> ref_shape_disagree(n_ranks, 0.0);
+        std::vector<double> ref_shape_all(n_ranks, 0.0);
+
+        for (int32_t p = 0; p < n_prompts; p++) {
+            const auto & pa = fa.prompts[p];
+            const auto & pb = fb.prompts[p];
+            const int32_t n_logits = pa.n_tokens - 1;
+            agree_mask[p].resize(n_logits);
+
+            std::vector<double> log_p(n_vocab);
+            std::vector<int32_t> idx(n_vocab);
+
+            for (int32_t i = 0; i < n_logits; i++) {
+                const float * la = pa.logits.data() + (size_t)i * n_vocab;
+                const float * lb = pb.logits.data() + (size_t)i * n_vocab;
+
+                bool agree = (argmax(la, n_vocab) == argmax(lb, n_vocab));
+                agree_mask[p][i] = agree;
+                if (agree) n_agree++; else n_disagree++;
+
+                log_softmax_temp(la, n_vocab, sp.ref_temp, log_p);
+
+                for (int32_t j = 0; j < n_vocab; j++) idx[j] = j;
+                std::partial_sort(idx.begin(), idx.begin() + n_ranks, idx.end(),
+                    [&](int32_t a, int32_t b) { return log_p[a] > log_p[b]; });
+
+                for (int32_t r = 0; r < n_ranks; r++) {
+                    double prob = exp(log_p[idx[r]]);
+                    ref_shape_all[r] += prob;
+                    if (agree) ref_shape_agree[r] += prob;
+                    else       ref_shape_disagree[r] += prob;
+                }
+            }
+        }
+
+        int64_t total_pos = n_agree + n_disagree;
+        for (int32_t r = 0; r < n_ranks; r++) {
+            ref_shape_all[r]      /= total_pos;
+            if (n_agree > 0)    ref_shape_agree[r]    /= n_agree;
+            if (n_disagree > 0) ref_shape_disagree[r] /= n_disagree;
+        }
+
+        fprintf(stderr, "  positions: %lld agree, %lld disagree (%.1f%% disagree)\n",
+                (long long)n_agree, (long long)n_disagree,
+                100.0 * n_disagree / total_pos);
+
+        // target shapes at each temperature, split by agree/disagree
+        struct shape_row {
+            std::vector<double> all, agree, disagree;
+            shape_row(int32_t n) : all(n, 0.0), agree(n, 0.0), disagree(n, 0.0) {}
+        };
+        std::vector<shape_row> shape_data;
+        for (int32_t ti = 0; ti < n_temps; ti++) shape_data.emplace_back(n_ranks);
+
+        for (int32_t ti = 0; ti < n_temps; ti++) {
+            double T = temp_vals[ti];
+
+            for (int32_t p = 0; p < n_prompts; p++) {
+                const auto & pb = fb.prompts[p];
+                const int32_t n_logits = pb.n_tokens - 1;
+
+                std::vector<double> log_p(n_vocab);
+                std::vector<int32_t> idx(n_vocab);
+
+                for (int32_t i = 0; i < n_logits; i++) {
+                    const float * lb = pb.logits.data() + (size_t)i * n_vocab;
+                    log_softmax_temp(lb, n_vocab, T, log_p);
+
+                    for (int32_t j = 0; j < n_vocab; j++) idx[j] = j;
+                    std::partial_sort(idx.begin(), idx.begin() + n_ranks, idx.end(),
+                        [&](int32_t a, int32_t b) { return log_p[a] > log_p[b]; });
+
+                    bool agree = agree_mask[p][i];
+                    for (int32_t r = 0; r < n_ranks; r++) {
+                        double prob = exp(log_p[idx[r]]);
+                        shape_data[ti].all[r] += prob;
+                        if (agree) shape_data[ti].agree[r] += prob;
+                        else       shape_data[ti].disagree[r] += prob;
+                    }
+                }
+            }
+
+            for (int32_t r = 0; r < n_ranks; r++) {
+                shape_data[ti].all[r]      /= total_pos;
+                if (n_agree > 0)    shape_data[ti].agree[r]    /= n_agree;
+                if (n_disagree > 0) shape_data[ti].disagree[r] /= n_disagree;
+            }
+
+            fprintf(stderr, "  shape: %d / %d temps\r", ti + 1, n_temps);
+            fflush(stderr);
+        }
+        fprintf(stderr, "\n");
+
+        FILE * csv = fopen(params.shape_csv_path.c_str(), "w");
+        if (!csv) {
+            fprintf(stderr, "compare: cannot open shape CSV '%s'\n", params.shape_csv_path.c_str());
+            return 1;
+        }
+        fprintf(csv, "# n_all=%lld n_agree=%lld n_disagree=%lld\n",
+                (long long)total_pos, (long long)n_agree, (long long)n_disagree);
+        fprintf(csv, "temp,rank,group,prob_ref,prob_target\n");
+        for (int32_t ti = 0; ti < n_temps; ti++) {
+            for (int32_t r = 0; r < n_ranks; r++) {
+                fprintf(csv, "%.4f,%d,all,%.8f,%.8f\n",
+                    temp_vals[ti], r + 1, ref_shape_all[r], shape_data[ti].all[r]);
+                fprintf(csv, "%.4f,%d,agree,%.8f,%.8f\n",
+                    temp_vals[ti], r + 1, ref_shape_agree[r], shape_data[ti].agree[r]);
+                fprintf(csv, "%.4f,%d,disagree,%.8f,%.8f\n",
+                    temp_vals[ti], r + 1, ref_shape_disagree[r], shape_data[ti].disagree[r]);
+            }
+        }
+        fclose(csv);
+        fprintf(stderr, "compare: wrote %s (%d temps x %d ranks x 3 groups)\n",
+                params.shape_csv_path.c_str(), n_temps, n_ranks);
     }
 
     // CSV export
