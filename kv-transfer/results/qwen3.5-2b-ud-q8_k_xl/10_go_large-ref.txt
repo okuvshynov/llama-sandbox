@@ -1,0 +1,30 @@
+<think>
+Here's a thinking process that leads to the code review:
+
+1.  **Understand the Goal:** The user wants a review of the provided Go codebase. The review needs to focus on three specific categories: bugs, race conditions, and design issues. For each issue found, I need to explain *why* it's a problem and *how* to fix it.
+
+2.  **Initial Code Scan & Context Understanding:**
+    *   **Package:** A simple HTTP server (`main`) with a background worker pool (`WorkerPool`) and a rate limiter.
+    *   **Purpose:** It looks like a background job processing system where requests are submitted via a REST API, workers process them, and stats are reported.
+    *   **Dependencies:** `context`, `encoding/json`, `fmt`, `log`, `math/rand`, `net/http`, `sync`, `time`.
+    *   **Key Components:** `Job` struct, `WorkerPool` struct, `RateLimiter` struct, `loggingMiddleware`, `rateLimitMiddleware`.
+
+3.  **Detailed Code Analysis (Section by Section):**
+
+    *   **`Job` Struct:** Standard struct with standard tags. Looks okay.
+    *   **`WorkerPool` Struct:**
+        *   `jobQueue`: Channel.
+        *   `results`: `map[string]*Job`.
+        *   `handlers`: `map[string]func(string) (string, error)`.
+        *   `middleware`: `[]func(*Job) error`.
+        *   `mu`: `sync.Mutex`.
+        *   `results` logic: `wp.results[job.ID] = job`.
+        *   `GetJob`: `wp.mu.Lock()`, check `results[id]`, `Unlock()`.
+    *   **`NewWorkerPool`:** Basic initialization.
+    *   **`RegisterHandler` / `Use`:** Standard.
+    *   **`Submit`:**
+        *   Status set to `queued`, `CreatedAt` set.
+        *   Retry logic.
+        *   `wp.mu.Lock()` -> `wp.results[job.ID] = job` -> `wp.mu.Unlock()`.
+        *   Wait, `wp.results` is a `map[string]*Job`. `job.ID` is unique. This is safe.
+        *   Wait, `wp.results` gets overwritten if `Submit` is called

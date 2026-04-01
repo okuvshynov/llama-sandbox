@@ -1,0 +1,51 @@
+<think>
+This is a Java implementation of a Least Recently Used (LRU) cache data structure. Let me break down what this code does and analyze the data structure.
+
+## What the program does:
+
+1. **LRUCache class**: A cache implementation that follows the LRU (Least Recently Used) eviction policy
+2. **LRU Cache**: A data structure that maintains a cache with limited capacity, where the least recently used items are removed first
+
+## Data Structure Analysis:
+
+The code uses a **doubly linked list** to track the order of access/usage in the cache.
+
+### Key Components:
+
+1. **`Node<K, V>`** (Node class):
+   - Represents a cache entry with key-value pair
+   - Has `prev` (previous node) and `next` (next node) pointers
+   - This creates a doubly linked list structure
+
+2. **`head` and `tail`**:
+   - `head` points to the first node in the doubly linked list
+   - `tail` points to the last node in the doubly linked list
+   - This allows efficient insertion at the front (for LRU behavior)
+
+3. **`map`**:
+   - A HashMap that stores the mapping from keys to Node references
+   - This allows O(1) lookup of existing nodes
+
+4. **`capacity`**:
+   - The maximum number of items the cache can hold
+
+### Data Structure Flow:
+
+1. **Cache Initialization**:
+   - Creates two sentinel nodes (head and tail) that don't actually store values
+   - These sentinel nodes form the doubly linked list
+   - Initially head.next = tail and tail.prev = head
+
+2. **Node Operations**:
+   - `remove()`: Removes a node from the doubly linked list
+   - `addToFront()`: Inserts a node at the front (most recently used position)
+   - `get()`: Retrieves a value and moves it to the front (most recently used)
+   - `put()`: Adds new key-value pair or updates existing value
+
+3. **LRU Behavior**:
+   - When `get()` is called, the accessed node is moved to the front
+   - When `put()` is called, if the cache is full, the least recently used item is evicted
+   - The least recently used item is tracked by its position in the doubly linked list
+
+4. **Eviction Logic**:
+   -

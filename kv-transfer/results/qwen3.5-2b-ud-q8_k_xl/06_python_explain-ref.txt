@@ -1,0 +1,67 @@
+<think>
+Let me analyze this Python program step by step.
+
+## Program Overview
+
+This program solves a graph traversal problem where we need to find all valid topological orderings (permutations) of nodes given a directed graph.
+
+## Key Components
+
+### 1. `build_graph(edges)`
+- Creates a directed graph from the edges
+- Uses `defaultdict(list)` for the graph
+- Tracks in-degree (number of incoming edges to each node)
+- Adds all nodes to a set
+- Returns the graph, in-degree dictionary, and nodes
+
+### 2. `solve(edges)`
+- Uses topological sort algorithm
+- Builds the graph and in-degree map
+- Initializes a queue with all nodes having in-degree 0
+- Processes nodes in queue order, updating neighbors' in-degrees
+- Returns a list of nodes in valid topological order
+
+### 3. `find_all(edges)`
+- Uses backtracking to find ALL valid topological orderings
+- Implements DFS with backtracking
+- Returns all valid permutations
+
+## Algorithm Description
+
+### Topological Sort (solve function)
+This is a classic topological sorting algorithm:
+1. Find all nodes with in-degree 0 (no incoming edges)
+2. Add them to a queue
+3. Process each node in queue:
+   - Mark it as visited
+   - For each neighbor, decrease its in-degree
+   - If a neighbor's in-degree becomes 0, add to queue
+4. Return the processed nodes
+
+### Backtracking (find_all function)
+This finds all valid topological permutations using DFS:
+1. Start with empty path and full in-degree map
+2. Try adding each node with remaining in-degree 0
+3. Recursively explore valid paths
+4. Backtrack when exploring
+
+## Edge Cases
+- Graph with cycles will return None (not all nodes visited)
+- Multiple valid orderings are captured
+- Unreachable nodes are handled (have in-degree 0)
+
+## Example Walkthrough
+For the given edges:
+```
+("compile", "link")
+("compile", "test")
+("lint", "compile")
+("deps", "compile")
+("deps", "lint")
+("link", "package")
+("test", "package")
+```
+
+This creates a directed graph where:
+- compile has in-degree 3 (from deps, lint, link)
+- link has in-degree 1 (from compile)

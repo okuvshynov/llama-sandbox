@@ -1,0 +1,27 @@
+<think>
+
+</think>
+
+This codebase has several critical architectural flaws, type safety issues, and potential runtime bugs. While it attempts to solve the classic "Eventual Consistency" problem for task processing, it lacks the robustness needed for production use.
+
+Here is a detailed review of the issues, followed by a refactored version.
+
+### 1. Critical Type Safety Issues
+
+*   **The `EventMap` Type**:
+    *   **Issue**: `EventMap` is defined as `[event: string]: (...args: any[]) => void`. This is a **type error** because it does not enforce that the event name is a valid TypeScript property key.
+    *   **Impact**: In your `PipelineEvents`, you explicitly define the keys (e.g., `'task:start'`). TypeScript will not catch if you try to register an event that isn't in the interface.
+    *   **Fix**: Use a mapped type or a union type that includes the specific event names you intend to register. A mapped type is cleaner for defining a set of specific event handlers.
+
+*   **Lambda Capture (Closure) in `on`/`once`**:
+    *   **Issue**: `this.listeners.get(event)!.add(listener)` captures `this` by reference. While `this` isn't mutated inside `emit`, it is a best practice to capture `this` explicitly if the method signature requires it (e.g., `on<K, T extends EventMap>(event: K, listener: T[K]): () => void`).
+    *   **Impact**: In an object-oriented class, `this` is implicitly captured. However, if this class were ever subclassed, it could cause confusion. Explicitly capturing `this` is safer.
+
+*   **Missing Return Types**:
+    *   **Issue**: `on` and `once` return `() => void`, but `emit` returns `void`.
+    *   **Impact**: If a developer calls `pipeline.on(...)().on(...)` or `pipeline.on(...)().once(...)`, the return value is ignored. Explicitly returning the cleanup function is a standard pattern for event emitters.
+
+### 2. Architectural & Performance Problems
+
+*   **Memory Leak from `onceListeners`**:
+    *   **Issue**: `onceListeners` stores a `Set` of functions. Every time you call `on('event', ...)` or `once('event', ...)`, a new `

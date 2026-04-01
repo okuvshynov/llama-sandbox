@@ -1,0 +1,32 @@
+<think>
+Here's a thinking process that leads to the code review:
+
+1.  **Understand the Goal:** The user wants a review of the provided Python codebase. The review needs to cover bugs, performance issues, and design problems. For each issue found, I need to explain it and suggest a fix.
+
+2.  **Initial Scan & Architecture Analysis:**
+    *   **Core Functionality:** Implements a Cache Store using SQLite.
+    *   **Eviction Policies:** Uses `LRU` (LRUEvictionPolicy) and `TTL` (TTLEvictionPolicy).
+    *   **Concurrency:** Uses `threading.Lock`.
+    *   **Main Entry Point:** A main script demonstrating usage and benchmarking.
+    *   **Dependencies:** `sqlite3`, `threading`, `time`, `hashlib`, `json`, `collections`, `typing`, `dataclasses`, `datetime`.
+
+3.  **Detailed Code Review (Section by Section):**
+
+    *   **Imports:** Standard and good. `dataclass` is used correctly. `typing` is correct.
+
+    *   **`CacheEntry` Dataclass:**
+        *   `size_bytes` is an attribute.
+        *   `access_count` and `last_accessed` use `field(default_factory=time.time)`.
+        *   *Potential Issue:* `size_bytes` is calculated in `_compute_size` which uses `json.dumps`. This is specific to data serialization.
+        *   *Potential Issue:* `expires_at` is a float. `time.time()` returns seconds since epoch. `CacheEntry` stores this.
+        *   *Bug Check:* `size_bytes` calculation in `_compute_size` might be inefficient for large objects or very large datasets if not memoized, but for simple JSON it's okay.
+
+    *   **`LRUEvictionPolicy`:**
+        *   `record_access`: `remove` then `append`. Standard LRU.
+        *   `get_eviction_candidate`: Returns the oldest.
+        *   `remove`: Removes from list.
+        *   *Logic Check:* `remove` and `append` are O(1) with a list, but since `access_order` is used as a list, it's fine.
+
+    *   **`TTLEvictionPolicy`:**
+        *   `record_access`: Stores `expires_at`.
+        *   `

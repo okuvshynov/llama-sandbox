@@ -1,0 +1,68 @@
+<think>
+Let me analyze this C++ program step by step.
+
+## Program Overview
+
+This is a Huffman coding implementation in C++. It:
+1. Builds a Huffman tree from character frequencies
+2. Creates binary codes for each character
+3. Encodes and decodes text using the Huffman codes
+
+## Key Components
+
+### 1. `Node` struct
+- Stores a character, frequency, and pointers to left/right children
+- Uses null pointer for empty nodes
+- Default constructor initializes with '0' as null character
+
+### 2. `Compare` struct
+- Custom comparator for priority queue that orders by frequency (descending)
+
+### 3. `buildTree` function
+- Counts character frequencies in the text
+- Uses a priority queue to build the Huffman tree
+- Merges nodes with lower frequencies first
+- Returns the root of the Huffman tree
+
+### 4. `buildCodes` function
+- Recursively assigns codes to each node
+- Uses prefix to build binary codes (0/1)
+- Only assigns codes to leaf nodes
+
+### 5. `encode` function
+- Encodes text using the Huffman codes
+- Returns the encoded string
+
+## Time Complexity Analysis
+
+Let me break down each function:
+
+### `buildTree`
+- **Frequency counting**: O(n) where n is text length
+- **Priority queue operations**: Each character is pushed once, then merged when needed
+- Merging happens O(log k) where k is number of nodes, with k ≈ 2n
+- **Overall**: O(n log n) or O(n log n) depending on queue operations
+
+### `buildCodes`
+- **DFS traversal**: Each node visited once
+- **Code assignment**: O(1) per node
+- **Overall**: O(n) where n is number of nodes
+
+### `encode`
+- **String concatenation**: O(n) characters
+- **Overall**: O(n)
+
+### `main`
+- **Tree building**: O(n log n)
+- **Code sorting**: O(m log m) where m is number of unique characters
+- **Overall**: O(n log n + m log m)
+
+## Space Complexity
+
+- **Node structure**: O(n) for the tree
+- **Priority queue**: O(n) for storing nodes
+- **Memory allocation**: O(n) for each Node
+- **Codes map**: O(n) for storing codes
+- **Overall**: O(n)
+
+## Issues

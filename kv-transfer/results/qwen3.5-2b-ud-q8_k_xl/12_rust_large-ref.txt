@@ -1,0 +1,28 @@
+<think>
+Here's a thinking process that leads to the review of the Rust codebase:
+
+1.  **Understand the Goal:** The user wants a review of the provided Rust codebase focusing on soundness issues, performance problems, and API design concerns. Each issue needs an explanation.
+
+2.  **Initial Scan & High-Level Overview:**
+    *   **Purpose:** This code appears to be a simulation of distributed tracing/metrics collection (specifically looking at request latency, size, and percentiles). It uses `Arc` and `Mutex` for shared state across threads. It simulates a workload with `thread::spawn`.
+    *   **Key Components:**
+        *   `Metric`: Holds values and timestamps.
+        *   `MetricsRegistry`: Manages multiple `Metric`s using `RwLock`.
+        *   `Timer`: A wrapper around the registry to track duration and record it in `Drop`.
+        *   `Histogram`: A bucket-based structure to track distribution.
+        *   `simulate_workload`: The main logic running in threads.
+        *   `main`: Orchestrates the threads and prints results.
+    *   **Dependencies:** `std::collections`, `std::sync`, `std::thread`, `std::time`.
+
+3.  **Detailed Analysis by Category:**
+
+    *   **Issue 1: Thread Safety of `MetricsRegistry` (The `RwLock` + `HashMap` + `Arc` Combo)**
+        *   *Code:* `struct MetricsRegistry { metrics: RwLock<HashMap<String, Arc<Mutex<Metric>>>> }`
+        *   *Problem:* This is a classic "lock-in" problem. `Arc<Mutex<Metric>>` gives exclusive access to a single metric. The `MetricsRegistry` uses `RwLock` to protect access.
+        *   *Wait, actually look closer:* `get_or_create` uses `read()` then `write()`. `record` acquires the inner `Mutex`. `snapshot` acquires the inner `Mutex` and takes a lock.
+        *   *Specific Issue:* `Arc<Mutex<Metric>>` is *not* thread-safe with `RwLock` in the way it's used.
+        *   *Wait, check `get_or_create` again:*
+            ```rust
+            {
+                let read = self.metrics.read().unwrap();
+                if let Some(metric) = read
