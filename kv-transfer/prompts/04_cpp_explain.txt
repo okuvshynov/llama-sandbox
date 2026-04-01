@@ -1,0 +1,83 @@
+Explain what this C++ program does and analyze its time complexity:
+
+```cpp
+#include <iostream>
+#include <vector>
+#include <queue>
+#include <unordered_map>
+#include <algorithm>
+
+struct Node {
+    char ch;
+    int freq;
+    Node* left;
+    Node* right;
+    Node(char c, int f) : ch(c), freq(f), left(nullptr), right(nullptr) {}
+};
+
+struct Compare {
+    bool operator()(Node* a, Node* b) { return a->freq > b->freq; }
+};
+
+Node* buildTree(const std::string& text) {
+    std::unordered_map<char, int> freq;
+    for (char c : text) freq[c]++;
+
+    std::priority_queue<Node*, std::vector<Node*>, Compare> pq;
+    for (auto& [ch, f] : freq) {
+        pq.push(new Node(ch, f));
+    }
+
+    while (pq.size() > 1) {
+        Node* left = pq.top(); pq.pop();
+        Node* right = pq.top(); pq.pop();
+        Node* parent = new Node('\0', left->freq + right->freq);
+        parent->left = left;
+        parent->right = right;
+        pq.push(parent);
+    }
+    return pq.top();
+}
+
+void buildCodes(Node* node, const std::string& prefix,
+                std::unordered_map<char, std::string>& codes) {
+    if (!node) return;
+    if (!node->left && !node->right) {
+        codes[node->ch] = prefix.empty() ? "0" : prefix;
+        return;
+    }
+    buildCodes(node->left, prefix + "0", codes);
+    buildCodes(node->right, prefix + "1", codes);
+}
+
+std::string encode(const std::string& text,
+                   const std::unordered_map<char, std::string>& codes) {
+    std::string result;
+    for (char c : text) result += codes.at(c);
+    return result;
+}
+
+int main() {
+    std::string text = "this is an example of huffman encoding";
+
+    Node* root = buildTree(text);
+    std::unordered_map<char, std::string> codes;
+    buildCodes(root, "", codes);
+
+    std::vector<std::pair<char, std::string>> sorted_codes(codes.begin(), codes.end());
+    std::sort(sorted_codes.begin(), sorted_codes.end(),
+              [](auto& a, auto& b) { return a.second.size() < b.second.size(); });
+
+    for (auto& [ch, code] : sorted_codes) {
+        char display = (ch == ' ') ? '_' : ch;
+        std::cout << "  '" << display << "': " << code << std::endl;
+    }
+
+    std::string encoded = encode(text, codes);
+    std::cout << "Original:  " << text.size() * 8 << " bits" << std::endl;
+    std::cout << "Encoded:   " << encoded.size() << " bits" << std::endl;
+    std::cout << "Ratio:     " << (100.0 * encoded.size() / (text.size() * 8)) << "%" << std::endl;
+
+    return 0;
+}
+```

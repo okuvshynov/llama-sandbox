@@ -1,0 +1,61 @@
+Explain what this Rust program does, step by step:
+
+```rust
+use std::collections::HashMap;
+
+fn compress(input: &[u8]) -> Vec<(u8, u16)> {
+    let mut result = Vec::new();
+    if input.is_empty() {
+        return result;
+    }
+    let mut current = input[0];
+    let mut count: u16 = 1;
+    for &byte in &input[1..] {
+        if byte == current && count < u16::MAX {
+            count += 1;
+        } else {
+            result.push((current, count));
+            current = byte;
+            count = 1;
+        }
+    }
+    result.push((current, count));
+    result
+}
+
+fn decompress(data: &[(u8, u16)]) -> Vec<u8> {
+    let mut result = Vec::new();
+    for &(byte, count) in data {
+        for _ in 0..count {
+            result.push(byte);
+        }
+    }
+    result
+}
+
+fn analyze(input: &[u8]) -> HashMap<u8, usize> {
+    let mut freq = HashMap::new();
+    for &b in input {
+        *freq.entry(b).or_insert(0) += 1;
+    }
+    freq
+}
+
+fn main() {
+    let data = b"AAABBBCCCCDDDDDEEEEE";
+    let compressed = compress(data);
+    let decompressed = decompress(&compressed);
+    let freq = analyze(data);
+
+    println!("Original size: {}", data.len());
+    println!("Compressed entries: {}", compressed.len());
+    println!("Ratio: {:.1}%", (compressed.len() * 3) as f64 / data.len() as f64 * 100.0);
+    println!("Roundtrip OK: {}", data.as_slice() == decompressed.as_slice());
+
+    let mut pairs: Vec<_> = freq.into_iter().collect();
+    pairs.sort_by(|a, b| b.1.cmp(&a.1));
+    for (byte, count) in pairs {
+        println!("  '{}': {}", byte as char, count);
+    }
+}
+```

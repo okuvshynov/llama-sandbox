@@ -1,0 +1,261 @@
+Review this Go codebase for bugs, race conditions, and design issues. Explain each problem and how to fix it.
+
+```go
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"math/rand"
+	"net/http"
+	"sync"
+	"time"
+)
+
+type Job struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	Payload   string    `json:"payload"`
+	Status    string    `json:"status"`
+	Result    string    `json:"result,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	StartedAt time.Time `json:"started_at,omitempty"`
+	DoneAt    time.Time `json:"done_at,omitempty"`
+	Retries   int       `json:"retries"`
+	MaxRetry  int       `json:"max_retry"`
+}
+
+type WorkerPool struct {
+	workers    int
+	jobQueue   chan *Job
+	results    map[string]*Job
+	mu         sync.Mutex
+	wg         sync.WaitGroup
+	ctx        context.Context
+	cancel     context.CancelFunc
+	handlers   map[string]func(string) (string, error)
+	middleware []func(*Job) error
+}
+
+func NewWorkerPool(workers, queueSize int) *WorkerPool {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &WorkerPool{
+		workers:  workers,
+		jobQueue: make(chan *Job, queueSize),
+		results:  make(map[string]*Job),
+		ctx:      ctx,
+		cancel:   cancel,
+		handlers: make(map[string]func(string) (string, error)),
+	}
+}
+
+func (wp *WorkerPool) RegisterHandler(name string, handler func(string) (string, error)) {
+	wp.handlers[name] = handler
+}
+
+func (wp *WorkerPool) Use(mw func(*Job) error) {
+	wp.middleware = append(wp.middleware, mw)
+}
+
+func (wp *WorkerPool) Submit(job *Job) error {
+	job.Status = "queued"
+	job.CreatedAt = time.Now()
+	if job.MaxRetry == 0 {
+		job.MaxRetry = 3
+	}
+
+	wp.mu.Lock()
+	wp.results[job.ID] = job
+	wp.mu.Unlock()
+
+	wp.jobQueue <- job
+	return nil
+}
+
+func (wp *WorkerPool) GetJob(id string) *Job {
+	wp.mu.Lock()
+	job := wp.results[id]
+	wp.mu.Unlock()
+	return job
+}
+
+func (wp *WorkerPool) Start() {
+	for i := 0; i < wp.workers; i++ {
+		wp.wg.Add(1)
+		go wp.worker(i)
+	}
+}
+
+func (wp *WorkerPool) Stop() {
+	wp.cancel()
+	close(wp.jobQueue)
+	wp.wg.Wait()
+}
+
+func (wp *WorkerPool) worker(id int) {
+	defer wp.wg.Done()
+	for {
+		select {
+		case <-wp.ctx.Done():
+			return
+		case job := <-wp.jobQueue:
+			wp.processJob(id, job)
+		}
+	}
+}
+
+func (wp *WorkerPool) processJob(workerID int, job *Job) {
+	log.Printf("[worker %d] processing job %s (%s)", workerID, job.ID, job.Name)
+
+	for _, mw := range wp.middleware {
+		if err := mw(job); err != nil {
+			job.Status = "failed"
+			job.Result = fmt.Sprintf("middleware error: %v", err)
+			return
+		}
+	}
+
+	handler, ok := wp.handlers[job.Name]
+	if !ok {
+		job.Status = "failed"
+		job.Result = fmt.Sprintf("no handler for job type: %s", job.Name)
+		return
+	}
+
+	job.Status = "running"
+	job.StartedAt = time.Now()
+
+	result, err := handler(job.Payload)
+	if err != nil {
+		job.Retries++
+		if job.Retries < job.MaxRetry {
+			log.Printf("[worker %d] job %s failed, retrying (%d/%d)",
+				workerID, job.ID, job.Retries, job.MaxRetry)
+			time.Sleep(time.Duration(job.Retries) * time.Second)
+			wp.jobQueue <- job
+			return
+		}
+		job.Status = "failed"
+		job.Result = err.Error()
+	} else {
+		job.Status = "completed"
+		job.Result = result
+	}
+	job.DoneAt = time.Now()
+}
+
+type RateLimiter struct {
+	tokens     float64
+	maxTokens  float64
+	refillRate float64
+	lastRefill time.Time
+	mu         sync.Mutex
+}
+
+func NewRateLimiter(maxTokens, refillRate float64) *RateLimiter {
+	return &RateLimiter{
+		tokens:     maxTokens,
+		maxTokens:  maxTokens,
+		refillRate: refillRate,
+		lastRefill: time.Now(),
+	}
+}
+
+func (rl *RateLimiter) Allow() bool {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	now := time.Now()
+	elapsed := now.Sub(rl.lastRefill).Seconds()
+	rl.tokens += elapsed * rl.refillRate
+	if rl.tokens > rl.maxTokens {
+		rl.tokens = rl.maxTokens
+	}
+	rl.lastRefill = now
+
+	if rl.tokens >= 1 {
+		rl.tokens--
+		return true
+	}
+	return false
+}
+
+func loggingMiddleware(job *Job) error {
+	log.Printf("Processing job: %s (type: %s)", job.ID, job.Name)
+	return nil
+}
+
+func rateLimitMiddleware(limiter *RateLimiter) func(*Job) error {
+	return func(job *Job) error {
+		if !limiter.Allow() {
+			return fmt.Errorf("rate limit exceeded")
+		}
+		return nil
+	}
+}
+
+func main() {
+	pool := NewWorkerPool(4, 100)
+
+	pool.RegisterHandler("compute", func(payload string) (string, error) {
+		time.Sleep(time.Duration(rand.Intn(2000)) * time.Millisecond)
+		if rand.Float64() < 0.3 {
+			return "", fmt.Errorf("random failure")
+		}
+		return fmt.Sprintf("computed: %s", payload), nil
+	})
+
+	pool.RegisterHandler("notify", func(payload string) (string, error) {
+		time.Sleep(500 * time.Millisecond)
+		return fmt.Sprintf("notified: %s", payload), nil
+	})
+
+	limiter := NewRateLimiter(10, 2)
+	pool.Use(loggingMiddleware)
+	pool.Use(rateLimitMiddleware(limiter))
+	pool.Start()
+
+	http.HandleFunc("/submit", func(w http.ResponseWriter, r *http.Request) {
+		var job Job
+		if err := json.NewDecoder(r.Body).Decode(&job); err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		if err := pool.Submit(&job); err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]string{"status": "queued", "id": job.ID})
+	})
+
+	http.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
+		id := r.URL.Query().Get("id")
+		job := pool.GetJob(id)
+		if job == nil {
+			http.Error(w, "not found", 404)
+			return
+		}
+		json.NewEncoder(w).Encode(job)
+	})
+
+	http.HandleFunc("/stats", func(w http.ResponseWriter, r *http.Request) {
+		pool.mu.Lock()
+		stats := map[string]interface{}{
+			"total_jobs": len(pool.results),
+			"queue_size": len(pool.jobQueue),
+		}
+		counts := map[string]int{}
+		for _, job := range pool.results {
+			counts[job.Status]++
+		}
+		stats["by_status"] = counts
+		pool.mu.Unlock()
+		json.NewEncoder(w).Encode(stats)
+	})
+
+	log.Println("Starting server on :8080")
+	log.Fatal(http.ListenAndServe(":8080", nil))
+}
+```

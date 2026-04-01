@@ -1,0 +1,70 @@
+Find the bugs in this JavaScript event scheduler and explain each one:
+
+```javascript
+class EventScheduler {
+  constructor() {
+    this.events = [];
+    this.listeners = {};
+  }
+
+  schedule(name, time, callback) {
+    this.events.push({ name, time, callback });
+    this.events.sort((a, b) => a.time - b.time);
+  }
+
+  on(eventName, handler) {
+    if (!this.listeners[eventName]) {
+      this.listeners[eventName] = [];
+    }
+    this.listeners[eventName].push(handler);
+  }
+
+  off(eventName, handler) {
+    const list = this.listeners[eventName];
+    if (list) {
+      const idx = list.indexOf(handler);
+      if (idx >= 0) list.splice(idx, 1);
+    }
+  }
+
+  async run() {
+    const startTime = Date.now();
+    for (const event of this.events) {
+      const elapsed = Date.now() - startTime;
+      const wait = event.time - elapsed;
+      if (wait > 0) {
+        await new Promise(resolve => setTimeout(resolve, wait));
+      }
+      event.callback();
+
+      const handlers = this.listeners[event.name];
+      if (handlers) {
+        for (const handler of handlers) {
+          handler(event);
+        }
+      }
+    }
+  }
+
+  cancel(name) {
+    this.events = this.events.filter(e => e.name !== name);
+  }
+
+  reschedule(name, newTime) {
+    for (const event of this.events) {
+      if (event.name == name) {
+        event.time = newTime;
+      }
+    }
+  }
+}
+
+const scheduler = new EventScheduler();
+scheduler.schedule("backup", 1000, () => console.log("backing up..."));
+scheduler.schedule("cleanup", 2000, () => console.log("cleaning up..."));
+scheduler.schedule("report", 500, () => console.log("generating report..."));
+
+scheduler.on("backup", (e) => console.log(`${e.name} completed at ${e.time}ms`));
+
+scheduler.run().then(() => console.log("all events done"));
+```

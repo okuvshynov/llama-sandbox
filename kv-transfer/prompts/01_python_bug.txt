@@ -1,0 +1,36 @@
+Find the bug in this Python program and explain how to fix it:
+
+```python
+def merge_sorted_lists(list1, list2):
+    result = []
+    i, j = 0, 0
+    while i < len(list1) and j < len(list2):
+        if list1[i] <= list2[j]:
+            result.append(list1[i])
+            i += 1
+        else:
+            result.append(list2[j])
+            j += 1
+    return result
+
+def find_median(nums):
+    sorted_nums = sorted(nums)
+    n = len(sorted_nums)
+    mid = n // 2
+    if n % 2 == 0:
+        return (sorted_nums[mid] + sorted_nums[mid - 1]) / 2
+    return sorted_nums[mid]
+
+def running_median(stream):
+    window = []
+    medians = []
+    for i, val in enumerate(stream):
+        window.append(val)
+        if len(window) > 5:
+            window.pop(0)
+        medians.append(find_median(window))
+    return medians
+
+data = [3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5]
+print(running_median(data))
+```

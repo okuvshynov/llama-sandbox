@@ -1,0 +1,90 @@
+Find all memory-related bugs in this C program:
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+typedef struct {
+    char* key;
+    char* value;
+} Entry;
+
+typedef struct {
+    Entry* entries;
+    int size;
+    int capacity;
+} Table;
+
+Table* table_create(int capacity) {
+    Table* t = malloc(sizeof(Table));
+    t->entries = malloc(sizeof(Entry) * capacity);
+    t->size = 0;
+    t->capacity = capacity;
+    return t;
+}
+
+void table_put(Table* t, const char* key, const char* value) {
+    for (int i = 0; i < t->size; i++) {
+        if (strcmp(t->entries[i].key, key) == 0) {
+            t->entries[i].value = strdup(value);
+            return;
+        }
+    }
+
+    if (t->size >= t->capacity) {
+        t->capacity *= 2;
+        t->entries = realloc(t->entries, sizeof(Entry) * t->capacity);
+    }
+
+    t->entries[t->size].key = strdup(key);
+    t->entries[t->size].value = strdup(value);
+    t->size++;
+}
+
+char* table_get(Table* t, const char* key) {
+    for (int i = 0; i < t->size; i++) {
+        if (strcmp(t->entries[i].key, key) == 0) {
+            return t->entries[i].value;
+        }
+    }
+    return NULL;
+}
+
+void table_delete(Table* t, const char* key) {
+    for (int i = 0; i < t->size; i++) {
+        if (strcmp(t->entries[i].key, key) == 0) {
+            t->entries[i] = t->entries[t->size - 1];
+            t->size--;
+            return;
+        }
+    }
+}
+
+void table_free(Table* t) {
+    for (int i = 0; i < t->size; i++) {
+        free(t->entries[i].key);
+        free(t->entries[i].value);
+    }
+    free(t->entries);
+    free(t);
+}
+
+int main() {
+    Table* t = table_create(4);
+
+    table_put(t, "name", "Alice");
+    table_put(t, "city", "Portland");
+    table_put(t, "lang", "C");
+    table_put(t, "name", "Bob");
+
+    printf("name: %s\n", table_get(t, "name"));
+    printf("city: %s\n", table_get(t, "city"));
+
+    table_delete(t, "city");
+    printf("after delete, city: %s\n", table_get(t, "city") ?: "(null)");
+
+    table_free(t);
+    return 0;
+}
+```

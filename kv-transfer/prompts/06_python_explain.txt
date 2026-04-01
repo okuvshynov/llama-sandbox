@@ -1,0 +1,75 @@
+Explain what this Python program does and describe the algorithm:
+
+```python
+from collections import defaultdict, deque
+
+def build_graph(edges):
+    graph = defaultdict(list)
+    in_degree = defaultdict(int)
+    nodes = set()
+    for u, v in edges:
+        graph[u].append(v)
+        in_degree[v] += 1
+        nodes.add(u)
+        nodes.add(v)
+    for node in nodes:
+        if node not in in_degree:
+            in_degree[node] = 0
+    return graph, in_degree, nodes
+
+def solve(edges):
+    graph, in_degree, nodes = build_graph(edges)
+
+    queue = deque()
+    for node in nodes:
+        if in_degree[node] == 0:
+            queue.append(node)
+
+    result = []
+    while queue:
+        node = queue.popleft()
+        result.append(node)
+        for neighbor in graph[node]:
+            in_degree[neighbor] -= 1
+            if in_degree[neighbor] == 0:
+                queue.append(neighbor)
+
+    if len(result) != len(nodes):
+        return None
+    return result
+
+def find_all(edges):
+    graph, in_degree, nodes = build_graph(edges)
+    results = []
+
+    def backtrack(path, remaining_in_degree):
+        if len(path) == len(nodes):
+            results.append(list(path))
+            return
+        for node in sorted(nodes):
+            if node not in path and remaining_in_degree[node] == 0:
+                path.append(node)
+                new_degrees = dict(remaining_in_degree)
+                for neighbor in graph[node]:
+                    new_degrees[neighbor] -= 1
+                backtrack(path, new_degrees)
+                path.pop()
+
+    backtrack([], dict(in_degree))
+    return results
+
+edges = [
+    ("compile", "link"),
+    ("compile", "test"),
+    ("lint", "compile"),
+    ("deps", "compile"),
+    ("deps", "lint"),
+    ("link", "package"),
+    ("test", "package"),
+]
+
+print("One valid order:", solve(edges))
+print(f"All valid orders ({len(find_all(edges))} total):")
+for order in find_all(edges):
+    print("  ->".join(order))
+```
