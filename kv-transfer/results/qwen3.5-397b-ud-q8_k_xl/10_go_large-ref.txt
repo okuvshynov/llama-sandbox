@@ -1,0 +1,28 @@
+<think>
+Here's a thinking process that leads to the code review:
+
+1.  **Understand the Goal:** The user wants a review of the provided Go codebase. I need to identify bugs, race conditions, and design issues, explain them, and suggest fixes.
+
+2.  **Initial Scan & High-Level Understanding:**
+    *   **Purpose:** It's a simple job processing system with a worker pool, HTTP API for submission/status, middleware support, and a rate limiter.
+    *   **Components:** `Job` struct, `WorkerPool` struct, `RateLimiter` struct, HTTP handlers, `main` function.
+    *   **Concurrency:** Uses goroutines, channels, `sync.Mutex`, `sync.WaitGroup`, and `context`.
+
+3.  **Detailed Code Analysis (Section by Section):**
+
+    *   **Imports:** Standard library. `math/rand` is used without seeding. *Issue: Predictable random numbers.*
+    *   **`Job` Struct:** Looks okay. Contains state. *Potential Issue: Shared state.* The `WorkerPool` stores pointers to `Job` in `results`. If the job is modified by workers and read by HTTP handlers, we need to ensure thread safety.
+    *   **`WorkerPool` Struct:**
+        *   `jobQueue`: Buffered channel. Good.
+        *   `results`: Map protected by `mu`. Good.
+        *   `handlers`: Map. *Issue: Accessed without lock in `processJob`.*
+        *   `middleware`: Slice. *Issue: Accessed without lock in `processJob`.*
+    *   **`NewWorkerPool`:** Standard initialization.
+    *   **`RegisterHandler` / `Use`:** *Issue: Not thread-safe.* If called after `Start()`, race conditions occur on `handlers` and `middleware` maps/slices.
+    *   **`Submit`:**
+        *   Sets fields on `job`.
+        *   Locks `mu` to update `results`.
+        *   Sends to `jobQueue`.
+        *   *Issue:* If `jobQueue` is full, this blocks. No timeout.
+        *   *Issue:* `job` is passed by pointer. The caller might modify it after submit? (Less likely in this pattern, but worth noting).
+    *   **`GetJob`:** Returns the pointer. *Issue: Race

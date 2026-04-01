@@ -1,0 +1,37 @@
+<think>
+
+</think>
+
+This C++ program implements **Huffman Coding**, a popular lossless data compression algorithm. It analyzes the frequency of characters in a given string, builds a binary tree based on those frequencies, generates unique binary codes for each character (where frequent characters get shorter codes), and finally calculates the compression ratio.
+
+Here is a step-by-step breakdown of the program's logic and its time complexity analysis.
+
+---
+
+### 1. Program Logic Explanation
+
+The program executes in four main phases:
+
+#### Phase 1: Frequency Analysis (`buildTree` - Part 1)
+- It takes an input string (`text`).
+- It uses an `unordered_map` to count the occurrences (`freq`) of every character in the string.
+- **Example**: In "this is...", 'i' and 's' appear frequently, while 't', 'h', etc., appear less often.
+
+#### Phase 2: Building the Huffman Tree (`buildTree` - Part 2)
+- It creates a **Min-Priority Queue** (`std::priority_queue` with a custom `Compare` struct) where nodes are ordered by frequency (lowest frequency at the top).
+- Initially, every unique character becomes a leaf node and is pushed into the queue.
+- **The Loop**: While there is more than one node in the queue:
+  1. Extract the two nodes with the lowest frequencies (`left` and `right`).
+  2. Create a new internal `parent` node with a frequency equal to the sum of the two children.
+  3. Push the `parent` node back into the queue.
+- This process repeats until only one node remains: the **Root** of the Huffman Tree.
+
+#### Phase 3: Generating Codes (`buildCodes`)
+- The program performs a **Depth-First Search (DFS)** traversal of the tree.
+- Moving to a **left** child appends `"0"` to the current code prefix.
+- Moving to a **right** child appends `"1"` to the current code prefix.
+- When a leaf node (a character) is reached, the accumulated prefix is stored as that character's binary code in the `codes` map.
+- *Note*: There is a specific check `prefix.empty() ? "0" : prefix` to handle the edge case where the input string has only one unique character type.
+
+#### Phase 4: Encoding and Statistics (`main`)
+- The

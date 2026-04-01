@@ -1,0 +1,39 @@
+<think>
+Let me analyze this C program for memory-related bugs.
+
+1. **Memory leak in `table_put` when updating existing key:**
+   When a key already exists and we update its value, we do:
+   ```c
+   t->entries[i].value = strdup(value);
+   ```
+   This allocates new memory but doesn't free the old `t->entries[i].value`. This is a memory leak.
+
+2. **Memory leak in `table_delete`:**
+   When deleting an entry, we do:
+   ```c
+   t->entries[i] = t->entries[t->size - 1];
+   t->size--;
+   ```
+   This copies the last entry to position `i`, but we never free the memory for `t->entries[i].key` and `t->entries[i].value` before overwriting. This is a memory leak.
+
+3. **No NULL check after malloc/realloc:**
+   - `table_create`: `malloc(sizeof(Table))` and `malloc(sizeof(Entry) * capacity)` don't check for NULL
+   - `table_put`: `realloc` doesn't check for NULL (if realloc fails, it returns NULL and the original pointer is lost)
+   - `table_put`: `strdup` calls don't check for NULL
+
+4. **Potential use-after-free in `table_delete`:**
+   After deletion, if the deleted entry was moved (when we copy the last entry to position i), the old pointers at position i are leaked (covered in point 2).
+
+5. **In `table_free`:**
+   This looks okay - it frees all keys and values, then the entries array, then the table itself.
+
+Let me trace through the program execution:
+
+1. `table_create(4)` - allocates Table and entries array
+2. `table_put(t, "name", "Alice")` - allocates key="name", value="Alice"
+3. `table_put(t, "city", "Portland")` - allocates key="city", value="Portland"
+
+
+4. `table_put(t, "lang", "C")` - allocates key="lang", value="C"
+5. `table_put(t, "name", "Bob")` - **MEMORY LEAK**: Updates "name" value but doesn't free old "Alice" string
+6. `table_delete(t, "city")` -
