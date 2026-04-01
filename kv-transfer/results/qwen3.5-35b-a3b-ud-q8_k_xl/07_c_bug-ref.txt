@@ -1,0 +1,24 @@
+<think>
+
+</think>
+
+Here are the memory-related bugs and issues found in the C program, categorized by severity:
+
+### 1. Critical Memory Leak & Double-Free in `table_delete`
+**Location:** `table_delete` function, lines 58–61.
+**The Bug:**
+When deleting an entry, the code swaps the target entry with the last entry in the array:
+```c
+t->entries[i] = t->entries[t->size - 1];
+```
+This performs a **shallow copy** of the `Entry` struct.
+1.  **Double-Free Risk:** The pointer to the string (e.g., `key` or `value`) from the last entry is now copied to position `i`. Later, when `table_free` iterates through the array, it will attempt to `free` this pointer twice (once at index `i` and once at the original last index, assuming the loop logic or subsequent operations handle the "hole" incorrectly, though here the loop only goes up to `t->size` which decrements).
+    *   *Correction:* Actually, the immediate issue is that `t->size` is decremented. The loop in `table_free` runs from `0` to `new_size - 1`. The entry that was moved to index `i` is now valid. The entry that was at the end (and moved to `i`) is now "gone" from the logical list, but its pointers are still owned by the struct at index `i`.
+    *   **Wait, let's trace the specific logic:**
+        *   Original: `[A, B, C]` (size 3). Delete B (index 1).
+        *   Move C to index 1: `[A, C, C]`.
+        *   Decrement size: `size` becomes 2.
+        *   `table_free` runs `i=0` to `1`.
+        *   `i=1`: `free(C->key)`, `free(C->value)`.
+        *   **Result:** The original `C` pointers are freed once. The pointers moved to `i=1` are the *same* pointers.
+        *   **Wait, is it a double free?** No, `table_free` only iterates up to `t->size`. Since `t->size` was decremented, the "duplicate" entry
