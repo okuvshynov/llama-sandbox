@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KV cache decay</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace; background: #f5f5f5; color: #333; padding: 16px; max-width: 1200px; }
+  h1 { font-size: 1.4em; margin-bottom: 4px; color: #111; }
+  h2 { font-size: 1.1em; margin: 24px 0 12px; color: #333; border-bottom: 1px solid #ccc; padding-bottom: 4px; }
+  .subtitle { color: #777; margin-bottom: 20px; font-size: 0.9em; }
+  .controls { margin-bottom: 16px; display: flex; gap: 16px; flex-wrap: wrap; align-items: center; }
+  .controls label { font-size: 0.85em; color: #666; }
+  .controls select { background: #fff; color: #333; border: 1px solid #bbb; padding: 4px 8px; border-radius: 4px; font-size: 0.85em; }
+  .section { margin-bottom: 32px; }
+  .section p { font-size: 0.85em; color: #777; margin-bottom: 12px; }
+  .chart-container { margin: 16px 0; }
+  canvas { display: block; background: #fff; border: 1px solid #ddd; border-radius: 4px; width: 100%; }
+  .legend { display: flex; gap: 16px; font-size: 0.85em; color: #666; margin: 8px 0; flex-wrap: wrap; }
+  .legend-item { display: flex; align-items: center; gap: 5px; }
+  .legend-swatch { width: 14px; height: 3px; border-radius: 1px; }
+</style>
+</head>
+<body>
+
+<h1>KV Cache Decay Analysis</h1>
+<div class="subtitle">How the KV transfer benefit changes across generation position</div>
+
+<div class="controls">
+  <label>Data: <select id="csv-select"><option value="">Loading...</option></select></label>
+</div>
+
+<div id="content" style="display:none">
+  <div class="section">
+    <h2>KL ratio by generation position (averaged across prompts)</h2>
+    <p>KL(handoff) / KL(target). Below 1.0 = handoff is better. Approaching 1.0 = benefit fading.</p>
+    <div class="chart-container"><canvas id="chart"></canvas></div>
+    <div class="legend" id="legend"></div>
+  </div>
+</div>
+
+<script>
+const DPR = window.devicePixelRatio || 1;
+const LINE_COLORS = [
+  '#d04040','#e07840','#d0a030','#40a050','#2090a0','#2070c0','#6050c0','#a040a0','#888'
+];
+
+let allData = null;
+
+function parseCSV(text) {
+  const lines = text.trim().split('\n');
+  return lines.slice(1).map(line => {
+    const c = line.split(',');
+    // support both formats:
+    // with prompt/target/n_prompt prefix (9 cols from run.sh)
+    // without prefix (6 cols from single decay run)
+    if (c.length >= 9) {
+      return {
+        prompt: c[0], target: c[1], n_prompt: parseInt(c[2]),
+        window_start: parseInt(c[3]), window_end: parseInt(c[4]),
+        kl_target: parseFloat(c[5]), top1_target: parseFloat(c[6]),
+        kl_handoff: parseFloat(c[7]), top1_handoff: parseFloat(c[8]),
+      };
+    }
+    return {
+      prompt: 'single', target: 'target', n_prompt: 0,
+      window_start: parseInt(c[0]), window_end: parseInt(c[1]),
+      kl_target: parseFloat(c[2]), top1_target: parseFloat(c[3]),
+      kl_handoff: parseFloat(c[4]), top1_handoff: parseFloat(c[5]),
+    };
+  });
+}
+
+function getTargets(rows) {
+  const seen = new Set();
+  const result = [];
+  for (const r of rows) {
+    if (!seen.has(r.target)) { seen.add(r.target); result.push(r.target); }
+  }
+  return result;
+}
+
+function getWindows(rows) {
+  const seen = new Set();
+  const result = [];
+  for (const r of rows) {
+    const key = `${r.window_start}-${r.window_end}`;
+    if (!seen.has(key)) { seen.add(key); result.push({ start: r.window_start, end: r.window_end }); }
+  }
+  return result.sort((a, b) => a.start - b.start);
+}
+
+function aggregate(rows) {
+  // average across prompts: for each (target, window) -> mean values
+  const key = (r) => `${r.target}|${r.window_start}`;
+  const groups = {};
+  for (const r of rows) {
+    const k = key(r);
+    if (!groups[k]) groups[k] = { ...r, _count: 1 };
+    else {
+      groups[k].kl_target += r.kl_target;
+      groups[k].kl_handoff += r.kl_handoff;
+      groups[k].top1_target += r.top1_target;
+      groups[k].top1_handoff += r.top1_handoff;
+      groups[k]._count++;
+    }
+  }
+  const result = [];
+  for (const g of Object.values(groups)) {
+    result.push({
+      ...g,
+      kl_target: g.kl_target / g._count,
+      kl_handoff: g.kl_handoff / g._count,
+      top1_target: g.top1_target / g._count,
+      top1_handoff: g.top1_handoff / g._count,
+    });
+  }
+  return result;
+}
+
+function drawChart() {
+  if (!allData) return;
+
+  const metric = 'kl_ratio';
+  const agg = aggregate(allData);
+  const targets = getTargets(agg);
+  const windows = getWindows(agg);
+
+  // build series
+  const series = [];
+  for (const tgt of targets) {
+    const tgtRows = agg.filter(r => r.target === tgt);
+    const points = windows.map(w => {
+      const r = tgtRows.find(r => r.window_start === w.start);
+      if (!r) return null;
+      if (metric === 'kl_ratio') return r.kl_target > 0 ? r.kl_handoff / r.kl_target : 0;
+      if (metric === 'kl_both') return { v1: r.kl_target, v2: r.kl_handoff };
+      if (metric === 'top1_both') return { v1: r.top1_target, v2: r.top1_handoff };
+      return 0;
+    });
+    series.push({ name: tgt, points });
+  }
+
+
+  const canvas = document.getElementById('chart');
+  const W = Math.min(900, window.innerWidth - 32);
+  const H = 400;
+  canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+  canvas.width = W * DPR; canvas.height = H * DPR;
+  const ctx = canvas.getContext('2d');
+  ctx.scale(DPR, DPR);
+  ctx.clearRect(0, 0, W, H);
+
+  const pad = { top: 20, right: 20, bottom: 45, left: 55 };
+  const cw = W - pad.left - pad.right;
+  const ch = H - pad.top - pad.bottom;
+
+  // compute y range
+  let yMin, yMax;
+  if (metric === 'kl_ratio') {
+    const allVals = series.flatMap(s => s.points.filter(p => p !== null));
+    yMin = 0;
+    yMax = Math.min(Math.max(...allVals) * 1.1, 1.5);
+  } else {
+    const allVals = series.flatMap(s => s.points.filter(p => p !== null).flatMap(p => [p.v1, p.v2]));
+    yMin = 0;
+    yMax = Math.max(...allVals) * 1.1;
+  }
+
+  const toX = (i) => pad.left + (i / (windows.length - 1)) * cw;
+  const toY = (v) => pad.top + ch - ((v - yMin) / (yMax - yMin)) * ch;
+
+  // grid
+  ctx.strokeStyle = '#ddd'; ctx.lineWidth = 0.5;
+  ctx.fillStyle = '#bbb'; ctx.font = '12px monospace';
+  ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+  const nGridY = 5;
+  for (let i = 0; i <= nGridY; i++) {
+    const v = yMin + (yMax - yMin) * i / nGridY;
+    const y = toY(v);
+    ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(W - pad.right, y); ctx.stroke();
+    ctx.fillText(metric === 'top1_both' ? v.toFixed(0) + '%' : v.toFixed(2), pad.left - 6, y);
+  }
+
+  // reference line at 1.0 for ratio
+  if (metric === 'kl_ratio' && yMax >= 1.0) {
+    const y1 = toY(1.0);
+    ctx.strokeStyle = '#999'; ctx.lineWidth = 1; ctx.setLineDash([5, 5]);
+    ctx.beginPath(); ctx.moveTo(pad.left, y1); ctx.lineTo(W - pad.right, y1); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#999'; ctx.textAlign = 'left';
+    ctx.fillText('1.0 (no benefit)', W - pad.right - 100, y1 - 8);
+  }
+
+  // x labels
+  ctx.fillStyle = '#bbb'; ctx.font = '11px monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+  for (let i = 0; i < windows.length; i++) {
+    if (i % 2 === 0 || windows.length <= 10) {
+      ctx.fillText(`${windows[i].start}`, toX(i), H - pad.bottom + 6);
+    }
+  }
+  ctx.fillText('generation token offset', pad.left + cw / 2, H - 8);
+
+  // draw lines
+  function drawLine(points, color, dashed) {
+    ctx.strokeStyle = color; ctx.lineWidth = 2.5;
+    ctx.setLineDash(dashed ? [6, 4] : []);
+    ctx.beginPath();
+    let started = false;
+    for (let i = 0; i < points.length; i++) {
+      if (points[i] === null) continue;
+      const x = toX(i);
+      const y = toY(points[i]);
+      if (!started) { ctx.moveTo(x, y); started = true; }
+      else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // dots
+    ctx.fillStyle = color;
+    for (let i = 0; i < points.length; i++) {
+      if (points[i] === null) continue;
+      ctx.beginPath(); ctx.arc(toX(i), toY(points[i]), 3, 0, Math.PI * 2); ctx.fill();
+    }
+  }
+
+  for (let si = 0; si < series.length; si++) {
+    const color = LINE_COLORS[si % LINE_COLORS.length];
+    drawLine(series[si].points, color, false);
+  }
+
+  // legend
+  const legendDiv = document.getElementById('legend');
+  legendDiv.innerHTML = targets.map((t, i) =>
+    `<div class="legend-item"><div class="legend-swatch" style="background:${LINE_COLORS[i % LINE_COLORS.length]}"></div>${t}</div>`
+  ).join('');
+}
+
+async function init() {
+  const html = await (await fetch('./')).text();
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(html, 'text/html');
+  const links = [...doc.querySelectorAll('a')].map(a => a.getAttribute('href'));
+
+  const csvFiles = [];
+  const dirs = links.filter(h => h && h.endsWith('/') && h !== '../');
+  for (const dir of dirs) {
+    try {
+      const subHtml = await (await fetch(dir)).text();
+      const subDoc = parser.parseFromString(subHtml, 'text/html');
+      const subLinks = [...subDoc.querySelectorAll('a')].map(a => a.getAttribute('href'));
+      if (subLinks.includes('decay.csv')) csvFiles.push(dir + 'decay.csv');
+    } catch (e) {}
+  }
+  if (links.includes('decay.csv')) csvFiles.unshift('decay.csv');
+
+  const select = document.getElementById('csv-select');
+  select.innerHTML = '';
+  if (csvFiles.length === 0) { select.innerHTML = '<option>No decay.csv found</option>'; return; }
+  for (const f of csvFiles) {
+    const opt = document.createElement('option');
+    opt.value = f; opt.textContent = f; select.appendChild(opt);
+  }
+
+  const load = async (url) => {
+    const text = await (await fetch(url)).text();
+    allData = parseCSV(text);
+    document.getElementById('content').style.display = 'block';
+    drawChart();
+  };
+
+  select.addEventListener('change', () => load(select.value));
+  load(csvFiles[0]);
+}
+
+init();
+</script>
+</body>
+</html>
