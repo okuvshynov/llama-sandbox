@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>kv-transfer results</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace; background: #f5f5f5; color: #333; padding: 16px; max-width: 1200px; }
+  h1 { font-size: 1.4em; margin-bottom: 4px; color: #111; }
+  h2 { font-size: 1.1em; margin: 24px 0 12px; color: #333; border-bottom: 1px solid #ccc; padding-bottom: 4px; }
+  .subtitle { color: #777; margin-bottom: 20px; font-size: 0.9em; }
+  .controls { margin-bottom: 16px; }
+  .controls label { font-size: 0.85em; color: #666; }
+  .controls select { background: #fff; color: #333; border: 1px solid #bbb; padding: 4px 8px; border-radius: 4px; font-size: 0.85em; }
+  .section { margin-bottom: 32px; }
+  .section p { font-size: 0.85em; color: #777; margin-bottom: 12px; }
+  table { border-collapse: collapse; font-size: 0.82em; width: 100%; margin-bottom: 16px; overflow-x: auto; display: block; }
+  th, td { padding: 5px 10px; text-align: right; white-space: nowrap; }
+  th { color: #555; border-bottom: 2px solid #ccc; }
+  th:first-child, td:first-child { text-align: left; }
+  td { border-bottom: 1px solid #e0e0e0; }
+  .chart-container { margin: 16px 0; position: relative; }
+  canvas { display: block; background: #fff; border: 1px solid #ddd; border-radius: 4px; cursor: pointer; width: 100%; }
+  .legend { display: flex; gap: 20px; font-size: 0.85em; color: #666; margin: 8px 0; flex-wrap: wrap; }
+  .legend-item { display: flex; align-items: center; gap: 5px; }
+  .legend-swatch { width: 14px; height: 14px; border-radius: 2px; }
+  .hint { font-size: 0.8em; color: #999; margin-top: 4px; }
+</style>
+</head>
+<body>
+
+<h1>KV Transfer Results</h1>
+<div class="subtitle" id="subtitle">Loading...</div>
+
+<div class="controls">
+  <label>Data: <select id="csv-select"><option value="">Loading...</option></select></label>
+</div>
+
+<div id="content" style="display:none">
+
+  <div class="section">
+    <h2>KL Divergence (averaged across prompts, log scale, lower is better)</h2>
+    <div class="chart-container">
+      <canvas id="chart-kl"></canvas>
+    </div>
+    <div class="legend">
+      <div class="legend-item"><div class="legend-swatch" style="background:#d04040"></div>Target (no transfer)</div>
+      <div class="legend-item"><div class="legend-swatch" style="background:#2070c0"></div>Handoff (KV transfer)</div>
+    </div>
+    <div class="hint">Tap a bar to compare it against all others. Tap again to deselect.</div>
+  </div>
+
+  <div class="section">
+    <h2>Top-1 Agreement (averaged across prompts, higher is better)</h2>
+    <div class="chart-container">
+      <canvas id="chart-top1"></canvas>
+    </div>
+    <div class="legend">
+      <div class="legend-item"><div class="legend-swatch" style="background:#d04040"></div>Target (no transfer)</div>
+      <div class="legend-item"><div class="legend-swatch" style="background:#2070c0"></div>Handoff (KV transfer)</div>
+    </div>
+    <div class="hint">Tap a bar to compare.</div>
+  </div>
+
+  <div class="section">
+    <h2>Per-Prompt Consistency (each dot = one prompt, log scale)</h2>
+    <p>X = KL(target), Y = KL(handoff). Points below the diagonal improved with KV transfer. A tight band shows the effect is consistent across prompts.</p>
+    <div class="chart-container">
+      <canvas id="chart-scatter"></canvas>
+    </div>
+    <div id="scatter-legend" class="legend"></div>
+    <div class="hint">Hover over a point to see prompt details.</div>
+    <div id="scatter-tooltip" style="font-size:0.82em;color:#555;min-height:1.2em;margin-top:4px;"></div>
+  </div>
+
+
+</div>
+
+<script>
+const QUANT_ORDER = ['iq2_xxs','q2_k_xl','iq3_xxs','q3_k_xl','iq4_xs','q4_k_xl','q5_k_xl','q6_k_xl','q8_k_xl'];
+const COLORS = { target: '#d04040', handoff: '#2070c0' };
+const COLORS_DIM = { target: '#e8b0b0', handoff: '#b0c8e0' };
+const DPR = window.devicePixelRatio || 1;
+
+function sortQuants(tags) {
+  return [...tags].sort((a, b) => {
+    const ai = QUANT_ORDER.indexOf(a);
+    const bi = QUANT_ORDER.indexOf(b);
+    return (ai < 0 ? 999 : ai) - (bi < 0 ? 999 : bi);
+  });
+}
+
+function parseCSV(text) {
+  const lines = text.trim().split('\n');
+  return lines.slice(1).map(line => {
+    const c = line.split(',');
+    return {
+      prompt: c[0], ref_model: c[1], target_model: c[2],
+      ref_bytes: parseInt(c[3]), target_bytes: parseInt(c[4]),
+      n_prompt: parseInt(c[5]), n_gen: parseInt(c[6]),
+      kl_target: parseFloat(c[7]), top1_target: parseFloat(c[8]),
+      kl_handoff: parseFloat(c[9]), top1_handoff: parseFloat(c[10]),
+    };
+  });
+}
+
+function aggregate(rows) {
+  const byQuant = {};
+  for (const r of rows) {
+    const q = r.target_model;
+    if (!byQuant[q]) byQuant[q] = [];
+    byQuant[q].push(r);
+  }
+  const quants = sortQuants(Object.keys(byQuant));
+  const stats = {};
+  for (const q of quants) {
+    const rs = byQuant[q];
+    const n = rs.length;
+    stats[q] = {
+      kl_target:    rs.reduce((s, r) => s + r.kl_target, 0) / n,
+      kl_handoff:   rs.reduce((s, r) => s + r.kl_handoff, 0) / n,
+      top1_target:  rs.reduce((s, r) => s + r.top1_target, 0) / n,
+      top1_handoff: rs.reduce((s, r) => s + r.top1_handoff, 0) / n,
+    };
+  }
+  return { quants, stats };
+}
+
+const charts = {};
+
+function initChart(id) {
+  charts[id] = { bars: [], selected: null, quants: null, stats: null, key1: null, key2: null, logScale: false };
+}
+
+function sizeCanvas(canvas, quants) {
+  const rowH = 52;
+  const W = Math.min(900, window.innerWidth - 32);
+  const H = quants.length * rowH + 40;
+  canvas.style.width = W + 'px';
+  canvas.style.height = H + 'px';
+  canvas.width = W * DPR;
+  canvas.height = H * DPR;
+}
+
+function drawChart(id) {
+  const c = charts[id];
+  const { quants, stats, key1, key2, logScale, selected } = c;
+  const canvas = document.getElementById(id);
+  sizeCanvas(canvas, quants);
+  const ctx = canvas.getContext('2d');
+  ctx.scale(DPR, DPR);
+  const W = canvas.width / DPR;
+  const H = canvas.height / DPR;
+  const pad = { top: 10, right: 80, bottom: 30, left: 90 };
+  const cw = W - pad.left - pad.right;
+  const ch = H - pad.top - pad.bottom;
+  ctx.clearRect(0, 0, W, H);
+
+  const vals1 = quants.map(q => stats[q][key1]);
+  const vals2 = quants.map(q => stats[q][key2]);
+  const allVals = [...vals1, ...vals2].filter(v => v > 0);
+
+  let toX, baseline;
+
+  if (logScale) {
+    const logMin = Math.floor(Math.log10(Math.min(...allVals)));
+    const logMax = Math.ceil(Math.log10(Math.max(...allVals) * 1.2));
+    const minVal = Math.pow(10, logMin);
+    const maxVal = Math.pow(10, logMax);
+    toX = (v) => pad.left + ((Math.log10(Math.max(v, minVal)) - logMin) / (logMax - logMin)) * cw;
+    baseline = pad.left;
+
+    ctx.fillStyle = '#bbb'; ctx.font = '12px monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+    for (let p = logMin; p <= logMax; p++) {
+      const v = Math.pow(10, p);
+      const x = toX(v);
+      ctx.strokeStyle = '#ddd'; ctx.lineWidth = 0.5;
+      ctx.beginPath(); ctx.moveTo(x, pad.top); ctx.lineTo(x, H - pad.bottom); ctx.stroke();
+      ctx.fillText(v >= 1 ? v.toFixed(0) : v.toFixed(Math.abs(p)), x, H - pad.bottom + 6);
+      for (const m of [2, 5]) {
+        const vm = v * m;
+        if (vm > maxVal) break;
+        ctx.strokeStyle = '#eee'; ctx.beginPath();
+        ctx.moveTo(toX(vm), pad.top); ctx.lineTo(toX(vm), H - pad.bottom); ctx.stroke();
+      }
+    }
+  } else {
+    const maxVal = Math.ceil(Math.max(...allVals) / 10) * 10;
+    toX = (v) => pad.left + (v / maxVal) * cw;
+    baseline = pad.left;
+
+    ctx.fillStyle = '#bbb'; ctx.font = '12px monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+    for (let i = 0; i <= 5; i++) {
+      const v = maxVal * i / 5;
+      const x = toX(v);
+      ctx.strokeStyle = '#ddd'; ctx.lineWidth = 0.5;
+      ctx.beginPath(); ctx.moveTo(x, pad.top); ctx.lineTo(x, H - pad.bottom); ctx.stroke();
+      ctx.fillText(v.toFixed(0) + '%', x, H - pad.bottom + 6);
+    }
+  }
+
+  const rowH = ch / quants.length;
+  const barH = rowH * 0.3;
+  const barGap = 2;
+
+  let selVal = null;
+  if (selected !== null) {
+    const si = Math.floor(selected / 2);
+    const st = selected % 2;
+    selVal = st === 0 ? vals1[si] : vals2[si];
+  }
+
+  c.bars = [];
+
+  for (let i = 0; i < quants.length; i++) {
+    const y0 = pad.top + i * rowH;
+
+    for (let t = 0; t < 2; t++) {
+      const val = t === 0 ? vals1[i] : vals2[i];
+      const barIdx = i * 2 + t;
+      const isSelected = selected === barIdx;
+      const isDimmed = selected !== null && !isSelected;
+
+      const by = t === 0 ? y0 + (rowH / 2 - barH - barGap) : y0 + (rowH / 2 + barGap);
+      const bw = toX(val) - baseline;
+
+      const baseColor = t === 0 ? COLORS.target : COLORS.handoff;
+      const dimColor = t === 0 ? COLORS_DIM.target : COLORS_DIM.handoff;
+      ctx.fillStyle = isDimmed ? dimColor : baseColor;
+      if (isSelected) {
+        ctx.shadowColor = baseColor;
+        ctx.shadowBlur = 6;
+      }
+      ctx.fillRect(baseline, by, bw, barH);
+      ctx.shadowBlur = 0;
+
+      c.bars.push({ x: baseline, y: by, w: bw, h: barH, val, idx: barIdx });
+
+      // label at end of bar
+      ctx.font = '12px monospace'; ctx.textBaseline = 'middle';
+      ctx.textAlign = 'left';
+      const labelX = baseline + bw + 6;
+      const labelY = by + barH / 2;
+
+      if (selected !== null && !isSelected && selVal > 0) {
+        const diff = ((val - selVal) / selVal) * 100;
+        const sign = diff >= 0 ? '+' : '';
+        ctx.fillStyle = '#555';
+        ctx.fillText(`${sign}${diff.toFixed(0)}%`, labelX, labelY);
+      } else {
+        ctx.fillStyle = '#777';
+        const label = logScale ? val.toFixed(3) : val.toFixed(1) + '%';
+        ctx.fillText(label, labelX, labelY);
+      }
+    }
+
+    // quant label on left
+    ctx.fillStyle = '#333'; ctx.font = '13px monospace';
+    ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+    ctx.fillText(quants[i], pad.left - 8, y0 + rowH / 2);
+  }
+}
+
+function handleClick(id, e) {
+  const c = charts[id];
+  const canvas = document.getElementById(id);
+  const rect = canvas.getBoundingClientRect();
+  const mx = (e.clientX - rect.left) * DPR;
+  const my = (e.clientY - rect.top) * DPR;
+
+  // scale to logical coords
+  const lx = mx / DPR;
+  const ly = my / DPR;
+
+  // expand hit area vertically for easier tapping
+  let clicked = null;
+  for (const bar of c.bars) {
+    const hitPad = 6;
+    if (lx >= bar.x && lx <= bar.x + bar.w + 60 &&
+        ly >= bar.y - hitPad && ly <= bar.y + bar.h + hitPad) {
+      clicked = bar.idx;
+      break;
+    }
+  }
+
+  c.selected = (clicked === c.selected) ? null : clicked;
+  drawChart(id);
+}
+
+function setupChart(id, quants, stats, key1, key2, logScale) {
+  initChart(id);
+  const c = charts[id];
+  c.quants = quants; c.stats = stats; c.key1 = key1; c.key2 = key2; c.logScale = logScale;
+
+  // remove old listeners by replacing element, then draw on the new one
+  const canvas = document.getElementById(id);
+  const newCanvas = canvas.cloneNode(true);
+  canvas.parentNode.replaceChild(newCanvas, canvas);
+  newCanvas.addEventListener('click', (e) => handleClick(id, e));
+  newCanvas.addEventListener('touchend', (e) => {
+    e.preventDefault();
+    const touch = e.changedTouches[0];
+    handleClick(id, { clientX: touch.clientX, clientY: touch.clientY });
+  });
+
+  drawChart(id);
+}
+
+/* ── scatter plot ─────────────────────────────────────────── */
+
+const QUANT_COLORS = [
+  '#e03030', '#e07020', '#c0a020', '#40a040', '#2080c0', '#6050d0', '#a040a0', '#666', '#333'
+];
+
+function quantColor(quants, q) {
+  return QUANT_COLORS[quants.indexOf(q) % QUANT_COLORS.length];
+}
+
+const scatter = { points: [], rows: null, quants: null };
+
+function drawScatter(rows, quants) {
+  scatter.rows = rows;
+  scatter.quants = quants;
+
+  const canvas = document.getElementById('chart-scatter');
+  const size = Math.min(600, window.innerWidth - 32);
+  canvas.style.width = size + 'px';
+  canvas.style.height = size + 'px';
+  canvas.width = size * DPR;
+  canvas.height = size * DPR;
+  const ctx = canvas.getContext('2d');
+  ctx.scale(DPR, DPR);
+  const W = size, H = size;
+  const pad = { top: 16, right: 16, bottom: 40, left: 52 };
+  const cw = W - pad.left - pad.right;
+  const ch = H - pad.top - pad.bottom;
+  ctx.clearRect(0, 0, W, H);
+
+  // compute log bounds across all points
+  const allKL = rows.flatMap(r => [r.kl_target, r.kl_handoff]).filter(v => v > 0);
+  const logMin = Math.floor(Math.log10(Math.min(...allKL)) * 2) / 2;
+  const logMax = Math.ceil(Math.log10(Math.max(...allKL)) * 2) / 2;
+  const toX = v => pad.left + ((Math.log10(v) - logMin) / (logMax - logMin)) * cw;
+  const toY = v => pad.top + ch - ((Math.log10(v) - logMin) / (logMax - logMin)) * ch;
+
+  // grid lines
+  ctx.strokeStyle = '#e0e0e0'; ctx.lineWidth = 0.5;
+  ctx.fillStyle = '#aaa'; ctx.font = '11px monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+  for (let p = Math.ceil(logMin); p <= Math.floor(logMax); p++) {
+    const v = Math.pow(10, p);
+    const x = toX(v), y = toY(v);
+    ctx.beginPath(); ctx.moveTo(x, pad.top); ctx.lineTo(x, H - pad.bottom); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(W - pad.right, y); ctx.stroke();
+    const label = v >= 1 ? v.toFixed(0) : v < 0.01 ? v.toExponential(0) : v.toFixed(Math.abs(p));
+    ctx.fillText(label, x, H - pad.bottom + 6);
+    ctx.save(); ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+    ctx.fillText(label, pad.left - 6, y);
+    ctx.restore();
+  }
+
+  // axis labels
+  ctx.fillStyle = '#777'; ctx.font = '12px monospace';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+  ctx.fillText('KL(target)', pad.left + cw / 2, H - 12);
+  ctx.save();
+  ctx.translate(14, pad.top + ch / 2);
+  ctx.rotate(-Math.PI / 2);
+  ctx.textBaseline = 'middle'; ctx.textAlign = 'center';
+  ctx.fillText('KL(handoff)', 0, 0);
+  ctx.restore();
+
+  // diagonal y = x
+  ctx.strokeStyle = '#bbb'; ctx.lineWidth = 1; ctx.setLineDash([4, 4]);
+  ctx.beginPath(); ctx.moveTo(toX(Math.pow(10, logMin)), toY(Math.pow(10, logMin)));
+  ctx.lineTo(toX(Math.pow(10, logMax)), toY(Math.pow(10, logMax))); ctx.stroke();
+  ctx.setLineDash([]);
+
+  // draw points — circles for short prompts, squares for long
+  scatter.points = [];
+  const R = 5;
+  const isLong = (name) => name.match(/^(09|10|11|12)_/) || parseInt(name) >= 9;
+  for (const r of rows) {
+    if (r.kl_target <= 0 || r.kl_handoff <= 0) continue;
+    const x = toX(r.kl_target), y = toY(r.kl_handoff);
+    const color = quantColor(quants, r.target_model);
+    const long = isLong(r.prompt);
+    ctx.fillStyle = color;
+    ctx.globalAlpha = 0.75;
+    if (long) {
+      ctx.fillRect(x - R, y - R, R * 2, R * 2);
+    } else {
+      ctx.beginPath(); ctx.arc(x, y, R, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.globalAlpha = 1.0;
+    ctx.strokeStyle = color; ctx.lineWidth = 1;
+    if (long) {
+      ctx.strokeRect(x - R, y - R, R * 2, R * 2);
+    } else {
+      ctx.beginPath(); ctx.arc(x, y, R, 0, Math.PI * 2); ctx.stroke();
+    }
+    scatter.points.push({ x, y, r: R + 3, row: r });
+  }
+
+  // legend — quant colors + shape key
+  const legendEl = document.getElementById('scatter-legend');
+  const colorLegend = quants.map(q =>
+    `<div class="legend-item"><div class="legend-swatch" style="background:${quantColor(quants, q)}"></div>${q}</div>`
+  ).join('');
+  const shapeLegend =
+    `<div class="legend-item"><div class="legend-swatch" style="background:#999;border-radius:50%"></div>short prompt</div>` +
+    `<div class="legend-item"><div class="legend-swatch" style="background:#999;border-radius:0"></div>long prompt</div>`;
+  legendEl.innerHTML = colorLegend + shapeLegend;
+}
+
+function scatterHit(e) {
+  const canvas = document.getElementById('chart-scatter');
+  const rect = canvas.getBoundingClientRect();
+  const mx = (e.clientX - rect.left);
+  const my = (e.clientY - rect.top);
+  for (const p of scatter.points) {
+    const dx = mx - p.x, dy = my - p.y;
+    if (dx * dx + dy * dy <= p.r * p.r) return p.row;
+  }
+  return null;
+}
+
+function initScatterEvents() {
+  const canvas = document.getElementById('chart-scatter');
+  const tip = document.getElementById('scatter-tooltip');
+  const handler = (e) => {
+    const r = scatterHit(e);
+    if (r) {
+      const ratio = (r.kl_handoff / r.kl_target).toFixed(2);
+      tip.textContent = `${r.prompt} [${r.target_model}] — target: ${r.kl_target.toFixed(3)}, handoff: ${r.kl_handoff.toFixed(3)}, ratio: ${ratio}`;
+    } else {
+      tip.textContent = '';
+    }
+  };
+  canvas.addEventListener('mousemove', handler);
+  canvas.addEventListener('touchstart', (e) => { e.preventDefault(); handler({ clientX: e.touches[0].clientX, clientY: e.touches[0].clientY }); });
+}
+
+function render(rows) {
+  const { quants, stats } = aggregate(rows);
+  setupChart('chart-kl', quants, stats, 'kl_target', 'kl_handoff', true);
+  setupChart('chart-top1', quants, stats, 'top1_target', 'top1_handoff', false);
+  drawScatter(rows, quants);
+  initScatterEvents();
+}
+
+async function init() {
+  const html = await (await fetch('./')).text();
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(html, 'text/html');
+  const links = [...doc.querySelectorAll('a')].map(a => a.getAttribute('href'));
+
+  const csvFiles = [];
+  const dirs = links.filter(h => h && h.endsWith('/') && h !== '../');
+  for (const dir of dirs) {
+    try {
+      const subHtml = await (await fetch(dir)).text();
+      const subDoc = parser.parseFromString(subHtml, 'text/html');
+      const subLinks = [...subDoc.querySelectorAll('a')].map(a => a.getAttribute('href'));
+      if (subLinks.includes('summary.csv')) csvFiles.push(dir + 'summary.csv');
+    } catch (e) {}
+  }
+  if (links.includes('summary.csv')) csvFiles.unshift('summary.csv');
+
+  const select = document.getElementById('csv-select');
+  select.innerHTML = '';
+  if (csvFiles.length === 0) { select.innerHTML = '<option>No data found</option>'; return; }
+  for (const f of csvFiles) {
+    const opt = document.createElement('option');
+    opt.value = f; opt.textContent = f; select.appendChild(opt);
+  }
+
+  const load = async (url) => {
+    const text = await (await fetch(url)).text();
+    document.getElementById('subtitle').textContent = url;
+    document.getElementById('content').style.display = 'block';
+    render(parseCSV(text));
+  };
+
+  select.addEventListener('change', () => load(select.value));
+  load(csvFiles[0]);
+}
+
+init();
+</script>
+</body>
+</html>
