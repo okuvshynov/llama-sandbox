@@ -17,6 +17,7 @@ struct target_params {
     std::string output_path = "target.bin";
     int32_t     n_gpu_layers = 99;
     int32_t     n_ctx        = 0;
+    int32_t     n_threads    = 0;
 };
 
 static bool parse_args(int argc, char ** argv, target_params & params) {
@@ -32,6 +33,8 @@ static bool parse_args(int argc, char ** argv, target_params & params) {
             params.n_gpu_layers = atoi(argv[++i]);
         } else if (strcmp(arg, "-c") == 0 && i + 1 < argc) {
             params.n_ctx = atoi(argv[++i]);
+        } else if (strcmp(arg, "-t") == 0 && i + 1 < argc) {
+            params.n_threads = atoi(argv[++i]);
         } else {
             fprintf(stderr, "target: unknown argument '%s'\n", arg);
             return false;
@@ -41,7 +44,8 @@ static bool parse_args(int argc, char ** argv, target_params & params) {
         fprintf(stderr, "Usage: kv-transfer target -m <model> -i <ref.bin> [options]\n"
                         "  -o <path>    output file (default: target.bin)\n"
                         "  -ngl <int>   GPU layers (default: 99)\n"
-                        "  -c <int>     context size (default: auto)\n");
+                        "  -c <int>     context size (default: auto)\n"
+                        "  -t <int>     threads (default: llama.cpp default)\n");
         return false;
     }
     return true;
@@ -91,6 +95,10 @@ int cmd_target(int argc, char ** argv) {
     llama_context_params ctx_params = llama_context_default_params();
     ctx_params.n_ctx   = params.n_ctx > 0 ? params.n_ctx : n_tokens;
     ctx_params.n_batch = n_tokens;
+    if (params.n_threads > 0) {
+        ctx_params.n_threads       = params.n_threads;
+        ctx_params.n_threads_batch = params.n_threads;
+    }
 
     llama_context * ctx = llama_init_from_model(model, ctx_params);
     if (!ctx) {

@@ -11,6 +11,7 @@ set -euo pipefail
 #   N_PREDICT   — tokens to generate (default: 512)
 #   TEMP        — sampling temperature (default: 0.6)
 #   NGL         — GPU layers (default: 99)
+#   THREADS     — inference threads (default: not set, llama.cpp default)
 #
 # Usage: source config, then call this script. Or use a wrapper like:
 #   ./run-qwen3.5-2b.sh
@@ -25,6 +26,12 @@ RESULTS="${SCRIPT_DIR}/results"
 N_PREDICT="${N_PREDICT:-512}"
 TEMP="${TEMP:-0.6}"
 NGL="${NGL:-99}"
+THREADS="${THREADS:-0}"
+
+THREAD_ARGS=()
+if [ "$THREADS" -gt 0 ] 2>/dev/null; then
+    THREAD_ARGS=(-t "$THREADS")
+fi
 
 # --- Validate config ---------------------------------------------------------
 
@@ -40,7 +47,8 @@ if [ ! -x "$BINARY" ]; then
 fi
 
 REF_DIR="${RESULTS}/${REF_TAG}"
-mkdir -p "$REF_DIR"
+LOG_DIR="${REF_DIR}/logs"
+mkdir -p "$REF_DIR" "$LOG_DIR"
 
 # --- Helper: read token counts from .bin file --------------------------------
 
@@ -91,13 +99,17 @@ for prompt_file in "$PROMPTS"/*.txt; do
         continue
     fi
 
+    log_file="${LOG_DIR}/${name}-ref.log"
     echo -n "  [ref] $name — running... "
     prompt=$(cat "$prompt_file")
-    "$BINARY" ref \
+    if ! "$BINARY" ref \
         -m "$REF_MODEL" \
         -p "$prompt" \
-        -n "$N_PREDICT" --temp "$TEMP" -ngl "$NGL" \
-        -o "$ref_bin" > /dev/null 2>&1
+        -n "$N_PREDICT" --temp "$TEMP" -ngl "$NGL" "${THREAD_ARGS[@]}" \
+        -o "$ref_bin" > /dev/null 2>"$log_file"; then
+        echo "FAILED (see $log_file)"
+        exit 1
+    fi
     echo "done"
 done
 echo ""
@@ -122,11 +134,15 @@ for tgt_entry in "${TARGETS[@]}"; do
         if [ -f "$tgt_bin" ]; then
             echo "  [target] $name — skip"
         else
+            log_file="${LOG_DIR}/${name}-${tgt_tag}-target.log"
             echo -n "  [target] $name — running... "
-            "$BINARY" target \
+            if ! "$BINARY" target \
                 -m "$tgt_model" \
                 -i "$ref_bin" \
-                -o "$tgt_bin" -ngl "$NGL" > /dev/null 2>&1
+                -o "$tgt_bin" -ngl "$NGL" "${THREAD_ARGS[@]}" > /dev/null 2>"$log_file"; then
+                echo "FAILED (see $log_file)"
+                exit 1
+            fi
             echo "done"
         fi
 
@@ -134,12 +150,16 @@ for tgt_entry in "${TARGETS[@]}"; do
         if [ -f "$hoff_bin" ]; then
             echo "  [handoff] $name — skip"
         else
+            log_file="${LOG_DIR}/${name}-${tgt_tag}-handoff.log"
             echo -n "  [handoff] $name — running... "
-            "$BINARY" handoff \
+            if ! "$BINARY" handoff \
                 -m-ref "$REF_MODEL" \
                 -m-tgt "$tgt_model" \
                 -i "$ref_bin" \
-                -o "$hoff_bin" -ngl "$NGL" > /dev/null 2>&1
+                -o "$hoff_bin" -ngl "$NGL" "${THREAD_ARGS[@]}" > /dev/null 2>"$log_file"; then
+                echo "FAILED (see $log_file)"
+                exit 1
+            fi
             echo "done"
         fi
     done
@@ -221,9 +241,10 @@ for tgt_entry in "${TARGETS[@]}"; do
 
         echo -n "  ${tgt_tag}/${name}... "
         tmp_csv=$(mktemp)
+        log_file="${LOG_DIR}/${name}-${tgt_tag}-decay.log"
         "$BINARY" decay \
             --ref "$ref_bin" --target "$tgt_bin" --handoff "$hoff_bin" \
-            --window 64 --temp "$TEMP" --csv "$tmp_csv" > /dev/null 2>&1
+            --window 64 --temp "$TEMP" --csv "$tmp_csv" > /dev/null 2>"$log_file"
 
         read n_tokens_bin n_prompt_val <<< $(read_token_counts "$ref_bin")
 

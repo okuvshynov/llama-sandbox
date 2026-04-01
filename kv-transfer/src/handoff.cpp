@@ -19,6 +19,7 @@ struct handoff_params {
     std::string state_path  = "";  // temp file for KV state (auto if empty)
     int32_t     n_gpu_layers = 99;
     int32_t     n_ctx        = 0;
+    int32_t     n_threads    = 0;
 };
 
 static bool parse_args(int argc, char ** argv, handoff_params & params) {
@@ -38,6 +39,8 @@ static bool parse_args(int argc, char ** argv, handoff_params & params) {
             params.n_gpu_layers = atoi(argv[++i]);
         } else if (strcmp(arg, "-c") == 0 && i + 1 < argc) {
             params.n_ctx = atoi(argv[++i]);
+        } else if (strcmp(arg, "-t") == 0 && i + 1 < argc) {
+            params.n_threads = atoi(argv[++i]);
         } else {
             fprintf(stderr, "handoff: unknown argument '%s'\n", arg);
             return false;
@@ -48,7 +51,8 @@ static bool parse_args(int argc, char ** argv, handoff_params & params) {
                         "  -o <path>      output file (default: handoff.bin)\n"
                         "  --state <path> KV state file (default: auto temp file)\n"
                         "  -ngl <int>     GPU layers (default: 99)\n"
-                        "  -c <int>       context size (default: auto)\n");
+                        "  -c <int>       context size (default: auto)\n"
+                        "  -t <int>       threads (default: llama.cpp default)\n");
         return false;
     }
     if (params.state_path.empty()) {
@@ -110,6 +114,10 @@ int cmd_handoff(int argc, char ** argv) {
     llama_context_params ctx_params = llama_context_default_params();
     ctx_params.n_ctx   = n_ctx;
     ctx_params.n_batch = n_ctx;
+    if (params.n_threads > 0) {
+        ctx_params.n_threads       = params.n_threads;
+        ctx_params.n_threads_batch = params.n_threads;
+    }
 
     llama_context * ref_ctx = llama_init_from_model(ref_model, ctx_params);
     if (!ref_ctx) {

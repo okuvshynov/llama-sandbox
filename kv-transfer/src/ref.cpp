@@ -22,6 +22,7 @@ struct ref_params {
     uint32_t    seed         = 42;
     int32_t     n_gpu_layers = 99;
     int32_t     n_ctx        = 2048;
+    int32_t     n_threads    = 0;   // 0 = llama.cpp default
     bool        no_chat      = false;
 };
 
@@ -48,6 +49,8 @@ static bool parse_args(int argc, char ** argv, ref_params & params) {
             params.n_gpu_layers = atoi(argv[++i]);
         } else if (strcmp(arg, "-c") == 0 && i + 1 < argc) {
             params.n_ctx = atoi(argv[++i]);
+        } else if (strcmp(arg, "-t") == 0 && i + 1 < argc) {
+            params.n_threads = atoi(argv[++i]);
         } else if (strcmp(arg, "--no-chat") == 0) {
             params.no_chat = true;
         } else {
@@ -65,6 +68,7 @@ static bool parse_args(int argc, char ** argv, ref_params & params) {
                         "  --seed <int>  RNG seed (default: 42)\n"
                         "  -ngl <int>    GPU layers (default: 99)\n"
                         "  -c <int>      context size (default: 2048)\n"
+                        "  -t <int>      threads (default: llama.cpp default)\n"
                         "  --no-chat     skip chat template formatting\n");
         return false;
     }
@@ -114,6 +118,10 @@ int cmd_ref(int argc, char ** argv) {
     llama_context_params ctx_params = llama_context_default_params();
     ctx_params.n_ctx   = std::max(params.n_ctx, total_tokens);
     ctx_params.n_batch = std::max(params.n_ctx, total_tokens);
+    if (params.n_threads > 0) {
+        ctx_params.n_threads       = params.n_threads;
+        ctx_params.n_threads_batch = params.n_threads;
+    }
 
     llama_context * ctx = llama_init_from_model(model, ctx_params);
     if (!ctx) {

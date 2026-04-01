@@ -5,6 +5,5 @@ build*/
 .vscode/
 tags
 
-# build/runtime logs from llama-duo and moe-inspect
-llama-duo/*.log
-moe-inspect/*.log
+# runtime logs
+*.log
