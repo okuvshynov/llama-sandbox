@@ -57,8 +57,9 @@ cmake --build build
 `run.sh` is a generic engine that runs ref, target, handoff, compare, and decay analysis for all prompts across multiple target models. Per-model wrapper scripts set the configuration and source `run.sh`:
 
 ```bash
-./run-qwen3.5-2b.sh         # Qwen3.5-2B: Q8 ref vs 6 quants
-./run-qwen3.5-35b-a3b.sh    # Qwen3.5-35B-A3B (MoE): Q8 ref vs 6 quants
+./run-qwen3.5-2b.sh                    # Qwen3.5-2B: Q8 ref vs 6 quants
+./run-qwen3.5-35b-a3b.sh               # Qwen3.5-35B-A3B (MoE): Q8 ref vs 6 quants
+THREADS=16 NGL=0 ./run-qwen3.5-2b.sh   # CPU-only, 16 threads
 ```
 
 To add a new model family, create a wrapper script that sets:
