@@ -85,6 +85,8 @@ source "$(dirname "$0")/run.sh"
 
 Resume-friendly — skips existing ref, target, and handoff .bin files. Summary CSV and decay CSV are always regenerated.
 
+**Disk space note:** once all .bin files for a target quant are generated, that target model file is no longer needed. The reference model must be kept — it's required for handoff runs whenever a new target quant is added.
+
 ## Results
 
 Results are organized as:
