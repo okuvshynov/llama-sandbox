@@ -1,0 +1,271 @@
+Review this TypeScript codebase for bugs, type safety issues, and architectural problems. Explain each issue and suggest improvements.
+
+```typescript
+interface EventMap {
+  [event: string]: (...args: any[]) => void;
+}
+
+class TypedEventEmitter<T extends EventMap> {
+  private listeners: Map<keyof T, Set<Function>> = new Map();
+  private onceListeners: Map<keyof T, Set<Function>> = new Map();
+
+  on<K extends keyof T>(event: K, listener: T[K]): () => void {
+    if (!this.listeners.has(event)) {
+      this.listeners.set(event, new Set());
+    }
+    this.listeners.get(event)!.add(listener);
+    return () => this.off(event, listener);
+  }
+
+  once<K extends keyof T>(event: K, listener: T[K]): void {
+    if (!this.onceListeners.has(event)) {
+      this.onceListeners.set(event, new Set());
+    }
+    this.onceListeners.get(event)!.add(listener);
+  }
+
+  off<K extends keyof T>(event: K, listener: T[K]): void {
+    this.listeners.get(event)?.delete(listener);
+    this.onceListeners.get(event)?.delete(listener);
+  }
+
+  emit<K extends keyof T>(event: K, ...args: Parameters<T[K]>): void {
+    this.listeners.get(event)?.forEach(fn => fn(...args));
+    const onceSet = this.onceListeners.get(event);
+    if (onceSet) {
+      onceSet.forEach(fn => fn(...args));
+      onceSet.clear();
+    }
+  }
+}
+
+type TaskStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
+
+interface Task<T = any> {
+  id: string;
+  name: string;
+  execute: () => Promise<T>;
+  dependencies: string[];
+  timeout: number;
+  retries: number;
+  status: TaskStatus;
+  result?: T;
+  error?: Error;
+  startTime?: number;
+  endTime?: number;
+}
+
+interface PipelineEvents extends EventMap {
+  'task:start': (task: Task) => void;
+  'task:complete': (task: Task, result: any) => void;
+  'task:fail': (task: Task, error: Error) => void;
+  'task:retry': (task: Task, attempt: number) => void;
+  'pipeline:start': () => void;
+  'pipeline:complete': (results: Map<string, any>) => void;
+  'pipeline:fail': (error: Error) => void;
+}
+
+class Pipeline extends TypedEventEmitter<PipelineEvents> {
+  private tasks: Map<string, Task> = new Map();
+  private results: Map<string, any> = new Map();
+  private running: boolean = false;
+  private concurrency: number;
+
+  constructor(concurrency: number = 4) {
+    super();
+    this.concurrency = concurrency;
+  }
+
+  addTask<T>(config: {
+    id: string;
+    name: string;
+    execute: () => Promise<T>;
+    dependencies?: string[];
+    timeout?: number;
+    retries?: number;
+  }): this {
+    const task: Task<T> = {
+      ...config,
+      dependencies: config.dependencies || [],
+      timeout: config.timeout || 30000,
+      retries: config.retries || 0,
+      status: 'pending',
+    };
+    this.tasks.set(task.id, task);
+    return this;
+  }
+
+  private getReadyTasks(): Task[] {
+    const ready: Task[] = [];
+    for (const [id, task] of this.tasks) {
+      if (task.status !== 'pending') continue;
+      const depsComplete = task.dependencies.every(
+        dep => this.tasks.get(dep)?.status === 'completed'
+      );
+      if (depsComplete) ready.push(task);
+    }
+    return ready;
+  }
+
+  private async executeTask(task: Task): Promise<void> {
+    let lastError: Error | undefined;
+
+    for (let attempt = 0; attempt <= task.retries; attempt++) {
+      if (attempt > 0) {
+        this.emit('task:retry', task, attempt);
+        await new Promise(r => setTimeout(r, Math.pow(2, attempt) * 1000));
+      }
+
+      task.status = 'running';
+      task.startTime = Date.now();
+      this.emit('task:start', task);
+
+      try {
+        const result = await Promise.race([
+          task.execute(),
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error(`Task ${task.id} timed out`)), task.timeout)
+          ),
+        ]);
+
+        task.status = 'completed';
+        task.result = result;
+        task.endTime = Date.now();
+        this.results.set(task.id, result);
+        this.emit('task:complete', task, result);
+        return;
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+      }
+    }
+
+    task.status = 'failed';
+    task.error = lastError;
+    task.endTime = Date.now();
+    this.emit('task:fail', task, lastError!);
+  }
+
+  async run(): Promise<Map<string, any>> {
+    if (this.running) throw new Error('Pipeline already running');
+    this.running = true;
+    this.emit('pipeline:start');
+
+    try {
+      while (true) {
+        const ready = this.getReadyTasks();
+        if (ready.length === 0) {
+          const pending = [...this.tasks.values()].filter(t => t.status === 'pending');
+          const running = [...this.tasks.values()].filter(t => t.status === 'running');
+          if (pending.length === 0 && running.length === 0) break;
+          if (pending.length > 0 && running.length === 0) {
+            throw new Error('Deadlock: pending tasks with unresolvable dependencies');
+          }
+          await new Promise(r => setTimeout(r, 100));
+          continue;
+        }
+
+        const batch = ready.slice(0, this.concurrency);
+        await Promise.all(batch.map(task => this.executeTask(task)));
+      }
+
+      const failed = [...this.tasks.values()].filter(t => t.status === 'failed');
+      if (failed.length > 0) {
+        throw new Error(`${failed.length} tasks failed: ${failed.map(t => t.id).join(', ')}`);
+      }
+
+      this.emit('pipeline:complete', this.results);
+      return this.results;
+    } catch (err) {
+      this.emit('pipeline:fail', err instanceof Error ? err : new Error(String(err)));
+      throw err;
+    } finally {
+      this.running = false;
+    }
+  }
+
+  cancel(): void {
+    for (const task of this.tasks.values()) {
+      if (task.status === 'pending' || task.status === 'running') {
+        task.status = 'cancelled';
+      }
+    }
+  }
+
+  getStatus(): Record<string, { status: TaskStatus; duration?: number }> {
+    const status: Record<string, { status: TaskStatus; duration?: number }> = {};
+    for (const [id, task] of this.tasks) {
+      status[id] = {
+        status: task.status,
+        duration: task.startTime && task.endTime
+          ? task.endTime - task.startTime
+          : undefined,
+      };
+    }
+    return status;
+  }
+}
+
+// Usage example
+async function main() {
+  const pipeline = new Pipeline(2);
+
+  pipeline.on('task:start', task => console.log(`Starting: ${task.name}`));
+  pipeline.on('task:complete', (task, result) =>
+    console.log(`Completed: ${task.name} (${task.endTime! - task.startTime!}ms)`)
+  );
+  pipeline.on('task:fail', (task, error) =>
+    console.log(`Failed: ${task.name}: ${error.message}`)
+  );
+
+  pipeline
+    .addTask({
+      id: 'fetch-users',
+      name: 'Fetch Users',
+      execute: async () => {
+        await new Promise(r => setTimeout(r, 1000));
+        return [{ id: 1, name: 'Alice' }, { id: 2, name: 'Bob' }];
+      },
+    })
+    .addTask({
+      id: 'fetch-orders',
+      name: 'Fetch Orders',
+      execute: async () => {
+        await new Promise(r => setTimeout(r, 1500));
+        return [{ userId: 1, amount: 100 }, { userId: 2, amount: 200 }];
+      },
+    })
+    .addTask({
+      id: 'merge-data',
+      name: 'Merge Data',
+      dependencies: ['fetch-users', 'fetch-orders'],
+      execute: async () => {
+        const users = pipeline['results'].get('fetch-users');
+        const orders = pipeline['results'].get('fetch-orders');
+        return users.map((u: any) => ({
+          ...u,
+          orders: orders.filter((o: any) => o.userId === u.id),
+        }));
+      },
+      timeout: 5000,
+    })
+    .addTask({
+      id: 'generate-report',
+      name: 'Generate Report',
+      dependencies: ['merge-data'],
+      execute: async () => {
+        const merged = pipeline['results'].get('merge-data');
+        return `Report: ${merged.length} users processed`;
+      },
+      retries: 2,
+    });
+
+  try {
+    const results = await pipeline.run();
+    console.log('Pipeline complete:', pipeline.getStatus());
+  } catch (err) {
+    console.error('Pipeline failed:', err);
+  }
+}
+
+main();
+```

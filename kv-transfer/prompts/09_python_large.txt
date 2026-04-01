@@ -1,0 +1,273 @@
+Review this Python codebase for bugs, performance issues, and design problems. Explain each issue you find and suggest fixes.
+
+```python
+import threading
+import time
+import sqlite3
+import hashlib
+import json
+import os
+from collections import defaultdict
+from typing import Optional, List, Dict, Any
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+
+@dataclass
+class CacheEntry:
+    key: str
+    value: Any
+    expires_at: float
+    size_bytes: int
+    access_count: int = 0
+    last_accessed: float = field(default_factory=time.time)
+
+class LRUEvictionPolicy:
+    def __init__(self):
+        self.access_order = []
+
+    def record_access(self, key: str):
+        if key in self.access_order:
+            self.access_order.remove(key)
+        self.access_order.append(key)
+
+    def get_eviction_candidate(self) -> Optional[str]:
+        if self.access_order:
+            return self.access_order[0]
+        return None
+
+    def remove(self, key: str):
+        if key in self.access_order:
+            self.access_order.remove(key)
+
+class TTLEvictionPolicy:
+    def __init__(self):
+        self.entries = {}
+
+    def record_access(self, key: str, expires_at: float):
+        self.entries[key] = expires_at
+
+    def get_expired_keys(self) -> List[str]:
+        now = time.time()
+        expired = []
+        for key, expires_at in self.entries.items():
+            if expires_at < now:
+                expired.append(key)
+        return expired
+
+    def remove(self, key: str):
+        if key in self.entries:
+            del self.entries[key]
+
+class CacheStore:
+    def __init__(self, max_size_bytes: int = 100 * 1024 * 1024,
+                 default_ttl: int = 3600,
+                 db_path: str = "cache.db"):
+        self.max_size_bytes = max_size_bytes
+        self.default_ttl = default_ttl
+        self.current_size = 0
+        self.entries: Dict[str, CacheEntry] = {}
+        self.lock = threading.Lock()
+        self.lru = LRUEvictionPolicy()
+        self.ttl = TTLEvictionPolicy()
+        self.stats = defaultdict(int)
+
+        self.db = sqlite3.connect(db_path)
+        self.db.execute("""
+            CREATE TABLE IF NOT EXISTS cache_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT,
+                operation TEXT,
+                key TEXT,
+                hit BOOLEAN
+            )
+        """)
+
+    def _compute_size(self, value: Any) -> int:
+        return len(json.dumps(value))
+
+    def _hash_key(self, key: str) -> str:
+        return hashlib.md5(key.encode()).hexdigest()
+
+    def get(self, key: str) -> Optional[Any]:
+        hashed = self._hash_key(key)
+        self.lock.acquire()
+
+        if hashed not in self.entries:
+            self.stats['misses'] += 1
+            self._log_operation('GET', key, False)
+            self.lock.release()
+            return None
+
+        entry = self.entries[hashed]
+
+        if entry.expires_at < time.time():
+            del self.entries[hashed]
+            self.current_size -= entry.size_bytes
+            self.lru.remove(hashed)
+            self.ttl.remove(hashed)
+            self.stats['expired'] += 1
+            self._log_operation('GET', key, False)
+            self.lock.release()
+            return None
+
+        entry.access_count += 1
+        entry.last_accessed = time.time()
+        self.lru.record_access(hashed)
+        self.stats['hits'] += 1
+        self._log_operation('GET', key, True)
+        self.lock.release()
+        return entry.value
+
+    def put(self, key: str, value: Any, ttl: Optional[int] = None) -> bool:
+        if ttl is None:
+            ttl = self.default_ttl
+
+        hashed = self._hash_key(key)
+        size = self._compute_size(value)
+
+        if size > self.max_size_bytes:
+            return False
+
+        self.lock.acquire()
+
+        if hashed in self.entries:
+            old = self.entries[hashed]
+            self.current_size -= old.size_bytes
+
+        while self.current_size + size > self.max_size_bytes:
+            candidate = self.lru.get_eviction_candidate()
+            if candidate is None:
+                break
+            self._evict(candidate)
+
+        entry = CacheEntry(
+            key=key,
+            value=value,
+            expires_at=time.time() + ttl,
+            size_bytes=size,
+        )
+        self.entries[hashed] = entry
+        self.current_size += size
+        self.lru.record_access(hashed)
+        self.ttl.record_access(hashed, entry.expires_at)
+        self.stats['puts'] += 1
+        self._log_operation('PUT', key, True)
+        self.lock.release()
+        return True
+
+    def delete(self, key: str) -> bool:
+        hashed = self._hash_key(key)
+        self.lock.acquire()
+        if hashed in self.entries:
+            self._evict(hashed)
+            self.lock.release()
+            return True
+        self.lock.release()
+        return False
+
+    def _evict(self, hashed_key: str):
+        if hashed_key in self.entries:
+            entry = self.entries[hashed_key]
+            self.current_size -= entry.size_bytes
+            del self.entries[hashed_key]
+            self.lru.remove(hashed_key)
+            self.ttl.remove(hashed_key)
+            self.stats['evictions'] += 1
+
+    def cleanup_expired(self):
+        self.lock.acquire()
+        expired = self.ttl.get_expired_keys()
+        for key in expired:
+            self._evict(key)
+        self.lock.release()
+        return len(expired)
+
+    def _log_operation(self, operation: str, key: str, hit: bool):
+        self.db.execute(
+            "INSERT INTO cache_log (timestamp, operation, key, hit) VALUES (?, ?, ?, ?)",
+            (datetime.now().isoformat(), operation, key, hit)
+        )
+        self.db.commit()
+
+    def get_stats(self) -> Dict[str, int]:
+        total = self.stats['hits'] + self.stats['misses']
+        hit_rate = self.stats['hits'] / total if total > 0 else 0
+        return {
+            **dict(self.stats),
+            'total_requests': total,
+            'hit_rate': hit_rate,
+            'current_entries': len(self.entries),
+            'current_size_bytes': self.current_size,
+        }
+
+class CacheWarmer:
+    def __init__(self, cache: CacheStore, warmup_keys: List[str]):
+        self.cache = cache
+        self.warmup_keys = warmup_keys
+
+    def warm(self, data_source: Dict[str, Any]):
+        for key in self.warmup_keys:
+            if key in data_source:
+                self.cache.put(key, data_source[key])
+
+class PeriodicCleaner:
+    def __init__(self, cache: CacheStore, interval: int = 60):
+        self.cache = cache
+        self.interval = interval
+        self.running = False
+        self.thread = None
+
+    def start(self):
+        self.running = True
+        self.thread = threading.Thread(target=self._run)
+        self.thread.start()
+
+    def stop(self):
+        self.running = False
+        if self.thread:
+            self.thread.join()
+
+    def _run(self):
+        while self.running:
+            cleaned = self.cache.cleanup_expired()
+            if cleaned > 0:
+                print(f"Cleaned {cleaned} expired entries")
+            time.sleep(self.interval)
+
+def benchmark(cache: CacheStore, n_operations: int = 10000):
+    import random
+    import string
+
+    keys = [''.join(random.choices(string.ascii_lowercase, k=10)) for _ in range(100)]
+    values = [{'data': ''.join(random.choices(string.ascii_lowercase, k=100))} for _ in range(100)]
+
+    start = time.time()
+    for i in range(n_operations):
+        idx = i % len(keys)
+        if random.random() < 0.7:
+            cache.get(keys[idx])
+        else:
+            cache.put(keys[idx], values[idx], ttl=random.randint(10, 300))
+    elapsed = time.time() - start
+
+    stats = cache.get_stats()
+    print(f"Benchmark: {n_operations} ops in {elapsed:.2f}s ({n_operations/elapsed:.0f} ops/sec)")
+    print(f"Stats: {json.dumps(stats, indent=2)}")
+
+if __name__ == "__main__":
+    cache = CacheStore(max_size_bytes=10 * 1024 * 1024)
+    cleaner = PeriodicCleaner(cache, interval=30)
+    cleaner.start()
+
+    cache.put("user:1", {"name": "Alice", "email": "alice@example.com"})
+    cache.put("user:2", {"name": "Bob", "email": "bob@example.com"})
+    cache.put("config", {"theme": "dark", "lang": "en"}, ttl=7200)
+
+    print(cache.get("user:1"))
+    print(cache.get("nonexistent"))
+    print(cache.get_stats())
+
+    benchmark(cache, 1000)
+
+    cleaner.stop()
+```

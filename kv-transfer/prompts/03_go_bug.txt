@@ -1,0 +1,61 @@
+Find all the bugs in this Go HTTP server and explain each one:
+
+```go
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"sync"
+)
+
+type Counter struct {
+	counts map[string]int
+	mu     sync.Mutex
+}
+
+func NewCounter() *Counter {
+	return &Counter{}
+}
+
+func (c *Counter) Increment(key string) int {
+	c.mu.Lock()
+	c.counts[key]++
+	val := c.counts[key]
+	c.mu.Unlock()
+	return val
+}
+
+func (c *Counter) Get(key string) int {
+	return c.counts[key]
+}
+
+func (c *Counter) GetAll() map[string]int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.counts
+}
+
+var counter = NewCounter()
+
+func handleIncrement(w http.ResponseWriter, r *http.Request) {
+	key := r.URL.Query().Get("key")
+	if key == "" {
+		http.Error(w, "missing key", 400)
+	}
+	val := counter.Increment(key)
+	fmt.Fprintf(w, "%d", val)
+}
+
+func handleGetAll(w http.ResponseWriter, r *http.Request) {
+	data := counter.GetAll()
+	json.NewEncoder(w).Encode(data)
+}
+
+func main() {
+	http.HandleFunc("/inc", handleIncrement)
+	http.HandleFunc("/all", handleGetAll)
+	http.ListenAndServe(":8080", nil)
+}
+```
