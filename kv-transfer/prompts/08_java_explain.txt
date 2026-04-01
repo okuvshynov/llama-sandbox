@@ -1,0 +1,99 @@
+Explain what this Java program does and describe the data structure:
+
+```java
+import java.util.*;
+
+public class LRUCache<K, V> {
+    private final int capacity;
+    private final Map<K, Node<K, V>> map;
+    private final Node<K, V> head;
+    private final Node<K, V> tail;
+
+    static class Node<K, V> {
+        K key;
+        V value;
+        Node<K, V> prev, next;
+        Node(K key, V value) {
+            this.key = key;
+            this.value = value;
+        }
+    }
+
+    public LRUCache(int capacity) {
+        this.capacity = capacity;
+        this.map = new HashMap<>();
+        this.head = new Node<>(null, null);
+        this.tail = new Node<>(null, null);
+        head.next = tail;
+        tail.prev = head;
+    }
+
+    public V get(K key) {
+        Node<K, V> node = map.get(key);
+        if (node == null) return null;
+        remove(node);
+        addToFront(node);
+        return node.value;
+    }
+
+    public void put(K key, V value) {
+        Node<K, V> existing = map.get(key);
+        if (existing != null) {
+            existing.value = value;
+            remove(existing);
+            addToFront(existing);
+            return;
+        }
+        if (map.size() >= capacity) {
+            Node<K, V> lru = tail.prev;
+            remove(lru);
+            map.remove(lru.key);
+        }
+        Node<K, V> node = new Node<>(key, value);
+        map.put(key, node);
+        addToFront(node);
+    }
+
+    private void remove(Node<K, V> node) {
+        node.prev.next = node.next;
+        node.next.prev = node.prev;
+    }
+
+    private void addToFront(Node<K, V> node) {
+        node.next = head.next;
+        node.prev = head;
+        head.next.prev = node;
+        head.next = node;
+    }
+
+    public void printState() {
+        System.out.print("Cache [");
+        Node<K, V> curr = head.next;
+        boolean first = true;
+        while (curr != tail) {
+            if (!first) System.out.print(", ");
+            System.out.print(curr.key + "=" + curr.value);
+            curr = curr.next;
+            first = false;
+        }
+        System.out.println("]");
+    }
+
+    public static void main(String[] args) {
+        LRUCache<String, Integer> cache = new LRUCache<>(3);
+        cache.put("a", 1);
+        cache.put("b", 2);
+        cache.put("c", 3);
+        cache.printState();  // c=3, b=2, a=1
+
+        cache.get("a");
+        cache.printState();  // a=1, c=3, b=2
+
+        cache.put("d", 4);
+        cache.printState();  // d=4, a=1, c=3 (b evicted)
+
+        cache.put("b", 5);
+        cache.printState();  // b=5, d=4, a=1 (c evicted)
+    }
+}
+```
