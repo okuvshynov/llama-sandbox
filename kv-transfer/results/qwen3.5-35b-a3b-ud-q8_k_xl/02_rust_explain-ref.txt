@@ -1,0 +1,33 @@
+<think>
+
+</think>
+
+This Rust program implements a simple **Run-Length Encoding (RLE)** compression algorithm. It demonstrates how to compress a byte sequence by replacing consecutive duplicate bytes with a pair of (byte, count), and then verifies the process by decompressing it back to the original data.
+
+Here is the step-by-step breakdown of what the program does:
+
+### 1. Imports and Setup
+```rust
+use std::collections::HashMap;
+```
+The program imports the `HashMap` collection to store frequency data later.
+
+### 2. The `compress` Function
+This function takes a slice of bytes (`&[u8]`) and converts it into a vector of tuples `Vec<(u8, u16)>`. Each tuple represents a byte value and the number of times it appears consecutively.
+
+*   **Initialization**: It creates an empty `result` vector. If the input is empty, it returns immediately.
+*   **State Tracking**: It initializes `current` with the first byte of the input and `count` to 1.
+*   **Iteration**: It loops through the rest of the input bytes:
+    *   If the current byte matches `current`, it increments `count`.
+    *   **Safety Check**: It ensures `count` does not exceed `u16::MAX` (65,535). If it hits the limit, the loop logic naturally moves to the `else` block to push the current run, preventing overflow.
+    *   If the byte is different (or the count limit is reached), it pushes the pair `(current, count)` to `result`, resets `current` to the new byte, and resets `count` to 1.
+*   **Final Push**: After the loop finishes, it pushes the final run of bytes to `result`.
+
+**Example**: Input `AAABBB` becomes `[( 'A', 3 ), ( 'B', 3 )]`.
+
+### 3. The `decompress` Function
+This function performs the reverse operation. It takes the compressed vector `&[(u8, u16)]` and reconstructs the original byte sequence.
+
+*   **Iteration**: It loops through each `(byte, count)` tuple in the input data.
+*   **Expansion**: For each tuple, it pushes the `byte` into the `result` vector `count` times.
+*   **Result**: Returns the reconstructed `

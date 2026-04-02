@@ -1,0 +1,32 @@
+<think>
+
+</think>
+
+This codebase represents a functional prototype for an e-commerce microservice. While it demonstrates good use of Python's standard library (dataclasses, enums, threading), it contains several **critical bugs**, **security vulnerabilities**, **performance bottlenecks**, and **design anti-patterns** that would prevent it from running in a production environment.
+
+Here is a detailed review categorized by issue type.
+
+---
+
+### 1. Critical Bugs & Logic Errors
+
+#### A. Race Condition in Inventory (Critical)
+**Issue:** In `inventory.py`, the `reserve_stock` method checks availability and reserves stock within a lock, but it does **not** check if the reservation already exists or if the `order_id` is unique. More critically, the `cleanup_expired_reservations` method is empty of logic. It iterates through reservations but deletes them based on a hardcoded list of `expired` (which is always populated with *all* orders) without checking the timestamp.
+**Impact:** Orders could be processed multiple times for the same reservation, or reservations could be deleted prematurely, causing stock mismatches.
+**Fix:**
+1.  Store the `created_at` timestamp for each reservation in the `self.reservations` dict.
+2.  In `cleanup_expired_reservations`, compare `datetime.now()` against the stored timestamp.
+3.  Ensure `reserve_stock` fails if `order_id` already exists.
+
+#### B. Floating Point Arithmetic
+**Issue:** The code uses `float` for all monetary calculations (prices, totals, taxes).
+**Impact:** Floating-point math (e.g., `0.1 + 0.2`) often results in precision errors (e.g., `0.30000000000000004`). In financial systems, this leads to unbalanced ledgers and customer billing errors.
+**Fix:** Use the `decimal.Decimal` module for all currency fields.
+```python
+from decimal import Decimal, ROUND_HALF_UP
+# Instead of price: float, use price: Decimal
+# Example: self.price = Decimal("19.99")
+```
+
+#### C. Inventory "Ghost" Stock in `reserve_stock`
+**Issue:** `reserve_stock` checks `check_availability` (which subtracts *other* reservations) and then adds the *new* reservation. However, it does not verify that the `order_id` isn't already in the `reservations`

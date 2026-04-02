@@ -1,0 +1,21 @@
+<think>
+Here
+</think>
+
+This codebase implements a custom metrics collection system in Rust with multi-threaded support. While it demonstrates a good understanding of concurrency primitives, it contains several critical **soundness issues**, **performance bottlenecks**, and **API design flaws** that make it unsuitable for production use.
+
+Here is a detailed review categorized by issue type.
+
+---
+
+### 1. Soundness & Concurrency Issues
+
+#### A. Data Races in `Metric` State
+The `Metric` struct stores `Vec<f64>` and `Vec<Instant>` which are mutable. While `MetricsRegistry` uses `Arc<Mutex<Metric>>` to protect access, the `Metric` methods (like `record`, `mean`, `percentile`) are called while holding the lock. However, the `snapshot` method iterates over the registry, locks each metric, and calls methods that **read** the data.
+*   **The Issue:** The current design is actually safe from data races *if* the locking discipline is strictly followed. However, the `trim_older_than` method is **never called** in the provided logic, leading to unbounded memory growth. If it were called, it would require a lock, but there is no mechanism to trigger it periodically.
+*   **The Real Danger:** The `percentile` and `rate` methods clone the `values` vector (`let mut sorted = self.values.clone()`). While safe, this means `record` holds the lock, calculates, and drops. The real soundness risk is the lack of atomicity in the snapshot. If `record` is called between the `read` lock acquisition of the registry and the `lock` acquisition of the individual metric, the snapshot might miss a metric or see an inconsistent state relative to the registry's key set (though `HashMap` iteration is safe here due to the outer read lock).
+
+#### B. `Instant` Precision and Overflow
+`Instant::now()` returns a `Duration` since an arbitrary point.
+*   **The Issue:** In `trim_older_than`, the code calculates `now.duration_since(*t)`. If `*t` is in the future (clock skew) or if the system time is adjusted backwards, `duration_since` can panic or return `Duration::ZERO` (depending on implementation details, but usually panics on `Instant` if the argument is in the future).
+*   **Fix:** Use `Instant::now().checked

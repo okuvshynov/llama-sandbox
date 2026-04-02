@@ -1,0 +1,26 @@
+<think>
+
+</think>
+
+This is a comprehensive code review of your Go distributed task scheduler. The code demonstrates a solid understanding of concurrent patterns (goroutines, channels, mutexes), but there are several critical **race conditions**, **deadlocks**, **logic errors**, and **design flaws** that need to be addressed before this can be considered production-ready.
+
+### 1. Critical Race Conditions & Data Integrity
+
+#### A. The `heap` Invariant Violation
+**Location:** `scheduler.go` -> `CompleteTask` (Retry Logic)
+**Issue:** In the retry logic, you spawn a goroutine that sleeps, then acquires `s.mu.Lock()` to update the task state and push it back to the heap.
+```go
+go func() {
+    // ... sleep ...
+    s.mu.Lock()
+    task.State = TaskPending
+    heap.Push(&s.queue, task) // <--- DANGER
+    s.mu.Unlock()
+}()
+```
+**Why it's a bug:** The `container/heap` package relies on the `index` field of elements to maintain the heap structure. The `index` field is managed by the heap itself during `Push` and `Pop`.
+1. When the task is first pushed, `heap.Push` sets `task.index`.
+2. If a worker calls `AssignTask` and pops the task, `heap.Pop` sets `task.index = -1`.
+3. If the retry goroutine wakes up later and pushes the *same* task object back into the heap, the heap structure is corrupted because the `index` field inside the task object is stale or incorrect relative to its new position. The `heap` package does not handle re-insertion of an item that was previously popped without a re-initialization of the heap view.
+**Fix:** Do not reuse the same `*Task` pointer in the heap if you are going to modify its state outside of the heap's control. Better yet, ensure the retry logic does not access the heap directly while holding the lock in a way that violates the heap's internal invariants.
+*Correction:* The `heap` package requires that the slice is the *only* source of truth for the heap structure. If you modify the slice while the heap is in use, you must ensure `heap.Fix` is called or the item is re-inserted correctly. However, the real issue here is that `task.index` is being set by the heap, but
