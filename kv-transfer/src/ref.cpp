@@ -193,7 +193,16 @@ int cmd_ref(int argc, char ** argv) {
     }
     fprintf(stdout, "\n");
 
-    // write output (single-prompt v3 format)
+    const int32_t n_gen = (int32_t)all_tokens.size() - n_prompt;
+    if (n_gen < params.n_predict) {
+        fprintf(stderr, "ref: WARNING: generated only %d / %d tokens (EOS or decode error)\n",
+                n_gen, params.n_predict);
+    }
+    if (n_gen < 100) {
+        fprintf(stderr, "ref: WARNING: very short generation (%d tokens), percentile metrics will be unreliable\n", n_gen);
+    }
+
+    // write output
     trace_file out;
     out.n_vocab   = n_vocab;
     out.n_prompts = 1;

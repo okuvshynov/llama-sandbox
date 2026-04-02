@@ -12,7 +12,7 @@ TARGETS=(
     "ud-q6_k_xl:$HOME/projects/llms/qwen-3.5-35b-a3b/Qwen3.5-35B-A3B-UD-Q6_K_XL.gguf"
 )
 
-N_PREDICT=512
+N_PREDICT=2048
 TEMP=0.6
 
 source "$(dirname "$0")/run.sh"
