@@ -3,11 +3,11 @@
 #include <cstdio>
 #include <cstring>
 
-// --- v3 binary layout ---
+// --- v4 binary layout ---
 //
 // Global header (72 bytes):
 //   [0..7]   magic "qmlogits"
-//   [8..11]  version (uint32 = 3)
+//   [8..11]  version (uint32 = 4)
 //   [12..15] n_vocab (int32)
 //   [16..19] n_prompts (int32)
 //   [20..23] reserved (int32, zero)
@@ -22,7 +22,7 @@
 //   n_tokens (int32)
 //   n_prompt (int32)
 //   tokens   (int32 * n_tokens)
-//   logits   (float * (n_tokens - 1) * n_vocab)
+//   logits   (float * (n_tokens - n_prompt) * n_vocab)  [generation only]
 
 static constexpr size_t HEADER_SIZE = 72;
 
@@ -64,7 +64,8 @@ bool trace_write(const std::string & path, const trace_file & f) {
         fwrite(&p.n_prompt, 4, 1, fp);
         fwrite(p.tokens.data(), 4, p.n_tokens, fp);
 
-        const size_t n_logit_floats = (size_t)(p.n_tokens - 1) * f.n_vocab;
+        const size_t n_gen = p.n_tokens - p.n_prompt;
+        const size_t n_logit_floats = n_gen * f.n_vocab;
         fwrite(p.logits.data(), 4, n_logit_floats, fp);
     }
 
@@ -159,7 +160,8 @@ bool trace_read(const std::string & path, trace_file & f) {
             fclose(fp); return false;
         }
 
-        const size_t n_logit_floats = (size_t)(p.n_tokens - 1) * rh.n_vocab;
+        const size_t n_gen = p.n_tokens - p.n_prompt;
+        const size_t n_logit_floats = n_gen * rh.n_vocab;
         p.logits.resize(n_logit_floats);
         if (fread(p.logits.data(), 4, n_logit_floats, fp) != n_logit_floats) {
             fprintf(stderr, "trace_read: truncated logits in prompt %d\n", i);
@@ -202,7 +204,8 @@ bool trace_read_tokens(const std::string & path, trace_file & f) {
             fclose(fp); return false;
         }
 
-        const size_t logit_bytes = (size_t)(p.n_tokens - 1) * rh.n_vocab * 4;
+        const size_t n_gen = p.n_tokens - p.n_prompt;
+        const size_t logit_bytes = n_gen * rh.n_vocab * 4;
         if (fseek(fp, (long)logit_bytes, SEEK_CUR) != 0) { fclose(fp); return false; }
     }
 

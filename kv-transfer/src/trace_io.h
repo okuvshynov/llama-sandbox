@@ -5,7 +5,7 @@
 #include <vector>
 
 static constexpr char     TRACE_MAGIC[]   = "qmlogits";
-static constexpr uint32_t TRACE_VERSION   = 3;
+static constexpr uint32_t TRACE_VERSION   = 4;
 
 // Per-prompt data section.
 struct trace_entry {
@@ -13,7 +13,7 @@ struct trace_entry {
     int32_t              n_tokens = 0;      // total tokens (prompt + generated)
     int32_t              n_prompt = 0;      // prompt-only token count
     std::vector<int32_t> tokens;            // [n_tokens]
-    std::vector<float>   logits;            // [(n_tokens - 1) * n_vocab]
+    std::vector<float>   logits;            // [(n_tokens - n_prompt) * n_vocab] generation logits only
 };
 
 // Multi-prompt file.

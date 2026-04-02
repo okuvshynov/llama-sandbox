@@ -128,9 +128,10 @@ int cmd_handoff(int argc, char ** argv) {
 
     const int32_t n_batch = llama_n_batch(ref_ctx);
 
-    // collect prompt logits from ref model
+    // decode prompt with ref model (logits not stored — only need KV cache)
+    const int32_t n_gen = n_tokens - n_prompt;
     std::vector<float> all_logits;
-    all_logits.reserve((size_t)(n_tokens - 1) * n_vocab);
+    all_logits.reserve((size_t)n_gen * n_vocab);
 
     llama_batch batch = llama_batch_init(n_batch, 0, 1);
 
@@ -139,17 +140,12 @@ int cmd_handoff(int argc, char ** argv) {
         common_batch_clear(batch);
         int32_t batch_end = std::min(n_prompt, n_decoded + n_batch);
         for (int32_t i = n_decoded; i < batch_end; i++) {
-            common_batch_add(batch, rp.tokens[i], i, {0}, i > 0);
+            common_batch_add(batch, rp.tokens[i], i, {0}, false);
         }
         if (llama_decode(ref_ctx, batch) != 0) {
             fprintf(stderr, "handoff: ref decode failed at position %d\n", n_decoded);
             llama_batch_free(batch); llama_free(ref_ctx); llama_model_free(ref_model);
             return 1;
-        }
-        for (int32_t i = n_decoded; i < batch_end; i++) {
-            if (i == 0) continue;
-            const float * logits = llama_get_logits_ith(ref_ctx, i - n_decoded);
-            all_logits.insert(all_logits.end(), logits, logits + n_vocab);
         }
         n_decoded = batch_end;
     }
@@ -217,7 +213,6 @@ int cmd_handoff(int argc, char ** argv) {
 
     // now replay the generation tokens through target model, collecting logits
     // the KV cache already has the prompt, so we feed generation tokens one by one
-    const int32_t n_gen = n_tokens - n_prompt;
     batch = llama_batch_init(1, 0, 1);
 
     for (int32_t i = 0; i < n_gen; i++) {
@@ -267,8 +262,8 @@ int cmd_handoff(int argc, char ** argv) {
         return 1;
     }
 
-    fprintf(stderr, "handoff: wrote %s (%d tokens: %d prompt logits from ref + %d generation logits from target)\n",
-            params.output_path.c_str(), n_tokens, n_prompt - 1, n_gen);
+    fprintf(stderr, "handoff: wrote %s (%d tokens, %d generation logits)\n",
+            params.output_path.c_str(), n_tokens, n_gen);
 
     llama_batch_free(batch);
     llama_free(tgt_ctx);

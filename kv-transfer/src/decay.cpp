@@ -61,7 +61,7 @@ struct window_stats {
 
 static void compute_window_kl(
     const trace_entry & ref, const trace_entry & other,
-    int32_t n_vocab, double temp, int32_t gen_start, int32_t win_start, int32_t win_end,
+    int32_t n_vocab, double temp, int32_t win_start, int32_t win_end,
     double & kl_out, double & top1_out, int32_t n_threads
 ) {
     const int32_t n = win_end - win_start;
@@ -75,7 +75,7 @@ static void compute_window_kl(
         while (true) {
             int32_t idx = counter.fetch_add(1);
             if (idx >= n) break;
-            int32_t li = gen_start + win_start + idx;
+            int32_t li = win_start + idx;
 
             const float * la = ref.logits.data() + (size_t)li * n_vocab;
             const float * lb = other.logits.data() + (size_t)li * n_vocab;
@@ -124,9 +124,7 @@ int cmd_decay(int argc, char ** argv) {
     const auto & tgt = fb.prompts[0];
     const auto & hoff = fc.prompts[0];
     const int32_t n_vocab = fa.n_vocab;
-    const int32_t n_logits = ref.n_tokens - 1;
-    const int32_t gen_start = ref.n_prompt - 1;
-    const int32_t gen_count = n_logits - gen_start;
+    const int32_t gen_count = ref.n_tokens - ref.n_prompt;
     const int32_t n_threads = std::max(1, (int32_t)std::thread::hardware_concurrency());
 
     fprintf(stderr, "decay: n_vocab=%d, n_prompt=%d, gen=%d, window=%d, threads=%d\n",
@@ -141,9 +139,9 @@ int cmd_decay(int argc, char ** argv) {
         ws.start = pos;
         ws.end = end;
 
-        compute_window_kl(ref, tgt, n_vocab, params.temp, gen_start, pos, end,
+        compute_window_kl(ref, tgt, n_vocab, params.temp, pos, end,
                           ws.kl_target, ws.top1_target, n_threads);
-        compute_window_kl(ref, hoff, n_vocab, params.temp, gen_start, pos, end,
+        compute_window_kl(ref, hoff, n_vocab, params.temp, pos, end,
                           ws.kl_handoff, ws.top1_handoff, n_threads);
 
         windows.push_back(ws);

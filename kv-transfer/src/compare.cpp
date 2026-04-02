@@ -64,7 +64,8 @@ int cmd_compare(int argc, char ** argv) {
     }
 
     const int32_t n_vocab  = fa.n_vocab;
-    const int32_t n_logits = pa.n_tokens - 1;
+    const int32_t n_gen    = pa.n_tokens - pa.n_prompt;
+    const int32_t n_logits = n_gen;  // generation logits only
     const int32_t n_threads = std::max(1, (int32_t)std::thread::hardware_concurrency());
     const double ref_temp = (fa.temp > 0.0f) ? (double)fa.temp : 1.0;
 

@@ -136,7 +136,7 @@ int cmd_ref(int argc, char ** argv) {
     all_tokens.reserve(total_tokens);
 
     std::vector<float> all_logits;
-    all_logits.reserve((size_t)(total_tokens - 1) * n_vocab);
+    all_logits.reserve((size_t)params.n_predict * n_vocab);
 
     // sampler
     auto sparams = llama_sampler_chain_default_params();
@@ -161,11 +161,7 @@ int cmd_ref(int argc, char ** argv) {
             llama_batch_free(batch); llama_sampler_free(smpl); llama_free(ctx); llama_model_free(model);
             return 1;
         }
-        for (int32_t i = n_decoded; i < batch_end; i++) {
-            if (i == 0) continue;
-            const float * logits = llama_get_logits_ith(ctx, i - n_decoded);
-            all_logits.insert(all_logits.end(), logits, logits + n_vocab);
-        }
+        // prompt logits not stored — only need decode for KV cache + sampling
         n_decoded = batch_end;
     }
 

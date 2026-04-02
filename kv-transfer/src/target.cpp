@@ -109,25 +109,32 @@ int cmd_target(int argc, char ** argv) {
 
     const int32_t n_batch = llama_n_batch(ctx);
 
+    const int32_t n_prompt = rp.n_prompt;
+    const int32_t n_gen = n_tokens - n_prompt;
+
     std::vector<float> all_logits;
-    all_logits.reserve((size_t)(n_tokens - 1) * n_vocab);
+    all_logits.reserve((size_t)n_gen * n_vocab);
 
     llama_batch batch = llama_batch_init(n_batch, 0, 1);
 
+    // decode all tokens, but only store generation logits
     int32_t n_processed = 0;
     while (n_processed < n_tokens) {
         common_batch_clear(batch);
         int32_t batch_end = std::min(n_tokens, n_processed + n_batch);
         for (int32_t i = n_processed; i < batch_end; i++) {
-            common_batch_add(batch, rp.tokens[i], i, {0}, i > 0);
+            // enable logits for generation positions only (>= n_prompt)
+            bool need_logits = (i >= n_prompt);
+            common_batch_add(batch, rp.tokens[i], i, {0}, need_logits);
         }
         if (llama_decode(ctx, batch) != 0) {
             fprintf(stderr, "target: decode failed at position %d\n", n_processed);
             llama_batch_free(batch); llama_free(ctx); llama_model_free(model);
             return 1;
         }
+        // collect logits for generation positions in this batch
         for (int32_t i = n_processed; i < batch_end; i++) {
-            if (i == 0) continue;
+            if (i < n_prompt) continue;
             const float * logits = llama_get_logits_ith(ctx, i - n_processed);
             all_logits.insert(all_logits.end(), logits, logits + n_vocab);
         }
