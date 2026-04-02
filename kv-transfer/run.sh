@@ -169,7 +169,7 @@ done
 # --- Compare and collect results ---------------------------------------------
 
 CSV_FILE="${REF_DIR}/summary.csv"
-echo "prompt,ref_model,target_model,ref_bytes,target_bytes,n_prompt,n_gen,kl_target,top1_target,kl_handoff,top1_handoff" > "$CSV_FILE"
+echo "prompt,ref_model,target_model,ref_bytes,target_bytes,n_prompt,n_gen,kl_target,kl_target_p95,kl_target_p99,top1_target,kl_handoff,kl_handoff_p95,kl_handoff_p99,top1_handoff" > "$CSV_FILE"
 
 REF_BYTES=$(model_size_bytes "$REF_MODEL")
 echo "=== Results (ref model: $(echo "$REF_BYTES" | awk '{printf "%.0f MB", $1/1048576}')) ==="
@@ -199,8 +199,12 @@ for tgt_entry in "${TARGETS[@]}"; do
         hoff_out=$("$BINARY" compare -a "$ref_bin" -b "$hoff_bin" 2>/dev/null)
 
         tgt_kl=$(echo "$tgt_out" | grep "KL divergence:" | awk '{print $3}')
+        tgt_p95=$(echo "$tgt_out" | grep "KL p95:" | awk '{print $3}')
+        tgt_p99=$(echo "$tgt_out" | grep "KL p99:" | awk '{print $3}')
         tgt_t1=$(echo "$tgt_out" | grep "Top-1 agree:" | awk '{print $3}')
         hoff_kl=$(echo "$hoff_out" | grep "KL divergence:" | awk '{print $3}')
+        hoff_p95=$(echo "$hoff_out" | grep "KL p95:" | awk '{print $3}')
+        hoff_p99=$(echo "$hoff_out" | grep "KL p99:" | awk '{print $3}')
         hoff_t1=$(echo "$hoff_out" | grep "Top-1 agree:" | awk '{print $3}')
 
         read n_tokens_bin n_prompt <<< $(read_token_counts "$ref_bin")
@@ -212,7 +216,7 @@ for tgt_entry in "${TARGETS[@]}"; do
         printf "%-20s  %-15s  %7s  %7s  %5s  %10s  %8s  %10s  %8s\n" \
             "$name" "$tgt_tag" "$TGT_MB" "$n_prompt" "$n_gen" "$tgt_kl" "$tgt_t1" "$hoff_kl" "$hoff_t1"
 
-        echo "${name},${REF_TAG},${tgt_tag},${REF_BYTES},${TGT_BYTES},${n_prompt},${n_gen},${tgt_kl},${tgt_t1_num},${hoff_kl},${hoff_t1_num}" >> "$CSV_FILE"
+        echo "${name},${REF_TAG},${tgt_tag},${REF_BYTES},${TGT_BYTES},${n_prompt},${n_gen},${tgt_kl},${tgt_p95},${tgt_p99},${tgt_t1_num},${hoff_kl},${hoff_p95},${hoff_p99},${hoff_t1_num}" >> "$CSV_FILE"
     done
 done
 

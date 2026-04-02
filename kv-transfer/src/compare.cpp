@@ -2,6 +2,7 @@
 #include "trace_io.h"
 #include "kl_utils.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdio>
@@ -102,7 +103,21 @@ int cmd_compare(int argc, char ** argv) {
     double kl_mean = kl_sum / n_logits;
     double top1_pct = 100.0 * top1_agree.load() / n_logits;
 
+    // percentiles
+    std::vector<double> sorted_kl(kl_per_pos.begin(), kl_per_pos.end());
+    std::sort(sorted_kl.begin(), sorted_kl.end());
+    auto percentile = [&](double p) -> double {
+        double k = (sorted_kl.size() - 1) * p;
+        int32_t lo = (int32_t)k;
+        int32_t hi = lo + 1;
+        if (hi >= (int32_t)sorted_kl.size()) return sorted_kl.back();
+        double frac = k - lo;
+        return sorted_kl[lo] * (1.0 - frac) + sorted_kl[hi] * frac;
+    };
+
     printf("  KL divergence: %.6f\n", kl_mean);
+    printf("  KL p95:        %.6f\n", percentile(0.95));
+    printf("  KL p99:        %.6f\n", percentile(0.99));
     printf("  Top-1 agree:   %.1f%%\n", top1_pct);
 
     return 0;
