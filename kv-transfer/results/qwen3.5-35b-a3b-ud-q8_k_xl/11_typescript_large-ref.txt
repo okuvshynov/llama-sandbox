@@ -29,4 +29,83 @@ Here is a detailed review categorized by issue type.
 Use a helper type to infer `T` from the `execute` function signature automatically, or ensure the generic is strictly enforced.
 
 #### C. `PipelineEvents` Interface Mismatch
-**Issue:** The `PipelineEvents` interface defines `'task:complete': (task:
+**Issue:** The `PipelineEvents` interface defines `'task:complete': (task: Task, result: any) => void`.
+*   **Problem:** `result` is `any`. Since `Task<T>` holds a specific `T`, the event emitter should emit `T`.
+*   **Consequence:** The consumer of the event must cast `result` to the correct type, or use `any` everywhere, defeating the type safety of the pipeline.
+
+**Fix:**
+Make `PipelineEvents` generic: `class Pipeline<TEvents extends EventMap>` isn't enough. We need to link the event result type to the task's result type.
+*   *Better approach:* The `emit` call inside `executeTask` passes `result` (which is typed as `T`). The event definition should be `(task: Task<T>, result: T)`.
+*   *Challenge:* The `Pipeline` class itself isn't generic over the *task type* because it handles multiple tasks of different types.
+*   *Solution:* The event map in the class definition should use a union or accept `any` for the result if tasks have different types, OR the event definition should be `(task: Task, result: unknown)` and the consumer casts.
+*   *Strict Fix:* Change `PipelineEvents` to accept `result: unknown` or `result: any` but document that consumers must cast based on the `task.result` type. However, `T[K]` in the emitter will still be `any` if the map definition uses `any`.
+
+---
+
+### 2. Architectural & Logic Bugs
+
+#### A. Race Condition in `getReadyTasks` and `running` State
+**Issue:** The `run()` method loops:
+1.  Get ready tasks.
+2.  If none, check for deadlock.
+3.  Wait 100ms.
+4.  **Crucial:** It does **not** check if the pipeline was cancelled or if a previous task failed *before* starting the next batch.
+*   **Bug:** If a task fails, `pipeline:fail` is emitted, but the loop continues to `while(true)`. It will try to start new tasks even after a failure has occurred, unless the `try/catch` block breaks the loop.
+*   **Current Logic:** The `catch` block throws the error, which breaks the `while` loop. **However**, the `failed` check at the end of the loop (`if (failed.length > 0) throw...`) happens *after* the loop finishes. If a task fails, the loop continues until all tasks are processed or a deadlock is detected.
+*   **Real Bug:** If `cancelled` is set, the `getReadyTasks` logic checks `status !== 'pending'`. If a task is `cancelled`, it is skipped. But the `while` loop condition doesn't check for `cancelled` tasks explicitly to stop early. If all tasks are cancelled, the loop might spin forever or until `pending.length === 0` and `running.length === 0`.
+*   **Wait:** The code checks `if (pending.length === 0 && running.length === 0) break;`. If all are cancelled, this breaks. So this is actually okay, but it's inefficient to wait 100ms if the pipeline is cancelled.
+
+#### B. Deadlock Detection Logic Flaw
+**Issue:**
+```typescript
+if (pending.length > 0 && running.length === 0) {
+  throw new Error('Deadlock...');
+}
+```
+*   **Scenario:** Task A depends on B. B is pending. A is pending.
+*   **Logic:** Both are `pending`. `running` is 0. It throws immediately.
+*   **Correctness:** This is correct for a simple cycle.
+*   **Scenario:** Task A depends on B. B is `running`. A is `pending`.
+*   **Logic:** `running` > 0. It continues.
+*   **Scenario:** Task A depends on B. B is `failed`. A is `pending`.
+*   **Logic:** `depsComplete` check: `this.tasks.get(dep)?.status === 'completed'`. If B is `failed`, `depsComplete` is false. A remains `pending`.
+*   **Result:** The loop waits for B to become `completed`. B never will. `running` is 0. `pending` > 0. It throws "Deadlock".
+*   **Verdict:** The logic works, but the error message "Deadlock" is misleading. It should be "Unresolvable dependency" or "Dependency failed".
+
+#### C. Concurrency Control is Broken
+**Issue:**
+```typescript
+const batch = ready.slice(0, this.concurrency);
+await Promise.all(batch.map(task => this.executeTask(task)));
+```
+*   **Problem:** `Promise.all` waits for *all* tasks in the batch to finish. If you have 100 tasks and concurrency 2.
+    1.  Batch 1 (2 tasks) runs.
+    2.  Both finish.
+    3.  Batch 2 (2 tasks) runs.
+*   **Wait:** This looks correct for a simple pipeline.
+*   **However:** The `getReadyTasks` is called *inside* the loop.
+    1.  Loop starts. `getReadyTasks` finds 2 tasks.
+    2.  `Promise.all` runs them.
+    3.  Loop restarts. `getReadyTasks` finds 2 new tasks (because the previous ones finished).
+*   **Is it broken?** No, the logic seems to handle concurrency correctly by processing in batches.
+*   **BUT:** What if a task in the batch fails? `Promise.all` rejects immediately. The `catch` block in `run()` catches it.
+*   **The Real Bug:** The `running` flag is set to `true` at the start. If an error occurs, `finally` sets it to `false`. But the `cancel()` method sets `task.status = 'cancelled'`.
+*   **Concurrency Leak:** If `cancel()` is called while a batch is running, the `task.status` changes to `cancelled`. The `executeTask` doesn't check for cancellation *during* the `execute` promise. It only checks status at the start.
+*   **Fix:** The `execute` function needs to be cancellable, or the loop needs to check `cancelled` status before starting the next batch.
+
+#### D. `onceListeners` Memory Leak
+**Issue:**
+```typescript
+const onceSet = this.onceListeners.get(event);
+if (onceSet) {
+  onceSet.forEach(fn => fn(...args));
+  onceSet.clear();
+}
+```
+*   **Problem:** `onceListeners` is a `Map`. If an event is emitted but has no listeners, the key is not deleted from the Map. If the event is emitted frequently with no listeners, the Map grows indefinitely with empty Sets.
+*   **Fix:** Delete the key from the map after clearing: `this.onceListeners.delete(event);`
+
+#### E. `off` Method Logic
+**Issue:**
+```typescript
+this.listeners.get(event)?.delete(listener

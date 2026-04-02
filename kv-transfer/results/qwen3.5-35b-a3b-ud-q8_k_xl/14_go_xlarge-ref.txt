@@ -23,4 +23,80 @@ go func() {
 2. If a worker calls `AssignTask` and pops the task, `heap.Pop` sets `task.index = -1`.
 3. If the retry goroutine wakes up later and pushes the *same* task object back into the heap, the heap structure is corrupted because the `index` field inside the task object is stale or incorrect relative to its new position. The `heap` package does not handle re-insertion of an item that was previously popped without a re-initialization of the heap view.
 **Fix:** Do not reuse the same `*Task` pointer in the heap if you are going to modify its state outside of the heap's control. Better yet, ensure the retry logic does not access the heap directly while holding the lock in a way that violates the heap's internal invariants.
-*Correction:* The `heap` package requires that the slice is the *only* source of truth for the heap structure. If you modify the slice while the heap is in use, you must ensure `heap.Fix` is called or the item is re-inserted correctly. However, the real issue here is that `task.index` is being set by the heap, but
+*Correction:* The `heap` package requires that the slice is the *only* source of truth for the heap structure. If you modify the slice while the heap is in use, you must ensure `heap.Fix` is called or the item is re-inserted correctly. However, the real issue here is that `task.index` is being set by the heap, but if the task is popped, `index` becomes -1. When you push it back, the heap expects the index to be valid.
+**Better Approach:** Create a *new* `Task` struct for the retry with the same ID but reset state, or ensure `heap.Push` is called correctly. Actually, the standard pattern is fine *if* you don't hold the lock while the heap is being mutated by other goroutines. The real issue is **concurrent modification of the heap slice**.
+*Wait, the code uses `s.mu.Lock()` around the push.* This serializes access. The `heap` implementation uses `task.index` to track position.
+1. `Push`: sets `task.index = n`.
+2. `Pop`: sets `task.index = -1`.
+3. `Push` again: sets `task.index = new_n`.
+This *should* work if the mutex is held. **However**, there is a subtle bug: `heap.Push` expects the slice to be the underlying array. If the task was popped, it is removed from the slice. When you push it back, it is a new element.
+**The Real Bug:** The `task` object is shared. If `AssignTask` pops the task, sets `State = Running`, and then the retry goroutine (which might have been sleeping for a long time) wakes up, it might try to push a task that is *already* running or failed? No, the state check `if task.State == TaskCancelled` prevents this.
+**The actual Race:** The `heap` implementation assumes the slice is not modified by external code other than `Push`/`Pop`. The mutex protects this. **BUT**, the `index` field in the `Task` struct is modified by the heap. If you have a reference to the task elsewhere, it's fine.
+**Wait, is there a deadlock?** No.
+**Is there a race?** No, because of the mutex.
+**However**, the `heap` package's `Less` function relies on `task.CreatedAt`. If `CreatedAt` changes (it doesn't here), it breaks.
+**The Real Issue:** The `heap` implementation in `container/heap` does **not** support "updating" an item in place. You must remove it and push it again. This is what you are doing.
+**Wait, the bug is in `Swap`**:
+```go
+func (tq *TaskQueue) Swap(i, j int) {
+    tq[i], tq[j] = tq[j], tq[i]
+    tq[i].index = i
+    tq[j].index = j
+}
+```
+If the heap is being mutated by `heap.Pop` (which calls `Swap`), and another goroutine is holding a reference to `tq[i]` (the task), the `index` is updated. This is standard.
+**Conclusion on Heap:** The logic seems safe *if* the mutex is held during all heap operations.
+**Wait, I missed a subtle race:** In `CompleteTask`, you update `worker.Load` and `worker.CurrentTask`. Then you push to the heap.
+**The Real Bug:** `heap.Push` is called inside the retry goroutine.
+1. `task` is popped (index = -1).
+2. `task.State` is set to `Running`.
+3. Worker fails.
+4. Retry goroutine wakes up.
+5. Sets `task.State = TaskPending`.
+6. `heap.Push`.
+This works.
+**BUT**, what if the task is **Cancelled** by a user while the retry is sleeping?
+1. `CancelTask` sets `State = Cancelled`.
+2. Retry wakes up.
+3. Sets `State = Pending`.
+4. Pushes to heap.
+**Result:** A cancelled task is re-queued. This is a **Logic Bug**, not a race condition.
+**Fix:** Check `task.State` before pushing in the retry logic.
+
+#### B. `worker.Load` and `worker.CurrentTask` Race
+**Location:** `scheduler.go` -> `AssignTask` and `CompleteTask`
+**Issue:** `worker.Load` is incremented in `AssignTask` and decremented in `CompleteTask`.
+`worker.Load` is an `int` inside `WorkerStatus`.
+`AssignTask`: `worker.Load++` (inside `s.mu.Lock()`).
+`CompleteTask`: `worker.Load--` (inside `s.mu.Lock()`).
+**Wait**, `CompleteTask` has `worker := s.workers[task.WorkerID]`.
+If the worker is removed from the map while `CompleteTask` is running?
+`RegisterWorker` and `RemoveWorker` (if it existed) would be protected. But `RemoveWorker` is in `WorkerPool`.
+The `WorkerPool` does not remove workers from the `Scheduler`'s `workers` map. It just stops the goroutine.
+**Issue:** `worker.Load` is an `int`. If you have multiple goroutines (e.g., if `CompleteTask` was called concurrently for the same task?), no, `CompleteTask` is called by one worker.
+**But**: `worker.Load` is updated inside `s.mu.Lock()`. This is safe.
+**Wait**, `worker.Load` is also used in `autoScale`.
+`p.mu.RLock()` reads `worker.Load`? No, `p.mu` reads `workers` list, but `worker.Load` is internal to `WorkerStatus`.
+`WorkerStatus` is stored in `Scheduler.workers`.
+`Scheduler` has `mu`. `WorkerPool` has `mu`.
+`WorkerPool` calls `scheduler.Stats()`.
+`Stats` locks `s.mu`.
+So `worker.Load` is accessed via `s.mu`.
+**Is `worker.Load` an `int` or `int64`?** It is `int`.
+In `CompleteTask`: `worker.Load--`.
+If `worker.Load` is used for auto-scaling logic?
+`autoScale` reads `worker.Load`? No, it reads `worker.CurrentTask` or checks `running` flag.
+Actually, `autoScale` logic uses `worker.Load`?
+No, `autoScale` checks `worker.CurrentTask`? No, it checks `atomic.LoadInt32(&w.running)`.
+Wait, `WorkerStatus` has `Load int`.
+`AssignTask` updates `worker.Load`.
+`CompleteTask` updates `worker.Load`.
+This is protected by `s.mu`.
+**However**, `WorkerStatus` is shared.
+**Is there a race in `WorkerPool`?**
+`WorkerPool` reads `worker.CurrentTask`? No, it doesn't read `WorkerStatus` directly. It calls `scheduler.AssignTask`.
+**Wait**, `WorkerPool` has its own `workers` list (`p.workers []*Worker`).
+`p.workers` contains `Worker` structs.
+`Worker` structs have `tasksDone`, `tasksFailed`.
+`WorkerStatus` is inside `Scheduler`.
+`WorkerPool` does **not** use `WorkerStatus` for its own logic, except via `scheduler.RegisterWorker`

@@ -55,3 +55,160 @@ Let's break down each function:
 
 Where:
 - n = length of input text
+- k = number of unique characters in text
+- L = average code length (typically small, O(log k) on average)
+
+**Space Complexity Analysis**:
+
+1. **Frequency map**: O(k)
+2. **Priority queue**: O(k)
+3. **Huffman tree**: O(k) nodes
+4. **Code map**: O(k) entries
+5. **Encoded string**: O(n * L) bits
+
+Total space: O(k + n * L)
+
+**Key Observations**:
+
+1. This is a classic Huffman coding implementation
+2. Space complexity for the encoded string could be optimized (using bits instead of characters)
+3. No memory cleanup - memory leaks on Node allocations
+4. Uses `unordered_map` which has O(1) average case but can have O(k) worst case
+5. The code is functional but not production-ready (memory leaks, no error handling)
+
+Let me write a comprehensive explanation.
+</think>
+
+# Huffman Encoding Program Analysis
+
+## Overview
+
+This C++ program implements the **Huffman encoding** algorithm, a lossless data compression technique that assigns variable-length binary codes to characters based on their frequency. More frequent characters receive shorter codes, reducing the total number of bits needed to represent the input text.
+
+---
+
+## Program Functionality
+
+### 1. **Node Structure**
+Represents each node in the Huffman tree:
+```cpp
+struct Node {
+    char ch;        // Character (for leaf nodes)
+    int freq;       // Frequency count
+    Node* left;     // Left child
+    Node* right;    // Right child
+};
+```
+
+### 2. **buildTree()**
+Constructs the Huffman tree:
+- Counts character frequencies: `O(n)`
+- Initializes a min-priority queue with character nodes: `O(k log k)`
+- Iteratively merges the two lowest-frequency nodes: `O(k log k)`
+- **Total:** `O(n + k log k)`
+
+### 3. **buildCodes()**
+Traverses the tree to generate binary codes:
+- Assigns `'0'` for left branches, `'1'` for right
+- Leaf nodes store their character's final code
+- **Total:** `O(k)`
+
+### 4. **encode()**
+Converts input text to a binary string:
+- Replaces each character with its Huffman code
+- **Total:** `O(n × L)`, where `L` is average code length
+
+### 5. **main()**
+- Builds the Huffman tree and code map
+- Sorts and displays codes by length
+- Compares original and encoded bit sizes
+- Reports compression ratio
+- **Total:** `O(k log k)`
+
+---
+
+## Time Complexity Summary
+
+| Component            | Time Complexity     |
+|----------------------|---------------------|
+| Frequency counting   | `O(n)`              |
+| Tree construction    | `O(k log k)`        |
+| Code generation      | `O(k)`              |
+| Encoding text        | `O(n × L)`          |
+| Sorting and display  | `O(k log k)`        |
+| **Overall**          | **O(n + k log k + n × L)** |
+
+Where:
+- `n` = input text length
+- `k` = number of unique characters
+- `L` = average code length (typically `O(log k)`)
+
+---
+
+## Space Complexity Summary
+
+| Component            | Space Complexity     |
+|----------------------|----------------------|
+| Frequency map        | `O(k)`              |
+| Priority queue       | `O(k)`              |
+| Huffman tree         | `O(k)`              |
+| Code map             | `O(k)`              |
+| Encoded string       | `O(n × L)` bits     |
+| **Total**            | **O(k + n × L)**    |
+
+---
+
+## Compression Example
+
+For the text `"this is an example of huffman encoding"`:
+- Original size: `40 characters × 8 bits = 320 bits`
+- Encoded size: `~120 bits` (varies by character distribution)
+- Compression ratio: ~37% of original size
+
+---
+
+## Strengths
+
+✅ Efficient compression for texts with uneven character frequencies  
+✅ Simple and intuitive implementation  
+✅ Optimal prefix-free codes for lossless compression  
+
+---
+
+## Weaknesses
+
+❌ **Memory leaks** — dynamically allocated `Node` objects are never deleted  
+❌ **No error handling** — crashes if character not found in `codes` map  
+❌ **Inefficient bit storage** — encodes as string instead of actual bits  
+❌ **Not thread-safe** — global state in `main()`  
+❌ **No decompression** — only encoding is implemented  
+
+---
+
+## Recommendations for Improvement
+
+1. **Memory Management**
+   ```cpp
+   void deleteTree(Node* node) {
+       if (!node) return;
+       deleteTree(node->left);
+       deleteTree(node->right);
+       delete node;
+   }
+   // Call deleteTree(root) before program exit
+   ```
+
+2. **Bit-Level Encoding**
+   Use `std::vector<bool>` or bit manipulation to reduce storage overhead.
+
+3. **Robustness**
+   Add checks for missing characters in the `codes` map.
+
+4. **Add Decompression**
+   Implement a decoder using the Huffman tree to reconstruct the original text.
+
+---
+
+## Conclusion
+
+This program is a clear and functional demonstration of Huffman encoding. While it effectively illustrates the algorithm's logic and achieves meaningful compression, it contains practical limitations typical of educational examples. With improvements in memory management, bit-level encoding, and added error handling, it could be adapted for real-world use.

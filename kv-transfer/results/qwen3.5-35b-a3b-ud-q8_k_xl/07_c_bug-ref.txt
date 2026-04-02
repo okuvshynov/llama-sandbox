@@ -21,4 +21,83 @@ This performs a **shallow copy** of the `Entry` struct.
         *   `table_free` runs `i=0` to `1`.
         *   `i=1`: `free(C->key)`, `free(C->value)`.
         *   **Result:** The original `C` pointers are freed once. The pointers moved to `i=1` are the *same* pointers.
-        *   **Wait, is it a double free?** No, `table_free` only iterates up to `t->size`. Since `t->size` was decremented, the "duplicate" entry
+        *   **Wait, is it a double free?** No, `table_free` only iterates up to `t->size`. Since `t->size` was decremented, the "duplicate" entry at the end of the array is ignored by `table_free`.
+        *   **So what is the bug?** The bug is that **the original entry at `t->size - 1` (the one being moved) is never freed** before it is overwritten?
+        *   Let's re-examine: `t->entries[i] = t->entries[t->size - 1]`.
+        *   The struct at `t->size - 1` is copied to `i`.
+        *   The struct at `t->size - 1` is now logically "discarded" because `size` decreases.
+        *   **Crucially:** The memory pointed to by `t->entries[t->size - 1].key` and `.value` **was not freed** before the struct was overwritten or discarded.
+        *   When `table_free` runs, it iterates `0` to `size-1`. It frees the moved entry (now at `i`). It **skips** the original entry at the old `size-1` index because the loop stops before it.
+        *   **Result:** **Memory Leak**. The strings belonging to the entry that was moved to the current slot are kept, but the original entry's strings (which were identical pointers) are now "leaked" because the struct holding them was effectively removed from the tracking list without freeing the pointed-to memory.
+        *   *Wait, they are the same pointers!* If `A` points to "X" and `B` points to "X", and we copy `B` to `A`'s spot, `A` now points to "X". If we remove `B`'s slot without freeing "X", and later free `A`'s spot, "X" is freed. Is there a leak?
+        *   **No, there is no double free here**, but there is a **logic error regarding ownership**.
+        *   **Actually, the real bug is simpler:** If you swap `entries[i]` with `entries[last]`, you are **not freeing the old entry at `i`**.
+        *   **Scenario:**
+            1. `entries[1]` has key "City", value "PDX".
+            2. `entries[2]` has key "Lang", value "C".
+            3. Delete "City" (index 1).
+            4. Copy `entries[2]` to `entries[1]`. Now `entries[1]` holds "Lang"/"C".
+            5. Decrement size. `entries[2]` is ignored.
+            6. `table_free` runs. It frees `entries[1]` (which is "Lang"/"C").
+            7. **BUT** the original `entries[1]` ("City"/"PDX") was **never freed**. The pointers to "City" and "PDX" are lost.
+        *   **Conclusion:** **Memory Leak**. The strings associated with the deleted entry are leaked.
+
+### 2. Use-After-Free / Dangling Pointer in `table_delete`
+**Location:** `table_delete` function, line 59.
+**The Bug:**
+```c
+t->entries[i] = t->entries[t->size - 1];
+```
+This copies the struct. However, if the entry being deleted (`i`) is the **same** as the last entry (`t->size - 1`), this is fine.
+But if `i` is **not** the last entry, we are moving the last entry's data to `i`.
+**The Problem:** The code does **not** free the strings of the entry being moved out of the logical set (the one at `t->size - 1` before the move? No, the one at `i` before the move).
+*   **Wait, let's re-verify the leak logic.**
+    *   We want to remove `entries[i]`.
+    *   We copy `entries[last]` into `entries[i]`.
+    *   We decrement size.
+    *   The memory allocated for `entries[i].key` and `entries[i].value` (the old values) is **never freed**.
+    *   The memory allocated for `entries[last].key` and `entries[last].value` is now effectively owned by `entries[i]`.
+    *   When `table_free` runs, it frees the new `entries[i]` (which are the old `entries[last]` values).
+    *   **Result:** The old `entries[i]` values are leaked. The old `entries[last]` values are freed correctly once.
+    *   **Verdict:** **Memory Leak** of the deleted entry's strings.
+
+### 3. Potential Double-Free in `table_delete` (Edge Case)
+If the implementation of `table_delete` is intended to maintain a specific order or if the `realloc` logic in `table_put` interacts strangely? No, the main issue is the leak.
+However, consider the case where `table_delete` is called on the **last element**.
+*   `i == t->size - 1`.
+*   `t->entries[i] = t->entries[i]`. (Self-copy).
+*   `size--`.
+*   The entry is removed.
+*   **Is the memory freed?** No. The pointers in the struct at `i` are never freed. They are simply ignored by `table_free` because the loop stops at `new_size`.
+*   **Verdict:** **Memory Leak** even when deleting the last element.
+
+### 4. Missing Null Check in `table_free`
+**Location:** `table_free` function.
+**The Bug:**
+```c
+void table_free(Table* t) {
+    // ...
+    free(t->entries);
+    free(t);
+}
+```
+If `table_free` is called on a `Table*` that is `NULL`, the code will crash (segfault) because it immediately tries to access `t->size` and `t->entries`.
+**Fix:** Add `if (t == NULL) return;`.
+
+### 5. Missing Null Check in `table_get` (Return Value)
+**Location:** `table_get` function.
+**The Bug:**
+```c
+char* table_get(Table* t, const char* key) {
+    // ...
+    return NULL;
+}
+```
+The function returns `NULL` if the key is not found. The `main` function handles this with the ternary operator `?: "(null)"`, which is safe.
+**However**, if `t` itself is `NULL` (passed by mistake), the loop `for (int i = 0; i < t->size; i++)` will crash.
+**Fix:** Add a null check for `t` at the start of `table_get`.
+
+### 6. Missing Null Check in `table_put` and `table_delete`
+**Location:** `table_put` and `table_delete`.
+**The Bug:**
+If `t` is `

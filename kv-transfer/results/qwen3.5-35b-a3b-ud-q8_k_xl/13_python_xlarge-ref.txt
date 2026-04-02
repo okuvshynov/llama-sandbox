@@ -29,4 +29,108 @@ from decimal import Decimal, ROUND_HALF_UP
 ```
 
 #### C. Inventory "Ghost" Stock in `reserve_stock`
-**Issue:** `reserve_stock` checks `check_availability` (which subtracts *other* reservations) and then adds the *new* reservation. However, it does not verify that the `order_id` isn't already in the `reservations`
+**Issue:** `reserve_stock` checks `check_availability` (which subtracts *other* reservations) and then adds the *new* reservation. However, it does not verify that the `order_id` isn't already in the `reservations` dictionary before adding. If `reserve_stock` is called twice for the same order, it might double-reserve stock if the logic isn't strictly guarded.
+**Fix:** Add a check `if order_id in self.reservations: return False` at the start of `reserve_stock`.
+
+#### D. `cleanup_expired_reservations` Logic Bug
+**Issue:** In `inventory.py`, the method iterates `for order_id in self.reservations` and appends to `expired`, then deletes. Since `self.reservations` is a dictionary, iterating over it while deleting keys inside the loop (or after collecting keys) is generally okay, but the logic `expired.append(order_id)` happens before checking the time. It deletes **every** reservation regardless of age because the `expired` list is populated with *all* keys immediately.
+**Fix:**
+```python
+def cleanup_expired_reservations(self):
+    now = datetime.now()
+    with self.lock:
+        expired = [oid for oid, data in self.reservations.items() 
+                   if now - data['created_at'] > self.reservation_timeout]
+        for oid in expired:
+            del self.reservations[oid]
+            # Optionally release stock back to inventory here
+```
+
+---
+
+### 2. Security Vulnerabilities
+
+#### A. Hardcoded Credentials & Plain Text Storage
+**Issue:**
+1.  `EmailService` takes `username` and `password` as constructor arguments. In a real app, these are often hardcoded or passed via CLI/env vars poorly.
+2.  `PaymentGateway` stores transactions in a simple dictionary in memory. If the service restarts, **all transaction history is lost**. If the server is compromised, memory is dumped.
+3.  **No Input Validation:** `EmailService` does not validate the `to` address. An attacker could inject headers (Email Injection) if the `body` string is not sanitized.
+**Fix:**
+1.  Use Environment Variables (`os.getenv`) for secrets.
+2.  Implement a secure database backend (PostgreSQL/SQLite) for transaction logs, not in-memory dicts.
+3.  Sanitize email inputs and use a library like `email-validator`.
+
+#### B. Insecure ID Generation
+**Issue:** `order_processor.py` uses `hashlib.md5` to generate tracking numbers.
+**Impact:** MD5 is cryptographically broken and not suitable for generating unique identifiers. It is also predictable.
+**Fix:** Use `uuid.uuid4()` or `secrets.token_urlsafe(12)` for tracking numbers.
+
+#### C. SQL/NoSQL Injection Risk (Potential)
+**Issue:** While the current code uses `json` files, the `_dict_to_product` method assumes keys exist (`d["id"]`). If the JSON file is malformed or tampered with, it will crash or behave unpredictably.
+**Fix:** Use `d.get("id")` with default values and strict schema validation (e.g., using `pydantic`).
+
+---
+
+### 3. Performance Issues
+
+#### A. Synchronous I/O Blocking
+**Issue:** `OrderProcessor` uses `ThreadPoolExecutor` but the `submit_order` and `process_next` methods are synchronous.
+1.  `email.send_email` uses `smtplib` synchronously. If the SMTP server is slow, the entire worker thread is blocked.
+2.  `inventory._save_to_disk` writes to a file on every single action (`add_product`, `reserve_stock`, `commit_reservation`).
+**Impact:** High latency. Writing to disk on every micro-operation kills throughput.
+**Fix:**
+1.  **Batching:** Queue database writes and flush them periodically (e.g., every 5 seconds or every 100 orders).
+2.  **Async I/O:** Use `asyncio` and an async email library (e.g., `aio-mail`) or a message queue (RabbitMQ/Kafka) to decouple email sending from order processing.
+
+#### B. Inefficient Data Structures
+**Issue:** `AnalyticsEngine` stores all events in a list `self.events`. As the system grows, iterating through this list to analyze funnels becomes $O(N)$.
+**Fix:** Use time-series databases (InfluxDB, TimescaleDB) or specialized caching (Redis) for analytics. If staying in-memory, use a circular buffer or a database-backed store.
+
+#### C. `TimeSeries.resample` Complexity
+**Issue:** The `resample` method sorts the entire list of points every time it is called. If the series grows large, this is $O(N \log N)$ per call.
+**Fix:** Maintain points in a sorted structure (e.g., `heapq` or a sorted list) or assume the data is already sorted and use a linear scan.
+
+---
+
+### 4. Design Flaws & Architecture
+
+#### A. Tight Coupling
+**Issue:** `OrderProcessor` depends directly on concrete implementations of `InventoryManager`, `PaymentGateway`, and `EmailService`.
+**Impact:** You cannot unit test `OrderProcessor` without mocking the entire file system, network, and database.
+**Fix:** Define Abstract Base Classes (ABCs) or Protocols for `Inventory`, `Payment`, and `Email`. Inject these dependencies.
+
+#### B. Missing Database Layer
+**Issue:** The code uses JSON files for persistence (`inventory.json`).
+**Impact:**
+1.  **No Concurrency Control:** JSON files cannot handle concurrent writes from multiple threads/processes safely without external locking mechanisms (which are hard to implement correctly in Python).
+2.  **No Queries:** You cannot query "Get all orders for user X" efficiently. You have to load the whole file into memory.
+3.  **Data Integrity:** No ACID guarantees. If the process crashes during a write, the JSON file could be corrupted.
+**Fix:** Integrate an ORM (SQLAlchemy, Tortoise ORM) with a proper database (PostgreSQL).
+
+#### C. Stateful Services
+**Issue:** `PaymentGateway` and `EmailService` are stateful classes holding in-memory dictionaries (`self.transactions`, `self.sent_count`).
+**Impact:** If the service restarts, all transaction history and email logs are lost.
+**Fix:** These services should be stateless regarding history; they should write to a persistent store.
+
+#### D. Error Handling
+**Issue:** In `OrderProcessor.process_next`, exceptions are caught broadly (`except Exception`).
+**Impact:** Silent failures. If a critical logic error occurs (e.g., `KeyError`), it is logged but the order status is set to `FAILED` without knowing *why* or rolling back the reservation properly in all cases.
+**Fix:** Distinguish between expected errors (PaymentError) and unexpected bugs. Implement a retry mechanism for transient network failures.
+
+---
+
+### 5. Specific Code Fixes (Snippets)
+
+#### Fix 1: Use `Decimal` for Money
+```python
+# models.py
+from decimal import Decimal
+
+@dataclass
+class Product:
+    # ...
+    price: Decimal  # Changed from float
+    discount_percent: Decimal = Decimal("0.0")
+
+    def effective_price(self) -> Decimal:
+        return self.price * (Decimal(100) - self.discount_percent) / Decimal

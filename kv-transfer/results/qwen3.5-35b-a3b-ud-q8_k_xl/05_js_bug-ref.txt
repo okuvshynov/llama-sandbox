@@ -20,4 +20,186 @@ Let me analyze this JavaScript event scheduler code for bugs.
    
    The main issue is that `schedule()` stores relative times (ms from now), but `run()` treats them as absolute timestamps. When `schedule("backup", 1000, ...)` is called, it stores 1000, but then in `run()` it calculates `wait = 1000 - elapsed`, which doesn't make sense because 1000 isn't an absolute timestamp.
    
-   This is a critical bug - the scheduler won't work as intended because of this time representation
+   This is a critical bug - the scheduler won't work as intended because of this time representation mismatch.
+
+3. **Missing event removal in `run()`**: After an event callback executes, the event is not removed from the `events` array. This means if `run()` is called multiple times, it will process the same events repeatedly.
+
+4. **Handler execution doesn't await**: In `run()`, the handlers are called synchronously:
+   ```javascript
+   for (const handler of handlers) {
+     handler(event);
+   }
+   ```
+   If a handler is async, it won't be awaited, and the next event might start before the handler completes.
+
+5. **Event name filtering in `cancel()`**: The `cancel()` method filters by name, but if multiple events have the same name, all of them are removed. This might be intended, but it's worth noting.
+
+6. **No error handling**: If a callback or handler throws an error, the entire scheduler execution stops. There's no try-catch to continue processing other events.
+
+7. **`run()` returns a Promise that may not resolve properly**: The `run()` method is async, but if an error is thrown in a callback, the Promise might not resolve correctly.
+
+8. **Time calculation issue**: The `wait` calculation assumes `event.time` is an absolute timestamp (like `Date.now()`), but `schedule()` stores relative time (delay in ms). This needs to be fixed by converting relative time to absolute when scheduling.
+
+9. **In the `reschedule` method**: It uses `==` instead of `===` for comparison (minor issue but inconsistent with best practices).
+
+10. **Event sorting after reschedule**: As mentioned in point 1, after rescheduling, the array isn't re-sorted.
+
+11. **The `event.time` in the handler**: The handler logs `e.time` which would be the original scheduled time (relative), not the actual time when it was executed. This could be confusing.
+
+Let me prioritize the most critical bugs:
+
+1. **Critical**: Time representation mismatch (relative vs absolute)
+2. **Critical**: Events not removed after execution
+3. **Important**: Async handlers not awaited
+4. **Important**: No error handling
+5. **Medium**: Events not re-sorted after reschedule
+6. **Minor**: Using `==` instead of `===`
+</think>
+
+Here are the bugs in the provided JavaScript event scheduler, along with explanations and recommendations for fixing each:
+
+---
+
+### 1. **Time Representation Mismatch (Critical)**
+**Issue:**  
+The `schedule()` method stores `time` as a relative delay (e.g., 1000ms from now), but the `run()` method treats `time` as an absolute timestamp. This causes incorrect wait calculations.
+
+**Example:**
+```javascript
+schedule("backup", 1000, ...); // Stores 1000
+// In run():
+const wait = event.time - elapsed; // 1000 - elapsed → incorrect!
+```
+
+**Fix:**
+Convert relative time to absolute timestamp when scheduling:
+```javascript
+schedule(name, delay, callback) {
+  this.events.push({
+    name,
+    time: Date.now() + delay, // Absolute time
+    callback
+  });
+  this.events.sort((a, b) => a.time - b.time);
+}
+```
+Update the handler to log a human-readable execution time.
+
+---
+
+### 2. **Events Not Removed After Execution (Critical)**
+**Issue:**  
+The `run()` method never removes events after executing them. If `run()` is called again, the same events will execute repeatedly.
+
+**Fix:**
+Remove events after execution:
+```javascript
+for (const event of this.events) {
+  // ...
+  event.callback();
+  // Remove executed event
+  this.events.shift();
+}
+```
+Alternatively, use `splice()` or rebuild the array after filtering.
+
+---
+
+### 3. **Async Handlers Not Awaited (Important)**
+**Issue:**  
+If a handler is async, it's not awaited, so the scheduler may proceed to the next event before the handler completes.
+
+**Fix:**
+Wait for each handler to resolve:
+```javascript
+for (const handler of handlers) {
+  await handler(event);
+}
+```
+
+---
+
+### 4. **No Error Handling (Important)**
+**Issue:**  
+If a callback or handler throws an error, the entire scheduler stops without continuing to other events.
+
+**Fix:**
+Wrap callbacks and handlers in `try...catch`:
+```javascript
+try {
+  event.callback();
+} catch (err) {
+  console.error(`Event ${event.name} failed:`, err);
+}
+```
+Apply the same for handlers.
+
+---
+
+### 5. **Events Not Re-Sorted After Rescheduling (Medium)**
+**Issue:**  
+The `reschedule()` method updates an event's time but doesn't re-sort the `events` array. This can cause out-of-order execution.
+
+**Fix:**
+Re-sort after updating:
+```javascript
+reschedule(name, newTime) {
+  for (const event of this.events) {
+    if (event.name === name) {
+      event.time = Date.now() + newTime; // or absolute time
+    }
+  }
+  this.events.sort((a, b) => a.time - b.time);
+}
+```
+
+---
+
+### 6. **Inconsistent Equality Check (Minor)**
+**Issue:**  
+The `reschedule()` method uses loose equality (`==`) instead of strict equality (`===`), which can lead to unintended type coercion.
+
+**Fix:**
+Use strict equality:
+```javascript
+if (event.name === name) { ... }
+```
+
+---
+
+### 7. **`run()` May Not Resolve on Error (Minor)**
+**Issue:**  
+If an unhandled error occurs during event execution, the Promise returned by `run()` may hang or fail silently.
+
+**Fix:**
+Ensure the Promise resolves even if errors occur, using `finally()` or `catch()`:
+```javascript
+run().catch(err => console.error("Scheduler error:", err));
+```
+
+---
+
+### 8. **Handler Receives Outdated `event.time` (Medium)**
+**Issue:**  
+The handler logs `e.time`, which reflects the original relative time, not the actual time of execution.
+
+**Fix:**
+Pass the actual execution time to the handler:
+```javascript
+const executionTime = Date.now();
+event.callback();
+handler({ ...event, executionTime });
+```
+
+---
+
+### Summary Table
+
+| Bug                              | Severity | Fix Summary                                |
+|----------------------------------|----------|--------------------------------------------|
+| Time representation mismatch     | Critical | Use absolute timestamps in `schedule()`    |
+| Events not removed after run     | Critical | Remove executed events from `events` array |
+| Async handlers not awaited       | Important| `await handler(event)`                     |
+| No error handling                | Important| Wrap callbacks/handlers in try-catch       |
+| Events not re-sorted after reschedule | Medium | Re-sort after updating time                |
+| Inconsistent equality (`==`)     | Minor    | Use `===
