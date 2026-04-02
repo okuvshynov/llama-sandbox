@@ -1,0 +1,85 @@
+<|channel>thought
+
+*   Input: A list of tuples (`edges`) representing dependencies (e.g., `("compile", "link")` means "compile" must happen before "link").
+*   Functions:
+    *   `build_graph(edges)`: Converts the list of tuples into an adjacency list (`graph`), tracks the number of incoming edges for each node (`in_degree`), and keeps a set of all unique `nodes`.
+    *   `solve(edges)`: Implements an iterative process using a queue to find *one* possible sequence.
+    *   `find_all(edges)`: Implements a recursive backtracking process to find *every* possible sequence.
+*   Example Data: A software build process (deps $\rightarrow$ lint $\rightarrow$ compile $\rightarrow$ link/test $\rightarrow$ package).
+
+    *   The core problem is arranging nodes in a sequence such that for every directed edge $(u, v)$, $u$ comes before $v$. This is the classic definition of **Topological Sorting**.
+
+    *   **`build_graph`**:
+        *   `graph`: Adjacency list.
+        *   `in_degree`: A map where keys are nodes and values are the count of predecessors.
+    *   **`solve`**:
+        *   It starts with nodes that have an `in_degree` of 0 (no predecessors).
+        *   It uses a `deque` (queue) to process nodes.
+        *   When a node is processed (removed from the queue and added to the result), it "removes" its outgoing edges, effectively decreasing the `in_degree` of its neighbors.
+        *   If a neighbor's `in_degree` becomes 0, it's added to the queue.
+        *   *Check for cycles*: If the final result length isn't equal to the total number of nodes, it means there was a cycle (a deadlock), and it returns `None`.
+        *   *Algorithm Name*: This is **Kahn's Algorithm**.
+    *   **`find_all`**:
+        *   It uses recursion (backtracking).
+        *   At each step, it looks for *all* available nodes (those with current `in_degree == 0` and not yet in the path).
+        *   It tries each available node, updates the degrees, and recurses.
+        *   Then it "backtracks" (pops the node) to try the next available option.
+
+    *   *What does it do?* It manages dependencies. In the provided example, it's figuring out the order of steps for a software build pipeline.
+    *   *Algorithmic names:* Topological Sort, Kahn's Algorithm.
+    *   *Complexity:* $O(V+E)$ for `solve`, where $V$ is vertices and $E$ is edges. $O(V!)$ in the worst case for `find_all`.<channel|>### Summary
+This Python program implements **Topological Sorting** on a Directed Acyclic Graph (DAG). 
+
+In simple terms, it takes a list of dependencies (where one task must be completed before another) and determines the valid sequences in which those tasks can be performed. In the provided example, it is simulating a software build pipeline (e.g., you must resolve `deps` before you can `compile`).
+
+---
+
+### Detailed Algorithmic Explanation
+
+#### 1. Graph Representation (`build_graph`)
+Before sorting, the program converts the list of edge tuples into two data structures:
+*   **Adjacency List (`graph`):** A dictionary where each key is a node and its value is a list of nodes that depend on it.
+*   **In-Degree Map (`in_degree`):** A dictionary that counts how many incoming edges each node has. If a node has an in-degree of $0$, it means nothing needs to happen before it.
+
+#### 2. Finding One Valid Order (`solve` function)
+This function implements **Kahn's Algorithm**, which is an efficient iterative approach to topological sorting.
+
+**The Process:**
+1.  **Initialization:** Find all nodes with an `in_degree` of $0$ and put them into a queue.
+2.  **Processing:** While the queue is not empty:
+    *   Remove a node from the queue and add it to the `result` list.
+    *   For every neighbor (node that depends on the current node), decrement its `in_degree` by $1$.
+    *   If a neighbor's `in_degree` drops to $0$, add it to the queue.
+3.  **Cycle Detection:** If the final `result` list contains fewer nodes than the total number of nodes in the graph, the program returns `None`. This indicates a **circular dependency** (a cycle), making a topological sort impossible.
+
+**Time Complexity:** $O(V + E)$, where $V$ is the number of vertices (nodes) and $E$ is the number of edges.
+
+#### 3. Finding All Valid Orders (`find_all` function)
+Since there can be multiple valid sequences (e.g., `link` and `test` might be independent of each other), this function uses **Backtracking (Recursive DFS)**.
+
+**The Process:**
+1.  **Search:** It looks for all nodes that currently have an `in_degree` of $0$ and have not yet been added to the path.
+2.  **Recurse:** For each available node, it:
+    *   Adds the node to the current path.
+    *   Temporarily reduces the `in_degree` of its neighbors.
+    *   Calls itself recursively to find the next node in the sequence.
+3.  **Backtrack:** After the recursive call returns, it removes the node from the path and restores the `in_degree` counts to explore other possible permutations.
+
+**Time Complexity:** In the worst case (a graph with no edges), this is $O(V!)$, as it explores every possible permutation of nodes.
+
+---
+
+### Example Trace
+Using the provided `edges` list:
+*   `deps` must come before `compile` and `lint`.
+*   `lint` must come before `compile`.
+*   `compile` must come before `link` and `test`.
+*   `link` and `test` must come before `package`.
+
+**One valid output produced by `solve`:**
+`deps` $\rightarrow$ `lint` $\rightarrow$ `compile` $\rightarrow$ `link` $\rightarrow$ `test` $\rightarrow$ `package`
+
+**Alternative valid outputs produced by `find_all`:**
+The only flexibility in this specific graph is the order of `link` and `test`. Therefore, the program will find two valid orders:
+1. `deps` $\rightarrow$ `lint` $\rightarrow$ `compile` $\rightarrow$ **`link`** $\rightarrow$ **`test`** $\rightarrow$ `package`
+2. `deps` $\rightarrow$ `lint` $\rightarrow$ `compile` $\rightarrow$ **`test`** $\rightarrow$ **`link`** $\rightarrow$ `package`
