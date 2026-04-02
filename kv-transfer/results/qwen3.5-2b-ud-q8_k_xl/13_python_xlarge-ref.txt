@@ -28,4 +28,88 @@ Here is the detailed breakdown of issues, explanations, and suggested fixes.
 
 #### C. Cross-Site Scripting (XSS)
 *   **Location:** `order_processor.py` (`send_order_confirmation`), `email_service.py` (`send_shipping_notification`).
-*   **Issue:** The email body is constructed directly from `order.items` (which includes `product.name`). If a user input is not sanitized, an attacker could inject malicious
+*   **Issue:** The email body is constructed directly from `order.items` (which includes `product.name`). If a user input is not sanitized, an attacker could inject malicious JavaScript (e.g., `<script>alert(1)</script>`) into the product name or email content, leading to a **Server-Side Request Forgery (SSRF)** or **XSS** attack.
+*   **Fix:**
+    *   Sanitize all user inputs before embedding them in email templates. Use a library like `jinja2` to render templates safely.
+    *   Ensure `product.name` is already a safe string from the `Product` model.
+
+#### D. Authentication/Authorization Flaws
+*   **Location:** `order_processor.py` (Order creation flow).
+*   **Issue:** The code assumes the order can be created immediately by calling `submit_order`. It does not verify that the **Customer** exists, is authenticated, or that the **Inventory** actually has stock.
+    *   If an attacker creates an order without a valid user, they can drain inventory.
+    *   The `PaymentGateway` method doesn't check if the customer exists in any database.
+*   **Fix:**
+    *   Create a dedicated `AuthService` or `UserRepository`.
+    *   Validate user existence and permissions before allowing order creation.
+
+---
+
+### 2. Logic & Business Rules Errors
+
+#### A. Duplicate Order ID Generation in `OrderProcessor`
+*   **Location:** `order_processor.py` (`submit_order` and `cancel_order`).
+*   **Issue:** The code generates an ID using `uuid.uuid4()` *before* checking if the order already exists.
+    *   `submit_order` calls `self.queue.enqueue(order)` *after* validation. If the queue already has an entry for this ID, it might get processed twice.
+    *   `cancel_order` checks `if order_id in [o.id for o in self.queue.queue]`. This is fragile and likely to return `False` if the ID was already processed in a previous batch, causing a race condition where the order is cancelled twice or processed twice.
+*   **Fix:**
+    *   Use a database or a thread-safe global set (`concurrent.futures.Semaphore` + `queue.Queue`) to check for existing orders before generating a new ID.
+    *   Alternatively, store the generated ID immediately in the `Order` object's `id` field right after creation.
+
+#### B. Invalid Discount Logic in `OrderItem`
+*   **Location:** `models.py` (`apply_bulk_discount`).
+*   **Issue:** The discount calculation logic is flawed.
+    ```python
+    def apply_bulk_discount(self, quantity: int) -> float:
+        if quantity >= 100:
+            return self.effective_price() * 0.8  # 20% off
+        elif quantity >= 50:
+            return self.effective_price() * 0.85  # 15% off
+        elif quantity >= 20:
+            return self.effective_price() * 0.9   # 10% off
+        elif quantity >= 10:
+            return self.effective_price() * 0.95  # 5% off
+        return self.effective_price()
+    ```
+    *   **Scenario:** A customer buys 15 items. The code checks `>= 10`, applies 5% off. Then, when calculating the total weight for shipping, it uses `unit_price * quantity`.
+    *   **Bug:** The `subtotal` method inside `OrderItem` is also flawed:
+        ```python
+        def subtotal(self) -> float:
+            return self.unit_price * self.quantity - self.discount_applied  # WRONG: subtracts discount from price, not quantity
+        ```
+    *   **Fix:** The `subtotal` method should be: `self.unit_price * self.quantity - self.discount_applied`. The logic looks correct there, but the `apply_bulk_discount` method is confusing because it returns a *total* price reduction for the whole order, not a per-item deduction. It's better to calculate discounts per item based on quantity thresholds or use a single `get_discount_rate()` method.
+
+#### C. Inefficient Tax Calculation
+*   **Location:** `models.py` (`Order` class).
+*   **Issue:** The `tax()` method calculates tax based on `shipping_address.state`.
+    *   **Problem:** `shipping_address` in the model is a `dataclass` with `street`, `city`, etc., but `state` is only default to "US". If the address is invalid (e.g., "New York" but no state), it defaults to 0.5% (NY rate). This is incorrect logic.
+    *   **Fix:** Ensure the `Address` model has a required `state` field. If the address is invalid, raise an error or return 0.
+
+#### D. Memory Leak in `AnalyticsEngine`
+*   **Location:** `analytics.py` (`TimeSeriesPoint`).
+*   **Issue:** `TimeSeriesPoint` stores `labels` (dict) inside the object.
+    *   If the `labels` dict grows large or is never garbage collected (e.g., due to circular references or singleton-like behavior in `labels`), the object holds onto references indefinitely.
+*   **Fix:** Use `None` for `labels` by default and only store it if explicitly needed. If `labels` is needed, ensure it is a lightweight dict or use a mapping approach instead of dictionary objects.
+
+---
+
+### 3. Performance Issues
+
+#### A. Unnecessary Locking in `InventoryManager`
+*   **Location:** `inventory.py` (`__init__`, `_load_from_disk`, etc.).
+*   **Issue:** The code uses `threading.Lock` for every single method, including `_load_from_disk` which opens a file twice (once to read, once to write) and `_dict_to_product`.
+*   **Fix:**
+    *   Only use locks for **mutating** resources (writing to DB, changing stock counts).
+    *   `_load_from_disk` is I/O bound; lock it only if concurrent reads are expected and the DB might be busy. For simple JSON files, avoid locks.
+    *   `_dict_to_product` is a simple object creation; no lock needed.
+
+#### B. Slow Email Sending in `OrderProcessor`
+*   **Location:** `order_processor.py` (`send_order_confirmation`).
+*   **Issue:** `smtplib.SMTP` is called directly inside the `send_order_confirmation` method.
+    *   If the `smtplib` module is imported globally, the **same SMTP connection** is reused for all emails. This causes a massive connection pool bottleneck. Every email creates a new connection (and closes it), or uses the same one repeatedly without refreshing.
+*   **Fix:**
+    *   Create a `SMTPClient` class that holds the connection.
+    *   `send_order_confirmation` should call `client.send_message()`.
+    *   Implement `SMTPSession` pattern: `connection.starttls()`, `login()`, `send_message()`, `close()`.
+
+#### C. `ThreadPoolExecutor` Warming
+*   **Location:** `order_processor.py` (`submit_order`).

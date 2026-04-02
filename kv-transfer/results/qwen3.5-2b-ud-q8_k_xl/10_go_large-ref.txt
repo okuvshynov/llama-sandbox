@@ -27,4 +27,84 @@ Here's a thinking process that leads to the code review:
         *   Retry logic.
         *   `wp.mu.Lock()` -> `wp.results[job.ID] = job` -> `wp.mu.Unlock()`.
         *   Wait, `wp.results` is a `map[string]*Job`. `job.ID` is unique. This is safe.
-        *   Wait, `wp.results` gets overwritten if `Submit` is called
+        *   Wait, `wp.results` gets overwritten if `Submit` is called concurrently?
+    *   **`Start` / `Stop`:**
+        *   `Start`: Uses `wg` and `go`.
+        *   `Stop`: `cancel`, `close`, `wg.Wait`.
+        *   **Race Condition Risk:** `Stop` calls `cancel`. But `Submit` might be called after `Start` while `Cancel` is active.
+        *   Wait, `Stop` calls `cancel` and `close`. If `jobQueue` is closed, workers wait.
+        *   **Issue:** `wp.results` is a `map`. `wp.mu.Lock()` is used to prevent race on `results`.
+        *   **Race:** `Submit` uses `wp.mu`. `Start` creates workers. Workers call `processJob`. `processJob` calls `handler`.
+        *   **Concurrency:**
+            *   `worker` goroutine reads from `jobQueue`.
+            *   `processJob` writes to `job.Status`, `job.Result`, `job.DoneAt`, `job.Retries`, `job.CreatedAt`.
+            *   `results` map writes are protected by `wp.mu`.
+            *   **Potential Issue:** `Submit` updates `job.Status` before sending to queue. If another worker is processing it, it's fine.
+            *   **Potential Issue:** `GetJob` is protected by `wp.mu`.
+            *   **Potential Issue:** `Stop` waits for `wg.Wait()`. This blocks until all workers stop.
+    *   **`rateLimitMiddleware`:**
+        *   `Allow()` uses `rl.mu`.
+        *   `Allow()` uses `time.Now().Sub(rl.lastRefill)`.
+        *   `Allow()` increments `tokens`, checks `maxTokens`.
+        *   **Race Condition:** `Allow()` increments `tokens`. If two goroutines call `Allow()` simultaneously, one might see `tokens=0`, increment to 1, decrement to 0. The next one might think it was allowed when it wasn't.
+        *   Wait, `Allow()` does `tokens += elapsed * refillRate`. This is a "refill" mechanism.
+        *   **Issue:** If `Allow()` is called concurrently, `tokens` is incremented. `rl.tokens` is a float. `float64` is precise. But `rl.mu.Lock()` is taken.
+        *   Wait, `Allow()` *does* take the lock.
+        *   **Issue:** `tokens` is incremented *inside* the lock. `lastRefill` is updated.
+        *   **Issue:** `tokens` is a float. `maxTokens` is a float. `elapsed * refillRate`.
+        *   **Wait, `Allow()` logic:** `tokens += elapsed * refillRate`. `if tokens > maxTokens`. `tokens -= 1`.
+        *   **Race:** `tokens` is updated. If two goroutines run simultaneously, `tokens` might exceed `maxTokens` slightly due to rounding or accumulation, but the lock protects it.
+        *   **Wait, `lastRefill`**: `lastRefill` is updated. If `Allow()` is called between `lastRefill` and `now`, the refill happens.
+        *   **Wait, `Allow()` logic again:**
+            ```go
+            rl.tokens += elapsed * rl.refillRate
+            if rl.tokens > rl.maxTokens { rl.tokens = rl.maxTokens }
+            rl.lastRefill = now
+            if rl.tokens >= 1 { rl.tokens-- }
+            return true
+            ```
+            If `tokens` is 0, `elapsed` is 0, `tokens` is 0. `if tokens >= 1` is false. Returns `false`.
+            If `tokens` is 0.5 (impossible with floats usually, but theoretically), `elapsed` is 1s, `refillRate` is 1. `tokens` becomes 1. `if tokens >= 1` is true. `tokens` becomes 0. Returns `true`.
+            This looks okay for `Allow()` if `lastRefill` is updated *after* the refill calculation.
+            Wait, `lastRefill` is updated at the *end*.
+            If `Allow()` is called concurrently:
+            1. A1 checks `tokens`.
+            2. A2 checks `tokens`.
+            If `tokens` is high enough, both decrement.
+            Wait, `Allow()` is called by `rateLimitMiddleware`.
+            If `Allow()` is called by `loggingMiddleware` (which is not rate limited), that's fine.
+            But `loggingMiddleware` is called on every job.
+            **Wait, `loggingMiddleware` is a middleware.**
+            `pool.Use(loggingMiddleware)`.
+            So `loggingMiddleware` is called *before* `rateLimitMiddleware`.
+            Wait, `pool.Use(mw)`. `middleware` is `[]func(*Job) error`.
+            `Use` appends `mw`.
+            `loggingMiddleware` is defined *outside*.
+            `pool.Use(loggingMiddleware)`.
+            `pool.Use(rateLimitMiddleware(limiter))`.
+            Wait, `loggingMiddleware` is defined *before* `pool.Use`.
+            Wait, `loggingMiddleware` is a function. `pool.Use` adds it to the list.
+            Wait, `loggingMiddleware` is called *before* `rateLimitMiddleware` in the `main` code.
+            Wait, `pool.Use` appends to the list.
+            `pool.Use(loggingMiddleware)` -> `loggingMiddleware` is called *before* `rateLimitMiddleware`.
+            `pool.Use(rateLimitMiddleware(limiter))` -> `rateLimitMiddleware` is called *after* `loggingMiddleware`.
+            Wait, `loggingMiddleware` is called inside `processJob`.
+            `rateLimitMiddleware` is called inside `processJob`.
+            Wait, `pool.Use` appends.
+            Wait, `loggingMiddleware` is defined *outside*.
+            `pool.Use(loggingMiddleware)`.
+            `pool.Use(rateLimitMiddleware(limiter))`.
+            Wait, `loggingMiddleware` is called *before* `rateLimitMiddleware` in the `main` code.
+            Wait, `loggingMiddleware` is a function. `pool.Use` appends to the list.
+            Wait, `loggingMiddleware` is defined *outside*.
+            `pool.Use(loggingMiddleware)`.
+            `pool.Use(rateLimitMiddleware(limiter))`.
+            Wait, `loggingMiddleware` is called *before* `rateLimitMiddleware` in the `main` code.
+            Wait, `loggingMiddleware` is defined *outside*.
+            `pool.Use(loggingMiddleware)`.
+            `pool.Use(rateLimitMiddleware(limiter))`.
+            Wait, `loggingMiddleware` is called *before* `rateLimitMiddleware` in the `main` code.
+            Wait, `loggingMiddleware` is a function. `pool.Use` appends to the list.
+            Wait, `loggingMiddleware` is defined *outside*.
+            `pool.Use(loggingMiddleware)`.
+            `pool.Use(rateLimitMiddleware(limiter))`.

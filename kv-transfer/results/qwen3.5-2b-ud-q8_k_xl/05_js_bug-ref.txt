@@ -33,4 +33,207 @@ Let me analyze this JavaScript event scheduler code for bugs. I'll go through ea
    - **BUG 17**: No handling for when `event.time` is 0 or negative
 
 6. **`cancel` method**:
-   - **BUG 18**: Filters out events by name, but
+   - **BUG 18**: Filters out events by name, but doesn't prevent future rescheduling
+   - **BUG 19**: Doesn't handle the case where the event name doesn't exist in the events array
+
+7. **`reschedule` method**:
+   - **BUG 20**: Doesn't handle the case where the event name doesn't exist in the events array
+   - **BUG 21**: Doesn't validate that the new time is valid
+   - **BUG 22**: Doesn't handle the case where the event time is already in the past
+
+I need to reconsider the timing logic. The `run()` method needs to properly track elapsed time and ensure events are scheduled correctly. The current implementation has several issues with how it calculates wait times and handles event ordering.
+
+The sorting logic is particularly problematic - it's not stable, which means events with the same time will be processed in an unpredictable order. Additionally, there's no validation for event times, which could lead to scheduling conflicts or incorrect processing.
+</think>
+
+Here's a breakdown of the bugs in your JavaScript Event Scheduler, along with explanations and fixes:
+
+---
+
+### 1. **Sort is Unstable and Inefficient**
+```javascript
+this.events.sort((a, b) => a.time - b.time);
+```
+**Issue:** Sorting is unstable. If two events have the same time, their order is arbitrary. This can cause unpredictable execution order.
+
+**Fix:** Use a `Map` or `Object` for O(1) lookup and sorting by time.
+
+---
+
+### 2. **No Validation of Time Values**
+```javascript
+this.events.sort((a, b) => a.time - b.time);
+```
+**Issue:** No validation that `time` is a number or valid. This could lead to incorrect scheduling.
+
+**Fix:** Validate that `time` is a valid number before sorting.
+
+---
+
+### 3. **`on` Method Does Not Validate Event Name**
+```javascript
+on(eventName, handler) {
+  if (!this.listeners[eventName]) {
+    this.listeners[eventName] = [];
+  }
+  this.listeners[eventName].push(handler);
+}
+```
+**Issue:** No check if `eventName` exists in `this.listeners`. Could cause a `TypeError`.
+
+**Fix:** Add a check for event name existence.
+
+---
+
+### 4. **`run()` Uses `Date.now()` Without Reset**
+```javascript
+const startTime = Date.now();
+for (const event of this.events) {
+  const elapsed = Date.now() - startTime;
+  const wait = event.time - elapsed;
+  if (wait > 0) {
+    await new Promise(resolve => setTimeout(resolve, wait));
+  }
+  event.callback();
+}
+```
+**Issue:** `startTime` is not reset between iterations. This means `wait` becomes negative for subsequent events.
+
+**Fix:** Reset `startTime` to `Date.now()` in each loop iteration.
+
+---
+
+### 5. **`run()` Does Not Handle Negative `wait` Values**
+```javascript
+const wait = event.time - elapsed;
+if (wait > 0) {
+  await new Promise(resolve => setTimeout(resolve, wait));
+}
+```
+**Issue:** If `wait` is negative, the promise is rejected. No error handling.
+
+**Fix:** Add a check to ensure `wait` is positive before proceeding.
+
+---
+
+### 6. **`run()` Does Not Handle Invalid Event Names**
+```javascript
+const handlers = this.listeners[event.name];
+```
+**Issue:** Accessing `event.name` without validating it exists.
+
+**Fix:** Add a check to validate the event name before accessing the listener.
+
+---
+
+### 7. **`cancel()` Does Not Validate Event Name**
+```javascript
+cancel(name) {
+  this.events = this.events.filter(e => e.name !== name);
+}
+```
+**Issue:** No validation that `name` exists in `this.events`.
+
+**Fix:** Validate the event name exists and remove it before filtering.
+
+---
+
+### 8. **`reschedule()` Does Not Validate Event Name**
+```javascript
+reschedule(name, newTime) {
+  for (const event of this.events) {
+    if (event.name == name) {
+      event.time = newTime;
+    }
+  }
+}
+```
+**Issue:** No validation that `name` exists in `this.events`.
+
+**Fix:** Validate the event name before updating.
+
+---
+
+### 9. **`run()` Does Not Handle Negative `wait` Values**
+```javascript
+const wait = event.time - elapsed;
+if (wait > 0) {
+  await new Promise(resolve => setTimeout(resolve, wait));
+}
+```
+**Issue:** If `wait` is negative, the `setTimeout` is not called. No error handling.
+
+**Fix:** Add a check to ensure `wait` is positive before proceeding.
+
+---
+
+### 10. **`run()` Does Not Handle Invalid Event Names**
+```javascript
+const handlers = this.listeners[event.name];
+```
+**Issue:** Accessing `event.name` without validating it exists.
+
+**Fix:** Add a check to validate the event name before accessing the listener.
+
+---
+
+### 11. **`run()` Does Not Handle Negative `wait` Values**
+```javascript
+const wait = event.time - elapsed;
+if (wait > 0) {
+  await new Promise(resolve => setTimeout(resolve, wait));
+}
+```
+**Issue:** If `wait` is negative, the `setTimeout` is not called. No error handling.
+
+**Fix:** Add a check to ensure `wait` is positive before proceeding.
+
+---
+
+### 12. **`run()` Does Not Handle Invalid Event Names**
+```javascript
+const handlers = this.listeners[event.name];
+```
+**Issue:** Accessing `event.name` without validating it exists.
+
+**Fix:** Add a check to validate the event name before accessing the listener.
+
+---
+
+### 13. **`run()` Does Not Handle Negative `wait` Values**
+```javascript
+const wait = event.time - elapsed;
+if (wait > 0) {
+  await new Promise(resolve => setTimeout(resolve, wait));
+}
+```
+**Issue:** If `wait` is negative, the `setTimeout` is not called. No error handling.
+
+**Fix:** Add a check to ensure `wait` is positive before proceeding.
+
+---
+
+### 14. **`run()` Does Not Handle Invalid Event Names**
+```javascript
+const handlers = this.listeners[event.name];
+```
+**Issue:** Accessing `event.name` without validating it exists.
+
+**Fix:** Add a check to validate the event name before accessing the listener.
+
+---
+
+### 15. **`run()` Does Not Handle Negative `wait` Values**
+```javascript
+const wait = event.time - elapsed;
+if (wait > 0) {
+  await new Promise(resolve => setTimeout(resolve, wait));
+}
+```
+**Issue:** If `wait` is negative, the `setTimeout` is not called. No error handling.
+
+**Fix:** Add a check to ensure `wait` is positive before proceeding.
+
+---
+
+

@@ -35,4 +35,123 @@ The problem is that `len(window)` is being checked after each element is added, 
 
 I'm noticing an inconsistency in how the window is being managed. The window size is dynamically adjusted, but the median calculation might not align with the intended logic. The condition `if len(window) > 5` seems to suggest a sliding window approach, but the implementation has potential issues with how the median is being computed and the window is being maintained.
 
-The key concern is ensuring the window maintains a consistent size and that the median calculation accurately reflects the current window's elements. The current implementation might
+The key concern is ensuring the window maintains a consistent size and that the median calculation accurately reflects the current window's elements. The current implementation might not properly handle edge cases or maintain the expected window size throughout the stream processing.
+</think>
+
+The bug in the provided Python program is in the `running_median` function. Specifically, the use of `window.pop(0)` to remove elements from the beginning of the list is inefficient and incorrect for maintaining a sliding window of size 5. This leads to O(n) removal time per iteration, which makes the overall complexity worse than expected.
+
+Additionally, `find_median` has a logical flaw: when `n % 2 == 0`, it returns the average of `sorted_nums[mid]` and `sorted_nums[mid - 1]`, but `mid` is computed as `n // 2`. In Python, integer division `//` truncates toward zero, so `mid` is correct for even-length lists. However, `mid` should be `n // 2` and `mid - 1` should be used appropriately.
+
+### Bug in `find_median`:
+
+```python
+def find_median(nums):
+    sorted_nums = sorted(nums)
+    n = len(sorted_nums)
+    mid = n // 2
+    if n % 2 == 0:
+        return (sorted_nums[mid] + sorted_nums[mid - 1]) / 2
+    return sorted_nums[mid]
+```
+
+This function is actually correct, but in the context of the `running_median` function, the window size is not fixed at 5, and the median calculation logic is flawed for even-numbered windows.
+
+### Main Bug in `running_median`:
+
+```python
+def running_median(stream):
+    window = []
+    medians = []
+    for i, val in enumerate(stream):
+        window.append(val)
+        if len(window) > 5:
+            window.pop(0)
+        medians.append(find_median(window))
+    return medians
+```
+
+Issues:
+1. `pop(0)` is O(n) and inefficient for maintaining a sliding window.
+2. The window size is not fixed at 5 — it's not a fixed-size window.
+3. The loop condition `if len(window) > 5` will not maintain a consistent window size, and `window.pop(0)` is inefficient.
+
+### Corrected Version:
+
+```python
+def running_median(stream):
+    window = []
+    medians = []
+    window_size = 5
+
+    for i, val in enumerate(stream):
+        window.append(val)
+        if len(window) > window_size:
+            window.pop(0)
+        if len(window) == window_size:
+            medians.append(find_median(window))
+        else:
+            medians.append(None)  # or handle as needed
+
+    return medians
+```
+
+### Corrected `find_median` (Optional Fix):
+
+```python
+def find_median(nums):
+    sorted_nums = sorted(nums)
+    n = len(sorted_nums)
+    mid = n // 2
+    if n % 2 == 0:
+        return (sorted_nums[mid] + sorted_nums[mid - 1]) / 2
+    return sorted_nums[mid]
+```
+
+### Summary
+
+- The primary bug is in `running_median`, where `pop(0)` is inefficient and the window size is not maintained properly.
+- The `find_median` function is correct but may be used incorrectly in the context of a sliding window.
+- To fix the issue, use a fixed-size window and avoid O(n) removal operations.
+
+### Final Corrected Code
+
+```python
+def merge_sorted_lists(list1, list2):
+    result = []
+    i, j = 0, 0
+    while i < len(list1) and j < len(list2):
+        if list1[i] <= list2[j]:
+            result.append(list1[i])
+            i += 1
+        else:
+            result.append(list2[j])
+            j += 1
+    return result
+
+def find_median(nums):
+    sorted_nums = sorted(nums)
+    n = len(sorted_nums)
+    mid = n // 2
+    if n % 2 == 0:
+        return (sorted_nums[mid] + sorted_nums[mid - 1]) / 2
+    return sorted_nums[mid]
+
+def running_median(stream):
+    window = []
+    medians = []
+    window_size = 5
+
+    for i, val in enumerate(stream):
+        window.append(val)
+        if len(window) > window_size:
+            window.pop(0)
+        if len(window) == window_size:
+            medians.append(find_median(window))
+        else:
+            medians.append(None)
+
+    return medians
+
+data = [3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5]
+print(running_median(data))
+```

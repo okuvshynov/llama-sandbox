@@ -65,3 +65,131 @@ For the given edges:
 This creates a directed graph where:
 - compile has in-degree 3 (from deps, lint, link)
 - link has in-degree 1 (from compile)
+- test has in-degree 1 (from compile)
+- lint has in-degree 1 (from deps)
+- package has in-degree 2 (from link, test)
+- deps has in-degree 0
+- compile has in-degree 3
+- link has in-degree 1
+- test has in-degree 1
+- lint has in-degree 1
+- package has in-degree 2
+
+Wait, let me reconsider. Looking at the edges more carefully:
+
+```
+("compile", "link")
+("compile", "test")
+("lint", "compile")
+("deps", "compile")
+("deps", "lint")
+("link", "package")
+("test", "package")
+```
+
+So:
+- compile -> link
+- compile -> test
+- lint -> compile
+- deps -> compile
+- deps -> lint
+- link -> package
+- test -> package
+
+This creates a dependency chain where "deps" must come first, then "lint", then "compile", then "link" and "test", then "package".
+
+The program correctly identifies all valid topological orderings.
+
+## Summary
+
+The program performs topological sorting of a directed graph, finding all valid permutations where dependencies are respected. It uses two main approaches:
+1. Kahn's algorithm for finding valid topological orderings
+2. Backtracking DFS for finding all valid orderings
+</think>
+
+This Python program implements **Topological Sorting** of a directed graph. It identifies all valid orderings of nodes such that dependencies are respected—i.e., if node A is a prerequisite for node B, then A must appear before B in the ordering.
+
+---
+
+### Program Overview
+
+The code defines three main functions:
+
+1. **`build_graph(edges)`**: Constructs a directed graph from input edges and computes in-degrees for all nodes.
+2. **`solve(edges)`**: Performs topological sort using Kahn's algorithm to find at least one valid ordering.
+3. **`find_all(edges)`**: Uses backtracking DFS to find **all** valid topological orderings.
+
+---
+
+### Algorithm Explanations
+
+#### 1. `build_graph(edges)`
+- Initializes a graph using a `defaultdict(list)` for adjacency.
+- Tracks in-degree of each node to detect dependencies.
+- Returns the graph, in-degree map, and set of all nodes.
+
+#### 2. `solve(edges)` (Kahn's Algorithm)
+- Uses a queue of nodes with in-degree 0.
+- Iteratively removes processed nodes, decreasing neighbors' in-degree.
+- When a neighbor's in-degree becomes 0, it is added to the queue.
+- Returns the resulting topological ordering if all nodes are processed.
+
+#### 3. `find_all(edges)` (Backtracking DFS)
+- Uses recursive DFS to explore all valid paths.
+- Builds a path node-by-node, ensuring no node appears after its dependencies.
+- Backtracks when a node is no longer valid for the current path.
+- Collects all valid topological orderings.
+
+---
+
+### Example Walkthrough
+
+Given the edges:
+```python
+edges = [
+    ("compile", "link"),
+    ("compile", "test"),
+    ("lint", "compile"),
+    ("deps", "compile"),
+    ("deps", "lint"),
+    ("link", "package"),
+    ("test", "package"),
+]
+```
+
+This defines the following dependencies:
+- `deps` → `lint` → `compile` → `link` → `package`
+- `deps` → `lint` → `compile` → `test` → `package`
+
+Valid topological orderings include:
+```
+["deps", "lint", "compile", "link", "test", "package"]
+["deps", "lint", "compile", "test", "link", "package"]
+["deps", "lint", "compile", "package", "link"]
+```
+
+The output will show all valid permutations and the total count.
+
+---
+
+### Key Notes
+
+- **Graph with Cycles**: If the graph contains cycles, `solve()` may return `None` and `find_all()` may return `[]`.
+- **Multiple Valid Orders**: The `find_all()` function explores all valid topological orderings, not just one.
+- **Unreachable Nodes**: The program handles nodes that are not part of any dependency chain.
+
+---
+
+### Complexity
+
+- **Time Complexity**:
+  - Build graph: O(V + E)
+  - Solve: O(V + E)
+  - Find all: O(V × E) in worst case
+- **Space Complexity**: O(V + E) for graph storage
+
+---
+
+### Summary
+
+This program performs topological sorting on a directed graph. It uses Kahn's algorithm for a single valid ordering and DFS with backtracking to find all possible valid orderings. It is useful for validating dependencies in systems such as build tools, compilers, or dependency managers.
