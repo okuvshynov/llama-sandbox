@@ -1,0 +1,31 @@
+<think>
+
+</think>
+
+This codebase represents a **Task Scheduler** with a complex distributed architecture (Queues, Workers, Circuit Breakers, Rate Limiting, and Worker Pool Scaling). While it attempts to solve common distributed problems, there are several critical **race conditions**, **deadlocks**, **data consistency issues**, and **performance bottlenecks** that will likely cause the system to crash under load or behave unpredictably.
+
+Here is the detailed review of the bugs and design problems.
+
+---
+
+### 1. Critical Deadlock & Lock Ordering Issues
+
+#### **Issue A: `Scheduler.AssignTask` Locking vs. `WorkerPool.Start`**
+In `scheduler.go`, `AssignTask` holds the main scheduler lock (`s.mu`) while calling `worker.Load++` and `worker.CurrentTask = task.ID`.
+In `workerpool.go`, `WorkerPool.Start` creates workers and calls `scheduler.RegisterWorker`.
+**The Problem:** If two goroutines are running simultaneously:
+1.  Worker A calls `AssignTask` (locks `s.mu`).
+2.  Worker B calls `Start` (locks `s.mu` to register the new worker).
+3.  Both acquire the lock.
+4.  Worker A proceeds to `heartbeat(w.ID)`, which calls `s.mu.Lock()`.
+5.  Worker B (still holding `s.mu` from `Start`) calls `CheckWorkerHealth`.
+6.  `CheckWorkerHealth` sees Worker A is dead and re-queues the task.
+7.  **Result:** A deadlock or a severe race where the task state is corrupted or lost. More critically, if `AssignTask` tries to assign a task to a worker that is currently being started by another goroutine, the worker might be in an inconsistent state.
+
+#### **Issue B: `Scheduler` vs. `WorkerPool` Lock Contention**
+*   **`Scheduler.AssignTask`** holds `s.mu`.
+*   **`WorkerPool.Start`** holds `p.mu` (its own lock) but tries to register workers.
+*   **`WorkerPool.autoScale`** holds `p.mu`.
+*   **`WorkerPool.metricsLoop`** holds `p.mu`.
+
+**The Problem:** The main scheduler lock (`s.mu`) is held while the worker pool registers new workers. The worker pool also holds its own internal locks. This creates a "deadlock" scenario where the scheduler waits for the

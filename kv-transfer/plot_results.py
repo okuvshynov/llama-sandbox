@@ -24,7 +24,8 @@ QUANT_COLORS = [
     '#2070c0', '#6050c0', '#a040a0', '#888', '#333',
 ]
 
-LONG_PROMPT_THRESHOLD = 1500
+MEDIUM_PROMPT_THRESHOLD = 1500
+XLARGE_PROMPT_THRESHOLD = 5000
 
 THEMES = {
     'light': {
@@ -147,9 +148,14 @@ def plot_scatter(rows, output_path, title, theme='light'):
         if r['kl_target'] <= 0 or r['kl_handoff'] <= 0:
             continue
         color = qcolor[r['target_model']]
-        marker = 's' if r['n_prompt'] >= LONG_PROMPT_THRESHOLD else 'o'
+        if r['n_prompt'] >= XLARGE_PROMPT_THRESHOLD:
+            marker, ms = 'D', 40
+        elif r['n_prompt'] >= MEDIUM_PROMPT_THRESHOLD:
+            marker, ms = 's', 40
+        else:
+            marker, ms = 'o', 40
         ax.scatter(r['kl_target'], r['kl_handoff'],
-                   c=color, marker=marker, s=40, alpha=0.75,
+                   c=color, marker=marker, s=ms, alpha=0.75,
                    edgecolors=color, linewidths=0.5)
 
     ax.set_xscale('log')
@@ -180,7 +186,10 @@ def plot_scatter(rows, output_path, title, theme='light'):
                           label='short prompt'))
     handles.append(Line2D([0], [0], marker='s', color=t['bg'],
                           markerfacecolor='#999', markersize=8,
-                          label='long prompt'))
+                          label='medium prompt'))
+    handles.append(Line2D([0], [0], marker='D', color=t['bg'],
+                          markerfacecolor='#999', markersize=8,
+                          label='xlarge prompt'))
     ax.legend(handles=handles, fontsize=7, loc='upper left',
               facecolor=t['bg'], edgecolor=t['grid'], labelcolor=t['text'])
 
