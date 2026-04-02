@@ -3,6 +3,7 @@
 
 #include "llama.h"
 #include "common.h"
+#include "chat.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -93,18 +94,19 @@ int cmd_ref(int argc, char ** argv) {
     const llama_vocab * vocab = llama_model_get_vocab(model);
     const int32_t n_vocab = llama_vocab_n_tokens(vocab);
 
-    // apply chat template
+    // apply chat template (jinja-based, supports all models)
     std::string formatted = params.prompt;
     if (!params.no_chat) {
-        const char * tmpl = llama_model_chat_template(model, nullptr);
-        if (tmpl) {
-            llama_chat_message msg = {"user", params.prompt.c_str()};
-            int32_t len = llama_chat_apply_template(tmpl, &msg, 1, true, nullptr, 0);
-            if (len > 0) {
-                std::vector<char> buf(len + 1);
-                llama_chat_apply_template(tmpl, &msg, 1, true, buf.data(), buf.size());
-                formatted.assign(buf.data(), len);
-                fprintf(stderr, "ref: applied chat template (%d chars)\n", len);
+        auto tmpls = common_chat_templates_init(model, "");
+        if (tmpls) {
+            common_chat_templates_inputs inputs;
+            inputs.messages = {{ "user", params.prompt }};
+            inputs.add_generation_prompt = true;
+            inputs.use_jinja = true;
+            auto result = common_chat_templates_apply(tmpls.get(), inputs);
+            if (!result.prompt.empty()) {
+                formatted = result.prompt;
+                fprintf(stderr, "ref: applied chat template (%zu chars)\n", formatted.size());
             }
         }
     }
