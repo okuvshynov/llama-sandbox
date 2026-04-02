@@ -123,8 +123,8 @@ def plot_combined(rows, output_path, title, theme='light'):
 
     for i, q in enumerate(quants):
         base_y = i * (2 * row_height + quant_gap)
-        y_target = base_y + row_height
-        y_handoff = base_y
+        y_target = base_y
+        y_handoff = base_y + row_height
         y_positions.append((y_target, y_handoff))
         y_label_positions.append(base_y + row_height / 2)
         y_labels.append(q)
