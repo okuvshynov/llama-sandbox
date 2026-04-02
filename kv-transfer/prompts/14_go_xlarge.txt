@@ -1,0 +1,1203 @@
+Review this Go distributed task scheduler for bugs, race conditions, performance issues, and design problems. Explain each issue you find and suggest fixes.
+
+```go
+// scheduler.go - Core task scheduler with priority queues
+package scheduler
+
+import (
+	"container/heap"
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"math/rand"
+	"sync"
+	"sync/atomic"
+	"time"
+)
+
+type TaskState int
+
+const (
+	TaskPending TaskState = iota
+	TaskRunning
+	TaskCompleted
+	TaskFailed
+	TaskCancelled
+	TaskRetrying
+)
+
+type TaskPriority int
+
+const (
+	PriorityLow    TaskPriority = 0
+	PriorityNormal TaskPriority = 1
+	PriorityHigh   TaskPriority = 2
+	PriorityCritical TaskPriority = 3
+)
+
+type Task struct {
+	ID          string
+	Name        string
+	Priority    TaskPriority
+	State       TaskState
+	Payload     json.RawMessage
+	Result      json.RawMessage
+	Error       string
+	MaxRetries  int
+	RetryCount  int
+	RetryDelay  time.Duration
+	Timeout     time.Duration
+	CreatedAt   time.Time
+	StartedAt   time.Time
+	CompletedAt time.Time
+	WorkerID    string
+	Dependencies []string
+	Tags        []string
+	Metadata    map[string]string
+	index       int
+}
+
+type TaskQueue []*Task
+
+func (tq TaskQueue) Len() int { return len(tq) }
+
+func (tq TaskQueue) Less(i, j int) bool {
+	if tq[i].Priority != tq[j].Priority {
+		return tq[i].Priority > tq[j].Priority
+	}
+	return tq[i].CreatedAt.Before(tq[j].CreatedAt)
+}
+
+func (tq TaskQueue) Swap(i, j int) {
+	tq[i], tq[j] = tq[j], tq[i]
+	tq[i].index = i
+	tq[j].index = j
+}
+
+func (tq *TaskQueue) Push(x interface{}) {
+	n := len(*tq)
+	task := x.(*Task)
+	task.index = n
+	*tq = append(*tq, task)
+}
+
+func (tq *TaskQueue) Pop() interface{} {
+	old := *tq
+	n := len(old)
+	task := old[n-1]
+	old[n-1] = nil
+	task.index = -1
+	*tq = old[0 : n-1]
+	return task
+}
+
+type WorkerStatus struct {
+	ID           string
+	CurrentTask  string
+	TasksCompleted int64
+	TasksFailed  int64
+	LastHeartbeat time.Time
+	IsAlive      bool
+	Tags         []string
+	Capacity     int
+	Load         int
+}
+
+type TaskHandler func(ctx context.Context, task *Task) (json.RawMessage, error)
+
+type Scheduler struct {
+	mu           sync.RWMutex
+	queue        TaskQueue
+	tasks        map[string]*Task
+	workers      map[string]*WorkerStatus
+	handlers     map[string]TaskHandler
+	completed    map[string]*Task
+	depGraph     map[string][]string
+
+	maxQueueSize   int
+	workerTimeout  time.Duration
+	cleanupInterval time.Duration
+
+	taskCounter  int64
+	running      int32
+	ctx          context.Context
+	cancel       context.CancelFunc
+	wg           sync.WaitGroup
+}
+
+func NewScheduler(maxQueueSize int) *Scheduler {
+	ctx, cancel := context.WithCancel(context.Background())
+	s := &Scheduler{
+		queue:          make(TaskQueue, 0),
+		tasks:          make(map[string]*Task),
+		workers:        make(map[string]*WorkerStatus),
+		handlers:       make(map[string]TaskHandler),
+		completed:      make(map[string]*Task),
+		depGraph:       make(map[string][]string),
+		maxQueueSize:   maxQueueSize,
+		workerTimeout:  30 * time.Second,
+		cleanupInterval: 5 * time.Minute,
+		ctx:            ctx,
+		cancel:         cancel,
+	}
+	heap.Init(&s.queue)
+	return s
+}
+
+func (s *Scheduler) RegisterHandler(taskName string, handler TaskHandler) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.handlers[taskName] = handler
+}
+
+func (s *Scheduler) SubmitTask(task *Task) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if len(s.queue) >= s.maxQueueSize {
+		return fmt.Errorf("queue is full (max %d)", s.maxQueueSize)
+	}
+
+	if task.ID == "" {
+		task.ID = fmt.Sprintf("task-%d-%d", time.Now().UnixNano(), atomic.AddInt64(&s.taskCounter, 1))
+	}
+	task.State = TaskPending
+	task.CreatedAt = time.Now()
+
+	if len(task.Dependencies) > 0 {
+		for _, depID := range task.Dependencies {
+			s.depGraph[depID] = append(s.depGraph[depID], task.ID)
+		}
+		allResolved := true
+		for _, depID := range task.Dependencies {
+			dep, exists := s.completed[depID]
+			if !exists || dep.State != TaskCompleted {
+				allResolved = false
+				break
+			}
+		}
+		if !allResolved {
+			s.tasks[task.ID] = task
+			return nil
+		}
+	}
+
+	s.tasks[task.ID] = task
+	heap.Push(&s.queue, task)
+	return nil
+}
+
+func (s *Scheduler) CancelTask(taskID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	task, exists := s.tasks[taskID]
+	if !exists {
+		return fmt.Errorf("task %s not found", taskID)
+	}
+
+	if task.State == TaskCompleted || task.State == TaskCancelled {
+		return fmt.Errorf("task %s already in terminal state", taskID)
+	}
+
+	task.State = TaskCancelled
+	task.CompletedAt = time.Now()
+	return nil
+}
+
+func (s *Scheduler) RegisterWorker(workerID string, tags []string, capacity int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.workers[workerID] = &WorkerStatus{
+		ID:            workerID,
+		LastHeartbeat: time.Now(),
+		IsAlive:       true,
+		Tags:          tags,
+		Capacity:      capacity,
+	}
+	log.Printf("Worker %s registered (capacity=%d, tags=%v)", workerID, capacity, tags)
+}
+
+func (s *Scheduler) Heartbeat(workerID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	worker, exists := s.workers[workerID]
+	if !exists {
+		return fmt.Errorf("worker %s not found", workerID)
+	}
+	worker.LastHeartbeat = time.Now()
+	worker.IsAlive = true
+	return nil
+}
+
+func (s *Scheduler) AssignTask(workerID string) (*Task, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	worker, exists := s.workers[workerID]
+	if !exists {
+		return nil, fmt.Errorf("worker %s not found", workerID)
+	}
+
+	if !worker.IsAlive {
+		return nil, fmt.Errorf("worker %s is not alive", workerID)
+	}
+
+	if worker.Load >= worker.Capacity {
+		return nil, fmt.Errorf("worker %s at capacity", workerID)
+	}
+
+	if s.queue.Len() == 0 {
+		return nil, nil
+	}
+
+	task := heap.Pop(&s.queue).(*Task)
+	if task.State == TaskCancelled {
+		return s.AssignTask(workerID)
+	}
+
+	task.State = TaskRunning
+	task.StartedAt = time.Now()
+	task.WorkerID = workerID
+	worker.CurrentTask = task.ID
+	worker.Load++
+
+	return task, nil
+}
+
+func (s *Scheduler) CompleteTask(taskID string, result json.RawMessage, taskError error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	task, exists := s.tasks[taskID]
+	if !exists {
+		return fmt.Errorf("task %s not found", taskID)
+	}
+
+	worker := s.workers[task.WorkerID]
+	if worker != nil {
+		worker.Load--
+		worker.CurrentTask = ""
+	}
+
+	if taskError != nil {
+		task.Error = taskError.Error()
+		if task.RetryCount < task.MaxRetries {
+			task.RetryCount++
+			task.State = TaskRetrying
+			go func() {
+				delay := task.RetryDelay * time.Duration(task.RetryCount)
+				jitter := time.Duration(rand.Int63n(int64(delay / 4)))
+				time.Sleep(delay + jitter)
+				s.mu.Lock()
+				task.State = TaskPending
+				heap.Push(&s.queue, task)
+				s.mu.Unlock()
+			}()
+			if worker != nil {
+				atomic.AddInt64(&worker.TasksFailed, 1)
+			}
+			return nil
+		}
+		task.State = TaskFailed
+		if worker != nil {
+			atomic.AddInt64(&worker.TasksFailed, 1)
+		}
+	} else {
+		task.State = TaskCompleted
+		task.Result = result
+		if worker != nil {
+			atomic.AddInt64(&worker.TasksCompleted, 1)
+		}
+	}
+
+	task.CompletedAt = time.Now()
+	s.completed[taskID] = task
+
+	if dependents, ok := s.depGraph[taskID]; ok && task.State == TaskCompleted {
+		for _, depID := range dependents {
+			depTask, exists := s.tasks[depID]
+			if !exists || depTask.State != TaskPending {
+				continue
+			}
+			allResolved := true
+			for _, reqID := range depTask.Dependencies {
+				req, done := s.completed[reqID]
+				if !done || req.State != TaskCompleted {
+					allResolved = false
+					break
+				}
+			}
+			if allResolved {
+				heap.Push(&s.queue, depTask)
+			}
+		}
+	}
+
+	return nil
+}
+
+func (s *Scheduler) Start() {
+	atomic.StoreInt32(&s.running, 1)
+
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		ticker := time.NewTicker(s.workerTimeout / 2)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-s.ctx.Done():
+				return
+			case <-ticker.C:
+				s.checkWorkerHealth()
+			}
+		}
+	}()
+
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		ticker := time.NewTicker(s.cleanupInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-s.ctx.Done():
+				return
+			case <-ticker.C:
+				s.cleanupCompletedTasks()
+			}
+		}
+	}()
+
+	log.Println("Scheduler started")
+}
+
+func (s *Scheduler) Stop() {
+	atomic.StoreInt32(&s.running, 0)
+	s.cancel()
+	s.wg.Wait()
+	log.Println("Scheduler stopped")
+}
+
+func (s *Scheduler) checkWorkerHealth() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now()
+	for _, worker := range s.workers {
+		if now.Sub(worker.LastHeartbeat) > s.workerTimeout {
+			if worker.IsAlive {
+				worker.IsAlive = false
+				log.Printf("Worker %s marked as dead", worker.ID)
+				if worker.CurrentTask != "" {
+					if task, exists := s.tasks[worker.CurrentTask]; exists {
+						task.State = TaskPending
+						task.WorkerID = ""
+						heap.Push(&s.queue, task)
+						log.Printf("Task %s requeued from dead worker %s", task.ID, worker.ID)
+					}
+				}
+			}
+		}
+	}
+}
+
+func (s *Scheduler) cleanupCompletedTasks() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	cutoff := time.Now().Add(-1 * time.Hour)
+	for id, task := range s.completed {
+		if task.CompletedAt.Before(cutoff) {
+			delete(s.completed, id)
+			delete(s.tasks, id)
+		}
+	}
+}
+
+func (s *Scheduler) Stats() map[string]interface{} {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	stats := map[string]interface{}{
+		"queue_size":       s.queue.Len(),
+		"total_tasks":      len(s.tasks),
+		"completed_tasks":  len(s.completed),
+		"active_workers":   0,
+		"total_workers":    len(s.workers),
+	}
+
+	for _, w := range s.workers {
+		if w.IsAlive {
+			stats["active_workers"] = stats["active_workers"].(int) + 1
+		}
+	}
+	return stats
+}
+```
+
+```go
+// ratelimiter.go - Token bucket and sliding window rate limiters
+package scheduler
+
+import (
+	"math"
+	"sync"
+	"time"
+)
+
+type RateLimiter interface {
+	Allow(key string) bool
+	AllowN(key string, n int) bool
+	Reset(key string)
+	Stats() map[string]interface{}
+}
+
+type tokenBucket struct {
+	tokens     float64
+	maxTokens  float64
+	refillRate float64
+	lastRefill time.Time
+}
+
+type TokenBucketLimiter struct {
+	mu       sync.Mutex
+	buckets  map[string]*tokenBucket
+	maxTokens  float64
+	refillRate float64
+	cleanupInterval time.Duration
+}
+
+func NewTokenBucketLimiter(maxTokens float64, refillRate float64) *TokenBucketLimiter {
+	tbl := &TokenBucketLimiter{
+		buckets:    make(map[string]*tokenBucket),
+		maxTokens:  maxTokens,
+		refillRate: refillRate,
+		cleanupInterval: 10 * time.Minute,
+	}
+	go tbl.cleanupLoop()
+	return tbl
+}
+
+func (tbl *TokenBucketLimiter) getBucket(key string) *tokenBucket {
+	bucket, exists := tbl.buckets[key]
+	if !exists {
+		bucket = &tokenBucket{
+			tokens:     tbl.maxTokens,
+			maxTokens:  tbl.maxTokens,
+			refillRate: tbl.refillRate,
+			lastRefill: time.Now(),
+		}
+		tbl.buckets[key] = bucket
+	}
+	return bucket
+}
+
+func (tbl *TokenBucketLimiter) refill(bucket *tokenBucket) {
+	now := time.Now()
+	elapsed := now.Sub(bucket.lastRefill).Seconds()
+	bucket.tokens = math.Min(bucket.maxTokens, bucket.tokens+elapsed*bucket.refillRate)
+	bucket.lastRefill = now
+}
+
+func (tbl *TokenBucketLimiter) Allow(key string) bool {
+	return tbl.AllowN(key, 1)
+}
+
+func (tbl *TokenBucketLimiter) AllowN(key string, n int) bool {
+	tbl.mu.Lock()
+	defer tbl.mu.Unlock()
+
+	bucket := tbl.getBucket(key)
+	tbl.refill(bucket)
+
+	if bucket.tokens >= float64(n) {
+		bucket.tokens -= float64(n)
+		return true
+	}
+	return false
+}
+
+func (tbl *TokenBucketLimiter) Reset(key string) {
+	tbl.mu.Lock()
+	defer tbl.mu.Unlock()
+	delete(tbl.buckets, key)
+}
+
+func (tbl *TokenBucketLimiter) Stats() map[string]interface{} {
+	tbl.mu.Lock()
+	defer tbl.mu.Unlock()
+
+	return map[string]interface{}{
+		"total_buckets": len(tbl.buckets),
+		"max_tokens":    tbl.maxTokens,
+		"refill_rate":   tbl.refillRate,
+	}
+}
+
+func (tbl *TokenBucketLimiter) cleanupLoop() {
+	ticker := time.NewTicker(tbl.cleanupInterval)
+	defer ticker.Stop()
+	for range ticker.C {
+		tbl.cleanup()
+	}
+}
+
+func (tbl *TokenBucketLimiter) cleanup() {
+	tbl.mu.Lock()
+	defer tbl.mu.Unlock()
+
+	cutoff := time.Now().Add(-30 * time.Minute)
+	for key, bucket := range tbl.buckets {
+		if bucket.lastRefill.Before(cutoff) && bucket.tokens >= bucket.maxTokens {
+			delete(tbl.buckets, key)
+		}
+	}
+}
+
+type slidingWindowEntry struct {
+	timestamps []time.Time
+}
+
+type SlidingWindowLimiter struct {
+	mu       sync.Mutex
+	windows  map[string]*slidingWindowEntry
+	maxRequests int
+	windowSize  time.Duration
+}
+
+func NewSlidingWindowLimiter(maxRequests int, windowSize time.Duration) *SlidingWindowLimiter {
+	swl := &SlidingWindowLimiter{
+		windows:     make(map[string]*slidingWindowEntry),
+		maxRequests: maxRequests,
+		windowSize:  windowSize,
+	}
+	go swl.cleanupLoop()
+	return swl
+}
+
+func (swl *SlidingWindowLimiter) Allow(key string) bool {
+	return swl.AllowN(key, 1)
+}
+
+func (swl *SlidingWindowLimiter) AllowN(key string, n int) bool {
+	swl.mu.Lock()
+	defer swl.mu.Unlock()
+
+	now := time.Now()
+	cutoff := now.Add(-swl.windowSize)
+
+	entry, exists := swl.windows[key]
+	if !exists {
+		entry = &slidingWindowEntry{}
+		swl.windows[key] = entry
+	}
+
+	valid := make([]time.Time, 0, len(entry.timestamps))
+	for _, ts := range entry.timestamps {
+		if ts.After(cutoff) {
+			valid = append(valid, ts)
+		}
+	}
+	entry.timestamps = valid
+
+	if len(entry.timestamps)+n > swl.maxRequests {
+		return false
+	}
+
+	for i := 0; i < n; i++ {
+		entry.timestamps = append(entry.timestamps, now)
+	}
+	return true
+}
+
+func (swl *SlidingWindowLimiter) Reset(key string) {
+	swl.mu.Lock()
+	defer swl.mu.Unlock()
+	delete(swl.windows, key)
+}
+
+func (swl *SlidingWindowLimiter) Stats() map[string]interface{} {
+	swl.mu.Lock()
+	defer swl.mu.Unlock()
+
+	totalEntries := 0
+	for _, entry := range swl.windows {
+		totalEntries += len(entry.timestamps)
+	}
+
+	return map[string]interface{}{
+		"total_keys":    len(swl.windows),
+		"total_entries": totalEntries,
+		"max_requests":  swl.maxRequests,
+		"window_size":   swl.windowSize.String(),
+	}
+}
+
+func (swl *SlidingWindowLimiter) cleanupLoop() {
+	ticker := time.NewTicker(swl.windowSize)
+	defer ticker.Stop()
+	for range ticker.C {
+		swl.cleanup()
+	}
+}
+
+func (swl *SlidingWindowLimiter) cleanup() {
+	swl.mu.Lock()
+	defer swl.mu.Unlock()
+
+	cutoff := time.Now().Add(-swl.windowSize)
+	for key, entry := range swl.windows {
+		valid := make([]time.Time, 0)
+		for _, ts := range entry.timestamps {
+			if ts.After(cutoff) {
+				valid = append(valid, ts)
+			}
+		}
+		if len(valid) == 0 {
+			delete(swl.windows, key)
+		} else {
+			entry.timestamps = valid
+		}
+	}
+}
+```
+
+```go
+// circuitbreaker.go - Circuit breaker pattern implementation
+package scheduler
+
+import (
+	"errors"
+	"log"
+	"sync"
+	"time"
+)
+
+type CircuitState int
+
+const (
+	CircuitClosed CircuitState = iota
+	CircuitOpen
+	CircuitHalfOpen
+)
+
+var (
+	ErrCircuitOpen = errors.New("circuit breaker is open")
+)
+
+type CircuitBreaker struct {
+	mu              sync.Mutex
+	name            string
+	state           CircuitState
+	failureCount    int
+	successCount    int
+	failureThreshold int
+	successThreshold int
+	timeout         time.Duration
+	lastFailure     time.Time
+	onStateChange   func(name string, from, to CircuitState)
+	halfOpenMaxConcurrent int
+	halfOpenCurrent       int
+}
+
+func NewCircuitBreaker(name string, failureThreshold int, timeout time.Duration) *CircuitBreaker {
+	return &CircuitBreaker{
+		name:             name,
+		state:            CircuitClosed,
+		failureThreshold: failureThreshold,
+		successThreshold: 3,
+		timeout:          timeout,
+		halfOpenMaxConcurrent: 1,
+	}
+}
+
+func (cb *CircuitBreaker) Execute(fn func() error) error {
+	if !cb.canExecute() {
+		return ErrCircuitOpen
+	}
+
+	err := fn()
+	cb.recordResult(err)
+	return err
+}
+
+func (cb *CircuitBreaker) canExecute() bool {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+
+	switch cb.state {
+	case CircuitClosed:
+		return true
+	case CircuitOpen:
+		if time.Since(cb.lastFailure) > cb.timeout {
+			cb.setState(CircuitHalfOpen)
+			cb.halfOpenCurrent = 1
+			return true
+		}
+		return false
+	case CircuitHalfOpen:
+		if cb.halfOpenCurrent < cb.halfOpenMaxConcurrent {
+			cb.halfOpenCurrent++
+			return true
+		}
+		return false
+	}
+	return false
+}
+
+func (cb *CircuitBreaker) recordResult(err error) {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+
+	if err != nil {
+		cb.failureCount++
+		cb.lastFailure = time.Now()
+
+		switch cb.state {
+		case CircuitClosed:
+			if cb.failureCount >= cb.failureThreshold {
+				cb.setState(CircuitOpen)
+			}
+		case CircuitHalfOpen:
+			cb.setState(CircuitOpen)
+			cb.halfOpenCurrent = 0
+		}
+	} else {
+		switch cb.state {
+		case CircuitClosed:
+			cb.failureCount = 0
+		case CircuitHalfOpen:
+			cb.successCount++
+			if cb.successCount >= cb.successThreshold {
+				cb.setState(CircuitClosed)
+				cb.halfOpenCurrent = 0
+			}
+		}
+	}
+}
+
+func (cb *CircuitBreaker) setState(newState CircuitState) {
+	if cb.state == newState {
+		return
+	}
+	oldState := cb.state
+	cb.state = newState
+	cb.failureCount = 0
+	cb.successCount = 0
+	log.Printf("Circuit breaker %s: %v -> %v", cb.name, oldState, newState)
+	if cb.onStateChange != nil {
+		cb.onStateChange(cb.name, oldState, newState)
+	}
+}
+
+func (cb *CircuitBreaker) State() CircuitState {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+	return cb.state
+}
+
+func (cb *CircuitBreaker) Stats() map[string]interface{} {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+
+	stateNames := map[CircuitState]string{
+		CircuitClosed:   "closed",
+		CircuitOpen:     "open",
+		CircuitHalfOpen: "half-open",
+	}
+
+	return map[string]interface{}{
+		"name":           cb.name,
+		"state":          stateNames[cb.state],
+		"failure_count":  cb.failureCount,
+		"success_count":  cb.successCount,
+		"last_failure":   cb.lastFailure,
+	}
+}
+
+type CircuitBreakerRegistry struct {
+	mu       sync.RWMutex
+	breakers map[string]*CircuitBreaker
+	defaults struct {
+		failureThreshold int
+		timeout          time.Duration
+	}
+}
+
+func NewCircuitBreakerRegistry(failureThreshold int, timeout time.Duration) *CircuitBreakerRegistry {
+	r := &CircuitBreakerRegistry{
+		breakers: make(map[string]*CircuitBreaker),
+	}
+	r.defaults.failureThreshold = failureThreshold
+	r.defaults.timeout = timeout
+	return r
+}
+
+func (r *CircuitBreakerRegistry) Get(name string) *CircuitBreaker {
+	r.mu.RLock()
+	cb, exists := r.breakers[name]
+	r.mu.RUnlock()
+
+	if exists {
+		return cb
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if cb, exists := r.breakers[name]; exists {
+		return cb
+	}
+
+	cb = NewCircuitBreaker(name, r.defaults.failureThreshold, r.defaults.timeout)
+	r.breakers[name] = cb
+	return cb
+}
+
+func (r *CircuitBreakerRegistry) Execute(name string, fn func() error) error {
+	return r.Get(name).Execute(fn)
+}
+
+func (r *CircuitBreakerRegistry) Stats() map[string]interface{} {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	stats := make(map[string]interface{})
+	for name, cb := range r.breakers {
+		stats[name] = cb.Stats()
+	}
+	return stats
+}
+```
+
+```go
+// workerpool.go - Managed worker pool with graceful shutdown
+package scheduler
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"runtime"
+	"sync"
+	"sync/atomic"
+	"time"
+)
+
+type WorkerPool struct {
+	mu           sync.RWMutex
+	scheduler    *Scheduler
+	workers      []*Worker
+	minWorkers   int
+	maxWorkers   int
+	scaleUpThreshold   float64
+	scaleDownThreshold float64
+	scaleCooldown      time.Duration
+	lastScaleAction    time.Time
+	metricsInterval    time.Duration
+	running            int32
+	ctx                context.Context
+	cancel             context.CancelFunc
+	wg                 sync.WaitGroup
+}
+
+type Worker struct {
+	ID          string
+	pool        *WorkerPool
+	tasksDone   int64
+	tasksFailed int64
+	idleSince   time.Time
+	running     int32
+	ctx         context.Context
+	cancel      context.CancelFunc
+}
+
+type PoolConfig struct {
+	MinWorkers         int
+	MaxWorkers         int
+	ScaleUpThreshold   float64
+	ScaleDownThreshold float64
+	ScaleCooldown      time.Duration
+	MetricsInterval    time.Duration
+}
+
+func DefaultPoolConfig() PoolConfig {
+	return PoolConfig{
+		MinWorkers:         2,
+		MaxWorkers:         runtime.NumCPU() * 2,
+		ScaleUpThreshold:   0.8,
+		ScaleDownThreshold: 0.2,
+		ScaleCooldown:      30 * time.Second,
+		MetricsInterval:    5 * time.Second,
+	}
+}
+
+func NewWorkerPool(scheduler *Scheduler, config PoolConfig) *WorkerPool {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &WorkerPool{
+		scheduler:          scheduler,
+		minWorkers:         config.MinWorkers,
+		maxWorkers:         config.MaxWorkers,
+		scaleUpThreshold:   config.ScaleUpThreshold,
+		scaleDownThreshold: config.ScaleDownThreshold,
+		scaleCooldown:      config.ScaleCooldown,
+		metricsInterval:    config.MetricsInterval,
+		ctx:                ctx,
+		cancel:             cancel,
+	}
+}
+
+func (p *WorkerPool) Start() {
+	atomic.StoreInt32(&p.running, 1)
+
+	for i := 0; i < p.minWorkers; i++ {
+		p.addWorker()
+	}
+
+	p.wg.Add(1)
+	go func() {
+		defer p.wg.Done()
+		p.autoScaleLoop()
+	}()
+
+	p.wg.Add(1)
+	go func() {
+		defer p.wg.Done()
+		p.metricsLoop()
+	}()
+
+	log.Printf("Worker pool started with %d workers", p.minWorkers)
+}
+
+func (p *WorkerPool) Stop() {
+	atomic.StoreInt32(&p.running, 0)
+	p.cancel()
+
+	p.mu.RLock()
+	for _, w := range p.workers {
+		w.Stop()
+	}
+	p.mu.RUnlock()
+
+	p.wg.Wait()
+	log.Println("Worker pool stopped")
+}
+
+func (p *WorkerPool) addWorker() *Worker {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	id := fmt.Sprintf("worker-%d", len(p.workers)+1)
+	ctx, cancel := context.WithCancel(p.ctx)
+	w := &Worker{
+		ID:        id,
+		pool:      p,
+		idleSince: time.Now(),
+		ctx:       ctx,
+		cancel:    cancel,
+	}
+
+	p.workers = append(p.workers, w)
+	p.scheduler.RegisterWorker(id, nil, 1)
+
+	go w.Run()
+	log.Printf("Added worker %s (total: %d)", id, len(p.workers))
+	return w
+}
+
+func (p *WorkerPool) removeWorker() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if len(p.workers) <= p.minWorkers {
+		return
+	}
+
+	var idlest *Worker
+	var idlestIdx int
+	for i, w := range p.workers {
+		if atomic.LoadInt32(&w.running) == 0 {
+			if idlest == nil || w.idleSince.Before(idlest.idleSince) {
+				idlest = w
+				idlestIdx = i
+			}
+		}
+	}
+
+	if idlest == nil {
+		return
+	}
+
+	idlest.Stop()
+	p.workers = append(p.workers[:idlestIdx], p.workers[idlestIdx+1:]...)
+	log.Printf("Removed worker %s (total: %d)", idlest.ID, len(p.workers))
+}
+
+func (p *WorkerPool) autoScaleLoop() {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-p.ctx.Done():
+			return
+		case <-ticker.C:
+			p.autoScale()
+		}
+	}
+}
+
+func (p *WorkerPool) autoScale() {
+	if time.Since(p.lastScaleAction) < p.scaleCooldown {
+		return
+	}
+
+	stats := p.scheduler.Stats()
+	queueSize := stats["queue_size"].(int)
+
+	p.mu.RLock()
+	workerCount := len(p.workers)
+	busyCount := 0
+	for _, w := range p.workers {
+		if atomic.LoadInt32(&w.running) == 1 {
+			busyCount++
+		}
+	}
+	p.mu.RUnlock()
+
+	utilization := float64(busyCount) / float64(workerCount)
+
+	if utilization > p.scaleUpThreshold || queueSize > workerCount*2 {
+		if workerCount < p.maxWorkers {
+			p.addWorker()
+			p.lastScaleAction = time.Now()
+		}
+	} else if utilization < p.scaleDownThreshold && queueSize == 0 {
+		if workerCount > p.minWorkers {
+			p.removeWorker()
+			p.lastScaleAction = time.Now()
+		}
+	}
+}
+
+func (p *WorkerPool) metricsLoop() {
+	ticker := time.NewTicker(p.metricsInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-p.ctx.Done():
+			return
+		case <-ticker.C:
+			p.logMetrics()
+		}
+	}
+}
+
+func (p *WorkerPool) logMetrics() {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	var totalDone, totalFailed int64
+	busyCount := 0
+	for _, w := range p.workers {
+		totalDone += atomic.LoadInt64(&w.tasksDone)
+		totalFailed += atomic.LoadInt64(&w.tasksFailed)
+		if atomic.LoadInt32(&w.running) == 1 {
+			busyCount++
+		}
+	}
+
+	log.Printf("Pool: workers=%d busy=%d done=%d failed=%d",
+		len(p.workers), busyCount, totalDone, totalFailed)
+}
+
+func (p *WorkerPool) Stats() map[string]interface{} {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	var totalDone, totalFailed int64
+	busyCount := 0
+	workerStats := make([]map[string]interface{}, 0, len(p.workers))
+
+	for _, w := range p.workers {
+		done := atomic.LoadInt64(&w.tasksDone)
+		failed := atomic.LoadInt64(&w.tasksFailed)
+		busy := atomic.LoadInt32(&w.running) == 1
+		totalDone += done
+		totalFailed += failed
+		if busy {
+			busyCount++
+		}
+		workerStats = append(workerStats, map[string]interface{}{
+			"id":     w.ID,
+			"done":   done,
+			"failed": failed,
+			"busy":   busy,
+		})
+	}
+
+	return map[string]interface{}{
+		"total_workers": len(p.workers),
+		"busy_workers":  busyCount,
+		"total_done":    totalDone,
+		"total_failed":  totalFailed,
+		"workers":       workerStats,
+	}
+}
+
+func (w *Worker) Run() {
+	for {
+		select {
+		case <-w.ctx.Done():
+			return
+		default:
+		}
+
+		task, err := w.pool.scheduler.AssignTask(w.ID)
+		if err != nil || task == nil {
+			w.idleSince = time.Now()
+			atomic.StoreInt32(&w.running, 0)
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+
+		atomic.StoreInt32(&w.running, 1)
+		w.pool.scheduler.Heartbeat(w.ID)
+
+		handler, exists := w.pool.scheduler.handlers[task.Name]
+		if !exists {
+			w.pool.scheduler.CompleteTask(task.ID, nil, fmt.Errorf("no handler for task %s", task.Name))
+			atomic.AddInt64(&w.tasksFailed, 1)
+			continue
+		}
+
+		var taskCtx context.Context
+		var taskCancel context.CancelFunc
+		if task.Timeout > 0 {
+			taskCtx, taskCancel = context.WithTimeout(w.ctx, task.Timeout)
+		} else {
+			taskCtx, taskCancel = context.WithCancel(w.ctx)
+		}
+
+		result, taskErr := handler(taskCtx, task)
+		taskCancel()
+
+		w.pool.scheduler.CompleteTask(task.ID, result, taskErr)
+		if taskErr != nil {
+			atomic.AddInt64(&w.tasksFailed, 1)
+		} else {
+			atomic.AddInt64(&w.tasksDone, 1)
+		}
+	}
+}
+
+func (w *Worker) Stop() {
+	w.cancel()
+}
+```

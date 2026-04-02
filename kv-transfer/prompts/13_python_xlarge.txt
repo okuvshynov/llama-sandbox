@@ -1,0 +1,925 @@
+Review this Python microservice codebase for bugs, performance issues, security problems, and design flaws. Explain each issue you find and suggest fixes.
+
+```python
+# models.py - Database models and schemas
+import enum
+import uuid
+from datetime import datetime, timedelta
+from typing import Optional, List, Dict, Any
+from dataclasses import dataclass, field
+
+class OrderStatus(enum.Enum):
+    PENDING = "pending"
+    CONFIRMED = "confirmed"
+    PROCESSING = "processing"
+    SHIPPED = "shipped"
+    DELIVERED = "delivered"
+    CANCELLED = "cancelled"
+    REFUNDED = "refunded"
+
+class PaymentMethod(enum.Enum):
+    CREDIT_CARD = "credit_card"
+    DEBIT_CARD = "debit_card"
+    PAYPAL = "paypal"
+    BANK_TRANSFER = "bank_transfer"
+    CRYPTO = "crypto"
+
+@dataclass
+class Address:
+    street: str
+    city: str
+    state: str
+    zip_code: str
+    country: str = "US"
+    apt_number: Optional[str] = None
+
+    def format_full(self) -> str:
+        parts = [self.street]
+        if self.apt_number:
+            parts.append(f"Apt {self.apt_number}")
+        parts.append(f"{self.city}, {self.state} {self.zip_code}")
+        parts.append(self.country)
+        return "\n".join(parts)
+
+    def validate(self) -> bool:
+        if not self.street or not self.city or not self.state:
+            return False
+        if self.country == "US" and len(self.zip_code) != 5:
+            return False
+        return True
+
+@dataclass
+class Product:
+    id: str
+    name: str
+    description: str
+    price: float
+    weight_kg: float
+    category: str
+    stock_count: int
+    tags: List[str] = field(default_factory=list)
+    discount_percent: float = 0.0
+    is_active: bool = True
+    created_at: datetime = field(default_factory=datetime.now)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def effective_price(self) -> float:
+        return self.price * (1 - self.discount_percent / 100)
+
+    def is_in_stock(self) -> bool:
+        return self.stock_count > 0 and self.is_active
+
+    def apply_bulk_discount(self, quantity: int) -> float:
+        if quantity >= 100:
+            return self.effective_price() * 0.8
+        elif quantity >= 50:
+            return self.effective_price() * 0.85
+        elif quantity >= 20:
+            return self.effective_price() * 0.9
+        elif quantity >= 10:
+            return self.effective_price() * 0.95
+        return self.effective_price()
+
+@dataclass
+class OrderItem:
+    product: Product
+    quantity: int
+    unit_price: float
+    discount_applied: float = 0.0
+
+    def subtotal(self) -> float:
+        return self.unit_price * self.quantity - self.discount_applied
+
+    def weight(self) -> float:
+        return self.product.weight_kg * self.quantity
+
+@dataclass
+class Customer:
+    id: str
+    email: str
+    name: str
+    phone: Optional[str] = None
+    addresses: List[Address] = field(default_factory=list)
+    loyalty_points: int = 0
+    tier: str = "bronze"
+    created_at: datetime = field(default_factory=datetime.now)
+    order_history: List[str] = field(default_factory=list)
+    preferences: Dict[str, Any] = field(default_factory=dict)
+
+    def primary_address(self) -> Optional[Address]:
+        return self.addresses[0] if self.addresses else None
+
+    def add_loyalty_points(self, amount: float):
+        points = int(amount * 10)
+        self.loyalty_points += points
+        self._update_tier()
+
+    def _update_tier(self):
+        if self.loyalty_points >= 10000:
+            self.tier = "platinum"
+        elif self.loyalty_points >= 5000:
+            self.tier = "gold"
+        elif self.loyalty_points >= 1000:
+            self.tier = "silver"
+        else:
+            self.tier = "bronze"
+
+    def tier_discount(self) -> float:
+        discounts = {"platinum": 0.15, "gold": 0.10, "silver": 0.05, "bronze": 0.0}
+        return discounts.get(self.tier, 0.0)
+
+@dataclass
+class Order:
+    id: str
+    customer: Customer
+    items: List[OrderItem]
+    shipping_address: Address
+    billing_address: Address
+    status: OrderStatus = OrderStatus.PENDING
+    payment_method: Optional[PaymentMethod] = None
+    created_at: datetime = field(default_factory=datetime.now)
+    updated_at: datetime = field(default_factory=datetime.now)
+    notes: str = ""
+    tracking_number: Optional[str] = None
+    estimated_delivery: Optional[datetime] = None
+
+    def subtotal(self) -> float:
+        return sum(item.subtotal() for item in self.items)
+
+    def shipping_cost(self) -> float:
+        total_weight = sum(item.weight() for item in self.items)
+        if total_weight < 1:
+            return 5.99
+        elif total_weight < 5:
+            return 9.99
+        elif total_weight < 20:
+            return 14.99
+        else:
+            return 24.99 + (total_weight - 20) * 0.5
+
+    def tax(self) -> float:
+        tax_rates = {
+            "CA": 0.0725, "NY": 0.08, "TX": 0.0625, "FL": 0.06,
+            "WA": 0.065, "OR": 0.0, "NH": 0.0, "MT": 0.0,
+        }
+        rate = tax_rates.get(self.shipping_address.state, 0.05)
+        return self.subtotal() * rate
+
+    def total(self) -> float:
+        discount = self.subtotal() * self.customer.tier_discount()
+        return self.subtotal() - discount + self.shipping_cost() + self.tax()
+
+    def total_weight(self) -> float:
+        return sum(item.weight() for item in self.items)
+```
+
+```python
+# inventory.py - Inventory management system
+import threading
+import logging
+import json
+import os
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional, Tuple
+from collections import defaultdict
+
+logger = logging.getLogger(__name__)
+
+class InventoryError(Exception):
+    pass
+
+class InsufficientStockError(InventoryError):
+    pass
+
+class ProductNotFoundError(InventoryError):
+    pass
+
+class InventoryManager:
+    def __init__(self, db_path: str = "inventory.json"):
+        self.db_path = db_path
+        self.products: Dict[str, 'Product'] = {}
+        self.reservations: Dict[str, Dict[str, int]] = {}
+        self.lock = threading.Lock()
+        self.reservation_timeout = timedelta(minutes=15)
+        self._load_from_disk()
+
+    def _load_from_disk(self):
+        if os.path.exists(self.db_path):
+            with open(self.db_path, 'r') as f:
+                data = json.load(f)
+                for pid, pdata in data.get("products", {}).items():
+                    self.products[pid] = self._dict_to_product(pdata)
+
+    def _save_to_disk(self):
+        data = {"products": {}}
+        for pid, product in self.products.items():
+            data["products"][pid] = {
+                "id": product.id,
+                "name": product.name,
+                "price": product.price,
+                "stock_count": product.stock_count,
+                "category": product.category,
+            }
+        with open(self.db_path, 'w') as f:
+            json.dump(data, f, indent=2)
+
+    def _dict_to_product(self, d: dict) -> 'Product':
+        from models import Product
+        return Product(
+            id=d["id"], name=d["name"], description=d.get("description", ""),
+            price=d["price"], weight_kg=d.get("weight_kg", 0),
+            category=d["category"], stock_count=d["stock_count"]
+        )
+
+    def add_product(self, product: 'Product'):
+        with self.lock:
+            self.products[product.id] = product
+            self._save_to_disk()
+            logger.info(f"Added product {product.id}: {product.name}")
+
+    def get_product(self, product_id: str) -> Optional['Product']:
+        return self.products.get(product_id)
+
+    def check_availability(self, product_id: str, quantity: int) -> bool:
+        product = self.products.get(product_id)
+        if not product:
+            return False
+        reserved = self._get_reserved_quantity(product_id)
+        return (product.stock_count - reserved) >= quantity
+
+    def _get_reserved_quantity(self, product_id: str) -> int:
+        total = 0
+        now = datetime.now()
+        expired = []
+        for order_id, reservation in self.reservations.items():
+            if product_id in reservation:
+                total += reservation[product_id]
+        return total
+
+    def reserve_stock(self, order_id: str, items: List[Tuple[str, int]]) -> bool:
+        with self.lock:
+            for product_id, quantity in items:
+                if not self.check_availability(product_id, quantity):
+                    return False
+
+            reservation = {}
+            for product_id, quantity in items:
+                reservation[product_id] = quantity
+            self.reservations[order_id] = reservation
+
+            logger.info(f"Reserved stock for order {order_id}")
+            return True
+
+    def commit_reservation(self, order_id: str) -> bool:
+        with self.lock:
+            reservation = self.reservations.get(order_id)
+            if not reservation:
+                logger.warning(f"No reservation found for {order_id}")
+                return False
+
+            for product_id, quantity in reservation.items():
+                product = self.products.get(product_id)
+                if product:
+                    product.stock_count -= quantity
+
+            del self.reservations[order_id]
+            self._save_to_disk()
+            logger.info(f"Committed reservation for order {order_id}")
+            return True
+
+    def release_reservation(self, order_id: str):
+        with self.lock:
+            if order_id in self.reservations:
+                del self.reservations[order_id]
+                logger.info(f"Released reservation for order {order_id}")
+
+    def restock(self, product_id: str, quantity: int):
+        with self.lock:
+            product = self.products.get(product_id)
+            if not product:
+                raise ProductNotFoundError(f"Product {product_id} not found")
+            product.stock_count += quantity
+            self._save_to_disk()
+            logger.info(f"Restocked {product_id}: +{quantity}")
+
+    def get_low_stock_products(self, threshold: int = 10) -> List['Product']:
+        return [p for p in self.products.values() if p.stock_count <= threshold]
+
+    def get_inventory_report(self) -> Dict:
+        report = {
+            "total_products": len(self.products),
+            "total_stock_value": 0.0,
+            "by_category": defaultdict(lambda: {"count": 0, "value": 0.0}),
+            "low_stock": [],
+            "out_of_stock": [],
+        }
+        for product in self.products.values():
+            value = product.price * product.stock_count
+            report["total_stock_value"] += value
+            cat = report["by_category"][product.category]
+            cat["count"] += product.stock_count
+            cat["value"] += value
+            if product.stock_count == 0:
+                report["out_of_stock"].append(product.id)
+            elif product.stock_count < 10:
+                report["low_stock"].append(product.id)
+        return report
+
+    def cleanup_expired_reservations(self):
+        now = datetime.now()
+        with self.lock:
+            expired = []
+            for order_id in self.reservations:
+                expired.append(order_id)
+            for order_id in expired:
+                del self.reservations[order_id]
+            if expired:
+                logger.info(f"Cleaned up {len(expired)} expired reservations")
+```
+
+```python
+# order_processor.py - Order processing pipeline
+import uuid
+import logging
+import smtplib
+import hashlib
+import time
+from email.mime.text import MIMEText
+from datetime import datetime, timedelta
+from typing import Optional, List, Dict
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
+
+logger = logging.getLogger(__name__)
+
+class PaymentError(Exception):
+    pass
+
+class PaymentGateway:
+    def __init__(self, api_key: str, sandbox: bool = True):
+        self.api_key = api_key
+        self.sandbox = sandbox
+        self.transactions: Dict[str, dict] = {}
+
+    def charge(self, amount: float, payment_method: str, customer_id: str,
+               currency: str = "USD") -> str:
+        tx_id = str(uuid.uuid4())
+        if amount <= 0:
+            raise PaymentError("Invalid amount")
+        if amount > 10000:
+            raise PaymentError("Amount exceeds limit")
+
+        self.transactions[tx_id] = {
+            "amount": amount,
+            "currency": currency,
+            "customer_id": customer_id,
+            "payment_method": payment_method,
+            "status": "completed",
+            "timestamp": datetime.now().isoformat(),
+        }
+        logger.info(f"Charged {amount} {currency} for customer {customer_id}, tx={tx_id}")
+        return tx_id
+
+    def refund(self, transaction_id: str, amount: Optional[float] = None) -> str:
+        tx = self.transactions.get(transaction_id)
+        if not tx:
+            raise PaymentError(f"Transaction {transaction_id} not found")
+
+        refund_amount = amount or tx["amount"]
+        if refund_amount > tx["amount"]:
+            raise PaymentError("Refund exceeds original amount")
+
+        refund_id = str(uuid.uuid4())
+        self.transactions[refund_id] = {
+            "amount": -refund_amount,
+            "currency": tx["currency"],
+            "customer_id": tx["customer_id"],
+            "original_tx": transaction_id,
+            "status": "refunded",
+            "timestamp": datetime.now().isoformat(),
+        }
+        return refund_id
+
+class EmailService:
+    def __init__(self, smtp_host: str, smtp_port: int, username: str, password: str):
+        self.smtp_host = smtp_host
+        self.smtp_port = smtp_port
+        self.username = username
+        self.password = password
+        self.sent_count = 0
+
+    def send_email(self, to: str, subject: str, body: str):
+        msg = MIMEText(body)
+        msg['Subject'] = subject
+        msg['From'] = self.username
+        msg['To'] = to
+        try:
+            with smtplib.SMTP(self.smtp_host, self.smtp_port) as server:
+                server.starttls()
+                server.login(self.username, self.password)
+                server.send_message(msg)
+                self.sent_count += 1
+                logger.info(f"Email sent to {to}: {subject}")
+        except Exception as e:
+            logger.error(f"Failed to send email to {to}: {e}")
+
+    def send_order_confirmation(self, order: 'Order'):
+        items_text = "\n".join(
+            f"  - {item.product.name} x{item.quantity}: ${item.subtotal():.2f}"
+            for item in order.items
+        )
+        body = f"""Dear {order.customer.name},
+
+Your order {order.id} has been confirmed!
+
+Items:
+{items_text}
+
+Subtotal: ${order.subtotal():.2f}
+Shipping: ${order.shipping_cost():.2f}
+Tax: ${order.tax():.2f}
+Total: ${order.total():.2f}
+
+Shipping to:
+{order.shipping_address.format_full()}
+
+Thank you for your purchase!
+"""
+        self.send_email(order.customer.email, f"Order Confirmed: {order.id}", body)
+
+    def send_shipping_notification(self, order: 'Order'):
+        body = f"""Dear {order.customer.name},
+
+Your order {order.id} has been shipped!
+Tracking number: {order.tracking_number}
+Estimated delivery: {order.estimated_delivery.strftime('%B %d, %Y') if order.estimated_delivery else 'N/A'}
+
+Thank you for your patience!
+"""
+        self.send_email(order.customer.email, f"Order Shipped: {order.id}", body)
+
+class ShippingCalculator:
+    CARRIERS = {
+        "standard": {"base": 5.99, "per_kg": 0.5, "days": (5, 7)},
+        "express": {"base": 12.99, "per_kg": 1.0, "days": (2, 3)},
+        "overnight": {"base": 24.99, "per_kg": 2.0, "days": (1, 1)},
+    }
+
+    def calculate_rates(self, weight_kg: float, destination: 'Address') -> Dict:
+        rates = {}
+        for carrier, config in self.CARRIERS.items():
+            cost = config["base"] + weight_kg * config["per_kg"]
+            if destination.country != "US":
+                cost *= 2.5
+            min_days, max_days = config["days"]
+            rates[carrier] = {
+                "cost": round(cost, 2),
+                "min_days": min_days,
+                "max_days": max_days,
+            }
+        return rates
+
+    def estimate_delivery(self, carrier: str, ship_date: datetime) -> datetime:
+        config = self.CARRIERS.get(carrier)
+        if not config:
+            return ship_date + timedelta(days=7)
+        _, max_days = config["days"]
+        return ship_date + timedelta(days=max_days)
+
+class OrderQueue:
+    def __init__(self, max_size: int = 1000):
+        self.queue = deque(maxlen=max_size)
+        self.processing: Dict[str, 'Order'] = {}
+        self.completed: List[str] = []
+        self.failed: List[str] = []
+
+    def enqueue(self, order: 'Order'):
+        self.queue.append(order)
+        logger.info(f"Order {order.id} enqueued, queue size: {len(self.queue)}")
+
+    def dequeue(self) -> Optional['Order']:
+        if self.queue:
+            order = self.queue.popleft()
+            self.processing[order.id] = order
+            return order
+        return None
+
+    def mark_completed(self, order_id: str):
+        if order_id in self.processing:
+            del self.processing[order_id]
+            self.completed.append(order_id)
+
+    def mark_failed(self, order_id: str):
+        if order_id in self.processing:
+            del self.processing[order_id]
+            self.failed.append(order_id)
+
+    def stats(self) -> Dict:
+        return {
+            "queued": len(self.queue),
+            "processing": len(self.processing),
+            "completed": len(self.completed),
+            "failed": len(self.failed),
+        }
+
+class OrderProcessor:
+    def __init__(self, inventory: 'InventoryManager', payment: PaymentGateway,
+                 email: EmailService, shipping: ShippingCalculator,
+                 max_workers: int = 4):
+        self.inventory = inventory
+        self.payment = payment
+        self.email = email
+        self.shipping = shipping
+        self.queue = OrderQueue()
+        self.executor = ThreadPoolExecutor(max_workers=max_workers)
+        self.processed_orders: Dict[str, dict] = {}
+
+    def submit_order(self, order: 'Order') -> str:
+        if not order.shipping_address.validate():
+            raise ValueError("Invalid shipping address")
+
+        items_to_reserve = [
+            (item.product.id, item.quantity)
+            for item in order.items
+        ]
+        if not self.inventory.reserve_stock(order.id, items_to_reserve):
+            raise InsufficientStockError("Some items are out of stock")
+
+        self.queue.enqueue(order)
+        return order.id
+
+    def process_next(self) -> Optional[str]:
+        order = self.queue.dequeue()
+        if not order:
+            return None
+
+        try:
+            tx_id = self.payment.charge(
+                amount=order.total(),
+                payment_method=order.payment_method.value if order.payment_method else "credit_card",
+                customer_id=order.customer.id,
+            )
+
+            self.inventory.commit_reservation(order.id)
+
+            order.status = OrderStatus.CONFIRMED
+            order.updated_at = datetime.now()
+            order.customer.add_loyalty_points(order.subtotal())
+
+            self.email.send_order_confirmation(order)
+
+            self.processed_orders[order.id] = {
+                "order": order,
+                "transaction_id": tx_id,
+                "processed_at": datetime.now(),
+            }
+
+            self.queue.mark_completed(order.id)
+            logger.info(f"Order {order.id} processed successfully")
+            return order.id
+
+        except PaymentError as e:
+            logger.error(f"Payment failed for order {order.id}: {e}")
+            self.inventory.release_reservation(order.id)
+            order.status = OrderStatus.CANCELLED
+            self.queue.mark_failed(order.id)
+            return None
+
+        except Exception as e:
+            logger.error(f"Unexpected error processing order {order.id}: {e}")
+            self.inventory.release_reservation(order.id)
+            self.queue.mark_failed(order.id)
+            return None
+
+    def ship_order(self, order_id: str, carrier: str = "standard") -> bool:
+        record = self.processed_orders.get(order_id)
+        if not record:
+            return False
+
+        order = record["order"]
+        if order.status != OrderStatus.CONFIRMED:
+            return False
+
+        order.tracking_number = hashlib.md5(
+            f"{order_id}{time.time()}".encode()
+        ).hexdigest()[:12].upper()
+
+        order.estimated_delivery = self.shipping.estimate_delivery(
+            carrier, datetime.now()
+        )
+        order.status = OrderStatus.SHIPPED
+        order.updated_at = datetime.now()
+
+        self.email.send_shipping_notification(order)
+        logger.info(f"Order {order_id} shipped via {carrier}")
+        return True
+
+    def cancel_order(self, order_id: str) -> bool:
+        record = self.processed_orders.get(order_id)
+        if not record:
+            if order_id in [o.id for o in self.queue.queue]:
+                self.inventory.release_reservation(order_id)
+                return True
+            return False
+
+        order = record["order"]
+        if order.status in (OrderStatus.DELIVERED, OrderStatus.REFUNDED):
+            return False
+
+        tx_id = record["transaction_id"]
+        try:
+            self.payment.refund(tx_id)
+        except PaymentError as e:
+            logger.error(f"Refund failed for order {order_id}: {e}")
+            return False
+
+        order.status = OrderStatus.CANCELLED
+        order.updated_at = datetime.now()
+        return True
+
+    def get_order_status(self, order_id: str) -> Optional[Dict]:
+        record = self.processed_orders.get(order_id)
+        if not record:
+            return None
+        order = record["order"]
+        return {
+            "order_id": order.id,
+            "status": order.status.value,
+            "total": order.total(),
+            "tracking_number": order.tracking_number,
+            "estimated_delivery": str(order.estimated_delivery) if order.estimated_delivery else None,
+        }
+
+    def generate_report(self, start_date: datetime, end_date: datetime) -> Dict:
+        report = {
+            "period": f"{start_date.date()} to {end_date.date()}",
+            "total_orders": 0,
+            "total_revenue": 0.0,
+            "average_order_value": 0.0,
+            "orders_by_status": defaultdict(int),
+            "top_products": defaultdict(int),
+        }
+
+        for order_id, record in self.processed_orders.items():
+            order = record["order"]
+            processed_at = record["processed_at"]
+            if start_date <= processed_at <= end_date:
+                report["total_orders"] += 1
+                report["total_revenue"] += order.total()
+                report["orders_by_status"][order.status.value] += 1
+                for item in order.items:
+                    report["top_products"][item.product.name] += item.quantity
+
+        if report["total_orders"] > 0:
+            report["average_order_value"] = report["total_revenue"] / report["total_orders"]
+
+        return report
+```
+
+```python
+# analytics.py - Analytics and reporting engine
+import math
+import statistics
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional, Tuple, Callable
+from collections import defaultdict, Counter
+from functools import lru_cache
+
+class TimeSeriesPoint:
+    def __init__(self, timestamp: datetime, value: float, labels: Dict[str, str] = None):
+        self.timestamp = timestamp
+        self.value = value
+        self.labels = labels or {}
+
+class TimeSeries:
+    def __init__(self, name: str):
+        self.name = name
+        self.points: List[TimeSeriesPoint] = []
+
+    def add(self, timestamp: datetime, value: float, labels: Dict[str, str] = None):
+        self.points.append(TimeSeriesPoint(timestamp, value, labels))
+
+    def values(self) -> List[float]:
+        return [p.value for p in self.points]
+
+    def mean(self) -> float:
+        vals = self.values()
+        return statistics.mean(vals) if vals else 0.0
+
+    def median(self) -> float:
+        vals = self.values()
+        return statistics.median(vals) if vals else 0.0
+
+    def stddev(self) -> float:
+        vals = self.values()
+        return statistics.stdev(vals) if len(vals) > 1 else 0.0
+
+    def percentile(self, p: float) -> float:
+        vals = sorted(self.values())
+        if not vals:
+            return 0.0
+        k = (len(vals) - 1) * (p / 100.0)
+        f = math.floor(k)
+        c = math.ceil(k)
+        if f == c:
+            return vals[int(k)]
+        return vals[f] * (c - k) + vals[c] * (k - f)
+
+    def moving_average(self, window: int) -> List[float]:
+        vals = self.values()
+        result = []
+        for i in range(len(vals)):
+            start = max(0, i - window + 1)
+            window_vals = vals[start:i + 1]
+            result.append(sum(window_vals) / len(window_vals))
+        return result
+
+    def resample(self, interval: timedelta) -> 'TimeSeries':
+        if not self.points:
+            return TimeSeries(f"{self.name}_resampled")
+
+        result = TimeSeries(f"{self.name}_resampled")
+        sorted_points = sorted(self.points, key=lambda p: p.timestamp)
+
+        current_start = sorted_points[0].timestamp
+        current_values = []
+
+        for point in sorted_points:
+            if point.timestamp < current_start + interval:
+                current_values.append(point.value)
+            else:
+                if current_values:
+                    result.add(current_start, sum(current_values) / len(current_values))
+                current_start = point.timestamp
+                current_values = [point.value]
+
+        if current_values:
+            result.add(current_start, sum(current_values) / len(current_values))
+
+        return result
+
+    def detect_anomalies(self, threshold: float = 2.0) -> List[TimeSeriesPoint]:
+        vals = self.values()
+        if len(vals) < 3:
+            return []
+
+        m = statistics.mean(vals)
+        s = statistics.stdev(vals)
+        if s == 0:
+            return []
+
+        return [p for p in self.points if abs(p.value - m) > threshold * s]
+
+class AnalyticsEngine:
+    def __init__(self):
+        self.series: Dict[str, TimeSeries] = {}
+        self.events: List[Dict] = []
+        self.funnels: Dict[str, List[str]] = {}
+
+    def record_metric(self, name: str, value: float, timestamp: datetime = None,
+                      labels: Dict[str, str] = None):
+        if name not in self.series:
+            self.series[name] = TimeSeries(name)
+        self.series[name].add(timestamp or datetime.now(), value, labels)
+
+    def record_event(self, event_type: str, user_id: str, properties: Dict = None):
+        self.events.append({
+            "type": event_type,
+            "user_id": user_id,
+            "timestamp": datetime.now(),
+            "properties": properties or {},
+        })
+
+    def define_funnel(self, name: str, steps: List[str]):
+        self.funnels[name] = steps
+
+    def analyze_funnel(self, funnel_name: str, window: timedelta = timedelta(hours=24)) -> Dict:
+        steps = self.funnels.get(funnel_name)
+        if not steps:
+            return {}
+
+        users_by_step: Dict[str, set] = {step: set() for step in steps}
+
+        events_by_user: Dict[str, List[Dict]] = defaultdict(list)
+        for event in self.events:
+            events_by_user[event["user_id"]].append(event)
+
+        for user_id, user_events in events_by_user.items():
+            user_events.sort(key=lambda e: e["timestamp"])
+            step_idx = 0
+            first_step_time = None
+
+            for event in user_events:
+                if step_idx >= len(steps):
+                    break
+                if event["type"] == steps[step_idx]:
+                    if step_idx == 0:
+                        first_step_time = event["timestamp"]
+                        users_by_step[steps[0]].add(user_id)
+                        step_idx += 1
+                    elif first_step_time and event["timestamp"] - first_step_time <= window:
+                        users_by_step[steps[step_idx]].add(user_id)
+                        step_idx += 1
+
+        result = {"funnel": funnel_name, "steps": []}
+        for i, step in enumerate(steps):
+            count = len(users_by_step[step])
+            prev_count = len(users_by_step[steps[i - 1]]) if i > 0 else count
+            result["steps"].append({
+                "name": step,
+                "users": count,
+                "conversion": count / prev_count if prev_count > 0 else 0,
+            })
+        return result
+
+    def cohort_analysis(self, cohort_event: str, retention_event: str,
+                        period: timedelta = timedelta(days=7),
+                        num_periods: int = 8) -> Dict:
+        cohort_users: Dict[int, set] = defaultdict(set)
+        retention: Dict[int, Dict[int, set]] = defaultdict(lambda: defaultdict(set))
+
+        first_event_time: Dict[str, datetime] = {}
+        for event in self.events:
+            if event["type"] == cohort_event:
+                uid = event["user_id"]
+                if uid not in first_event_time:
+                    first_event_time[uid] = event["timestamp"]
+                    period_idx = 0
+                    cohort_users[period_idx].add(uid)
+
+        for event in self.events:
+            if event["type"] == retention_event:
+                uid = event["user_id"]
+                if uid in first_event_time:
+                    elapsed = event["timestamp"] - first_event_time[uid]
+                    ret_period = int(elapsed / period)
+                    if 0 <= ret_period < num_periods:
+                        retention[0][ret_period].add(uid)
+
+        result = {"cohort_event": cohort_event, "periods": []}
+        for p in range(num_periods):
+            cohort_size = len(cohort_users[0])
+            retained = len(retention[0].get(p, set()))
+            result["periods"].append({
+                "period": p,
+                "cohort_size": cohort_size,
+                "retained": retained,
+                "rate": retained / cohort_size if cohort_size > 0 else 0,
+            })
+        return result
+
+    def segment_users(self, metric_name: str, segments: List[Tuple[str, float, float]]) -> Dict:
+        series = self.series.get(metric_name)
+        if not series:
+            return {}
+
+        user_values: Dict[str, List[float]] = defaultdict(list)
+        for point in series.points:
+            uid = point.labels.get("user_id")
+            if uid:
+                user_values[uid].append(point.value)
+
+        user_aggregates = {uid: sum(vals) for uid, vals in user_values.items()}
+
+        result = {}
+        for name, lower, upper in segments:
+            users = [uid for uid, val in user_aggregates.items() if lower <= val < upper]
+            result[name] = {
+                "count": len(users),
+                "users": users,
+                "avg_value": statistics.mean([user_aggregates[u] for u in users]) if users else 0,
+            }
+        return result
+
+    def get_dashboard(self) -> Dict:
+        dashboard = {
+            "metrics": {},
+            "alerts": [],
+        }
+
+        for name, series in self.series.items():
+            vals = series.values()
+            if not vals:
+                continue
+            dashboard["metrics"][name] = {
+                "current": vals[-1] if vals else 0,
+                "mean": series.mean(),
+                "median": series.median(),
+                "p95": series.percentile(95),
+                "p99": series.percentile(99),
+                "stddev": series.stddev(),
+                "anomalies": len(series.detect_anomalies()),
+            }
+
+            anomalies = series.detect_anomalies()
+            if anomalies:
+                latest = max(anomalies, key=lambda p: p.timestamp)
+                dashboard["alerts"].append({
+                    "metric": name,
+                    "value": latest.value,
+                    "timestamp": latest.timestamp.isoformat(),
+                    "severity": "high" if abs(latest.value - series.mean()) > 3 * series.stddev() else "medium",
+                })
+
+        return dashboard
+```
