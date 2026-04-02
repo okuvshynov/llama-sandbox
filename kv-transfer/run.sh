@@ -10,6 +10,8 @@ set -euo pipefail
 #   TARGETS     — array of "tag:path" pairs for target models
 #   N_PREDICT   — tokens to generate (default: 512)
 #   TEMP        — sampling temperature (default: 0.6)
+#   TOP_K       — top-k sampling (default: 40)
+#   TOP_P       — top-p sampling (default: 0.95)
 #   NGL         — GPU layers (default: 99)
 #   THREADS     — inference threads (default: not set, llama.cpp default)
 #
@@ -25,6 +27,8 @@ RESULTS="${SCRIPT_DIR}/results"
 # defaults
 N_PREDICT="${N_PREDICT:-512}"
 TEMP="${TEMP:-0.6}"
+TOP_K="${TOP_K:-40}"
+TOP_P="${TOP_P:-0.95}"
 NGL="${NGL:-99}"
 THREADS="${THREADS:-0}"
 
@@ -105,7 +109,7 @@ for prompt_file in "$PROMPTS"/*.txt; do
     if ! "$BINARY" ref \
         -m "$REF_MODEL" \
         -p "$prompt" \
-        -n "$N_PREDICT" --temp "$TEMP" -ngl "$NGL" "${THREAD_ARGS[@]}" \
+        -n "$N_PREDICT" --temp "$TEMP" --top-k "$TOP_K" --top-p "$TOP_P" -ngl "$NGL" "${THREAD_ARGS[@]}" \
         -o "$ref_bin" > /dev/null 2>"$log_file"; then
         echo "FAILED (see $log_file)"
         exit 1
