@@ -199,10 +199,15 @@ for tgt_entry in "${TARGETS[@]}"; do
             continue
         fi
 
-        tgt_out=$("$BINARY" compare -a "$ref_bin" -b "$tgt_bin" 2>/dev/null)
-        hoff_out=$("$BINARY" compare -a "$ref_bin" -b "$hoff_bin" 2>/dev/null)
+        tgt_out=$("$BINARY" compare -a "$ref_bin" -b "$tgt_bin" 2>/dev/null) || true
+        hoff_out=$("$BINARY" compare -a "$ref_bin" -b "$hoff_bin" 2>/dev/null) || true
 
-        tgt_kl=$(echo "$tgt_out" | grep "KL divergence:" | awk '{print $3}')
+        tgt_kl=$(echo "$tgt_out" | grep "KL divergence:" | awk '{print $3}' || true)
+        if [ -z "$tgt_kl" ]; then
+            echo "  [compare] $name ($tgt_tag) — FAILED, skipping"
+            continue
+        fi
+
         tgt_p95=$(echo "$tgt_out" | grep "KL p95:" | awk '{print $3}')
         tgt_p99=$(echo "$tgt_out" | grep "KL p99:" | awk '{print $3}')
         tgt_t1=$(echo "$tgt_out" | grep "Top-1 agree:" | awk '{print $3}')
