@@ -93,14 +93,17 @@ function sortQuants(tags) {
 
 function parseCSV(text) {
   const lines = text.trim().split('\n');
+  const headers = lines[0].split(',');
   return lines.slice(1).map(line => {
     const c = line.split(',');
+    const row = {};
+    headers.forEach((h, i) => row[h] = c[i]);
     return {
-      prompt: c[0], ref_model: c[1], target_model: c[2],
-      ref_bytes: parseInt(c[3]), target_bytes: parseInt(c[4]),
-      n_prompt: parseInt(c[5]), n_gen: parseInt(c[6]),
-      kl_target: parseFloat(c[7]), top1_target: parseFloat(c[8]),
-      kl_handoff: parseFloat(c[9]), top1_handoff: parseFloat(c[10]),
+      prompt: row.prompt, ref_model: row.ref_model, target_model: row.target_model,
+      ref_bytes: parseInt(row.ref_bytes), target_bytes: parseInt(row.target_bytes),
+      n_prompt: parseInt(row.n_prompt), n_gen: parseInt(row.n_gen),
+      kl_target: parseFloat(row.kl_target), top1_target: parseFloat(row.top1_target),
+      kl_handoff: parseFloat(row.kl_handoff), top1_handoff: parseFloat(row.top1_handoff),
     };
   });
 }
