@@ -1,0 +1,20 @@
+<think>
+Let me analyze this JavaScript event scheduler code carefully to identify bugs.
+
+1. **Bug in `run()` method - Time calculation issue**: The `startTime` is captured once at the beginning, but `elapsed` is calculated as `Date.now() - startTime`. However, `event.time` appears to be an absolute time or a delay? Looking at the usage, events are scheduled with times like 1000, 2000, 500 (milliseconds). These look like delays from start, not absolute timestamps. The problem is that after waiting for the first event, the `elapsed` time for subsequent events won't be accurate because we've already spent time waiting. Each event's `time` should be relative to the start, but the wait calculation doesn't account for time already spent processing previous events.
+
+2. **Bug in `reschedule()` - No re-sorting**: After modifying an event's time, the events array is not re-sorted. This means events could execute out of order.
+
+3. **Bug in `reschedule()` - Loose equality**: Uses `==` instead of `===` for name comparison. This is a code quality issue that could lead to unexpected behavior.
+
+4. **Bug in `run()` - Multiple events with same name**: The `cancel()` method removes ALL events with a given name, but if there are multiple events with the same name scheduled, this could be problematic. However, this might be intentional design.
+
+5. **Bug in `run()` - Event handlers receive wrong data**: The handlers receive the `event` object which contains the `callback` function. This could be a security/encapsulation issue, but more importantly, the `time` value in the event object is the scheduled time, not the actual completion time.
+
+6. **Bug in `run()` - No error handling**: If a callback or handler throws an error, it will stop the entire scheduler.
+
+7. **Bug in `off()` - No return value**: While not strictly a bug, it doesn't return whether the handler was actually removed.
+   
+8. **Bug in `run()` - Time drift**: As events execute sequentially with await, the timing becomes increasingly inaccurate. Each event's wait time should be calculated relative to when it should fire, not from the original start time minus all elapsed time including previous event execution.
+
+9. **Bug in `cancel()` during execution**: If `cancel()` is called while `run()`

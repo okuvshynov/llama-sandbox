@@ -1,0 +1,34 @@
+<think>
+
+</think>
+
+This C++ program implements **Huffman Coding**, a popular lossless data compression algorithm. It analyzes the frequency of characters in a given string, builds a binary tree based on those frequencies, generates unique binary codes for each character (where frequent characters get shorter codes), and finally calculates the compression ratio.
+
+### Step-by-Step Functionality
+
+1.  **Frequency Counting**:
+    The `buildTree` function starts by iterating through the input string `text` and counting the occurrences of every character using an `unordered_map`.
+
+2.  **Building the Huffman Tree**:
+    *   It creates a min-priority queue (`std::priority_queue` with a custom `Compare` struct) where nodes are ordered by frequency (lowest frequency at the top).
+    *   Initial leaf nodes are created for every unique character and pushed into the queue.
+    *   The algorithm repeatedly extracts the two nodes with the lowest frequencies (`left` and `right`), creates a new internal `parent` node with a frequency equal to the sum of its children, and pushes the parent back into the queue.
+    *   This continues until only one node remains in the queue, which becomes the **root** of the Huffman tree.
+
+3.  **Generating Codes**:
+    The `buildCodes` function performs a Depth-First Search (DFS) traversal of the tree:
+    *   Moving to a left child appends `'0'` to the current code prefix.
+    *   Moving to a right child appends `'1'`.
+    *   When a leaf node is reached (a node with no children), the accumulated prefix is stored as the binary code for that character.
+    *   *Edge Case*: If the tree has only one node (string with one unique character), it assigns the code `"0"`.
+
+4.  **Encoding and Output**:
+    *   The `encode` function constructs the final compressed bitstring by replacing every character in the original text with its corresponding Huffman code.
+    *   The `main` function sorts the generated codes by length and prints them.
+    *   Finally, it compares the size of the original text (assuming 8 bits per character) against the size of the encoded bitstring to display the compression ratio.
+
+---
+
+### Time Complexity Analysis
+
+Let $N$ be the length of the input string (`text.size()`) and $K$ be the number of **unique** characters in

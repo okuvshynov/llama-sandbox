@@ -1,0 +1,45 @@
+<think>
+
+</think>
+
+This codebase provides a functional skeleton for an e-commerce microservice but contains several critical flaws ranging from data integrity risks and security vulnerabilities to architectural anti-patterns that prevent scalability.
+
+Here is a detailed review categorized by issue type.
+
+---
+
+### 1. Critical Data Integrity & Concurrency Issues
+
+#### **A. Race Conditions in Inventory Management**
+**Location:** `inventory.py` (`reserve_stock`, `check_availability`)
+**Issue:** The logic checks availability and then reserves stock in two separate steps, even though they are wrapped in a lock. However, `_get_reserved_quantity` iterates over reservations without considering expiration correctly within the check, and more importantly, the `check_availability` logic is flawed because it calculates reserved stock based on *all* reservations, not filtering out expired ones effectively before the check.
+Worse, in a real multi-process environment (e.g., Kubernetes pods), the `threading.Lock` only protects within a single process. Since the state is stored in a JSON file, concurrent writes from different processes will corrupt `inventory.json`.
+**Impact:** Overselling items (selling more stock than exists) or data corruption in the JSON file.
+**Fix:**
+1.  Move to a real database (PostgreSQL/Redis) with ACID transactions.
+2.  If sticking to file-based (not recommended for production), use file locking (`fcntl`) instead of threading locks, and ensure atomic read-modify-write operations.
+3.  Filter expired reservations *before* calculating available stock.
+
+```python
+# Fix concept for inventory.py
+def check_availability(self, product_id: str, quantity: int) -> bool:
+    self._cleanup_expired_reservations() # Must happen inside the lock
+    product = self.products.get(product_id)
+    if not product: return False
+    
+    reserved = self._get_reserved_quantity(product_id)
+    return (product.stock_count - reserved) >= quantity
+
+def reserve_stock(self, order_id: str, items: List[Tuple[str, int]]) -> bool:
+    with self.lock:
+        self._cleanup_expired_reservations() # Clean before checking
+        # Re-check availability inside the lock immediately before reserving
+        for product_id, quantity in items:
+            if not self.check_availability(product_id, quantity):
+                return False
+        
+        # Proceed to reserve...
+```
+
+#### **B. Mutable Default Arguments & Time Coupling**
+**Location:**

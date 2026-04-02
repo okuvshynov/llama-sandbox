@@ -1,0 +1,20 @@
+<think>
+Here's a thinking process that leads to the review:
+
+1.  **Understand the Goal:** The user wants a code review of a Go distributed task scheduler implementation. I need to identify bugs, race conditions, performance issues, and design problems across four files (`scheduler.go`, `ratelimiter.go`, `circuitbreaker.go`, `workerpool.go`). For each issue, I need to explain it and suggest a fix.
+
+2.  **Initial Scan & Architecture Overview:**
+    *   **`scheduler.go`:** Core logic. Manages tasks, a priority queue (heap), workers, dependencies, and state. Uses a global mutex (`sync.RWMutex`) for almost everything.
+    *   **`ratelimiter.go`:** Token bucket and sliding window implementations. Used for limiting task execution rates (though not explicitly integrated into the scheduler logic in the provided snippets, it's part of the package).
+    *   **`circuitbreaker.go`:** Standard circuit breaker pattern. Registry for managing multiple breakers.
+    *   **`workerpool.go`:** Manages a pool of worker goroutines that pull tasks from the scheduler. Includes auto-scaling logic.
+
+    *   **Overall Architecture:** It looks like a *single-process* scheduler with a worker pool, despite the name "distributed task scheduler". There's no RPC, no shared state store (Redis/DB), no leader election. It's essentially an in-memory job queue with worker threads. This is a significant design mismatch if the intent was truly "distributed." I need to point this out.
+
+3.  **Detailed Analysis - File by File:**
+
+    *   **`scheduler.go`:**
+        *   *Concurrency:* Heavy reliance on `s.mu`. This is a global lock bottleneck. `AssignTask`, `CompleteTask`, `SubmitTask`, `Heartbeat` all lock the whole scheduler.
+        *   *Race Conditions:*
+            *   `CompleteTask`: Modifies `worker.Load` inside the lock, but `WorkerStatus` fields like `TasksCompleted` are updated atomically *outside* the lock logic sometimes? Wait, `CompleteTask` holds `s.mu`. Inside, it accesses `s.workers[task.WorkerID]`. Then it does `atomic.AddInt64`. This is safe but mixing mutex and atomics on the same struct fields is confusing.
+            *   `checkWorkerHealth`: Requeues tasks. It pushes to the

@@ -1,0 +1,25 @@
+<think>
+Here's a thinking process that leads to the review:
+
+1.  **Understand the Goal:** The user wants a code review of a provided Python codebase. The review needs to cover bugs, performance issues, and design problems. For each issue found, I need to explain it and suggest a fix.
+
+2.  **Initial Scan & High-Level Assessment:**
+    *   **Purpose:** It's an in-memory cache with TTL (Time To Live) and LRU (Least Recently Used) eviction policies, backed by SQLite for logging. It includes a cache warmer and a periodic cleaner.
+    *   **Structure:** Several classes (`CacheEntry`, `LRUEvictionPolicy`, `TTLEvictionPolicy`, `CacheStore`, `CacheWarmer`, `PeriodicCleaner`).
+    *   **Concurrency:** Uses `threading.Lock`.
+    *   **Persistence:** SQLite is used *only* for logging operations, not for storing cache data.
+    *   **First Impression:** It looks like a custom implementation of something that already exists (like `cachetools` or `redis`), which is fine for learning but risky for production. There are immediate red flags regarding thread safety, SQLite usage within locks, and efficiency of data structures.
+
+3.  **Detailed Analysis (Class by Class/Feature by Feature):**
+
+    *   **`CacheEntry` (Dataclass):**
+        *   *Issue:* `last_accessed` uses `field(default_factory=time.time)`. This evaluates `time.time()` *once* when the class is defined, not when the instance is created.
+        *   *Fix:* Use `default_factory=lambda: time.time()`.
+
+    *   **`LRUEvictionPolicy`:**
+        *   *Issue:* Uses a `list` for `access_order`. `remove` and `in` checks on a list are $O(N)$. As the cache grows, eviction becomes very slow.
+        *   *Fix:* Use `collections.OrderedDict` or a combination of `dict` + doubly linked list (standard LRU implementation). Python's `OrderedDict` has `move_to_end` and `popitem(last=False)`.
+
+    *   **`TTLEvictionPolicy`:**
+        *   *Issue:* `get_expired_keys` iterates over *all* entries every time `cleanup_expired` is called. This is $O(N)$.
+        *

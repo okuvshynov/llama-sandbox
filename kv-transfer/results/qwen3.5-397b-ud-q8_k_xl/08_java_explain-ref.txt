@@ -1,0 +1,29 @@
+<think>
+
+</think>
+
+This Java program implements a **Least Recently Used (LRU) Cache**.
+
+An LRU cache is a data structure that stores a fixed number of items. When the cache reaches its capacity and a new item needs to be added, it automatically removes the item that hasn't been accessed (read or written) for the longest time.
+
+### 1. What the Program Does
+
+The program defines a generic class `LRUCache<K, V>` that supports two primary operations in **O(1)** (constant) time complexity:
+*   **`get(key)`**: Retrieves the value associated with a key. If the key exists, it marks the item as "recently used" by moving it to the front of the list. If the key doesn't exist, it returns `null`.
+*   **`put(key, value)`**: Inserts or updates a key-value pair.
+    *   If the key exists, it updates the value and moves the item to the front.
+    *   If the key is new and the cache is full, it evicts the **least recently used** item (the one at the very end of the list) before inserting the new one.
+    *   If the key is new and there is space, it simply adds the item to the front.
+
+#### Walkthrough of the `main` method logic:
+1.  **Initialization**: Creates a cache with a capacity of **3**.
+2.  **Insertion**: Adds `a=1`, `b=2`, `c=3`.
+    *   *State*: `[c=3, b=2, a=1]` (Newest on left, Oldest on right).
+3.  **Access**: Calls `get("a")`.
+    *   Since `a` was the oldest, accessing it moves it to the front.
+    *   *State*: `[a=1, c=3, b=2]`.
+4.  **Insertion (Eviction)**: Calls `put("d", 4)`.
+    *   Cache is full (size 3). The least recently used item is now `b` (at the tail).
+    *   `b` is removed. `d` is added to the front.
+    *   *State*: `[d=4, a=1, c=3]`.
+5.  **Update (Eviction)**: Calls

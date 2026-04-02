@@ -1,0 +1,26 @@
+<think>
+Here's a thinking process that leads to the review:
+
+1.  **Understand the Goal:** The user wants a code review of a provided TypeScript codebase. The review needs to cover bugs, type safety issues, and architectural problems. For each issue, I need to explain it and suggest improvements.
+
+2.  **Initial Scan & High-Level Understanding:**
+    *   **What is this?** It's a task pipeline execution engine with dependency resolution, concurrency control, retries, timeouts, and event emission.
+    *   **Key Components:** `TypedEventEmitter`, `Task` interface, `Pipeline` class.
+    *   **Language:** TypeScript.
+    *   **First Impression:** It looks functional but has several significant type safety holes, potential race conditions, and architectural rigidity (e.g., accessing private members in usage).
+
+3.  **Detailed Analysis - Section by Section:**
+
+    *   **`TypedEventEmitter`:**
+        *   *Issue:* `Set<Function>` is too loose. It should be `Set<T[K]>`.
+        *   *Issue:* `once` logic. When `emit` is called, it iterates over `onceSet`. If a listener removes itself or another listener during iteration, `Set` iteration is generally safe, *but* the logic clears the set *after* iteration. What if `emit` is called recursively?
+        *   *Issue:* `off` removes from `onceListeners`. Usually, `once` listeners are removed automatically after firing. Allowing manual removal is fine, but the type safety is the bigger concern.
+        *   *Type Safety:* `EventMap` uses `any[]`. Better to use `unknown[]` or specific tuple types, but generic `(...args: any[])` is common for event emitters. However, inside `TypedEventEmitter`, `Set<Function>` loses the specific signature of `T[K]`.
+
+    *   **`Task` Interface:**
+        *   *Issue:* `result?: T`. In `PipelineEvents`, `'task:complete'` uses `any` for result instead of inferring `T` from the specific task. This loses type safety on events.
+        *   *Issue:* `execute: () => Promise<T>`.
+        *   *Issue:* `dependencies: string[]`. String IDs are fragile.
+
+    *   **`PipelineEvents`:**
+        *   *

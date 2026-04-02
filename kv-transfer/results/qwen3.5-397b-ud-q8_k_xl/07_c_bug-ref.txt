@@ -1,0 +1,45 @@
+<think>
+Let me analyze this C program for memory-related bugs.
+
+1. **Memory leak in `table_put` when updating existing key:**
+   When a key already exists and we update its value, we do:
+   ```c
+   t->entries[i].value = strdup(value);
+   ```
+   This allocates new memory but doesn't free the old `t->entries[i].value` first. This is a memory leak.
+
+2. **Memory leak in `table_delete`:**
+   When deleting an entry, we do:
+   ```c
+   t->entries[i] = t->entries[t->size - 1];
+   t->size--;
+   ```
+   This copies the last entry to the position being deleted, but we never free the memory of the entry being deleted (both `key` and `value`). This is a memory leak.
+
+3. **No NULL check after malloc/realloc:**
+   - `table_create`: `malloc` for `Table` and `entries` could fail
+   - `table_put`: `realloc` could fail
+   - `strdup` could fail (returns NULL)
+   
+   While not strictly memory bugs, these can lead to crashes and undefined behavior.
+
+4. **Potential use-after-free in `table_delete`:**
+   After deleting "city", the code tries to get "city" which returns NULL (correct behavior), but the memory for the deleted entry's key and value is never freed.
+
+5. **No initialization of Entry fields:**
+   When `table_create` allocates entries, the `key` and `value` pointers are uninitialized (could be garbage). However, since we track `size` and only access entries up to `size`, this shouldn't cause issues in normal operation.
+
+Let me focus on the definite memory bugs:
+
+**Bug 1: Memory leak when updating existing key (line in `table_put`)**
+```c
+if (strcmp(t->entries[i].key, key) == 0) {
+    t->entries[i].value = strdup(value);  // Old value not freed!
+    return;
+}
+```
+
+**Bug 2: Memory leak when deleting entry (in `table_delete`)**
+```c
+if (strcmp(t->entries[i].key, key) == 0) {
+    t->entries[i] = t->entries[t->size - 1];  // Old

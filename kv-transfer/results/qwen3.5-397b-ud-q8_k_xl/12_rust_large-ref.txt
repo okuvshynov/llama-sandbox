@@ -1,0 +1,21 @@
+<think>
+Here's a thinking process that leads to the review:
+
+1.  **Understand the Goal:** The user wants a review of the provided Rust codebase. The review needs to cover three specific areas: Soundness Issues (correctness, safety, concurrency), Performance Problems (efficiency, bottlenecks), and API Design Concerns (usability, ergonomics, idioms).
+
+2.  **Initial Scan & High-Level Understanding:**
+    *   **Purpose:** It's a metrics collection library (similar to Prometheus or StatsD but in-memory). It tracks metrics like latency, size, etc.
+    *   **Key Components:**
+        *   `Metric`: Stores raw values and timestamps. Calculates mean, percentile, rate. Trims old data.
+        *   `MetricsRegistry`: Thread-safe storage for `Metric`s using `RwLock<HashMap<...>>` and `Arc<Mutex<Metric>>`.
+        *   `Timer`: RAII guard to record duration on drop.
+        *   `Histogram`: A separate implementation for bucketed histograms (unused in `main` but present).
+        *   `simulate_workload` & `main`: Multi-threaded stress test.
+    *   **Concurrency Model:** `Arc` + `RwLock` for the registry map, `Arc` + `Mutex` for individual metrics.
+    *   **Data Structures:** `Vec` for storing all raw values and timestamps.
+
+3.  **Detailed Analysis - Category by Category:**
+
+    *   **Soundness Issues (Correctness & Safety):**
+        *   *Panics:* `unwrap()` is used extensively (`read().unwrap()`, `lock().unwrap()`, `partial_cmp(...).unwrap()`). In a library, panics are generally bad. `partial_cmp` can return `None` for NaNs.
+        *   *Deadlocks:* `MetricsRegistry::snapshot` acquires the `RwLock` (read), then iterates and acquires individual `Mutex` locks. `get_or_create` acquires `RwLock` (read/write) then returns an `Arc<Mutex>`. This looks okay *unless* someone holds a `Metric` lock and tries to access the registry. Wait, `trim_older_than` isn't called in the main loop, but if it were called while holding the registry lock, it might be an issue. Actually, the bigger issue is `snapshot`. It holds
