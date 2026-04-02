@@ -109,7 +109,7 @@ for prompt_file in "$PROMPTS"/*.txt; do
     if ! "$BINARY" ref \
         -m "$REF_MODEL" \
         -p "$prompt" \
-        -n "$N_PREDICT" --temp "$TEMP" --top-k "$TOP_K" --top-p "$TOP_P" -ngl "$NGL" "${THREAD_ARGS[@]}" \
+        -n "$N_PREDICT" --temp "$TEMP" --top-k "$TOP_K" --top-p "$TOP_P" -ngl "$NGL" ${THREAD_ARGS[@]+"${THREAD_ARGS[@]}"} \
         -o "$ref_bin" > /dev/null 2>"$log_file"; then
         echo "FAILED (see $log_file)"
         exit 1
@@ -143,7 +143,7 @@ for tgt_entry in "${TARGETS[@]}"; do
             if ! "$BINARY" target \
                 -m "$tgt_model" \
                 -i "$ref_bin" \
-                -o "$tgt_bin" -ngl "$NGL" "${THREAD_ARGS[@]}" > /dev/null 2>"$log_file"; then
+                -o "$tgt_bin" -ngl "$NGL" ${THREAD_ARGS[@]+"${THREAD_ARGS[@]}"} > /dev/null 2>"$log_file"; then
                 echo "FAILED (see $log_file)"
                 exit 1
             fi
@@ -160,7 +160,7 @@ for tgt_entry in "${TARGETS[@]}"; do
                 -m-ref "$REF_MODEL" \
                 -m-tgt "$tgt_model" \
                 -i "$ref_bin" \
-                -o "$hoff_bin" -ngl "$NGL" "${THREAD_ARGS[@]}" > /dev/null 2>"$log_file"; then
+                -o "$hoff_bin" -ngl "$NGL" ${THREAD_ARGS[@]+"${THREAD_ARGS[@]}"} > /dev/null 2>"$log_file"; then
                 echo "FAILED (see $log_file)"
                 exit 1
             fi
