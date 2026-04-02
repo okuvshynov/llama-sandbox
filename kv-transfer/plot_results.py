@@ -78,7 +78,11 @@ def read_summary(path):
                 'target_model': r['target_model'],
                 'n_prompt': int(r['n_prompt']),
                 'kl_target': float(r['kl_target']),
+                'kl_target_p95': float(r.get('kl_target_p95', 0)),
+                'kl_target_p99': float(r.get('kl_target_p99', 0)),
                 'kl_handoff': float(r['kl_handoff']),
+                'kl_handoff_p95': float(r.get('kl_handoff_p95', 0)),
+                'kl_handoff_p99': float(r.get('kl_handoff_p99', 0)),
             })
     return rows
 
@@ -91,7 +95,8 @@ def prompt_marker(n_prompt):
     return 'o'
 
 
-def plot_combined(rows, output_path, title, theme='light'):
+def plot_combined(rows, output_path, title, theme='light',
+                  key_target='kl_target', key_handoff='kl_handoff'):
     """Horizontal box plot per quant with individual points overlaid.
 
     Each quant gets two rows: target (red) and handoff (blue).
@@ -134,8 +139,8 @@ def plot_combined(rows, output_path, title, theme='light'):
         rs = by_quant[q]
         y_t, y_h = y_positions[i]
 
-        for y_pos, key, color in [(y_t, 'kl_target', COLORS_TARGET),
-                                   (y_h, 'kl_handoff', COLORS_HANDOFF)]:
+        for y_pos, key, color in [(y_t, key_target, COLORS_TARGET),
+                                   (y_h, key_handoff, COLORS_HANDOFF)]:
             values = [r[key] for r in rs if r[key] > 0]
             if not values:
                 continue
@@ -211,11 +216,21 @@ def main():
         print(f'{short}:')
         rows = read_summary(summary_path)
 
-        for theme in ('light', 'dark'):
-            suffix = f'-{theme}' if theme == 'dark' else ''
-            plot_combined(rows,
-                          os.path.join(args.output_dir, f'kl-{short}{suffix}.png'),
-                          f'KL divergence — {short}', theme=theme)
+        metrics = [
+            ('kl',     'kl_target',     'kl_handoff',     'KL divergence (mean)'),
+            ('kl-p95', 'kl_target_p95', 'kl_handoff_p95', 'KL divergence (p95)'),
+            ('kl-p99', 'kl_target_p99', 'kl_handoff_p99', 'KL divergence (p99)'),
+        ]
+        for prefix, kt, kh, label in metrics:
+            # skip if data missing
+            if not any(r[kt] > 0 for r in rows):
+                continue
+            for theme in ('light', 'dark'):
+                suffix = f'-{theme}' if theme == 'dark' else ''
+                plot_combined(rows,
+                              os.path.join(args.output_dir, f'{prefix}-{short}{suffix}.png'),
+                              f'{label} — {short}', theme=theme,
+                              key_target=kt, key_handoff=kh)
 
 
 if __name__ == '__main__':
