@@ -83,114 +83,108 @@ def read_summary(path):
     return rows
 
 
-def plot_bar(rows, output_path, title, theme='light'):
-    """Horizontal bar chart: all quant×{target,handoff} bars sorted by KL value."""
+def prompt_marker(n_prompt):
+    if n_prompt >= XLARGE_PROMPT_THRESHOLD:
+        return 'D'
+    elif n_prompt >= MEDIUM_PROMPT_THRESHOLD:
+        return 's'
+    return 'o'
+
+
+def plot_combined(rows, output_path, title, theme='light'):
+    """Horizontal box plot per quant with individual points overlaid.
+
+    Each quant gets two rows: target (red) and handoff (blue).
+    Box shows quartiles, individual points are shaped by prompt length.
+    """
     t = THEMES[theme]
-    # Aggregate by quant
+    from matplotlib.patches import Patch
+    from matplotlib.lines import Line2D
+
+    # Group by quant
     by_quant = defaultdict(list)
     for r in rows:
         by_quant[r['target_model']].append(r)
 
-    entries = []
-    for q, rs in by_quant.items():
-        n = len(rs)
-        kl_t = sum(r['kl_target'] for r in rs) / n
-        kl_h = sum(r['kl_handoff'] for r in rs) / n
-        entries.append((kl_t, f'{q}', COLORS_TARGET))
-        entries.append((kl_h, f'{q} + handoff', COLORS_HANDOFF))
+    quants = sorted(by_quant.keys(), key=quant_sort_key)
+    n_quants = len(quants)
 
-    # Sort by value (lowest = best at top after inversion)
-    entries.sort(key=lambda e: e[0], reverse=True)
+    # Each quant gets 2 rows (target + handoff), with spacing between quants
+    row_height = 0.35
+    quant_gap = 0.3
+    fig_height = max(4, n_quants * (2 * row_height + quant_gap) + 1.5)
 
-    values = [e[0] for e in entries]
-    labels = [e[1] for e in entries]
-    colors = [e[2] for e in entries]
-
-    fig, ax = plt.subplots(figsize=(8, max(3, len(entries) * 0.35)))
+    fig, ax = plt.subplots(figsize=(10, fig_height))
     apply_theme(fig, ax, theme)
-    ax.barh(range(len(entries)), values, color=colors, height=0.7)
-    ax.set_yticks(range(len(entries)))
-    ax.set_yticklabels(labels, fontfamily='monospace', fontsize=9)
+
+    y_positions = []  # (y_target, y_handoff) per quant
+    y_labels = []
+    y_label_positions = []
+
+    for i, q in enumerate(quants):
+        base_y = i * (2 * row_height + quant_gap)
+        y_target = base_y + row_height
+        y_handoff = base_y
+        y_positions.append((y_target, y_handoff))
+        y_label_positions.append(base_y + row_height / 2)
+        y_labels.append(q)
+
+    # Draw box plots and points
+    for i, q in enumerate(quants):
+        rs = by_quant[q]
+        y_t, y_h = y_positions[i]
+
+        for y_pos, key, color in [(y_t, 'kl_target', COLORS_TARGET),
+                                   (y_h, 'kl_handoff', COLORS_HANDOFF)]:
+            values = [r[key] for r in rs if r[key] > 0]
+            if not values:
+                continue
+
+            # Box plot
+            bp = ax.boxplot([values], positions=[y_pos], vert=False,
+                            widths=row_height * 0.8, patch_artist=True,
+                            boxprops=dict(facecolor=color, alpha=0.3, edgecolor=color),
+                            medianprops=dict(color=color, linewidth=2),
+                            whiskerprops=dict(color=color),
+                            capprops=dict(color=color),
+                            flierprops=dict(marker='none'))
+
+            # Individual points with jitter
+            np.random.seed(42)
+            jitter = np.random.uniform(-row_height * 0.25, row_height * 0.25, len(rs))
+            for j, r in enumerate(rs):
+                v = r[key]
+                if v <= 0:
+                    continue
+                m = prompt_marker(r['n_prompt'])
+                ax.scatter(v, y_pos + jitter[j], marker=m, s=25,
+                           c=color, alpha=0.8, edgecolors=color,
+                           linewidths=0.5, zorder=5)
+
     ax.set_xscale('log')
     ax.set_xlabel('KL divergence (log scale, lower is better)')
     ax.set_title(title, fontsize=11)
+
+    ax.set_yticks(y_label_positions)
+    ax.set_yticklabels(y_labels, fontfamily='monospace', fontsize=9)
     ax.invert_yaxis()
 
-    # Value labels
-    for i, v in enumerate(values):
-        ax.text(v * 1.1, i, f'{v:.3f}', va='center', fontsize=8, color=t['text_light'])
+    # Grid
+    ax.xaxis.grid(True, alpha=0.3)
+    ax.yaxis.grid(False)
 
     # Legend
-    from matplotlib.patches import Patch
-    legend_elements = [
-        Patch(facecolor=COLORS_TARGET, label='Target (no transfer)'),
-        Patch(facecolor=COLORS_HANDOFF, label='Handoff (KV transfer)'),
+    handles = [
+        Patch(facecolor=COLORS_TARGET, alpha=0.5, label='Target (no transfer)'),
+        Patch(facecolor=COLORS_HANDOFF, alpha=0.5, label='Handoff (KV transfer)'),
+        Line2D([0], [0], marker='o', color=t['bg'], markerfacecolor=t['text_light'],
+               markersize=7, label='short prompt'),
+        Line2D([0], [0], marker='s', color=t['bg'], markerfacecolor=t['text_light'],
+               markersize=7, label='medium prompt'),
+        Line2D([0], [0], marker='D', color=t['bg'], markerfacecolor=t['text_light'],
+               markersize=7, label='xlarge prompt'),
     ]
-    ax.legend(handles=legend_elements, loc='lower right', fontsize=8,
-              facecolor=t['bg'], edgecolor=t['grid'], labelcolor=t['text'])
-
-    plt.tight_layout()
-    plt.savefig(output_path, dpi=150, bbox_inches='tight', facecolor=t['bg'])
-    plt.close()
-    print(f'  {output_path}')
-
-
-def plot_scatter(rows, output_path, title, theme='light'):
-    """Scatter: KL(target) vs KL(handoff), colored by quant, shape by prompt length."""
-    t = THEMES[theme]
-    quants = sorted(set(r['target_model'] for r in rows), key=quant_sort_key)
-    qcolor = {q: QUANT_COLORS[i % len(QUANT_COLORS)] for i, q in enumerate(quants)}
-
-    fig, ax = plt.subplots(figsize=(6, 6))
-    apply_theme(fig, ax, theme)
-
-    for r in rows:
-        if r['kl_target'] <= 0 or r['kl_handoff'] <= 0:
-            continue
-        color = qcolor[r['target_model']]
-        if r['n_prompt'] >= XLARGE_PROMPT_THRESHOLD:
-            marker, ms = 'D', 40
-        elif r['n_prompt'] >= MEDIUM_PROMPT_THRESHOLD:
-            marker, ms = 's', 40
-        else:
-            marker, ms = 'o', 40
-        ax.scatter(r['kl_target'], r['kl_handoff'],
-                   c=color, marker=marker, s=ms, alpha=0.75,
-                   edgecolors=color, linewidths=0.5)
-
-    ax.set_xscale('log')
-    ax.set_yscale('log')
-
-    # Diagonal — draw after setting scale so limits are correct
-    all_kl = [r['kl_target'] for r in rows if r['kl_target'] > 0] + \
-             [r['kl_handoff'] for r in rows if r['kl_handoff'] > 0]
-    lo = min(all_kl) * 0.5
-    hi = max(all_kl) * 2.0
-    ax.plot([lo, hi], [lo, hi], '--', color=t['diagonal'], linewidth=1, zorder=0)
-    ax.set_xlim(lo, hi)
-    ax.set_ylim(lo, hi)
-
-    ax.set_xlabel('KL(target)')
-    ax.set_ylabel('KL(handoff)')
-    ax.set_title(title, fontsize=11)
-
-    # Legend: quant colors
-    from matplotlib.lines import Line2D
-    handles = []
-    for q in quants:
-        handles.append(Line2D([0], [0], marker='o', color=t['bg'],
-                              markerfacecolor=qcolor[q], markersize=8,
-                              label=q))
-    handles.append(Line2D([0], [0], marker='o', color=t['bg'],
-                          markerfacecolor='#999', markersize=8,
-                          label='short prompt'))
-    handles.append(Line2D([0], [0], marker='s', color=t['bg'],
-                          markerfacecolor='#999', markersize=8,
-                          label='medium prompt'))
-    handles.append(Line2D([0], [0], marker='D', color=t['bg'],
-                          markerfacecolor='#999', markersize=8,
-                          label='xlarge prompt'))
-    ax.legend(handles=handles, fontsize=7, loc='upper left',
+    ax.legend(handles=handles, loc='lower right', fontsize=8,
               facecolor=t['bg'], edgecolor=t['grid'], labelcolor=t['text'])
 
     plt.tight_layout()
@@ -219,13 +213,9 @@ def main():
 
         for theme in ('light', 'dark'):
             suffix = f'-{theme}' if theme == 'dark' else ''
-            plot_bar(rows,
-                     os.path.join(args.output_dir, f'kl-bar-{short}{suffix}.png'),
-                     f'KL divergence — {short}', theme=theme)
-
-            plot_scatter(rows,
-                         os.path.join(args.output_dir, f'kl-scatter-{short}{suffix}.png'),
-                         f'Per-prompt KL — {short}', theme=theme)
+            plot_combined(rows,
+                          os.path.join(args.output_dir, f'kl-{short}{suffix}.png'),
+                          f'KL divergence — {short}', theme=theme)
 
 
 if __name__ == '__main__':
