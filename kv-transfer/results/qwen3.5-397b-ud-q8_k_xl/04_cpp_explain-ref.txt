@@ -31,4 +31,42 @@ This C++ program implements **Huffman Coding**, a popular lossless data compress
 
 ### Time Complexity Analysis
 
-Let $N$ be the length of the input string (`text.size()`) and $K$ be the number of **unique** characters in
+Let $N$ be the length of the input string (`text.size()`) and $K$ be the number of **unique** characters in the string (the size of the alphabet). Note that $K \le N$, and typically $K \ll N$ (e.g., $K \le 256$ for standard ASCII).
+
+#### 1. Frequency Counting
+*   **Operation**: Iterating through the string once and updating a hash map.
+*   **Complexity**: $O(N)$ on average.
+
+#### 2. Building the Priority Queue
+*   **Operation**: Inserting $K$ nodes into the priority queue.
+*   **Complexity**: Each insertion takes $O(\log K)$. Doing this $K$ times results in $O(K \log K)$.
+
+#### 3. Constructing the Tree
+*   **Operation**: The `while` loop runs $K-1$ times (since each iteration reduces the queue size by 1). Inside the loop, we perform two `pop` operations and one `push` operation.
+*   **Complexity**: Each heap operation is $O(\log K)$. Total: $(K-1) \times O(\log K) \approx O(K \log K)$.
+
+#### 4. Generating Codes (DFS Traversal)
+*   **Operation**: Traversing the Huffman tree. The tree has $2K - 1$ nodes total ($K$ leaves and $K-1$ internal nodes).
+*   **Complexity**: $O(K)$.
+    *   *Note*: String concatenation (`prefix + "0"`) takes time proportional to the depth of the tree. In the worst case, the depth is $K$, making this step theoretically $O(K^2)$ if string copying is naive. However, since the maximum depth is usually logarithmic or bounded by the alphabet size (256), this is often treated as negligible or $O(K \cdot L)$ where $L$ is max code length. For strict analysis with string copying, it is $O(K^2)$ in the worst skewed tree case, but practically $O(K)$.
+
+#### 5. Encoding the Text
+*   **Operation**: Iterating through the original string ($N$) and appending the code for each character.
+*   **Complexity**: $O(N \cdot L)$, where $L$ is the average length of the Huffman codes. Since $L$ is bounded by $K$ (and typically small), this is effectively linear relative to the output size. In terms of input $N$, it is $O(N)$.
+
+#### 6. Sorting and Printing
+*   **Operation**: Sorting $K$ items.
+*   **Complexity**: $O(K \log K)$.
+
+### Final Conclusion
+
+The dominant factors are scanning the input string and building the heap.
+
+*   **Time Complexity**: **$O(N + K \log K)$**
+    *   Where $N$ is the total number of characters.
+    *   Where $K$ is the number of unique characters.
+    *   Since $K$ is usually a small constant (e.g., 256 for ASCII), the complexity is effectively **linear**, i.e., **$O(N)$**.
+
+*   **Space Complexity**: **$O(N + K)$**
+    *   $O(K)$ to store the tree, frequency map, and codes.
+    *   $O(N)$ to store the resulting encoded string (in the worst case where compression doesn't reduce size significantly, though usually it is less than $8N$ bits).

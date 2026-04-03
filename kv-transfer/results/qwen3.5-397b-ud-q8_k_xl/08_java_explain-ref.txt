@@ -26,4 +26,50 @@ The program defines a generic class `LRUCache<K, V>` that supports two primary o
     *   Cache is full (size 3). The least recently used item is now `b` (at the tail).
     *   `b` is removed. `d` is added to the front.
     *   *State*: `[d=4, a=1, c=3]`.
-5.  **Update (Eviction)**: Calls
+5.  **Update (Eviction)**: Calls `put("b", 5)`.
+    *   Cache is full. The least recently used item is now `c`.
+    *   `c` is removed. `b` is added to the front with the new value.
+    *   *State*: `[b=5, d=4, a=1]`.
+
+---
+
+### 2. Data Structure Description
+
+To achieve **O(1)** time complexity for both `get` and `put` operations, this implementation uses a hybrid data structure combining a **Hash Map** and a **Doubly Linked List**.
+
+#### Components:
+
+1.  **HashMap (`map`)**:
+    *   **Type**: `Map<K, Node<K, V>>`
+    *   **Purpose**: Provides fast lookup. It maps the `key` directly to the `Node` object in the linked list.
+    *   **Role**: Allows the program to find any node instantly without traversing the list.
+
+2.  **Doubly Linked List**:
+    *   **Structure**: Custom `Node` class containing `key`, `value`, `prev`, and `next` pointers.
+    *   **Sentinel Nodes**: Uses dummy `head` and `tail` nodes to simplify edge cases (adding/removing from empty lists or ends).
+        *   `head.next` points to the **Most Recently Used (MRU)** item.
+        *   `tail.prev` points to the **Least Recently Used (LRU)** item.
+    *   **Role**: Maintains the order of usage.
+        *   **Front (near head)**: Most recently accessed items.
+        *   **Back (near tail)**: Least recently accessed items (candidates for eviction).
+
+#### How they work together:
+
+*   **Reading (`get`)**:
+    1.  Look up the key in the **HashMap** to get the `Node` (O(1)).
+    2.  Use the `Node`'s pointers to unlink it from its current position in the **Linked List** (O(1)).
+    3.  Re-insert the `Node` right after the `head` (O(1)).
+
+*   **Writing (`put`)**:
+    1.  Check **HashMap** for existing key.
+    2.  If capacity is exceeded, identify the LRU node via `tail.prev`, remove it from the **Linked List**, and remove its key from the **HashMap** (O(1)).
+    3.  Create a new `Node`, add it to the **HashMap**, and insert it at the front of the **Linked List** (O(1)).
+
+### Summary of Complexity
+
+| Operation | Time Complexity | Space Complexity |
+| :--- | :--- | :--- |
+| **Get** | O(1) | O(capacity) |
+| **Put** | O(1) | O(capacity) |
+
+This combination is the standard optimal solution for implementing an LRU cache because neither a standalone Hash Map (which has no order) nor a standalone Linked List (which requires O(N) search) could achieve O(1) for both operations simultaneously.

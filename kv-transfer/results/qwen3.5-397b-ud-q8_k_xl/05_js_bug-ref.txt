@@ -17,4 +17,171 @@ Let me analyze this JavaScript event scheduler code carefully to identify bugs.
    
 8. **Bug in `run()` - Time drift**: As events execute sequentially with await, the timing becomes increasingly inaccurate. Each event's wait time should be calculated relative to when it should fire, not from the original start time minus all elapsed time including previous event execution.
 
-9. **Bug in `cancel()` during execution**: If `cancel()` is called while `run()`
+9. **Bug in `cancel()` during execution**: If `cancel()` is called while `run()` is executing, it could modify the array being iterated over, though since `for...of` creates an iterator at the start, this might actually be safe.
+
+10. **Bug in `reschedule()` - Multiple matches**: If multiple events have the same name, ALL of them get rescheduled, which might not be intended.
+
+The most critical issues are the timing calculation in `run()` which causes drift, the missing re-sort after `reschedule()`, and the loose equality comparison.
+</think>
+
+# Bugs in the EventScheduler
+
+Here are the bugs identified in the code, ranked by severity:
+
+## 1. **Critical: Time Drift in `run()` Method** ⚠️
+
+**Problem:** The timing calculation doesn't account for execution time of previous events, causing cumulative drift.
+
+```javascript
+// Current buggy code:
+const startTime = Date.now();
+for (const event of this.events) {
+  const elapsed = Date.now() - startTime;  // Includes previous event execution time!
+  const wait = event.time - elapsed;
+  // ...
+}
+```
+
+**Impact:** If event callbacks take time to execute, subsequent events fire later than scheduled.
+
+**Fix:** Calculate wait time relative to each event's scheduled time:
+```javascript
+async run() {
+  const startTime = Date.now();
+  for (const event of this.events) {
+    const wait = event.time - (Date.now() - startTime);
+    if (wait > 0) {
+      await new Promise(resolve => setTimeout(resolve, wait));
+    }
+    event.callback();
+    // ...
+  }
+}
+```
+
+## 2. **Critical: `reschedule()` Doesn't Re-sort** ⚠️
+
+**Problem:** After modifying an event's time, the events array isn't re-sorted.
+
+```javascript
+reschedule(name, newTime) {
+  for (const event of this.events) {
+    if (event.name == name) {  // Also uses loose equality
+      event.time = newTime;
+      // Missing: this.events.sort((a, b) => a.time - b.time);
+    }
+  }
+}
+```
+
+**Impact:** Events execute out of order after rescheduling.
+
+**Fix:** Re-sort after modification and use strict equality:
+```javascript
+reschedule(name, newTime) {
+  for (const event of this.events) {
+    if (event.name === name) {
+      event.time = newTime;
+    }
+  }
+  this.events.sort((a, b) => a.time - b.time);
+}
+```
+
+## 3. **Medium: No Error Handling** ⚠️
+
+**Problem:** If any callback or handler throws, the entire scheduler stops.
+
+```javascript
+event.callback();  // Could throw
+for (const handler of handlers) {
+  handler(event);  // Could throw
+}
+```
+
+**Impact:** One failing event prevents all subsequent events from running.
+
+**Fix:** Wrap in try-catch:
+```javascript
+try {
+  event.callback();
+} catch (err) {
+  console.error(`Event ${event.name} failed:`, err);
+}
+```
+
+## 4. **Medium: Event Handlers Receive Internal Data**
+
+**Problem:** Handlers receive the full event object including the callback function.
+
+```javascript
+handler(event);  // Exposes internal callback
+```
+
+**Impact:** Breaks encapsulation; handlers could accidentally modify scheduler state.
+
+**Fix:** Pass only safe data:
+```javascript
+handler({ name: event.name, time: event.time });
+```
+
+## 5. **Low: Loose Equality in `reschedule()`**
+
+**Problem:** Uses `==` instead of `===`.
+
+```javascript
+if (event.name == name)  // Should be ===
+```
+
+**Impact:** Type coercion could cause unexpected matches (e.g., `0 == "0"`).
+
+**Fix:** Use strict equality `===`.
+
+## 6. **Low: `cancel()` Removes All Matching Events**
+
+**Problem:** If multiple events share a name, all are cancelled.
+
+```javascript
+cancel(name) {
+  this.events = this.events.filter(e => e.name !== name);
+}
+```
+
+**Impact:** May be unintended if events should be individually cancellable.
+
+**Fix:** Consider using unique IDs instead of names for cancellation.
+
+## 7. **Low: No Validation**
+
+**Problem:** No validation of inputs (negative times, missing callbacks, etc.).
+
+```javascript
+schedule(name, time, callback) {
+  // No validation
+  this.events.push({ name, time, callback });
+}
+```
+
+**Fix:** Add input validation:
+```javascript
+if (typeof callback !== 'function') {
+  throw new Error('Callback must be a function');
+}
+if (time < 0) {
+  throw new Error('Time must be non-negative');
+}
+```
+
+## Summary Table
+
+| Bug | Severity | Location | Impact |
+|-----|----------|----------|--------|
+| Time drift | Critical | `run()` | Events fire at wrong times |
+| No re-sort | Critical | `reschedule()` | Wrong execution order |
+| No error handling | Medium | `run()` | One failure stops all |
+| Exposed internals | Medium | `run()` | Encapsulation breach |
+| Loose equality | Low | `reschedule()` | Potential type bugs |
+| Bulk cancel | Low | `cancel()` | May cancel unintended events |
+| No validation | Low | `schedule()` | Invalid inputs accepted |
+
+**Priority Fix Order:** 1 → 2 → 3 → 4 → 5 → 6 → 7

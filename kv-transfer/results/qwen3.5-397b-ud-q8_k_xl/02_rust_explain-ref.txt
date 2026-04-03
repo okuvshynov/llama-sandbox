@@ -42,4 +42,87 @@ The program imports `HashMap` from the standard library. This is used later in t
 
 **Logic:**
 1.  Initializes an empty result vector.
-2
+2.  Iterates through every `(byte, count)` pair in the input data.
+3.  For each pair, it runs an inner loop `count` times, pushing the `byte` into the result vector each time.
+4.  Returns the reconstructed vector.
+
+---
+
+### 4. The `analyze` Function
+**Purpose:** Calculates the frequency of every unique byte in the input, regardless of whether they are consecutive.
+
+*   **Input:** A slice of bytes (`&[u8]`).
+*   **Output:** A `HashMap<u8, usize>` mapping each byte to its total occurrence count.
+
+**Logic:**
+1.  Creates a new `HashMap`.
+2.  Iterates through every byte `b` in the input.
+3.  Uses `entry(b).or_insert(0)` to access the count for that byte (creating it with 0 if it doesn't exist) and increments it by 1.
+
+---
+
+### 5. The `main` Function
+This is the entry point that ties everything together.
+
+#### A. Setup and Execution
+```rust
+let data = b"AAABBBCCCCDDDDDEEEEE";
+```
+Defines a byte string literal containing repeated characters.
+
+1.  **Compression:** Calls `compress(data)`.
+    *   Input: `AAABBBCCCCDDDDDEEEEE`
+    *   Output Logic: 3 'A's, 3 'B's, 4 'C's, 5 'D's, 5 'E's.
+    *   Result: `[(A, 3), (B, 3), (C, 4), (D, 5), (E, 5)]` (5 entries).
+
+2.  **Decompression:** Calls `decompress(&compressed)`.
+    *   Expands the 5 entries back into the original sequence of 20 bytes.
+
+3.  **Analysis:** Calls `analyze(data)`.
+    *   Counts total occurrences: A=3, B=3, C=4, D=5, E=5.
+
+#### B. Statistics and Verification
+The program prints several metrics:
+
+1.  **Original size:** Prints `20` (the length of the string).
+2.  **Compressed entries:** Prints `5` (the number of tuples generated).
+3.  **Ratio Calculation:**
+    ```rust
+    (compressed.len() * 3) as f64 / data.len() as f64 * 100.0
+    ```
+    *   It assumes each compressed entry takes up **3 bytes** of memory in this conceptual model (1 byte for the `u8` character + 2 bytes for the `u16` count).
+    *   Calculation: $(5 \times 3) / 20 = 15 / 20 = 0.75$.
+    *   Output: `75.0%`. This indicates the compressed representation (in this specific tuple format) is 75% the size of the original. *Note: In real-world scenarios, RLE is only efficient when runs are very long; here, the overhead of storing the count makes it slightly smaller but not drastically so.*
+
+4.  **Roundtrip Check:**
+    ```rust
+    data.as_slice() == decompressed.as_slice()
+    ```
+    Compares the original data with the decompressed data. It should print `true`, confirming the algorithm is lossless.
+
+#### C. Frequency Report
+```rust
+let mut pairs: Vec<_> = freq.into_iter().collect();
+pairs.sort_by(|a, b| b.1.cmp(&a.1));
+```
+1.  Converts the HashMap into a vector of tuples.
+2.  Sorts the vector by frequency (count) in **descending order** (highest count first).
+3.  Iterates and prints each character and its total count.
+
+**Expected Output for the Frequency Loop:**
+Since D and E both have 5, and A and B both have 3, the order among ties depends on the HashMap's internal iteration order (which is randomized in Rust), but generally, it will look like:
+```text
+  'D': 5
+  'E': 5
+  'C': 4
+  'A': 3
+  'B': 3
+```
+*(Note: The exact order of D/E and A/B might vary between runs).*
+
+### Summary Conclusion
+The program demonstrates a complete cycle of **Run-Length Encoding**:
+1.  It compresses a string of repeated characters into compact `(char, count)` pairs.
+2.  It verifies data integrity by decompressing it back to the original.
+3.  It calculates the theoretical storage ratio based on the tuple size.
+4.  It provides a statistical breakdown of character usage sorted by frequency.

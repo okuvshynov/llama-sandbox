@@ -23,4 +23,63 @@ Here's a thinking process that leads to the review:
         *   *Issue:* `dependencies: string[]`. String IDs are fragile.
 
     *   **`PipelineEvents`:**
-        *   *
+        *   *Issue:* `'task:complete': (task: Task, result: any) => void;`. `Task` is generic (`Task<T>`), but here it's used as raw `Task` (defaults to `any`). The `result` is `any`. This defeats the purpose of typing the tasks.
+        *   *Issue:* Events don't know *which* task is emitting. All tasks emit to the same global event stream. It's hard to listen to specific task completion types.
+
+    *   **`Pipeline` Class:**
+        *   *Constructor:* `concurrency` default is 4.
+        *   *`addTask`:*
+            *   *Type Safety:* It accepts `config` with `execute: () => Promise<T>`. It creates `Task<T>`. But it stores it in `private tasks: Map<string, Task> = new Map();`. `Task` defaults to `Task<any>`. This erases the generic type `T` for that specific task. When retrieving later, we lose the return type information.
+            *   *Architecture:* Storing tasks in a Map keyed by ID is fine.
+        *   *`getReadyTasks`:*
+            *   *Logic:* Checks `task.status !== 'pending'`.
+            *   *Bug:* It doesn't check for `cancelled` status explicitly, though `cancelled` isn't 'pending', so it skips. But `failed` tasks also stop dependents. If Task A fails, Task B (dep on A) stays `pending` forever -> Deadlock detection handles this, but logically, dependents of failed tasks should probably be marked skipped/failed or the pipeline should fail fast (configurable). Currently, it waits for deadlock timeout.
+        *   *`executeTask`:*
+            *   *Timeout Logic:* `Promise.race` with `setTimeout`.
+            *   *Bug:* **Major Resource Leak.** The `setTimeout` inside `Promise.race` is not cleared if `task.execute()` resolves first. The timer keeps ticking in the background. In a long-running process, this leaks memory/handles.
+            *   *Retry Logic:* Exponential backoff `Math.pow(2, attempt) * 1000`. Max retry is roughly 4 seconds (2^2 * 1000). Wait, `attempt` goes 0 to `retries`. If retries=2: attempt 0 (no wait), 1 (2s), 2 (4s). That's fine, but usually backoff is `2^attempt`.
+            *   *Type Safety:* `task` is `Task` (any). `result` is `any`.
+            *   *Concurrency:* The `run` method gets a batch of `ready` tasks and does `Promise.all`. This respects `concurrency` *per batch*, but `getReadyTasks` returns *all* ready tasks. If 100 tasks are ready and concurrency is 2, `slice(0, 2)` takes 2. But `Promise.all` waits for *those 2* to finish before the `while` loop continues. This is **sequential batching**, not true concurrency.
+            *   *Concurrency Bug:* True concurrency means as soon as one task finishes, another starts. Here, if Task A (10s) and Task B (1s) start, the loop waits 10s. Then it picks Task C. We only have 2 slots, but we aren't filling them dynamically. We fill 2, wait for both, then fill 2 more. This is effectively `concurrency` parallel batches, not a worker pool.
+        *   *`run`:*
+            *   *Deadlock Detection:* Checks `pending > 0 && running === 0`. This works but relies on the `setTimeout(100)` polling.
+            *   *Error Handling:* If one task fails, it continues running other independent tasks? The code collects failed tasks at the end. However, `executeTask` emits `task:fail`. The `run` method throws at the end if *any* failed.
+            *   *Cancellation:* `cancel()` sets status to `cancelled`. But `executeTask` doesn't check `task.status` inside the loop. If `cancel()` is called while a task is `running`, the task continues to completion. There is no `AbortController` or cancellation token support.
+        *   *`main` (Usage):*
+            *   *Architecture:* `pipeline['results'].get(...)`. Accessing private property via bracket notation. This breaks encapsulation. Tasks should receive results of dependencies as arguments to `execute`, not reach into the pipeline.
+            *   *Type Safety:* `(u: any)`, `(o: any)`. Because `results` is `Map<string, any>`.
+
+4.  **Categorizing Issues:**
+
+    *   **Critical Bugs:**
+        1.  Timeout timer leak.
+        2.  Concurrency implementation (batching vs. worker pool).
+        3.  Cancellation doesn't stop running tasks.
+        4.  Dependency failure handling (dependents hang until deadlock).
+    *   **Type Safety:**
+        1.  `EventMap` and `TypedEventEmitter` use `Function` and `any`.
+        2.  `Task` generic type erased in `Pipeline.tasks` map.
+        3.  Event payloads lose specific task types (all look like `Task<any>`).
+        4.  Usage example accesses private members.
+    *   **Architecture/Design:**
+        1.  Tasks accessing global state (`pipeline.results`) instead of receiving inputs.
+        2.  String-based dependencies.
+        3.  Polling loop for execution flow.
+
+5.  **Drafting the Review:**
+
+    *   *Introduction:* Acknowledge the solid foundation but highlight the critical production-readiness gaps.
+    *   *Section 1: Critical Bugs & Logic Errors.* (Timeout leak, Concurrency model, Cancellation).
+    *   *Section 2: Type Safety.* (EventEmitter generics, Task generic erasure, Any usage).
+    *   *Section 3: Architectural Improvements.* (Dependency injection for tasks, Error propagation strategy).
+    *   *Section 4: Code Refactoring Examples.* Show how to fix the timeout, the concurrency, and the types.
+
+6.  **Refining the Suggestions:**
+
+    *   *Timeout:* Use `AbortController` or clear the timeout ID.
+    *   *Concurrency:* Implement a "worker queue" pattern instead of `while(true) { batch }`.
+    *   *Types:* Make `Pipeline` generic? Or keep tasks heterogeneous but type the retrieval. Actually, since tasks are heterogeneous, `Map<string, Task<any>>` is inevitable internally, but the *events* and *execute* functions should be typed better.
+    *   *Dependency Inputs:* Change `execute: () => Promise<T>` to `execute: (deps: Record<string, any>) => Promise<T>`.
+
+7.  **Final Review of the Output:**
+    *   Did I answer the prompt? Yes (

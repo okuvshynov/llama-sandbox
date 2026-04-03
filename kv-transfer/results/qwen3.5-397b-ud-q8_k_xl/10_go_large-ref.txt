@@ -21,4 +21,67 @@ Here's a thinking process that leads to the code review:
     *   **`NewWorkerPool`:** Initializes maps. Okay.
     *   **`RegisterHandler` / `Use`:** No locking. *Race Condition.*
     *   **`Submit`:**
-        *   Sets
+        *   Sets fields on `job`.
+        *   Locks `mu`, updates `results`, unlocks.
+        *   Sends to `jobQueue`.
+        *   *Bug:* If `jobQueue` is full, this blocks. The lock is released before sending, which is good.
+        *   *Bug:* The `job` pointer is stored in `results`. The worker modifies `job.Status`, `job.Result`, etc. The HTTP handler reads `job` via `GetJob`. Since `GetJob` returns the pointer, and the worker modifies the struct fields *without holding the `WorkerPool` mutex* (only the map access is locked in `Submit`/`GetJob`), this is a **Data Race**. The `Job` struct fields are being accessed concurrently (Worker writes, HTTP Handler reads) without synchronization.
+    *   **`GetJob`:** Locks `mu`, gets pointer, unlocks. Returns pointer. Caller accesses fields without lock. *Data Race.*
+    *   **`Start` / `Stop`:** Standard pattern. `Stop` cancels context, closes channel, waits.
+        *   *Bug:* In `worker`, `select` checks `ctx.Done()` and `jobQueue`. If `Stop` is called, `cancel()` happens, `close(queue)` happens.
+        *   *Bug:* In `processJob`, if retrying (`wp.jobQueue <- job`), and `Stop` has been called (channel closed), this will panic.
+    *   **`worker` / `processJob`:**
+        *   Reads `wp.handlers` without lock. *Race Condition.*
+        *   Reads `wp.middleware` without lock. *Race Condition.*
+        *   Modifies `job` fields (`Status`, `Result`, `StartedAt`, `Retries`, `DoneAt`) without lock. *Data Race* (shared with `GetJob` and `Submit`).
+        *   **Retry Logic:** `wp.jobQueue <- job`.
+            *   If the pool is stopping, the channel is closed. Sending to a closed channel panics.
+            *   If the queue is full, this blocks the worker forever if no one is consuming (e.g., if all workers are retrying or deadlocked).
+            *   The retry happens *inside* the processing logic. The job status is still "running" (set earlier) when it gets re-queued. When picked up again, it resets to "running". This is slightly confusing state management but not necessarily a bug. However, `Retries` is incremented before re-queueing.
+        *   **Middleware:** If middleware fails, it returns early. `job.DoneAt` is *not* set. `job.Status` is set to "failed".
+    *   **`RateLimiter`:**
+        *   Token bucket algorithm implementation.
+        *   `Allow()` locks `mu`.
+        *   Logic looks mostly correct for a basic limiter.
+        *   *Design:* `tokens` is float64. `maxTokens` float64. Usually integers are preferred for counts, but float is okay for rates.
+    *   **`main`:**
+        *   `rand` usage: As noted, `rand.Seed` is missing for Go < 1.20.
+        *   HTTP Handlers:
+            *   `/submit`: Decodes JSON into `job`. Passes pointer to `Submit`. `Submit` stores the pointer.
+            *   `/status`: Calls `GetJob`. Returns pointer. Encodes to JSON.
+            *   `/stats`: Locks `pool.mu`. Iterates `pool.results`. Accesses `job.Status`.
+                *   *Race Condition:* `pool.mu` protects the *map*, not the *Job struct contents*. While iterating, workers are modifying `job.Status` concurrently. This is a data race.
+        *   **Graceful Shutdown:** `http.ListenAndServe` blocks. `Stop` is never called. The server doesn't handle SIGINT/SIGTERM. The worker pool will leak or panic on exit.
+    *   **Context:** `ctx` is created in `NewWorkerPool`. It's used to stop workers. But `processJob` doesn't respect context cancellation while working (e.g., during `time.Sleep` or handler execution).
+
+4.  **Categorizing Issues:**
+
+    *   **Critical (Race Conditions/Data Safety):**
+        1.  `Job` struct field access is not synchronized (Worker writes, HTTP reads, Stats reads).
+        2.  `handlers` and `middleware` maps/slices accessed without locks.
+        3.  `/stats` handler iterates map values while workers modify them.
+    *   **Critical (Panics/Crashes):**
+        1.  Sending to closed channel during retry if `Stop` is called.
+        2.  Blocking send on retry if queue is full (Deadlock potential).
+    *   **Design/Best Practices:**
+        1.  No graceful shutdown for HTTP server.
+        2.  `rand` seeding (version dependent).
+        3.  `GetJob` returns internal pointer (encapsulation violation + race enabler).
+        4.  Middleware/Handler registration should ideally be read-only after start.
+        5.  Retry logic blocks the worker thread during `time.Sleep`.
+
+5.  **Drafting the Review:**
+
+    *   *Introduction:* Acknowledge the code structure (it's a decent start) but highlight the concurrency safety issues.
+    *   *Section 1: Race Conditions (The big one).* Focus on `Job` mutability and Map access.
+    *   *Section 2: Channel & Lifecycle Issues.* Focus on the retry panic and graceful shutdown.
+    *   *Section 3: Design & API.* Focus on encapsulation and blocking operations.
+    *   *Section 4: Minor/Version specifics.* `rand` seeding.
+    *   *Fixes:* Provide concrete code snippets or patterns for each.
+
+6.  **Refining the Fixes:**
+
+    *   *Job Safety:* The `Job` needs its own mutex, or the `WorkerPool` needs to lock whenever a job is accessed/modified. Given `GetJob` returns a pointer, the easiest fix without refactoring the whole API is to protect `Job` fields with a mutex inside `Job`, or ensure `WorkerPool` holds the lock during processing (which defeats the purpose of parallelism).
+    *   *Better Fix:* `WorkerPool` should manage state. `GetJob` should return a *copy* or a snapshot, or the `Job` struct should have a `sync.Mutex`. Let's recommend adding a mutex to `Job` or protecting access via the Pool's mutex (which requires holding the lock during processing, bad for performance).
+    *   *Best Fix for Review:* Add a `sync.RWMutex` to the `Job` struct. Or, simpler for this review: The `WorkerPool` mutex should protect the *state* of the job if the pool owns it. However, holding `wp.mu` during `handler()` execution is a deadlock risk.
+    *  

@@ -42,4 +42,104 @@ if (strcmp(t->entries[i].key, key) == 0) {
 **Bug 2: Memory leak when deleting entry (in `table_delete`)**
 ```c
 if (strcmp(t->entries[i].key, key) == 0) {
-    t->entries[i] = t->entries[t->size - 1];  // Old
+    t->entries[i] = t->entries[t->size - 1];  // Old entry's key/value not freed!
+    t->size--;
+    return;
+}
+```
+
+These are the two critical memory leaks that need fixing.
+</think>
+
+# Memory-Related Bugs in the C Program
+
+This program contains **two critical memory leaks** that will cause memory to be lost during execution:
+
+---
+
+## 1. Memory Leak When Updating Existing Key (`table_put`)
+
+**Location:** `table_put` function, when a key already exists.
+
+**Problem:**
+```c
+if (strcmp(t->entries[i].key, key) == 0) {
+    t->entries[i].value = strdup(value);  // ❌ Old value not freed!
+    return;
+}
+```
+
+When updating an existing key's value, the old `value` string is not freed before assigning a new one. This results in a memory leak every time a key is updated.
+
+**Fix:**
+```c
+if (strcmp(t->entries[i].key, key) == 0) {
+    free(t->entries[i].value);            // ✅ Free old value first
+    t->entries[i].value = strdup(value);
+    return;
+}
+```
+
+---
+
+## 2. Memory Leak When Deleting Entry (`table_delete`)
+
+**Location:** `table_delete` function.
+
+**Problem:**
+```c
+if (strcmp(t->entries[i].key, key) == 0) {
+    t->entries[i] = t->entries[t->size - 1];  // ❌ Old entry's key/value not freed!
+    t->size--;
+    return;
+}
+```
+
+When an entry is deleted, its `key` and `value` strings are not freed before the entry is overwritten. This leaks memory for every deleted entry.
+
+**Fix:**
+```c
+if (strcmp(t->entries[i].key, key) == 0) {
+    free(t->entries[i].key);                  // ✅ Free key and value
+    free(t->entries[i].value);
+    t->entries[i] = t->entries[t->size - 1];
+    t->size--;
+    return;
+}
+```
+
+---
+
+## 3. Missing NULL Checks (Robustness Issue)
+
+While not memory leaks, failing to check the return values of memory allocation functions can lead to undefined behavior or crashes:
+
+- `malloc` in `table_create`
+- `realloc` in `table_put`
+- `strdup` in `table_put`
+
+**Recommendation:**
+```c
+Table* t = malloc(sizeof(Table));
+if (!t) return NULL;
+
+t->entries = malloc(sizeof(Entry) * capacity);
+if (!t->entries) {
+    free(t);
+    return NULL;
+}
+
+// Similarly for realloc and strdup
+```
+
+---
+
+## Summary
+
+| Bug | Location | Severity | Fix |
+|-----|----------|----------|-----|
+| Memory leak on key update | `table_put` | High | Free old `value` before `strdup` |
+| Memory leak on delete | `table_delete` | High | Free `key` and `value` before overwrite |
+| Missing NULL checks | Multiple | Medium | Check return values of `malloc`, `realloc`, `strdup` |
+
+**Note:** In the `main()` function, the line `table_put(t, "name", "Bob");` triggers the first bug by updating an existing key without freeing the old value ("Alice"), resulting in a memory leak.

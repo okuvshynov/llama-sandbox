@@ -18,4 +18,51 @@ Here's a thinking process that leads to the review:
 
     *   **Soundness Issues (Correctness & Safety):**
         *   *Panics:* `unwrap()` is used extensively (`read().unwrap()`, `lock().unwrap()`, `partial_cmp(...).unwrap()`). In a library, panics are generally bad. `partial_cmp` can return `None` for NaNs.
-        *   *Deadlocks:* `MetricsRegistry::snapshot` acquires the `RwLock` (read), then iterates and acquires individual `Mutex` locks. `get_or_create` acquires `RwLock` (read/write) then returns an `Arc<Mutex>`. This looks okay *unless* someone holds a `Metric` lock and tries to access the registry. Wait, `trim_older_than` isn't called in the main loop, but if it were called while holding the registry lock, it might be an issue. Actually, the bigger issue is `snapshot`. It holds
+        *   *Deadlocks:* `MetricsRegistry::snapshot` acquires the `RwLock` (read), then iterates and acquires individual `Mutex` locks. `get_or_create` acquires `RwLock` (read/write) then returns an `Arc<Mutex>`. This looks okay *unless* someone holds a `Metric` lock and tries to access the registry. Wait, `trim_older_than` isn't called in the main loop, but if it were called while holding the registry lock, it might be an issue. Actually, the bigger issue is `snapshot`. It holds the `RwLock` *while* locking individual metrics. If another thread tries to `get_or_create` (needs `RwLock` write) while `snapshot` is holding `RwLock` read and waiting on a `Mutex`, no deadlock *there*. But if `get_or_create` upgrades from read to write... wait, `get_or_create` drops the read lock before acquiring the write lock. That's safe.
+        *   *Logic Errors:*
+            *   `percentile`: `partial_cmp` on floats can return `None` (NaN). `unwrap()` will panic.
+            *   `trim_older_than`: Logic is flawed. `position` finds the *first* element matching the predicate. The predicate is `now.duration_since(*t) < window` (is *newer* than window). So it finds the first *valid* item. Draining `..pos` removes everything *before* the first valid item. This seems correct for keeping the window, *but* `position` stops at the first match. If timestamps are sorted, this works. Are they sorted? `record` pushes `Instant::now()`. Yes, they are monotonically increasing *per metric*. However, `Instant` is not guaranteed to be strictly monotonic across calls in some edge cases (though usually is).
+            *   `rate`: Iterates *all* timestamps every time. Combined with unbounded growth, this is O(N).
+            *   `Histogram::quantile`: The interpolation logic looks suspicious. `bucket.count` in a standard histogram is usually cumulative. Here, `observe` increments *all* buckets where `value <= le`. So `bucket.count` *is* cumulative. The logic `if bucket.count as f64 >= target` finds the bucket containing the quantile. The interpolation `prev_bound + fraction * (bucket.le - prev_bound)` assumes uniform distribution within the bucket, which is standard, but the `prev_count` logic needs to be careful. `prev_count` is the count of the *previous* bucket. Since counts are cumulative, the count *in* this bucket is `bucket.count - prev_count`. The logic looks roughly okay, but `prev_bound` initialization to `0.0` is wrong if the first bucket starts at e.g., 10.0.
+            *   `Timer`: Records on `drop`. If `drop` panics (e.g., `registry.record` panics due to lock poisoning), it's undefined behavior in Rust (panic during unwind). `record` uses `unwrap()` on lock. If a thread panics while holding the lock, the mutex becomes poisoned. Subsequent `lock().unwrap()` will panic.
+        *   *Memory Safety:* `Metric` stores `Vec<f64>`. Unbounded growth. Eventually OOM. `trim_older_than` exists but is never called in `simulate_workload`.
+
+    *   **Performance Problems:**
+        *   *Unbounded Memory:* `Metric::values` and `Metric::timestamps` grow forever unless `trim_older_than` is called. In `simulate_workload`, it's not called. This will eat RAM.
+        *   *O(N) Operations:*
+            *   `mean`: Iterates all values.
+            *   `percentile`: Clones the vector (`O(N)` memory + `O(N)` time) and sorts it (`O(N log N)`). This is extremely expensive for high-cardinality or high-frequency metrics.
+            *   `rate`: Iterates all timestamps (`O(N)`).
+            *   `snapshot`: Calls all the above for *every* metric while holding locks.
+        *   *Lock Contention:*
+            *   `MetricsRegistry` uses `RwLock<HashMap>`. `get_or_create` is fine.
+            *   `Metric` uses `Mutex`. Every `record` locks the mutex. In a high-throughput scenario, this is a bottleneck.
+            *   `snapshot` holds the registry read lock *and* iterates all metrics, locking each one. This blocks all writers (`record`) for the duration of the snapshot.
+        *   *Cloning:* `MetricSnapshot` clones strings. `get_or_create` clones `Arc` (cheap) but `name.to_string()` happens often. `percentile` clones the `values` vec.
+        *   `Histogram::observe`: Iterates *all* buckets for every observation. O(Buckets). Usually fine, but could be binary search.
+
+    *   **API Design Concerns:**
+        *   *Error Handling:* `unwrap()` everywhere. No `Result` types. Poisoned locks will crash the program. NaNs will crash the program.
+        *   *Encapsulation:* `Metric` fields are public (well, struct is private but methods expose internals). `MetricsRegistry` is exposed directly.
+        *   *Usability:* `Timer` requires passing `Arc<MetricsRegistry>`. A bit verbose.
+        *   *Inconsistency:* There is a `Metric` struct (raw values) and a `Histogram` struct (buckets). They aren't integrated. `MetricsRegistry` only stores `Metric`, not `Histogram`.
+        *   *Thread Safety:* `Metric` is not `Sync` itself, wrapped in `Mutex`. `MetricsRegistry` handles the `Arc`. This is okay, but `get_or_create` returning `Arc<Mutex<Metric>>` exposes the locking primitive to the caller, allowing them to hold the lock across scopes, potentially causing deadlocks if they are not careful (though `snapshot` mitigates this by locking internally).
+        *   *Naming:* `rate_1m` in snapshot implies 1 minute, but calculates based on passed duration. In `snapshot`, it hardcodes 60s.
+        *   *Float Equality/Comparison:* `partial_cmp` unwrap is risky.
+
+4.  **Synthesizing the Review:**
+
+    *   *Structure:* Group by the requested categories (Soundness, Performance, API).
+    *   *Tone:* Constructive, technical, specific.
+    *   *Evidence:* Quote line numbers or specific functions.
+    *   *Recommendations:* Provide concrete fixes for the major issues.
+
+    *(Self-Correction during drafting)*: I initially thought `trim_older_than` logic was definitely wrong. Let's re-verify.
+    `position` returns index of first element where `now.duration_since(*t) < window` is true. i.e., first element *inside* the window.
+    `drain(..pos)` removes elements *before* that index. i.e., removes elements *outside* the window.
+    So `trim_older_than` logic is actually correct *assuming* timestamps are sorted. Since `record` pushes `Instant::now()`, they are sorted.
+    *However*, the fact that it's not called in the workload is a major correctness/resource issue.
+
+    *Lock Poisoning:* This is a critical soundness issue. `unwrap()` on `Mutex`/`RwLock` propagates panics. In a library, you should handle `PoisonError`.
+
+    *Percentile Calculation:* Cloning and sorting the whole vector for every snapshot is

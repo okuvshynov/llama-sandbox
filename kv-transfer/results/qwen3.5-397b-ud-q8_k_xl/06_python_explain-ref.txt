@@ -35,4 +35,61 @@ This function uses the standard **Breadth-First Search (BFS)** approach of Kahn'
     -   Dequeue a node and add it to the `result` list.
     -   For each neighbor (dependent task) of this node:
         -   Decrement the neighbor's `in_degree` by 1 (simulating that one prerequisite is now complete).
-        -
+        -   If the neighbor's `in_degree` becomes 0, add it to the queue.
+3.  **Cycle Detection**: After the queue is empty, if the length of `result` is less than the total number of nodes, a cycle exists in the graph, and the function returns `None`. Otherwise, it returns the sorted list.
+
+**Time Complexity**: $O(V + E)$, where $V$ is the number of vertices (tasks) and $E$ is the number of edges (dependencies).
+
+#### Part C: Finding All Valid Orders (`find_all`)
+Finding *all* topological sorts is more complex because at any step, there might be multiple nodes with an `in_degree` of 0. Choosing different nodes leads to different valid paths. This function uses **Backtracking (Depth-First Search)**.
+
+1.  **State**: It maintains the current `path` and a snapshot of the current `remaining_in_degree`.
+2.  **Recursive Step (`backtrack`)**:
+    -   **Base Case**: If the `path` length equals the total number of nodes, a complete valid order is found; save it.
+    -   **Candidate Selection**: Iterate through all nodes. A node is a candidate if:
+        1.  It is not already in the current `path`.
+        2.  Its current `in_degree` is 0.
+        3.  *(Note: The code sorts nodes before iterating to ensure the output lists are generated in lexicographical order).*
+    -   **Explore**:
+        -   Add the candidate to the `path`.
+        -   Create a copy of the in-degree map and decrement the counts for the candidate's neighbors.
+        -   Recursively call `backtrack`.
+    -   **Backtrack**: Remove the candidate from the `path` (pop) to try the next candidate.
+
+**Time Complexity**: In the worst case, the number of topological sorts can be factorial $O(V!)$, making this approach exponential. It is suitable only for small graphs.
+
+---
+
+### 3. Analysis of the Specific Example
+
+The provided `edges` represent the following dependency chain:
+- `deps` must happen first (no incoming edges).
+- `deps` enables `lint` and `compile`.
+- `lint` enables `compile` (so `compile` waits for both `deps` and `lint`).
+- `compile` enables `link` and `test`.
+- `link` and `test` both enable `package`.
+
+**Visual Flow:**
+```text
+deps --> lint --> compile --> link --+
+ |                      ^            +--> package
+ +----------------------+            |
+                          test ------+
+```
+*(Correction on logic based on edges: `deps` -> `lint`, `deps` -> `compile`, `lint` -> `compile`. So `compile` waits for `deps` AND `lint`.)*
+
+**Corrected Flow Logic:**
+1.  **Start**: Only `deps` has 0 in-degree.
+2.  **After `deps`**: `lint` becomes available (in-degree 0). `compile` still waits for `lint`.
+3.  **After `lint`**: `compile` becomes available.
+4.  **After `compile`**: Both `link` and `test` become available. Here is where the branching happens. You can do `link` then `test`, OR `test` then `link`.
+5.  **End**: After both `link` and `test` are done, `package` becomes available.
+
+**Expected Output Behavior:**
+- `solve(edges)` will print one valid sequence, likely: `deps -> lint -> compile -> link -> test -> package` (or `test` before `link`).
+- `find_all(edges)` will find exactly **2** valid orders, differing only in the order of `link` and `test`:
+  1. `deps -> lint -> compile -> link -> test -> package`
+  2. `deps -> lint -> compile -> test -> link -> package`
+
+### Summary
+The program is a robust implementation of topological sorting. It uses an efficient **BFS queue method** to find a single solution quickly and a **recursive backtracking method** to exhaustively enumerate all possible valid execution paths for small datasets.

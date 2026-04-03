@@ -46,4 +46,51 @@ So technically, there IS a bug in the code (in `merge_sorted_lists`), even thoug
 
 The `merge_sorted_lists` function has a critical bug: **it doesn't append the remaining elements** from whichever list still has items after the main `while` loop exits.
 
-### Example
+### Example of the Bug
+
+```python
+list1 = [1, 3, 5]
+list2 = [2, 4]
+# Expected: [1, 2, 3, 4, 5]
+# Actual: [1, 2]  ❌ Missing [3, 5]!
+```
+
+**Why?** When one list is exhausted, the `while` loop terminates, but the remaining elements in the other list are never added to `result`.
+
+## The Fix
+
+Add these two lines after the `while` loop to append any remaining elements:
+
+```python
+def merge_sorted_lists(list1, list2):
+    result = []
+    i, j = 0, 0
+    while i < len(list1) and j < len(list2):
+        if list1[i] <= list2[j]:
+            result.append(list1[i])
+            i += 1
+        else:
+            result.append(list2[j])
+            j += 1
+    
+    # Fix: Add remaining elements from both lists
+    result.extend(list1[i:])
+    result.extend(list2[j:])
+    
+    return result
+```
+
+## Important Note
+
+⚠️ **This bug doesn't affect the current program output** because `merge_sorted_lists` is defined but **never actually called**. The `running_median` function uses Python's built-in `sorted()` instead.
+
+However, this is still a **real bug** that would cause incorrect behavior if `merge_sorted_lists` were used elsewhere in the codebase. It's a classic mistake in merge algorithm implementations.
+
+## Verification
+
+After the fix:
+```python
+merge_sorted_lists([1, 3, 5], [2, 4])  # Returns: [1, 2, 3, 4, 5] ✓
+merge_sorted_lists([1, 2], [3, 4, 5])  # Returns: [1, 2, 3, 4, 5] ✓
+merge_sorted_lists([], [1, 2])         # Returns: [1, 2] ✓
+```
