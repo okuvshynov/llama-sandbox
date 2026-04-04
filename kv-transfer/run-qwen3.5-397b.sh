@@ -8,6 +8,7 @@ TARGETS=(
     "ud-iq2_m:$HOME/projects/llms/qwen3.5-397b/UD-IQ2_M/Qwen3.5-397B-A17B-UD-IQ2_M-00001-of-00004.gguf"
     "ud-iq3_xss:$HOME/projects/llms/qwen3.5-397b/UD-IQ3_XXS/Qwen3.5-397B-A17B-UD-IQ3_XXS-00001-of-00004.gguf"
     "ud-iq4_xs:$HOME/projects/llms/qwen3.5-397b/UD-IQ4_XS/Qwen3.5-397B-A17B-UD-IQ4_XS-00001-of-00005.gguf"
+    "ud-q6_k_xl:$HOME/projects/llms/qwen3.5-397b/UD-Q6_K_XL/Qwen3.5-397B-A17B-UD-Q6_K_XL-00001-of-00009.gguf"
 )
 
 N_PREDICT=2048
