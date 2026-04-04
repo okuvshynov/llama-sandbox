@@ -17,7 +17,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 QUANT_ORDER = [
-    'ud-iq1_m', 'ud-iq2_xxs', 'ud-q2_k_xl', 'ud-iq3_xss', 'ud-iq3_xxs',
+    'ud-iq1_m', 'ud-iq2_m', 'ud-iq2_xxs', 'ud-q2_k_xl', 'ud-iq3_xss', 'ud-iq3_xxs',
     'ud-q3_k_xl', 'ud-iq4_xs', 'ud-q4_k_xl', 'ud-q5_k_xl', 'ud-q6_k_xl', 'ud-q8_k_xl',
 ]
 
@@ -217,9 +217,6 @@ def main():
 
         for theme in ('light', 'dark'):
             suffix = f'-{theme}' if theme == 'dark' else ''
-            plot_decay(rows,
-                       os.path.join(args.output_dir, f'decay-{short}{suffix}.png'),
-                       f'KL ratio decay — {short}', theme=theme)
             plot_decay_spread(rows,
                               os.path.join(args.output_dir, f'decay-spread-{short}{suffix}.png'),
                               f'KL ratio decay (with spread) — {short}', theme=theme)

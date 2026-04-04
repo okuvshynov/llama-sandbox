@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 QUANT_ORDER = [
-    'ud-iq1_m', 'ud-iq2_xxs', 'ud-q2_k_xl', 'ud-iq3_xss', 'ud-iq3_xxs',
+    'ud-iq1_m', 'ud-iq2_m', 'ud-iq2_xxs', 'ud-q2_k_xl', 'ud-iq3_xss', 'ud-iq3_xxs',
     'ud-q3_k_xl', 'ud-iq4_xs', 'ud-q4_k_xl', 'ud-q5_k_xl', 'ud-q6_k_xl', 'ud-q8_k_xl',
 ]
 
@@ -217,8 +217,6 @@ def main():
         rows = read_summary(summary_path)
 
         metrics = [
-            ('kl',     'kl_target',     'kl_handoff',     'KL divergence (mean)'),
-            ('kl-p95', 'kl_target_p95', 'kl_handoff_p95', 'KL divergence (p95)'),
             ('kl-p99', 'kl_target_p99', 'kl_handoff_p99', 'KL divergence (p99)'),
         ]
         for prefix, kt, kh, label in metrics:
