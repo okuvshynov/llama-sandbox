@@ -39,17 +39,17 @@ cmake --build build
 # Run reference model — generates tokens and saves logits
 ./build/kv-transfer ref -m <model> -p <prompt> -n 256 --temp 0.6 -ngl 99 -o ref.bin
 
-# Run target model — replays same tokens, saves logits
+# Run target model — replays same tokens, computes per-token KL vs ref inline
 ./build/kv-transfer target -m <model> -i ref.bin -o target.bin -ngl 99
 
-# Handoff — prompt with ref model, generation with target model
+# Handoff — prompt with ref model, generation with target model, computes KL inline
 ./build/kv-transfer handoff -m-ref <ref_model> -m-tgt <tgt_model> -i ref.bin -o handoff.bin -ngl 99
 
-# Compare two .bin files
-./build/kv-transfer compare -a ref.bin -b target.bin
+# Summarize a stats file (mean/p95/p99 KL + top-1 agreement)
+./build/kv-transfer compare -f target.bin
 
 # Analyze KL decay across generation position
-./build/kv-transfer decay --ref ref.bin --target target.bin --handoff handoff.bin --window 64
+./build/kv-transfer decay --target target.bin --handoff handoff.bin --window 64
 ```
 
 ## Automated studies

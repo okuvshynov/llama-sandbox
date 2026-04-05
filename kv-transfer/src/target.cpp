@@ -1,5 +1,7 @@
 #include "target.h"
 #include "trace_io.h"
+#include "stats_io.h"
+#include "kl_utils.h"
 
 #include "llama.h"
 #include "common.h"
@@ -55,9 +57,9 @@ int cmd_target(int argc, char ** argv) {
     target_params params;
     if (!parse_args(argc, argv, params)) return 1;
 
-    // read tokens from reference (skip logits)
+    // read reference trace with full logits (needed for inline KL computation)
     trace_file ref;
-    if (!trace_read_tokens(params.input_path, ref)) {
+    if (!trace_read(params.input_path, ref)) {
         fprintf(stderr, "target: failed to read '%s'\n", params.input_path.c_str());
         return 1;
     }
@@ -69,8 +71,13 @@ int cmd_target(int argc, char ** argv) {
 
     const auto & rp = ref.prompts[0];
     const int32_t n_tokens = rp.n_tokens;
+    const int32_t n_prompt = rp.n_prompt;
+    const int32_t n_gen    = n_tokens - n_prompt;
+    const int32_t n_vocab  = ref.n_vocab;
+    const double  temp     = (ref.temp > 0.0f) ? (double)ref.temp : 1.0;
 
-    fprintf(stderr, "target: read %d tokens from '%s'\n", n_tokens, params.input_path.c_str());
+    fprintf(stderr, "target: read %d tokens (%d prompt + %d gen) from '%s'\n",
+            n_tokens, n_prompt, n_gen, params.input_path.c_str());
 
     ggml_backend_load_all();
 
@@ -84,10 +91,10 @@ int cmd_target(int argc, char ** argv) {
     }
 
     const llama_vocab * vocab = llama_model_get_vocab(model);
-    const int32_t n_vocab = llama_vocab_n_tokens(vocab);
+    const int32_t model_n_vocab = llama_vocab_n_tokens(vocab);
 
-    if (n_vocab != ref.n_vocab) {
-        fprintf(stderr, "target: vocab mismatch: model=%d, ref=%d\n", n_vocab, ref.n_vocab);
+    if (model_n_vocab != n_vocab) {
+        fprintf(stderr, "target: vocab mismatch: model=%d, ref=%d\n", model_n_vocab, n_vocab);
         llama_model_free(model);
         return 1;
     }
@@ -109,21 +116,20 @@ int cmd_target(int argc, char ** argv) {
 
     const int32_t n_batch = llama_n_batch(ctx);
 
-    const int32_t n_prompt = rp.n_prompt;
-    const int32_t n_gen = n_tokens - n_prompt;
+    // per-token stats
+    std::vector<float>   kl_per_token(n_gen);
+    std::vector<uint8_t> top1_per_token(n_gen);
 
-    std::vector<float> all_logits;
-    all_logits.reserve((size_t)n_gen * n_vocab);
+    std::vector<double> log_p_ref, log_p_tgt;
 
     llama_batch batch = llama_batch_init(n_batch, 0, 1);
 
-    // decode all tokens, but only store generation logits
+    // decode all tokens, compute KL for generation positions inline
     int32_t n_processed = 0;
     while (n_processed < n_tokens) {
         common_batch_clear(batch);
         int32_t batch_end = std::min(n_tokens, n_processed + n_batch);
         for (int32_t i = n_processed; i < batch_end; i++) {
-            // enable logits for generation positions only (>= n_prompt)
             bool need_logits = (i >= n_prompt);
             common_batch_add(batch, rp.tokens[i], i, {0}, need_logits);
         }
@@ -132,36 +138,41 @@ int cmd_target(int argc, char ** argv) {
             llama_batch_free(batch); llama_free(ctx); llama_model_free(model);
             return 1;
         }
-        // collect logits for generation positions in this batch
+        // compute KL for generation positions in this batch
         for (int32_t i = n_processed; i < batch_end; i++) {
             if (i < n_prompt) continue;
-            const float * logits = llama_get_logits_ith(ctx, i - n_processed);
-            all_logits.insert(all_logits.end(), logits, logits + n_vocab);
+            int32_t gen_idx = i - n_prompt;
+
+            const float * tgt_logits = llama_get_logits_ith(ctx, i - n_processed);
+            const float * ref_logits = rp.logits.data() + (size_t)gen_idx * n_vocab;
+
+            log_softmax_temp(ref_logits, n_vocab, temp, log_p_ref);
+            log_softmax_temp(tgt_logits, n_vocab, temp, log_p_tgt);
+
+            kl_per_token[gen_idx] = (float)kl_divergence(log_p_ref, log_p_tgt, n_vocab);
+            top1_per_token[gen_idx] = (argmax(ref_logits, n_vocab) == argmax(tgt_logits, n_vocab)) ? 1 : 0;
         }
         n_processed = batch_end;
         fprintf(stderr, "target: processed %d / %d tokens\r", n_processed, n_tokens);
     }
     fprintf(stderr, "\n");
 
-    // write output
-    trace_file out;
-    out.n_vocab   = n_vocab;
-    out.n_prompts = 1;
+    // write stats
+    stats_file out;
+    out.n_gen    = n_gen;
+    out.n_prompt = n_prompt;
+    out.temp     = (float)temp;
+    out.kl         = std::move(kl_per_token);
+    out.top1_match = std::move(top1_per_token);
 
-    trace_entry & p = out.prompts.emplace_back();
-    p.path     = rp.path;
-    p.n_tokens = n_tokens;
-    p.n_prompt = rp.n_prompt;
-    p.tokens.assign(rp.tokens.begin(), rp.tokens.end());
-    p.logits   = std::move(all_logits);
-
-    if (!trace_write(params.output_path, out)) {
+    if (!stats_write(params.output_path, out)) {
         fprintf(stderr, "target: failed to write '%s'\n", params.output_path.c_str());
         llama_batch_free(batch); llama_free(ctx); llama_model_free(model);
         return 1;
     }
 
-    fprintf(stderr, "target: wrote %s (%d tokens)\n", params.output_path.c_str(), n_tokens);
+    fprintf(stderr, "target: wrote %s (%d gen tokens, per-token stats)\n",
+            params.output_path.c_str(), n_gen);
 
     llama_batch_free(batch);
     llama_free(ctx);

@@ -17,7 +17,7 @@ prompt,target,n_prompt,window_start,window_end,kl_target,top1_target,kl_handoff,
 01_python_small,ud-iq2_xxs,294,960,1024,1.019180,60.9,0.971137,59.4
 01_python_small,ud-iq2_xxs,294,1024,1088,1.415125,51.6,1.278649,53.1
 01_python_small,ud-iq2_xxs,294,1088,1152,0.722707,81.2,0.710350,79.7
-02_rust_small,ud-iq2_xxs,508,0,64,0.958288,65.6,0.753487,73.4
+02_rust_small,ud-iq2_xxs,508,0,64,0.958287,65.6,0.753487,73.4
 02_rust_small,ud-iq2_xxs,508,64,128,0.693394,70.3,0.676259,65.6
 02_rust_small,ud-iq2_xxs,508,128,192,0.564923,81.2,0.423866,82.8
 02_rust_small,ud-iq2_xxs,508,192,256,0.736179,71.9,0.474295,73.4
@@ -81,7 +81,7 @@ prompt,target,n_prompt,window_start,window_end,kl_target,top1_target,kl_handoff,
 04_cpp_small,ud-iq2_xxs,753,512,576,1.246341,59.4,0.988729,65.6
 04_cpp_small,ud-iq2_xxs,753,576,640,1.008726,67.2,0.870871,64.1
 04_cpp_small,ud-iq2_xxs,753,640,704,1.189076,57.8,0.975080,62.5
-04_cpp_small,ud-iq2_xxs,753,704,768,1.138264,71.9,0.965899,68.8
+04_cpp_small,ud-iq2_xxs,753,704,768,1.138264,71.9,0.965898,68.8
 04_cpp_small,ud-iq2_xxs,753,768,832,0.924149,68.8,0.855403,65.6
 04_cpp_small,ud-iq2_xxs,753,832,896,0.585074,79.7,0.567586,81.2
 04_cpp_small,ud-iq2_xxs,753,896,960,0.570110,81.2,0.562800,82.8
@@ -168,7 +168,7 @@ prompt,target,n_prompt,window_start,window_end,kl_target,top1_target,kl_handoff,
 07_c_small,ud-iq2_xxs,679,640,704,0.819662,64.1,0.608928,71.9
 07_c_small,ud-iq2_xxs,679,704,768,0.862804,73.4,0.646645,71.9
 07_c_small,ud-iq2_xxs,679,768,832,0.527365,71.9,0.457019,71.9
-07_c_small,ud-iq2_xxs,679,832,896,1.009586,59.4,0.806538,62.5
+07_c_small,ud-iq2_xxs,679,832,896,1.009585,59.4,0.806538,62.5
 07_c_small,ud-iq2_xxs,679,896,960,0.982278,64.1,0.749292,71.9
 07_c_small,ud-iq2_xxs,679,960,1024,0.588206,87.5,0.554789,85.9
 07_c_small,ud-iq2_xxs,679,1024,1088,0.257268,89.1,0.220693,92.2
@@ -197,7 +197,7 @@ prompt,target,n_prompt,window_start,window_end,kl_target,top1_target,kl_handoff,
 08_java_small,ud-iq2_xxs,756,448,512,0.871376,67.2,0.767535,67.2
 08_java_small,ud-iq2_xxs,756,512,576,1.072549,68.8,0.950979,71.9
 08_java_small,ud-iq2_xxs,756,576,640,0.781928,76.6,0.591814,79.7
-08_java_small,ud-iq2_xxs,756,640,704,1.216106,64.1,1.061247,62.5
+08_java_small,ud-iq2_xxs,756,640,704,1.216106,64.1,1.061246,62.5
 08_java_small,ud-iq2_xxs,756,704,768,0.942613,68.8,0.931040,70.3
 08_java_small,ud-iq2_xxs,756,768,832,0.828531,67.2,0.676435,71.9
 08_java_small,ud-iq2_xxs,756,832,896,1.060473,67.2,0.880954,70.3
@@ -226,7 +226,7 @@ prompt,target,n_prompt,window_start,window_end,kl_target,top1_target,kl_handoff,
 09_python_medium,ud-iq2_xxs,2125,256,320,0.560029,78.1,0.399819,73.4
 09_python_medium,ud-iq2_xxs,2125,320,384,0.736820,81.2,0.536886,85.9
 09_python_medium,ud-iq2_xxs,2125,384,448,0.833058,67.2,0.537527,79.7
-09_python_medium,ud-iq2_xxs,2125,448,512,0.345242,85.9,0.331555,84.4
+09_python_medium,ud-iq2_xxs,2125,448,512,0.345242,85.9,0.331554,84.4
 09_python_medium,ud-iq2_xxs,2125,512,576,0.539290,75.0,0.311916,82.8
 09_python_medium,ud-iq2_xxs,2125,576,640,0.620485,78.1,0.314781,81.2
 09_python_medium,ud-iq2_xxs,2125,640,704,0.575083,76.6,0.478014,78.1
@@ -255,7 +255,7 @@ prompt,target,n_prompt,window_start,window_end,kl_target,top1_target,kl_handoff,
 10_go_medium,ud-iq2_xxs,1864,64,128,1.222954,67.2,1.058689,70.3
 10_go_medium,ud-iq2_xxs,1864,128,192,0.617146,76.6,0.307779,85.9
 10_go_medium,ud-iq2_xxs,1864,192,256,1.441622,60.9,1.157663,67.2
-10_go_medium,ud-iq2_xxs,1864,256,320,1.123928,76.6,0.880288,78.1
+10_go_medium,ud-iq2_xxs,1864,256,320,1.123927,76.6,0.880288,78.1
 10_go_medium,ud-iq2_xxs,1864,320,384,0.890176,73.4,0.794629,68.8
 10_go_medium,ud-iq2_xxs,1864,384,448,1.292683,64.1,0.965157,67.2
 10_go_medium,ud-iq2_xxs,1864,448,512,0.812725,70.3,0.678732,71.9
@@ -283,7 +283,7 @@ prompt,target,n_prompt,window_start,window_end,kl_target,top1_target,kl_handoff,
 10_go_medium,ud-iq2_xxs,1864,1856,1920,0.522067,78.1,0.463163,79.7
 10_go_medium,ud-iq2_xxs,1864,1920,1984,0.700756,73.4,0.640823,73.4
 10_go_medium,ud-iq2_xxs,1864,1984,2048,0.494874,76.6,0.446556,78.1
-11_typescript_medium,ud-iq2_xxs,2233,0,64,1.329306,56.2,0.777128,65.6
+11_typescript_medium,ud-iq2_xxs,2233,0,64,1.329305,56.2,0.777128,65.6
 11_typescript_medium,ud-iq2_xxs,2233,64,128,0.825078,73.4,0.612270,78.1
 11_typescript_medium,ud-iq2_xxs,2233,128,192,0.595255,79.7,0.326493,85.9
 11_typescript_medium,ud-iq2_xxs,2233,192,256,0.596844,81.2,0.578165,79.7
@@ -302,11 +302,11 @@ prompt,target,n_prompt,window_start,window_end,kl_target,top1_target,kl_handoff,
 11_typescript_medium,ud-iq2_xxs,2233,1024,1088,1.150920,67.2,1.004104,71.9
 11_typescript_medium,ud-iq2_xxs,2233,1088,1152,0.757004,78.1,0.699475,75.0
 11_typescript_medium,ud-iq2_xxs,2233,1152,1216,0.528774,81.2,0.481713,82.8
-11_typescript_medium,ud-iq2_xxs,2233,1216,1280,0.678616,81.2,0.528564,79.7
+11_typescript_medium,ud-iq2_xxs,2233,1216,1280,0.678616,81.2,0.528563,79.7
 11_typescript_medium,ud-iq2_xxs,2233,1280,1344,0.462256,82.8,0.429477,84.4
 11_typescript_medium,ud-iq2_xxs,2233,1344,1408,0.557913,81.2,0.568925,81.2
 11_typescript_medium,ud-iq2_xxs,2233,1408,1472,0.490636,84.4,0.354158,84.4
-11_typescript_medium,ud-iq2_xxs,2233,1472,1536,1.138886,67.2,1.003066,71.9
+11_typescript_medium,ud-iq2_xxs,2233,1472,1536,1.138885,67.2,1.003066,71.9
 11_typescript_medium,ud-iq2_xxs,2233,1536,1600,0.370508,87.5,0.362115,85.9
 11_typescript_medium,ud-iq2_xxs,2233,1600,1664,0.472251,81.2,0.455026,82.8
 11_typescript_medium,ud-iq2_xxs,2233,1664,1728,0.639057,84.4,0.580142,84.4
@@ -324,7 +324,7 @@ prompt,target,n_prompt,window_start,window_end,kl_target,top1_target,kl_handoff,
 12_rust_medium,ud-iq2_xxs,2017,384,448,0.969202,57.8,0.839964,57.8
 12_rust_medium,ud-iq2_xxs,2017,448,512,0.900617,62.5,0.810981,64.1
 12_rust_medium,ud-iq2_xxs,2017,512,576,0.721654,67.2,0.528642,65.6
-12_rust_medium,ud-iq2_xxs,2017,576,640,0.775298,73.4,0.617611,70.3
+12_rust_medium,ud-iq2_xxs,2017,576,640,0.775297,73.4,0.617611,70.3
 12_rust_medium,ud-iq2_xxs,2017,640,704,0.687722,76.6,0.532136,75.0
 12_rust_medium,ud-iq2_xxs,2017,704,768,1.084937,71.9,0.896381,68.8
 12_rust_medium,ud-iq2_xxs,2017,768,832,0.846935,75.0,0.736012,73.4
@@ -422,13 +422,13 @@ prompt,target,n_prompt,window_start,window_end,kl_target,top1_target,kl_handoff,
 15_cpp_medium,ud-iq2_xxs,3630,512,576,0.749984,67.2,0.543086,73.4
 15_cpp_medium,ud-iq2_xxs,3630,576,640,0.847925,71.9,0.465254,84.4
 15_cpp_medium,ud-iq2_xxs,3630,640,704,0.626881,75.0,0.477168,79.7
-15_cpp_medium,ud-iq2_xxs,3630,704,768,0.685766,75.0,0.556537,68.8
+15_cpp_medium,ud-iq2_xxs,3630,704,768,0.685765,75.0,0.556537,68.8
 15_cpp_medium,ud-iq2_xxs,3630,768,832,0.601689,82.8,0.519869,84.4
 15_cpp_medium,ud-iq2_xxs,3630,832,896,0.780671,84.4,0.550247,84.4
 15_cpp_medium,ud-iq2_xxs,3630,896,960,0.676472,81.2,0.571029,79.7
 15_cpp_medium,ud-iq2_xxs,3630,960,1024,0.429756,81.2,0.317517,85.9
 15_cpp_medium,ud-iq2_xxs,3630,1024,1088,0.454708,84.4,0.395131,85.9
-15_cpp_medium,ud-iq2_xxs,3630,1088,1152,0.796441,76.6,0.753079,76.6
+15_cpp_medium,ud-iq2_xxs,3630,1088,1152,0.796441,76.6,0.753078,76.6
 15_cpp_medium,ud-iq2_xxs,3630,1152,1216,1.006699,68.8,0.826945,76.6
 15_cpp_medium,ud-iq2_xxs,3630,1216,1280,0.893293,65.6,0.891990,68.8
 15_cpp_medium,ud-iq2_xxs,3630,1280,1344,0.733805,76.6,0.596459,75.0
@@ -473,7 +473,7 @@ prompt,target,n_prompt,window_start,window_end,kl_target,top1_target,kl_handoff,
 16_java_medium,ud-iq2_xxs,2192,1728,1792,0.665533,79.7,0.631921,79.7
 16_java_medium,ud-iq2_xxs,2192,1792,1856,0.758409,71.9,0.781894,70.3
 16_java_medium,ud-iq2_xxs,2192,1856,1920,0.941035,75.0,0.760755,78.1
-16_java_medium,ud-iq2_xxs,2192,1920,1984,0.797772,81.2,0.632883,84.4
+16_java_medium,ud-iq2_xxs,2192,1920,1984,0.797771,81.2,0.632883,84.4
 16_java_medium,ud-iq2_xxs,2192,1984,2048,0.764270,76.6,0.637159,76.6
 17_rust_large,ud-iq2_xxs,8811,0,64,0.870156,78.1,0.726569,79.7
 17_rust_large,ud-iq2_xxs,8811,64,128,1.079850,71.9,0.783833,78.1
@@ -507,7 +507,7 @@ prompt,target,n_prompt,window_start,window_end,kl_target,top1_target,kl_handoff,
 17_rust_large,ud-iq2_xxs,8811,1856,1920,0.001666,100.0,0.001514,100.0
 17_rust_large,ud-iq2_xxs,8811,1920,1984,0.001182,100.0,0.001069,100.0
 17_rust_large,ud-iq2_xxs,8811,1984,2048,0.000899,100.0,0.000813,100.0
-18_typescript_large,ud-iq2_xxs,9740,0,64,1.185202,54.7,0.766844,67.2
+18_typescript_large,ud-iq2_xxs,9740,0,64,1.185202,54.7,0.766843,67.2
 18_typescript_large,ud-iq2_xxs,9740,64,128,1.123535,62.5,0.785640,68.8
 18_typescript_large,ud-iq2_xxs,9740,128,192,0.960156,71.9,0.797955,75.0
 18_typescript_large,ud-iq2_xxs,9740,192,256,0.612057,85.9,0.328258,87.5
@@ -553,7 +553,7 @@ prompt,target,n_prompt,window_start,window_end,kl_target,top1_target,kl_handoff,
 01_python_small,ud-q2_k_xl,294,704,768,0.342545,81.2,0.294966,82.8
 01_python_small,ud-q2_k_xl,294,768,832,0.255081,87.5,0.224709,87.5
 01_python_small,ud-q2_k_xl,294,832,896,0.155673,87.5,0.132421,89.1
-01_python_small,ud-q2_k_xl,294,896,960,0.172656,89.1,0.166999,90.6
+01_python_small,ud-q2_k_xl,294,896,960,0.172656,89.1,0.166998,90.6
 01_python_small,ud-q2_k_xl,294,960,1024,0.254413,76.6,0.233882,78.1
 01_python_small,ud-q2_k_xl,294,1024,1088,0.414779,73.4,0.371176,70.3
 01_python_small,ud-q2_k_xl,294,1088,1152,0.285630,78.1,0.249850,82.8
@@ -741,7 +741,7 @@ prompt,target,n_prompt,window_start,window_end,kl_target,top1_target,kl_handoff,
 08_java_small,ud-q2_k_xl,756,704,768,0.273866,82.8,0.262342,84.4
 08_java_small,ud-q2_k_xl,756,768,832,0.302219,82.8,0.218953,85.9
 08_java_small,ud-q2_k_xl,756,832,896,0.262136,84.4,0.237591,79.7
-08_java_small,ud-q2_k_xl,756,896,960,0.353589,75.0,0.301684,82.8
+08_java_small,ud-q2_k_xl,756,896,960,0.353589,75.0,0.301683,82.8
 08_java_small,ud-q2_k_xl,756,960,1024,0.263943,84.4,0.221678,84.4
 08_java_small,ud-q2_k_xl,756,1024,1088,0.169400,90.6,0.125997,89.1
 08_java_small,ud-q2_k_xl,756,1088,1152,0.091573,93.8,0.074827,96.9
@@ -822,7 +822,7 @@ prompt,target,n_prompt,window_start,window_end,kl_target,top1_target,kl_handoff,
 10_go_medium,ud-q2_k_xl,1864,1792,1856,0.328215,76.6,0.255804,76.6
 10_go_medium,ud-q2_k_xl,1864,1856,1920,0.268567,79.7,0.240988,84.4
 10_go_medium,ud-q2_k_xl,1864,1920,1984,0.196279,85.9,0.188849,85.9
-10_go_medium,ud-q2_k_xl,1864,1984,2048,0.237839,85.9,0.205108,85.9
+10_go_medium,ud-q2_k_xl,1864,1984,2048,0.237838,85.9,0.205108,85.9
 11_typescript_medium,ud-q2_k_xl,2233,0,64,0.375269,73.4,0.225150,79.7
 11_typescript_medium,ud-q2_k_xl,2233,64,128,0.250221,84.4,0.151141,85.9
 11_typescript_medium,ud-q2_k_xl,2233,128,192,0.181418,89.1,0.098220,90.6
@@ -1019,13 +1019,13 @@ prompt,target,n_prompt,window_start,window_end,kl_target,top1_target,kl_handoff,
 17_rust_large,ud-q2_k_xl,8811,64,128,0.303601,84.4,0.268913,85.9
 17_rust_large,ud-q2_k_xl,8811,128,192,0.550743,84.4,0.321305,87.5
 17_rust_large,ud-q2_k_xl,8811,192,256,0.402540,75.0,0.276388,78.1
-17_rust_large,ud-q2_k_xl,8811,256,320,0.528415,76.6,0.302363,81.2
+17_rust_large,ud-q2_k_xl,8811,256,320,0.528414,76.6,0.302363,81.2
 17_rust_large,ud-q2_k_xl,8811,320,384,0.506554,79.7,0.352046,79.7
 17_rust_large,ud-q2_k_xl,8811,384,448,0.410276,81.2,0.174394,89.1
 17_rust_large,ud-q2_k_xl,8811,448,512,0.317293,84.4,0.176745,92.2
 17_rust_large,ud-q2_k_xl,8811,512,576,0.418461,76.6,0.262380,84.4
 17_rust_large,ud-q2_k_xl,8811,576,640,0.597657,78.1,0.450262,82.8
-17_rust_large,ud-q2_k_xl,8811,640,704,0.326262,78.1,0.236072,87.5
+17_rust_large,ud-q2_k_xl,8811,640,704,0.326261,78.1,0.236072,87.5
 17_rust_large,ud-q2_k_xl,8811,704,768,0.209925,90.6,0.137885,90.6
 17_rust_large,ud-q2_k_xl,8811,768,832,0.287612,87.5,0.174435,89.1
 17_rust_large,ud-q2_k_xl,8811,832,896,0.272408,81.2,0.241638,85.9
@@ -1499,7 +1499,7 @@ prompt,target,n_prompt,window_start,window_end,kl_target,top1_target,kl_handoff,
 15_cpp_medium,ud-q3_k_xl,3630,320,384,0.054298,93.8,0.041281,98.4
 15_cpp_medium,ud-q3_k_xl,3630,384,448,0.061824,92.2,0.053228,89.1
 15_cpp_medium,ud-q3_k_xl,3630,448,512,0.072949,95.3,0.058060,95.3
-15_cpp_medium,ud-q3_k_xl,3630,512,576,0.057665,87.5,0.049453,89.1
+15_cpp_medium,ud-q3_k_xl,3630,512,576,0.057664,87.5,0.049453,89.1
 15_cpp_medium,ud-q3_k_xl,3630,576,640,0.065728,89.1,0.053009,95.3
 15_cpp_medium,ud-q3_k_xl,3630,640,704,0.049128,92.2,0.039317,95.3
 15_cpp_medium,ud-q3_k_xl,3630,704,768,0.091049,90.6,0.054346,92.2

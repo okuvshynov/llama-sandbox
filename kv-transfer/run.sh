@@ -191,7 +191,6 @@ for tgt_entry in "${TARGETS[@]}"; do
 
     for prompt_file in "$PROMPTS"/*.txt; do
         name=$(basename "$prompt_file" .txt)
-        ref_bin="${REF_DIR}/${name}-ref.bin"
         tgt_bin="${tgt_dir}/${name}-target.bin"
         hoff_bin="${tgt_dir}/${name}-handoff.bin"
 
@@ -199,8 +198,8 @@ for tgt_entry in "${TARGETS[@]}"; do
             continue
         fi
 
-        tgt_out=$("$BINARY" compare -a "$ref_bin" -b "$tgt_bin" 2>/dev/null) || true
-        hoff_out=$("$BINARY" compare -a "$ref_bin" -b "$hoff_bin" 2>/dev/null) || true
+        tgt_out=$("$BINARY" compare -f "$tgt_bin" 2>/dev/null) || true
+        hoff_out=$("$BINARY" compare -f "$hoff_bin" 2>/dev/null) || true
 
         tgt_kl=$(echo "$tgt_out" | grep "KL divergence:" | awk '{print $3}' || true)
         if [ -z "$tgt_kl" ]; then
@@ -216,7 +215,7 @@ for tgt_entry in "${TARGETS[@]}"; do
         hoff_p99=$(echo "$hoff_out" | grep "KL p99:" | awk '{print $3}')
         hoff_t1=$(echo "$hoff_out" | grep "Top-1 agree:" | awk '{print $3}')
 
-        read n_tokens_bin n_prompt <<< $(read_token_counts "$ref_bin")
+        read n_tokens_bin n_prompt <<< $(read_token_counts "$REF_DIR/${name}-ref.bin")
         n_gen=$((n_tokens_bin - n_prompt))
 
         tgt_t1_num=$(echo "$tgt_t1" | tr -d '%')
@@ -244,7 +243,6 @@ for tgt_entry in "${TARGETS[@]}"; do
 
     for prompt_file in "$PROMPTS"/*.txt; do
         name=$(basename "$prompt_file" .txt)
-        ref_bin="${REF_DIR}/${name}-ref.bin"
         tgt_bin="${tgt_dir}/${name}-target.bin"
         hoff_bin="${tgt_dir}/${name}-handoff.bin"
 
@@ -256,10 +254,10 @@ for tgt_entry in "${TARGETS[@]}"; do
         tmp_csv=$(mktemp)
         log_file="${LOG_DIR}/${name}-${tgt_tag}-decay.log"
         "$BINARY" decay \
-            --ref "$ref_bin" --target "$tgt_bin" --handoff "$hoff_bin" \
-            --window 64 --temp "$TEMP" --csv "$tmp_csv" > /dev/null 2>"$log_file"
+            --target "$tgt_bin" --handoff "$hoff_bin" \
+            --window 64 --csv "$tmp_csv" > /dev/null 2>"$log_file"
 
-        read n_tokens_bin n_prompt_val <<< $(read_token_counts "$ref_bin")
+        read n_tokens_bin n_prompt_val <<< $(read_token_counts "$REF_DIR/${name}-ref.bin")
 
         tail -n +2 "$tmp_csv" | while IFS= read -r line; do
             echo "${name},${tgt_tag},${n_prompt_val},${line}" >> "$DECAY_CSV"

@@ -1,5 +1,7 @@
 #include "handoff.h"
 #include "trace_io.h"
+#include "stats_io.h"
+#include "kl_utils.h"
 
 #include "llama.h"
 #include "common.h"
@@ -14,7 +16,7 @@
 struct handoff_params {
     std::string ref_model_path;
     std::string tgt_model_path;
-    std::string input_path;       // ref.bin with token sequence
+    std::string input_path;       // ref.bin with token sequence + logits
     std::string output_path = "handoff.bin";
     std::string state_path  = "";  // temp file for KV state (auto if empty)
     int32_t     n_gpu_layers = 99;
@@ -65,9 +67,9 @@ int cmd_handoff(int argc, char ** argv) {
     handoff_params params;
     if (!parse_args(argc, argv, params)) return 1;
 
-    // read token sequence from reference
+    // read reference trace with full logits (needed for inline KL computation)
     trace_file ref;
-    if (!trace_read_tokens(params.input_path, ref)) {
+    if (!trace_read(params.input_path, ref)) {
         fprintf(stderr, "handoff: failed to read '%s'\n", params.input_path.c_str());
         return 1;
     }
@@ -80,10 +82,13 @@ int cmd_handoff(int argc, char ** argv) {
     const auto & rp = ref.prompts[0];
     const int32_t n_tokens = rp.n_tokens;
     const int32_t n_prompt = rp.n_prompt;
-    const int32_t n_ctx = params.n_ctx > 0 ? params.n_ctx : n_tokens;
+    const int32_t n_gen    = n_tokens - n_prompt;
+    const int32_t n_vocab  = ref.n_vocab;
+    const int32_t n_ctx    = params.n_ctx > 0 ? params.n_ctx : n_tokens;
+    const double  temp     = (ref.temp > 0.0f) ? (double)ref.temp : 1.0;
 
     fprintf(stderr, "handoff: %d tokens (%d prompt + %d generated)\n",
-            n_tokens, n_prompt, n_tokens - n_prompt);
+            n_tokens, n_prompt, n_gen);
 
     ggml_backend_load_all();
 
@@ -103,10 +108,10 @@ int cmd_handoff(int argc, char ** argv) {
     }
 
     const llama_vocab * ref_vocab = llama_model_get_vocab(ref_model);
-    const int32_t n_vocab = llama_vocab_n_tokens(ref_vocab);
+    const int32_t model_n_vocab = llama_vocab_n_tokens(ref_vocab);
 
-    if (n_vocab != ref.n_vocab) {
-        fprintf(stderr, "handoff: vocab mismatch: ref model=%d, ref.bin=%d\n", n_vocab, ref.n_vocab);
+    if (model_n_vocab != n_vocab) {
+        fprintf(stderr, "handoff: vocab mismatch: ref model=%d, ref.bin=%d\n", model_n_vocab, n_vocab);
         llama_model_free(ref_model);
         return 1;
     }
@@ -128,11 +133,6 @@ int cmd_handoff(int argc, char ** argv) {
 
     const int32_t n_batch = llama_n_batch(ref_ctx);
 
-    // decode prompt with ref model (logits not stored — only need KV cache)
-    const int32_t n_gen = n_tokens - n_prompt;
-    std::vector<float> all_logits;
-    all_logits.reserve((size_t)n_gen * n_vocab);
-
     llama_batch batch = llama_batch_init(n_batch, 0, 1);
 
     int32_t n_decoded = 0;
@@ -152,7 +152,7 @@ int cmd_handoff(int argc, char ** argv) {
 
     fprintf(stderr, "handoff: prompt decoded (%d tokens), saving KV state...\n", n_prompt);
 
-    // save KV state — includes prompt tokens
+    // save KV state
     std::vector<llama_token> prompt_tok(rp.tokens.begin(), rp.tokens.begin() + n_prompt);
     size_t state_size = llama_state_save_file(ref_ctx, params.state_path.c_str(),
                                                prompt_tok.data(), n_prompt);
@@ -211,8 +211,13 @@ int cmd_handoff(int argc, char ** argv) {
 
     fprintf(stderr, "handoff: restored KV state (%zu tokens)\n", n_loaded);
 
-    // now replay the generation tokens through target model, collecting logits
-    // the KV cache already has the prompt, so we feed generation tokens one by one
+    // per-token stats
+    std::vector<float>   kl_per_token(n_gen);
+    std::vector<uint8_t> top1_per_token(n_gen);
+
+    std::vector<double> log_p_ref, log_p_tgt;
+
+    // replay generation tokens one by one, computing KL inline
     batch = llama_batch_init(1, 0, 1);
 
     for (int32_t i = 0; i < n_gen; i++) {
@@ -227,8 +232,14 @@ int cmd_handoff(int argc, char ** argv) {
             break;
         }
 
-        const float * logits = llama_get_logits_ith(tgt_ctx, 0);
-        all_logits.insert(all_logits.end(), logits, logits + n_vocab);
+        const float * tgt_logits = llama_get_logits_ith(tgt_ctx, 0);
+        const float * ref_logits = rp.logits.data() + (size_t)i * n_vocab;
+
+        log_softmax_temp(ref_logits, n_vocab, temp, log_p_ref);
+        log_softmax_temp(tgt_logits, n_vocab, temp, log_p_tgt);
+
+        kl_per_token[i] = (float)kl_divergence(log_p_ref, log_p_tgt, n_vocab);
+        top1_per_token[i] = (argmax(ref_logits, n_vocab) == argmax(tgt_logits, n_vocab)) ? 1 : 0;
 
         if ((i + 1) % 100 == 0 || i == n_gen - 1) {
             fprintf(stderr, "handoff: generation %d / %d\r", i + 1, n_gen);
@@ -240,30 +251,22 @@ int cmd_handoff(int argc, char ** argv) {
     // clean up temp state file
     remove(params.state_path.c_str());
 
-    // write output
-    trace_file out;
-    out.n_vocab   = n_vocab;
-    out.n_prompts = 1;
-    out.temp      = ref.temp;
-    out.top_p     = ref.top_p;
-    out.top_k     = ref.top_k;
-    out.seed      = ref.seed;
+    // write stats
+    stats_file out;
+    out.n_gen    = n_gen;
+    out.n_prompt = n_prompt;
+    out.temp     = (float)temp;
+    out.kl         = std::move(kl_per_token);
+    out.top1_match = std::move(top1_per_token);
 
-    trace_entry & p = out.prompts.emplace_back();
-    p.path     = rp.path;
-    p.n_tokens = n_tokens;
-    p.n_prompt = n_prompt;
-    p.tokens.assign(rp.tokens.begin(), rp.tokens.end());
-    p.logits   = std::move(all_logits);
-
-    if (!trace_write(params.output_path, out)) {
+    if (!stats_write(params.output_path, out)) {
         fprintf(stderr, "handoff: failed to write '%s'\n", params.output_path.c_str());
         llama_batch_free(batch); llama_free(tgt_ctx); llama_model_free(tgt_model);
         return 1;
     }
 
-    fprintf(stderr, "handoff: wrote %s (%d tokens, %d generation logits)\n",
-            params.output_path.c_str(), n_tokens, n_gen);
+    fprintf(stderr, "handoff: wrote %s (%d gen tokens, per-token stats)\n",
+            params.output_path.c_str(), n_gen);
 
     llama_batch_free(batch);
     llama_free(tgt_ctx);

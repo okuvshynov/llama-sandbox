@@ -22,6 +22,7 @@ find_package(Threads REQUIRED)
 add_executable(kv-transfer
     src/main.cpp
     src/trace_io.cpp
+    src/stats_io.cpp
     src/ref.cpp
     src/target.cpp
     src/handoff.cpp

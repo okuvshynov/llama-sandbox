@@ -13,10 +13,10 @@ static void print_usage(const char * prog) {
         "\n"
         "Commands:\n"
         "  ref      Run reference model (prompt + generation), save logits\n"
-        "  target   Run target model on existing tokens, save logits\n"
-        "  handoff  Process prompt with ref model, transfer KV, generate with target\n"
-        "  compare  Compare two .bin files (KL divergence + top-1 agreement)\n"
-        "  decay    Analyze KL decay across generation position\n",
+        "  target   Run target model on existing tokens, compute KL vs ref inline\n"
+        "  handoff  Process prompt with ref model, transfer KV, generate with target, compute KL inline\n"
+        "  compare  Summarize a per-token stats file (mean/p95/p99 KL + top-1)\n"
+        "  decay    Analyze KL decay across generation position from stats files\n",
         prog);
 }
 
