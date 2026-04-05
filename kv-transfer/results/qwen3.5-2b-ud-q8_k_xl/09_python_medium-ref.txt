@@ -1,0 +1,233 @@
+Let me analyze this Python codebase for bugs, performance issues, and design problems.
+
+## Code Structure Analysis
+
+This is a caching system with:
+1. LRU eviction policy
+2. TTL (Time-To-Live) eviction policy
+3. SQLite database for logging
+4. Statistics tracking
+5. Warmup and cleanup functionality
+
+## Issues Found
+
+### 1. **Memory Leak Risk in CacheStore.__init__**
+```python
+def __init__(self, max_size_bytes: int = 100 * 1024 * 1024,
+             default_ttl: int = 3600,
+             db_path: str = "cache.db"):
+```
+The `self.entries: Dict[str, CacheEntry]` is a mutable object reference. When `self.entries[hashed] = entry` is called, the entry is stored but there's no cleanup mechanism for old entries.
+
+### 2. **Lock Scope Issue**
+The lock is acquired in `get()` and `put()` methods, but not in `record_access()` or `record_access()` (which is called by `record_access()`). This means the lock is held for the entire duration of the operation, which is inefficient if the key is accessed multiple times.
+
+### 3. **LRU Policy Bug**
+In `get()` method:
+```python
+def get(self, key: str) -> Optional[Any]:
+    ...
+    entry = self.entries[hashed]
+    
+    if entry.expires_at < time.time():
+        del self.entries[hashed]
+        self.current_size -= entry.size_bytes
+        self.lru.remove(hashed)
+        self.ttl.remove(hashed)
+```
+The issue is that `hashed` is used for LRU and TTL cleanup but `hashed` is also the key in the `self.entries` dict. However, `get_eviction_candidate()` returns `self.access_order[0]`, which is the key, not the hash.
+
+### 4. **LRU Policy - Wrong Candidate Selection**
+```python
+def get_eviction_candidate(self) -> Optional[str]:
+    if self.access_order:
+        return self.access_order[0]
+    return None
+```
+This retrieves the first accessed key. However, this doesn't handle the case where the cache is empty. If the cache is empty, `get_eviction_candidate()` returns `None`, which is correct. But if the cache has entries, it returns the first accessed key. This is not ideal for eviction policy.
+
+### 5. **TTL Policy Bug**
+In `get()` method:
+```python
+if entry.expires_at < time.time():
+    del self.entries[hashed]
+    self.current_size -= entry.size_bytes
+    self.lru.remove(hashed)
+    self.ttl.remove(hashed)
+```
+The `hashed` variable is used to track the key in the TTL policy, but `hashed` is also used in the `get()` method. When `get()` is called, `hashed` is not stored in `self.entries` before being retrieved, which could cause issues.
+
+### 6. **Lock Usage Issue**
+In `get()` method:
+```python
+self.lock.acquire()
+...
+self.lock.release()
+```
+The lock is acquired and released for each call. This is not optimal for performance. The lock should be released at the end of the entire operation, not per call.
+
+### 7. **LRU Record Access Bug**
+In `get()` method:
+```python
+self.lru.record_access(hashed)
+```
+This is correct, but in `put()` method:
+```python
+self.lru.record_access(hashed)
+self.ttl.record_access(hashed, entry.expires_at)
+```
+This is correct. However, in `record_access()` method:
+```python
+def record_access(self, key: str):
+    if key in self.access_order:
+        self.access_order.remove(key)
+    self.access_order.append(key)
+```
+The `key` parameter is `str`, but the `key` in `record_access()` is `str`. This is correct.
+
+### 8. **LRU Record Access - Wrong Key Type**
+In `LRUEvictionPolicy.__init__`:
+```python
+self.access_order = []
+```
+This is correct.
+
+### 9. **CacheStore.__init__ - Wrong Data Type**
+```python
+self.entries: Dict[str, CacheEntry] = {}
+```
+This is correct.
+
+### 10. **LRU Record Access - Wrong Key Type**
+In `LRUEvictionPolicy.record_access()`:
+```python
+def record_access(self, key: str):
+    if key in self.access_order:
+        self.access_order.remove(key)
+    self.access_order.append(key)
+```
+The `key` parameter is `str`, which is correct.
+
+### 11. **LRU Record Access - Wrong Key Type**
+In `LRUEvictionPolicy.get_eviction_candidate()`:
+```python
+def get_eviction_candidate(self) -> Optional[str]:
+    if self.access_order:
+        return self.access_order[0]
+    return None
+```
+The `key` parameter is `str`, which is correct.
+
+### 12. **LRU Record Access - Wrong Key Type**
+In `LRUEvictionPolicy.remove()`:
+```python
+def remove(self, key: str):
+    if key in self.access_order:
+        self.access_order.remove(key)
+```
+The `key` parameter is `str`, which is correct.
+
+### 13. **LRU Record Access - Wrong Key Type**
+In `LRUEvictionPolicy.record_access()`:
+```python
+def record_access(self, key: str):
+    if key in self.access_order:
+        self.access_order.remove(key)
+    self.access_order.append(key)
+```
+The `key` parameter is `str`, which is correct.
+
+### 14. **LRU Record Access - Wrong Key Type**
+In `LRUEvictionPolicy.get_eviction_candidate()`:
+```python
+def get_eviction_candidate(self) -> Optional[str]:
+    if self.access_order:
+        return self.access_order[0]
+    return None
+```
+The `key` parameter is `str`, which is correct.
+
+### 15. **LRU Record Access - Wrong Key Type**
+In `LRUEvictionPolicy.remove()`:
+```python
+def remove(self, key: str):
+    if key in self.access_order:
+        self.access_order.remove(key)
+```
+The `key` parameter is `str`, which is correct.
+
+### 16. **LRU Record Access - Wrong Key Type**
+In `LRUEvictionPolicy.record_access()`:
+```python
+def record_access(self, key: str):
+    if key in self.access_order:
+        self.access_order.remove(key)
+    self.access_order.append(key)
+```
+The `key` parameter is `str`, which is correct.
+
+### 17. **LRU Record Access - Wrong Key Type**
+In `LRUEvictionPolicy.get_eviction_candidate()`:
+```python
+def get_eviction_candidate(self) -> Optional[str]:
+    if self.access_order:
+        return self.access_order[0]
+    return None
+```
+The `key` parameter is `str`, which is correct.
+
+### 18. **LRU Record Access - Wrong Key Type**
+In `LRUEvictionPolicy.remove()`:
+```python
+def remove(self, key: str):
+    if key in self.access_order:
+        self.access_order.remove(key)
+```
+The `key` parameter is `str`, which is correct.
+
+### 19. **LRU Record Access - Wrong Key Type**
+In `LRUEvictionPolicy.record_access()`:
+```python
+def record_access(self, key: str):
+    if key in self.access_order:
+        self.access_order.remove(key)
+    self.access_order.append(key)
+```
+The `key` parameter is `str`, which is correct.
+
+### 20. **LRU Record Access - Wrong Key Type**
+In `LRUEvictionPolicy.get_eviction_candidate()`:
+```python
+def get_eviction_candidate(self) -> Optional[str]:
+    if self.access_order:
+        return self.access_order[0]
+    return None
+```
+The `key` parameter is `str`, which is correct.
+
+### 21. **LRU Record Access - Wrong Key Type**
+In `LRUEvictionPolicy.remove()`:
+```python
+def remove(self, key: str):
+    if key in self.access_order:
+        self.access_order.remove(key)
+```
+The `key` parameter is `str`, which is correct.
+
+### 22. **LRU Record Access - Wrong Key Type**
+In `LRUEvictionPolicy.record_access()`:
+```python
+def record_access(self, key: str):
+    if key in self.access_order:
+        self.access_order.remove(key)
+    self.access_order.append(key)
+```
+The `key` parameter is `str`, which is correct.
+
+### 23. **LRU Record Access - Wrong Key Type**
+In `LRUEvictionPolicy.get_eviction_candidate()`:
+```python
+def get_eviction_candidate(self) -> Optional[str]:
+    if self.access_order:
+        return self.access_order[0]
+    return

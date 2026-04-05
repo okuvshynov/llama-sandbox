@@ -379,25 +379,35 @@ function drawScatter(rows, quants) {
   ctx.lineTo(toX(Math.pow(10, logMax)), toY(Math.pow(10, logMax))); ctx.stroke();
   ctx.setLineDash([]);
 
-  // draw points — circles for short prompts, squares for long
+  // draw points — circles for small, squares for medium, diamonds for large
   scatter.points = [];
   const R = 5;
-  const isLong = (name) => name.match(/^(09|10|11|12)_/) || parseInt(name) >= 9;
+  const MEDIUM_THRESHOLD = 1500, LARGE_THRESHOLD = 5000;
+  const promptSize = (np) => np >= LARGE_THRESHOLD ? 'large' : np >= MEDIUM_THRESHOLD ? 'medium' : 'small';
   for (const r of rows) {
     if (r.kl_target <= 0 || r.kl_handoff <= 0) continue;
     const x = toX(r.kl_target), y = toY(r.kl_handoff);
     const color = quantColor(quants, r.target_model);
-    const long = isLong(r.prompt);
+    const size = promptSize(r.n_prompt);
     ctx.fillStyle = color;
     ctx.globalAlpha = 0.75;
-    if (long) {
+    if (size === 'large') {
+      // diamond
+      ctx.beginPath();
+      ctx.moveTo(x, y - R); ctx.lineTo(x + R, y); ctx.lineTo(x, y + R); ctx.lineTo(x - R, y);
+      ctx.closePath(); ctx.fill();
+    } else if (size === 'medium') {
       ctx.fillRect(x - R, y - R, R * 2, R * 2);
     } else {
       ctx.beginPath(); ctx.arc(x, y, R, 0, Math.PI * 2); ctx.fill();
     }
     ctx.globalAlpha = 1.0;
     ctx.strokeStyle = color; ctx.lineWidth = 1;
-    if (long) {
+    if (size === 'large') {
+      ctx.beginPath();
+      ctx.moveTo(x, y - R); ctx.lineTo(x + R, y); ctx.lineTo(x, y + R); ctx.lineTo(x - R, y);
+      ctx.closePath(); ctx.stroke();
+    } else if (size === 'medium') {
       ctx.strokeRect(x - R, y - R, R * 2, R * 2);
     } else {
       ctx.beginPath(); ctx.arc(x, y, R, 0, Math.PI * 2); ctx.stroke();
@@ -411,8 +421,9 @@ function drawScatter(rows, quants) {
     `<div class="legend-item"><div class="legend-swatch" style="background:${quantColor(quants, q)}"></div>${q}</div>`
   ).join('');
   const shapeLegend =
-    `<div class="legend-item"><div class="legend-swatch" style="background:#999;border-radius:50%"></div>short prompt</div>` +
-    `<div class="legend-item"><div class="legend-swatch" style="background:#999;border-radius:0"></div>long prompt</div>`;
+    `<div class="legend-item"><div class="legend-swatch" style="background:#999;border-radius:50%"></div>small prompt</div>` +
+    `<div class="legend-item"><div class="legend-swatch" style="background:#999;border-radius:0"></div>medium prompt</div>` +
+    `<div class="legend-item"><div class="legend-swatch" style="background:#999;border-radius:0;transform:rotate(45deg);width:8px;height:8px"></div>large prompt</div>`;
   legendEl.innerHTML = colorLegend + shapeLegend;
 }
 

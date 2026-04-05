@@ -1,0 +1,131 @@
+Here's a thinking process that leads to the review of the Go codebase:
+
+1.  **Understand the Goal:** The user wants a review of the provided Go codebase. The review needs to cover three specific areas: bugs, race conditions, and design issues. For each issue found, I need to explain *why* it's a problem and *how* to fix it.
+
+2.  **Initial Code Scan & Context:**
+    *   **Package:** `main` (implies a standalone executable or module).
+    *   **Core Logic:** A worker pool system for processing jobs asynchronously.
+    *   **Dependencies:** `context`, `encoding/json`, `fmt`, `log`, `math/rand`, `net/http`, `sync`, `time`.
+    *   **Components:** `WorkerPool` struct, `RateLimiter` struct, `loggingMiddleware`, `rateLimitMiddleware`, `main` function with HTTP handlers.
+    *   **Architecture:** Job submission via HTTP, middleware wrapping logic, worker pool consuming jobs from a channel and processing them concurrently.
+
+3.  **Detailed Code Analysis (Bug Hunt):**
+
+    *   **`NewWorkerPool`**:
+        *   `ctx, cancel := context.WithCancel(context.Background())` -> Standard.
+        *   `jobQueue: make(chan *Job, queueSize)` -> Standard.
+        *   `results: make(map[string]*Job)` -> Standard.
+        *   `Submit`: Locks the map, adds to results, sends to queue.
+        *   `GetJob`: Locks the map, gets job, unlocks.
+        *   **Issue 1 (Race Condition):** `results` map is protected by `wp.mu`. However, `results` is assigned a `sync.Mutex`? Wait, let's check. `wp.mu` is defined in `WorkerPool`. `results` map is accessed by `wp.mu.Lock()`. This looks okay for reads/writes *if* the map is never concurrently accessed by the worker directly.
+        *   Wait, `worker` function reads from `wp.jobQueue` and calls `wp.processJob`.
+        *   Inside `processJob`, it modifies `job` struct.
+        *   **Issue 2 (Race Condition in `processJob`):** `job.Status` is modified inside `processJob`. Since `Submit` locks the map and sends the job, a race condition exists between `Submit` and the worker picking up the job? No, `Submit` sends to channel, worker picks up. `Submit` acquires lock, adds to map. `GetJob` acquires lock, gets value.
+        *   **Issue 3 (Race Condition in `results` map):** The `results` map is accessed from outside `Submit` and `GetJob`. But `results` is a `map[string]*Job`. `wp.mu` protects `results`.
+        *   **Wait, Check `Submit` again:** `wp.mu.Lock()` -> `wp.results[job.ID] = job`. `wp.mu.Unlock()`. This is safe.
+        *   **Wait, Check `GetJob` again:** `wp.mu.Lock()` -> `job := wp.results[id]`.
+        *   **Wait, Check `processJob` logic:**
+            ```go
+            for _, mw := range wp.middleware {
+                // ...
+                return
+            }
+            ```
+            Middleware `loggingMiddleware` just logs.
+            Middleware `rateLimitMiddleware` checks `limiter.Allow()`.
+            **Bug:** `loggingMiddleware` is called on every job. `rateLimitMiddleware` is called on every job.
+            **Wait, Check `Submit` again:**
+            `wp.mu.Lock()` then `wp.results[job.ID] = job`.
+            **Wait, check `results` map in `Submit` vs `GetJob`**:
+            `Submit` adds to `results`. `GetJob` retrieves from `results`.
+            The `results` map is protected by `wp.mu`.
+            However, `processJob` modifies `job` (Status, Result, etc.).
+            **Wait, Check `results` map key:** `job.ID`.
+            **Wait, Check `results` map initialization:** `make(map[string]*Job)`.
+            **Wait, Check `results` map update:** `wp.results[job.ID] = job`.
+            **Wait, Check `results` map access:** `wp.mu.Lock()` then `job := wp.results[id]`.
+            **Wait, Check `results` map update:** `wp.mu.Lock()` then `wp.results[job.ID] = job`.
+            **Wait, Check `results` map access:** `wp.mu.Lock()` then `job := wp.results[id]`.
+            **Wait, Check `results` map access:** `wp.mu.Lock()` then `job := wp.results[id]`.
+            **Wait, Check `results` map access:** `wp.mu.Lock()` then `job := wp.results[id]`.
+            **Wait, Check `results` map access:** `wp.mu.Lock()` then `job := wp.results[id]`.
+
+            Actually, looking closely at `Submit`:
+            ```go
+            wp.mu.Lock()
+            wp.results[job.ID] = job
+            wp.mu.Unlock()
+            ```
+            This is safe.
+
+            Looking at `GetJob`:
+            ```go
+            wp.mu.Lock()
+            job := wp.results[id]
+            wp.mu.Unlock()
+            ```
+            This is safe.
+
+            **Wait, Check `results` map key:** `job.ID`.
+            **Wait, Check `results` map initialization:** `make(map[string]*Job)`.
+            **Wait, Check `results` map update:** `wp.results[job.ID] = job`.
+            **Wait, Check `results` map access:** `wp.mu.Lock()` then `job := wp.results[id]`.
+
+            Okay, so `results` map is protected.
+            **Wait, Check `GetJob`**: `wp.mu.Lock()`. `job := wp.results[id]`. `wp.mu.Unlock()`.
+            **Wait, Check `processJob`**: `for _, mw := range wp.middleware`.
+            **Wait, Check `processJob`**: `job.Status`, `job.Result`, `job.Retries`, `job.DoneAt`.
+            **Wait, Check `processJob`**: `job.Status = "running"`, `job.StartedAt = time.Now()`, `job.Status = "completed"`, `job.DoneAt = time.Now()`.
+
+            **Wait, Check `processJob`**:
+            Inside `processJob`:
+            ```go
+            for _, mw := range wp.middleware {
+                if err := mw(job); err != nil {
+                    job.Status = "failed"
+                    job.Result = fmt.Sprintf("middleware error: %v", err)
+                    return
+                }
+            }
+            ```
+            **Wait, Check `processJob`**:
+            `job.Status = "running"`, `job.StartedAt = time.Now()`.
+            `handler` call.
+            **Wait, Check `processJob`**:
+            If `err != nil`: `job.Retries++`, `time.Sleep`, `wp.jobQueue <- job`.
+            **Wait, Check `processJob`**:
+            If `err == nil`: `job.Status = "completed"`, `job.Result = result`, `job.DoneAt = time.Now()`.
+            **Wait, Check `processJob`**:
+            `job.DoneAt = time.Now()`.
+
+            **Wait, Check `processJob`**:
+            There is a potential race condition here.
+            `Submit` locks the map and sends to channel.
+            `worker` picks up job from channel.
+            `worker` calls `processJob`.
+            `processJob` modifies the `job` struct.
+            **Wait, Check `processJob`**:
+            `job.Status = "running"`, `job.StartedAt = time.Now()`.
+            **Wait, Check `processJob`**:
+            `job.DoneAt = time.Now()`.
+            **Wait, Check `processJob`**:
+            `job.Retries++`.
+            **Wait, Check `processJob`**:
+            `job.Result = fmt.Sprintf("middleware error: %v", err)`.
+            **Wait, Check `processJob`**:
+            `job.Status = "failed"`.
+
+            **Wait, Check `processJob`**:
+            If `job.Status` is modified, and `job` is in `results`, is it possible that `results` is accessed concurrently by `worker` and `pool`?
+            `Submit` acquires `wp.mu`.
+            `worker` is blocked on `select` in `worker` function.
+            `worker` calls `processJob`.
+            `processJob` modifies `job`.
+            `job` is in `results` map.
+            `results` map is protected by `wp.mu`.
+            So `Submit` -> `results` -> `worker` -> `processJob` -> `results`.
+            Since `results` is protected by `wp.mu`, and `Submit` holds `wp.mu` before updating `results`, and `GetJob` holds `wp.mu` before reading `results`, there is no concurrent access to `results` that bypasses `wp.mu`.
+
+            **Wait, Check `results` map access:**
+            `wp.mu.Lock()` -> `job := wp.results[id]`. `wp.mu.Unlock()`.
+            **Wait, Check

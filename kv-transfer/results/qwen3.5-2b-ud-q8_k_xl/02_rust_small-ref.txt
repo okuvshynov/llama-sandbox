@@ -1,0 +1,129 @@
+This is a Rust program that demonstrates compression and decompression functionality. Let me break down each function and explain what it does step by step.
+
+## `compress` function
+- Takes a slice of bytes and returns a vector of tuples (byte, count)
+- Handles empty input by returning empty vector
+- Iterates through the input, tracking consecutive identical bytes
+- When a different byte is encountered or end of input, stores the previous byte and its count
+- Returns the compressed data as a vector of (byte, count) tuples
+
+## `decompress` function
+- Takes a slice of (byte, count) tuples
+- For each tuple, pushes the byte `count` times into result vector
+- Returns the decompressed data as a vector of bytes
+
+## `analyze` function
+- Takes a slice of bytes and returns a HashMap of byte -> frequency
+- Iterates through each byte, incrementing its count in the HashMap
+- Returns the HashMap with byte frequencies
+
+## `main` function
+- Creates test data: "AAABBBCCCCDDDDDEEEEE"
+- Compresses the data
+- Decompresses the compressed data
+- Analyzes the original data
+- Prints statistics: original size, number of compressed entries, compression ratio
+- Verifies roundtrip (compression + decompression equals original)
+- Sorts and prints frequency table
+
+Let me write a comprehensive explanation with step-by-step breakdown.
+</think>
+
+The Rust program demonstrates a compression and decompression system for byte sequences, along with frequency analysis. Here's a step-by-step breakdown:
+
+---
+
+### 1. `compress(input: &[u8]) -> Vec<(u8, u16)>`
+This function compresses a byte slice into a vector of (byte, count) pairs. It uses a sliding window approach to identify consecutive repeated bytes.
+
+**Steps:**
+1. **Initialization:**
+   - Creates an empty `Vec<(u8, u16)>` called `result`.
+   - Starts with the first byte of the input (`current`) and an initial count of 1.
+2. **Iterating:**
+   - For each byte after the first:
+     - If the byte matches the current one and the count is less than `u16::MAX`, increment the count.
+     - Otherwise, push the previous byte and its count into `result`, reset `current` and `count` to the new byte.
+3. **Final Entry:**
+   - After the loop, the last byte and its count are pushed into `result`.
+4. **Return:**
+   - Returns the compressed data.
+
+**Example:**
+For input `b"AAABBBCCCCDDDDDEEEEE"` → `[(b' A', 3), (b' B', 3), (b' C', 3), (b' D', 4), (b' E', 5)]`
+
+---
+
+### 2. `decompress(data: &[(u8, u16)]) -> Vec<u8>`
+This function expands a compressed byte slice back into its original byte form.
+
+**Steps:**
+1. **Initialization:**
+   - Creates an empty `Vec<u8>` called `result`.
+2. **Iterating:**
+   - For each `(byte, count)` pair:
+     - Pushes the byte `count` times into the result vector.
+3. **Return:**
+   - Returns the reconstructed byte sequence.
+
+**Example:**
+For input `[(b' A', 3), (b' B', 3), (b' C', 3), (b' D', 4), (b' E', 5)]` → `"AAABBBCCCCDDDDDEEEEE"`
+
+---
+
+### 3. `analyze(input: &[u8]) -> HashMap<u8, usize>`
+This function counts the frequency of each byte in the input.
+
+**Steps:**
+1. **Initialization:**
+   - Creates an empty `HashMap<u8, usize>` called `freq`.
+2. **Iterating:**
+   - For each byte in the input:
+     - Increments its count in the HashMap using `entry()` (atomically).
+3. **Return:**
+   - Returns the frequency map.
+
+**Example:**
+For input `"AAABBBCCCCDDDDDEEEEE"` → `{'A': 3, 'B': 3, 'C': 3, 'D': 4, 'E': 5}`
+
+---
+
+### 4. `main()`
+This function demonstrates the entire workflow:
+
+**Steps:**
+1. **Setup:**
+   - Defines test data: `b"AAABBBCCCCDDDDDEEEEE"`.
+   - Compresses the data using `compress()`.
+   - Decompresses the compressed data using `decompress()`.
+   - Analyzes the original data using `analyze()`.
+2. **Output:**
+   - Prints original size (8 bytes).
+   - Prints compressed entries (5).
+   - Calculates compression ratio: `(5 * 3) / 8 * 100 = 187.5%`.
+   - Verifies roundtrip by comparing original and decompressed data.
+   - Prints frequency table sorted by count.
+
+**Output:**
+```
+Original size: 8
+Compressed entries: 5
+Ratio: 187.5%
+Roundtrip OK: true
+  'A': 3
+  'B': 3
+  'C': 3
+  'D': 4
+  'E': 5
+```
+
+---
+
+### Key Insights
+- **Compression:** Uses a simple run-length encoding to reduce data size.
+- **Decompression:** Reconstructs the original sequence by repeating each byte according to its count.
+- **Frequency Analysis:** Shows the most frequent bytes.
+- **Roundtrip Validation:** Confirms that the decompressed data matches the original.
+- **Efficiency:** The compression ratio is calculated as `(compressed size / original size) * 100`, showing a 62.5% reduction.
+
+This program provides a basic example of lossless data compression and analysis in Rust.

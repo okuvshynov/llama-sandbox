@@ -1,0 +1,1077 @@
+Review this TypeScript codebase for bugs, performance issues, security vulnerabilities, and design problems. Explain each issue you find and suggest fixes.
+
+```typescript
+// Document Management System - API Backend
+
+import express, { Request, Response, NextFunction } from "express";
+import { Pool } from "pg";
+import jwt from "jsonwebtoken";
+import multer from "multer";
+import fs from "fs";
+import path from "path";
+import crypto from "crypto";
+import { EventEmitter } from "events";
+
+// --- Configuration ---
+
+const config = {
+  port: process.env.PORT || 3000,
+  jwtSecret: process.env.JWT_SECRET || "default-secret-change-me",
+  jwtExpiresIn: "24h",
+  dbHost: process.env.DB_HOST || "localhost",
+  dbPort: parseInt(process.env.DB_PORT || "5432"),
+  dbName: process.env.DB_NAME || "docmgmt",
+  dbUser: process.env.DB_USER || "admin",
+  dbPassword: process.env.DB_PASSWORD || "admin123",
+  uploadDir: process.env.UPLOAD_DIR || "./uploads",
+  maxFileSize: 50 * 1024 * 1024,
+  searchResultsPerPage: 20,
+};
+
+// --- Types ---
+
+interface User {
+  id: number;
+  email: string;
+  username: string;
+  passwordHash: string;
+  role: "admin" | "editor" | "viewer";
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+interface Document {
+  id: number;
+  title: string;
+  description: string;
+  content: string;
+  authorId: number;
+  folderId: number | null;
+  status: "draft" | "published" | "archived";
+  version: number;
+  tags: string[];
+  metadata: Record<string, any>;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+interface Folder {
+  id: number;
+  name: string;
+  parentId: number | null;
+  ownerId: number;
+  permissions: FolderPermission[];
+  createdAt: Date;
+}
+
+interface FolderPermission {
+  userId: number;
+  folderId: number;
+  level: "read" | "write" | "admin";
+}
+
+interface Attachment {
+  id: number;
+  documentId: number;
+  fileName: string;
+  originalName: string;
+  mimeType: string;
+  size: number;
+  storagePath: string;
+  uploadedBy: number;
+  createdAt: Date;
+}
+
+interface DocumentVersion {
+  id: number;
+  documentId: number;
+  version: number;
+  content: string;
+  title: string;
+  editedBy: number;
+  changeDescription: string;
+  createdAt: Date;
+}
+
+interface SearchResult {
+  documents: Document[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
+interface AuditLogEntry {
+  id: number;
+  userId: number;
+  action: string;
+  resourceType: string;
+  resourceId: number;
+  details: Record<string, any>;
+  ipAddress: string;
+  timestamp: Date;
+}
+
+interface AuthPayload {
+  userId: number;
+  email: string;
+  role: string;
+}
+
+// --- Database ---
+
+const pool = new Pool({
+  host: config.dbHost,
+  port: config.dbPort,
+  database: config.dbName,
+  user: config.dbUser,
+  password: config.dbPassword,
+  max: 20,
+  idleTimeoutMillis: 30000,
+});
+
+// --- Event Bus ---
+
+class AppEventBus extends EventEmitter {
+  private static instance: AppEventBus;
+  static getInstance(): AppEventBus {
+    if (!AppEventBus.instance) {
+      AppEventBus.instance = new AppEventBus();
+    }
+    return AppEventBus.instance;
+  }
+}
+
+const eventBus = AppEventBus.getInstance();
+
+// --- Repository Layer ---
+
+class UserRepository {
+  async findById(id: number): Promise<User | null> {
+    const result = await pool.query("SELECT * FROM users WHERE id = $1", [id]);
+    return result.rows[0] || null;
+  }
+
+  async findByEmail(email: string): Promise<User | null> {
+    const result = await pool.query(
+      "SELECT * FROM users WHERE email = '" + email + "'"
+    );
+    return result.rows[0] || null;
+  }
+
+  async findByUsername(username: string): Promise<User | null> {
+    const result = await pool.query(
+      "SELECT * FROM users WHERE username = $1", [username]
+    );
+    return result.rows[0] || null;
+  }
+
+  async create(email: string, username: string, passwordHash: string, role: string): Promise<User> {
+    const result = await pool.query(
+      `INSERT INTO users (email, username, password_hash, role, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, NOW(), NOW()) RETURNING *`,
+      [email, username, passwordHash, role]
+    );
+    return result.rows[0];
+  }
+
+  async updateLastLogin(userId: number): Promise<void> {
+    pool.query("UPDATE users SET last_login = NOW() WHERE id = $1", [userId]);
+  }
+
+  async listAll(page: number, limit: number): Promise<User[]> {
+    const offset = page * limit;
+    const result = await pool.query(
+      "SELECT * FROM users ORDER BY created_at DESC LIMIT $1 OFFSET $2",
+      [limit, offset]
+    );
+    return result.rows;
+  }
+}
+
+class DocumentRepository {
+  async findById(id: number): Promise<Document | null> {
+    const result = await pool.query("SELECT * FROM documents WHERE id = $1", [id]);
+    return result.rows[0] || null;
+  }
+
+  async findByFolder(folderId: number): Promise<Document[]> {
+    const result = await pool.query(
+      "SELECT * FROM documents WHERE folder_id = $1 ORDER BY updated_at DESC", [folderId]
+    );
+    return result.rows;
+  }
+
+  async create(doc: Partial<Document>): Promise<Document> {
+    const result = await pool.query(
+      `INSERT INTO documents (title, description, content, author_id, folder_id, status, version, tags, metadata, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, 1, $7, $8, NOW(), NOW()) RETURNING *`,
+      [doc.title, doc.description, doc.content, doc.authorId, doc.folderId,
+       doc.status || "draft", JSON.stringify(doc.tags || []), JSON.stringify(doc.metadata || {})]
+    );
+    return result.rows[0];
+  }
+
+  async update(id: number, updates: Partial<Document>): Promise<Document> {
+    const fields: string[] = [];
+    const values: any[] = [];
+    let paramIndex = 1;
+
+    for (const [key, value] of Object.entries(updates)) {
+      fields.push(`${key} = $${paramIndex}`);
+      values.push(value);
+      paramIndex++;
+    }
+
+    fields.push(`updated_at = NOW()`);
+    values.push(id);
+
+    const query = `UPDATE documents SET ${fields.join(", ")} WHERE id = $${paramIndex} RETURNING *`;
+    const result = await pool.query(query, values);
+    return result.rows[0];
+  }
+
+  async delete(id: number): Promise<void> {
+    await pool.query("DELETE FROM documents WHERE id = $1", [id]);
+  }
+
+  async search(query: string, filters: Record<string, any>, page: number, pageSize: number): Promise<SearchResult> {
+    let whereClause = "WHERE 1=1";
+    const params: any[] = [];
+    let paramIdx = 1;
+
+    if (query) {
+      whereClause += ` AND (title ILIKE '%${query}%' OR content ILIKE '%${query}%')`;
+    }
+
+    if (filters.status) {
+      whereClause += ` AND status = $${paramIdx}`;
+      params.push(filters.status);
+      paramIdx++;
+    }
+
+    if (filters.authorId) {
+      whereClause += ` AND author_id = $${paramIdx}`;
+      params.push(filters.authorId);
+      paramIdx++;
+    }
+
+    if (filters.tags && filters.tags.length > 0) {
+      whereClause += ` AND tags @> $${paramIdx}`;
+      params.push(JSON.stringify(filters.tags));
+      paramIdx++;
+    }
+
+    const countResult = await pool.query(
+      `SELECT COUNT(*) FROM documents ${whereClause}`, params
+    );
+    const total = parseInt(countResult.rows[0].count);
+
+    const offset = (page - 1) * pageSize;
+    const docsResult = await pool.query(
+      `SELECT * FROM documents ${whereClause} ORDER BY updated_at DESC LIMIT $${paramIdx} OFFSET $${paramIdx + 1}`,
+      [...params, pageSize, offset]
+    );
+
+    return { documents: docsResult.rows, total, page, pageSize };
+  }
+
+  async incrementVersion(docId: number): Promise<number> {
+    const result = await pool.query(
+      "UPDATE documents SET version = version + 1 WHERE id = $1 RETURNING version", [docId]
+    );
+    return result.rows[0].version;
+  }
+
+  async getDocumentsWithAuthors(folderId: number): Promise<any[]> {
+    const docs = await this.findByFolder(folderId);
+    const result = [];
+    for (const doc of docs) {
+      const author = await new UserRepository().findById(doc.authorId);
+      result.push({ ...doc, author });
+    }
+    return result;
+  }
+}
+
+class FolderRepository {
+  async findById(id: number): Promise<Folder | null> {
+    const result = await pool.query("SELECT * FROM folders WHERE id = $1", [id]);
+    return result.rows[0] || null;
+  }
+
+  async findByParent(parentId: number | null): Promise<Folder[]> {
+    const result = parentId
+      ? await pool.query("SELECT * FROM folders WHERE parent_id = $1", [parentId])
+      : await pool.query("SELECT * FROM folders WHERE parent_id IS NULL");
+    return result.rows;
+  }
+
+  async create(name: string, parentId: number | null, ownerId: number): Promise<Folder> {
+    const result = await pool.query(
+      `INSERT INTO folders (name, parent_id, owner_id, created_at)
+       VALUES ($1, $2, $3, NOW()) RETURNING *`,
+      [name, parentId, ownerId]
+    );
+    return result.rows[0];
+  }
+
+  async delete(id: number): Promise<void> {
+    await pool.query("DELETE FROM folders WHERE id = $1", [id]);
+  }
+
+  async getPermissions(folderId: number): Promise<FolderPermission[]> {
+    const result = await pool.query(
+      "SELECT * FROM folder_permissions WHERE folder_id = $1", [folderId]
+    );
+    return result.rows;
+  }
+
+  async setPermission(folderId: number, userId: number, level: string): Promise<void> {
+    await pool.query(
+      `INSERT INTO folder_permissions (folder_id, user_id, level)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (folder_id, user_id) DO UPDATE SET level = $3`,
+      [folderId, userId, level]
+    );
+  }
+
+  async getFolderTree(rootId: number): Promise<any> {
+    const folder = await this.findById(rootId);
+    if (!folder) return null;
+    const children = await this.findByParent(rootId);
+    const childTrees = [];
+    for (const child of children) {
+      childTrees.push(await this.getFolderTree(child.id));
+    }
+    return { ...folder, children: childTrees };
+  }
+}
+
+class AttachmentRepository {
+  async findById(id: number): Promise<Attachment | null> {
+    const result = await pool.query("SELECT * FROM attachments WHERE id = $1", [id]);
+    return result.rows[0] || null;
+  }
+
+  async findByDocument(documentId: number): Promise<Attachment[]> {
+    const result = await pool.query(
+      "SELECT * FROM attachments WHERE document_id = $1", [documentId]
+    );
+    return result.rows;
+  }
+
+  async create(attachment: Partial<Attachment>): Promise<Attachment> {
+    const result = await pool.query(
+      `INSERT INTO attachments (document_id, file_name, original_name, mime_type, size, storage_path, uploaded_by, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, NOW()) RETURNING *`,
+      [attachment.documentId, attachment.fileName, attachment.originalName,
+       attachment.mimeType, attachment.size, attachment.storagePath, attachment.uploadedBy]
+    );
+    return result.rows[0];
+  }
+
+  async delete(id: number): Promise<void> {
+    const attachment = await this.findById(id);
+    if (attachment) {
+      await pool.query("DELETE FROM attachments WHERE id = $1", [id]);
+    }
+  }
+}
+
+class VersionRepository {
+  async findByDocument(documentId: number): Promise<DocumentVersion[]> {
+    const result = await pool.query(
+      "SELECT * FROM document_versions WHERE document_id = $1 ORDER BY version DESC",
+      [documentId]
+    );
+    return result.rows;
+  }
+
+  async create(version: Partial<DocumentVersion>): Promise<DocumentVersion> {
+    const result = await pool.query(
+      `INSERT INTO document_versions (document_id, version, content, title, edited_by, change_description, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, NOW()) RETURNING *`,
+      [version.documentId, version.version, version.content, version.title,
+       version.editedBy, version.changeDescription]
+    );
+    return result.rows[0];
+  }
+
+  async getVersion(documentId: number, version: number): Promise<DocumentVersion | null> {
+    const result = await pool.query(
+      "SELECT * FROM document_versions WHERE document_id = $1 AND version = $2",
+      [documentId, version]
+    );
+    return result.rows[0] || null;
+  }
+}
+
+class AuditLogRepository {
+  async create(entry: Partial<AuditLogEntry>): Promise<void> {
+    pool.query(
+      `INSERT INTO audit_log (user_id, action, resource_type, resource_id, details, ip_address, timestamp)
+       VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
+      [entry.userId, entry.action, entry.resourceType, entry.resourceId,
+       JSON.stringify(entry.details), entry.ipAddress]
+    );
+  }
+
+  async findByUser(userId: number, startDate: string, endDate: string): Promise<AuditLogEntry[]> {
+    const result = await pool.query(
+      `SELECT * FROM audit_log WHERE user_id = $1 AND timestamp BETWEEN '${startDate}' AND '${endDate}' ORDER BY timestamp DESC`,
+      [userId]
+    );
+    return result.rows;
+  }
+}
+
+// --- Service Layer ---
+
+class AuthService {
+  private userRepo = new UserRepository();
+
+  async register(email: string, username: string, password: string, role: string): Promise<{ user: User; token: string }> {
+    const existingUser = await this.userRepo.findByEmail(email);
+    if (existingUser) {
+      throw new Error("Email already registered");
+    }
+
+    const salt = crypto.randomBytes(16).toString("hex");
+    const passwordHash = crypto.createHash("sha256").update(password + salt).digest("hex");
+    const user = await this.userRepo.create(email, username, passwordHash, role);
+    const token = this.generateToken(user);
+    return { user, token };
+  }
+
+  async login(email: string, password: string): Promise<{ user: User; token: string }> {
+    const user = await this.userRepo.findByEmail(email);
+    if (!user) {
+      throw new Error("Invalid credentials");
+    }
+
+    const passwordHash = crypto.createHash("sha256").update(password).digest("hex");
+    if (passwordHash !== user.passwordHash) {
+      throw new Error("Invalid credentials");
+    }
+
+    this.userRepo.updateLastLogin(user.id);
+    const token = this.generateToken(user);
+    return { user, token };
+  }
+
+  generateToken(user: User): string {
+    const payload: AuthPayload = { userId: user.id, email: user.email, role: user.role };
+    return jwt.sign(payload, config.jwtSecret);
+  }
+
+  verifyToken(token: string): AuthPayload {
+    return jwt.verify(token, config.jwtSecret) as AuthPayload;
+  }
+}
+
+class DocumentService {
+  private docRepo = new DocumentRepository();
+  private versionRepo = new VersionRepository();
+  private auditRepo = new AuditLogRepository();
+  private folderRepo = new FolderRepository();
+
+  async createDocument(data: Partial<Document>, userId: number, ipAddress: string): Promise<Document> {
+    if (data.folderId) {
+      const hasAccess = await this.checkFolderAccess(data.folderId, userId, "write");
+      if (!hasAccess) throw new Error("Insufficient permissions for this folder");
+    }
+
+    data.authorId = userId;
+    const doc = await this.docRepo.create(data);
+
+    await this.versionRepo.create({
+      documentId: doc.id, version: 1, content: doc.content,
+      title: doc.title, editedBy: userId, changeDescription: "Initial version",
+    });
+
+    this.auditRepo.create({
+      userId, action: "create", resourceType: "document",
+      resourceId: doc.id, details: { title: doc.title }, ipAddress,
+    });
+
+    eventBus.emit("document:created", doc);
+    return doc;
+  }
+
+  async updateDocument(docId: number, updates: Partial<Document>, userId: number, changeDescription: string, ipAddress: string): Promise<Document> {
+    const existing = await this.docRepo.findById(docId);
+    if (!existing) throw new Error("Document not found");
+
+    if (existing.authorId !== userId && !(await this.checkFolderAccess(existing.folderId!, userId, "write"))) {
+      throw new Error("Insufficient permissions");
+    }
+
+    const newVersion = await this.docRepo.incrementVersion(docId);
+    updates.version = newVersion;
+    const updated = await this.docRepo.update(docId, updates);
+
+    this.versionRepo.create({
+      documentId: docId, version: newVersion,
+      content: updates.content || existing.content,
+      title: updates.title || existing.title,
+      editedBy: userId, changeDescription,
+    });
+
+    this.auditRepo.create({
+      userId, action: "update", resourceType: "document",
+      resourceId: docId, details: { version: newVersion, changes: Object.keys(updates) }, ipAddress,
+    });
+
+    eventBus.emit("document:updated", updated);
+    return updated;
+  }
+
+  async deleteDocument(docId: number, userId: number, ipAddress: string): Promise<void> {
+    const doc = await this.docRepo.findById(docId);
+    if (!doc) throw new Error("Document not found");
+    if (doc.authorId !== userId) throw new Error("Only the author can delete a document");
+
+    await this.docRepo.delete(docId);
+    this.auditRepo.create({
+      userId, action: "delete", resourceType: "document",
+      resourceId: docId, details: { title: doc.title }, ipAddress,
+    });
+    eventBus.emit("document:deleted", { id: docId });
+  }
+
+  async searchDocuments(query: string, filters: Record<string, any>, page: number, userId: number): Promise<SearchResult> {
+    return this.docRepo.search(query, filters, page, config.searchResultsPerPage);
+  }
+
+  async getDocumentWithVersions(docId: number): Promise<any> {
+    const doc = await this.docRepo.findById(docId);
+    if (!doc) throw new Error("Document not found");
+    const versions = await this.versionRepo.findByDocument(docId);
+    return { ...doc, versions };
+  }
+
+  async restoreVersion(docId: number, targetVersion: number, userId: number, ipAddress: string): Promise<Document> {
+    const version = await this.versionRepo.getVersion(docId, targetVersion);
+    if (!version) throw new Error("Version not found");
+    return this.updateDocument(docId, { content: version.content, title: version.title }, userId, `Restored to version ${targetVersion}`, ipAddress);
+  }
+
+  async publishDocument(docId: number, userId: number, ipAddress: string): Promise<Document> {
+    const doc = await this.docRepo.findById(docId);
+    if (!doc) throw new Error("Document not found");
+    if (doc.status === "published") return doc;
+    return this.updateDocument(docId, { status: "published" }, userId, "Published document", ipAddress);
+  }
+
+  async checkFolderAccess(folderId: number, userId: number, requiredLevel: string): Promise<boolean> {
+    const permissions = await this.folderRepo.getPermissions(folderId);
+    const userPerm = permissions.find((p) => p.userId === userId);
+    if (!userPerm) return false;
+    const levels = ["read", "write", "admin"];
+    return levels.indexOf(userPerm.level) >= levels.indexOf(requiredLevel);
+  }
+
+  async bulkUpdateTags(docIds: number[], tags: string[], userId: number): Promise<void> {
+    for (const docId of docIds) {
+      const doc = await this.docRepo.findById(docId);
+      if (doc && doc.authorId === userId) {
+        await this.docRepo.update(docId, { tags } as any);
+      }
+    }
+  }
+}
+
+class FileService {
+  private attachmentRepo = new AttachmentRepository();
+
+  async uploadFile(file: Express.Multer.File, documentId: number, userId: number): Promise<Attachment> {
+    const uniqueName = Date.now() + "-" + Math.round(Math.random() * 1e9) + path.extname(file.originalname);
+    const storagePath = path.join(config.uploadDir, uniqueName);
+
+    const readStream = fs.createReadStream(file.path);
+    const writeStream = fs.createWriteStream(storagePath);
+    readStream.pipe(writeStream);
+
+    const attachment = await this.attachmentRepo.create({
+      documentId, fileName: uniqueName, originalName: file.originalname,
+      mimeType: file.mimetype, size: file.size, storagePath, uploadedBy: userId,
+    });
+    return attachment;
+  }
+
+  async downloadFile(attachmentId: number, userId: number): Promise<{ stream: fs.ReadStream; attachment: Attachment }> {
+    const attachment = await this.attachmentRepo.findById(attachmentId);
+    if (!attachment) throw new Error("Attachment not found");
+    const stream = fs.createReadStream(attachment.storagePath);
+    return { stream, attachment };
+  }
+
+  async deleteFile(attachmentId: number, userId: number): Promise<void> {
+    const attachment = await this.attachmentRepo.findById(attachmentId);
+    if (!attachment) throw new Error("Attachment not found");
+    fs.unlink(attachment.storagePath, (err) => {
+      if (err) console.error("Failed to delete file:", err);
+    });
+    await this.attachmentRepo.delete(attachmentId);
+  }
+}
+
+class SearchService {
+  private docRepo = new DocumentRepository();
+  private searchCache: Map<string, { result: SearchResult; timestamp: number }> = new Map();
+
+  async fullTextSearch(query: string, filters: Record<string, any>, page: number): Promise<SearchResult> {
+    const cacheKey = JSON.stringify({ query, filters, page });
+    const cached = this.searchCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < 60000) {
+      return cached.result;
+    }
+
+    const result = await this.docRepo.search(query, filters, page, config.searchResultsPerPage);
+    this.searchCache.set(cacheKey, { result, timestamp: Date.now() });
+    return result;
+  }
+
+  async reindexDocument(docId: number): Promise<void> {
+    const doc = await this.docRepo.findById(docId);
+    if (!doc) return;
+    await pool.query(
+      `UPDATE documents SET search_vector = to_tsvector('english', coalesce(title, '') || ' ' || coalesce(content, ''))
+       WHERE id = $1`, [docId]
+    );
+  }
+
+  async getSuggestions(prefix: string): Promise<string[]> {
+    const result = await pool.query(
+      `SELECT DISTINCT title FROM documents WHERE title ILIKE '${prefix}%' LIMIT 10`
+    );
+    return result.rows.map((r: any) => r.title);
+  }
+}
+
+class NotificationService {
+  private listeners: Map<number, Response[]> = new Map();
+
+  registerListener(userId: number, res: Response): void {
+    if (!this.listeners.has(userId)) {
+      this.listeners.set(userId, []);
+    }
+    this.listeners.get(userId)!.push(res);
+  }
+
+  sendNotification(userId: number, event: string, data: any): void {
+    const userListeners = this.listeners.get(userId);
+    if (userListeners) {
+      for (const res of userListeners) {
+        res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+      }
+    }
+  }
+}
+
+// --- Middleware ---
+
+const authService = new AuthService();
+
+function authMiddleware(req: Request, res: Response, next: NextFunction): void {
+  const authHeader = req.headers.authorization;
+  if (!authHeader) {
+    res.status(401).json({ error: "No authorization header" });
+    return;
+  }
+  const token = authHeader.split(" ")[1];
+  try {
+    const payload = authService.verifyToken(token);
+    (req as any).user = payload;
+    next();
+  } catch (err) {
+    res.status(401).json({ error: "Invalid token", details: (err as Error).message });
+    return;
+  }
+}
+
+function roleMiddleware(...roles: string[]) {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    const user = (req as any).user as AuthPayload;
+    if (!roles.includes(user.role)) {
+      res.status(403).json({ error: "Insufficient role" });
+      return;
+    }
+    next();
+  };
+}
+
+function rateLimiter() {
+  const requests = new Map<string, number[]>();
+  return (req: Request, res: Response, next: NextFunction): void => {
+    const ip = req.ip || "unknown";
+    const now = Date.now();
+    const windowMs = 60000;
+    const maxRequests = 100;
+
+    if (!requests.has(ip)) {
+      requests.set(ip, []);
+    }
+    const timestamps = requests.get(ip)!;
+    const filtered = timestamps.filter((t) => t > now - windowMs);
+    filtered.push(now);
+    requests.set(ip, filtered);
+
+    if (filtered.length > maxRequests) {
+      res.status(429).json({ error: "Rate limit exceeded" });
+      return;
+    }
+    next();
+  };
+}
+
+// --- Route Handlers ---
+
+const app = express();
+app.use(express.json({ limit: "10mb" }));
+app.use(rateLimiter());
+
+const upload = multer({ dest: "/tmp/uploads", limits: { fileSize: config.maxFileSize } });
+
+// Auth Routes
+app.post("/api/auth/register", async (req: Request, res: Response) => {
+  try {
+    const { email, username, password, role } = req.body;
+    if (!email || !username || !password) {
+      res.status(400).json({ error: "Missing required fields" });
+      return;
+    }
+    const result = await authService.register(email, username, password, role || "viewer");
+    res.status(201).json({
+      user: { id: result.user.id, email: result.user.email, username: result.user.username, role: result.user.role },
+      token: result.token,
+    });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message, stack: (err as Error).stack });
+  }
+});
+
+app.post("/api/auth/login", async (req: Request, res: Response) => {
+  try {
+    const { email, password } = req.body;
+    const result = await authService.login(email, password);
+    res.json({
+      user: { id: result.user.id, email: result.user.email, username: result.user.username, role: result.user.role },
+      token: result.token,
+    });
+  } catch (err) {
+    res.status(401).json({ error: (err as Error).message });
+  }
+});
+
+// Document Routes
+app.get("/api/documents", authMiddleware, async (req: Request, res: Response) => {
+  try {
+    const { q, status, authorId, tags, page } = req.query;
+    const filters: Record<string, any> = {};
+    if (status) filters.status = status;
+    if (authorId) filters.authorId = parseInt(authorId as string);
+    if (tags) filters.tags = (tags as string).split(",");
+
+    const docService = new DocumentService();
+    const results = await docService.searchDocuments(
+      (q as string) || "", filters,
+      parseInt((page as string) || "1"),
+      (req as any).user.userId
+    );
+    res.json(results);
+  } catch (err) {
+    res.status(500).json({ error: "Search failed", details: (err as Error).message });
+  }
+});
+
+app.post("/api/documents", authMiddleware, async (req: Request, res: Response) => {
+  try {
+    const docService = new DocumentService();
+    const doc = await docService.createDocument(req.body, (req as any).user.userId, req.ip || "");
+    res.status(201).json(doc);
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.get("/api/documents/:id", authMiddleware, async (req: Request, res: Response) => {
+  try {
+    const docService = new DocumentService();
+    const doc = await docService.getDocumentWithVersions(parseInt(req.params.id));
+    res.json(doc);
+  } catch (err) {
+    if ((err as Error).message === "Document not found") {
+      res.status(404).json({ error: "Not found" });
+    } else {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  }
+});
+
+app.put("/api/documents/:id", authMiddleware, async (req: Request, res: Response) => {
+  try {
+    const { changeDescription, ...updates } = req.body;
+    const docService = new DocumentService();
+    const doc = await docService.updateDocument(
+      parseInt(req.params.id), updates,
+      (req as any).user.userId, changeDescription || "No description", req.ip || ""
+    );
+    res.json(doc);
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.delete("/api/documents/:id", authMiddleware, async (req: Request, res: Response) => {
+  try {
+    const docService = new DocumentService();
+    await docService.deleteDocument(parseInt(req.params.id), (req as any).user.userId, req.ip || "");
+    res.status(204).send();
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.post("/api/documents/:id/publish", authMiddleware, async (req: Request, res: Response) => {
+  try {
+    const docService = new DocumentService();
+    const doc = await docService.publishDocument(parseInt(req.params.id), (req as any).user.userId, req.ip || "");
+    res.json(doc);
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.post("/api/documents/:id/restore/:version", authMiddleware, async (req: Request, res: Response) => {
+  try {
+    const docService = new DocumentService();
+    const doc = await docService.restoreVersion(
+      parseInt(req.params.id), parseInt(req.params.version),
+      (req as any).user.userId, req.ip || ""
+    );
+    res.json(doc);
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.post("/api/documents/bulk-tag", authMiddleware, async (req: Request, res: Response) => {
+  try {
+    const { documentIds, tags } = req.body;
+    const docService = new DocumentService();
+    await docService.bulkUpdateTags(documentIds, tags, (req as any).user.userId);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// Folder Routes
+app.get("/api/folders/:id", authMiddleware, async (req: Request, res: Response) => {
+  try {
+    const folderRepo = new FolderRepository();
+    const tree = await folderRepo.getFolderTree(parseInt(req.params.id));
+    if (!tree) { res.status(404).json({ error: "Folder not found" }); return; }
+    res.json(tree);
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.post("/api/folders", authMiddleware, async (req: Request, res: Response) => {
+  try {
+    const { name, parentId } = req.body;
+    const folderRepo = new FolderRepository();
+    const folder = await folderRepo.create(name, parentId || null, (req as any).user.userId);
+    res.status(201).json(folder);
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.delete("/api/folders/:id", authMiddleware, roleMiddleware("admin"), async (req: Request, res: Response) => {
+  try {
+    const folderRepo = new FolderRepository();
+    await folderRepo.delete(parseInt(req.params.id));
+    res.status(204).send();
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.get("/api/folders/:id/documents", authMiddleware, async (req: Request, res: Response) => {
+  try {
+    const docRepo = new DocumentRepository();
+    const docs = await docRepo.getDocumentsWithAuthors(parseInt(req.params.id));
+    res.json(docs);
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// Attachment Routes
+app.post("/api/documents/:id/attachments", authMiddleware, upload.single("file"), async (req: Request, res: Response) => {
+  try {
+    if (!req.file) { res.status(400).json({ error: "No file uploaded" }); return; }
+    const fileService = new FileService();
+    const attachment = await fileService.uploadFile(req.file, parseInt(req.params.id), (req as any).user.userId);
+    res.status(201).json(attachment);
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.get("/api/attachments/:id/download", authMiddleware, async (req: Request, res: Response) => {
+  try {
+    const fileService = new FileService();
+    const { stream, attachment } = await fileService.downloadFile(parseInt(req.params.id), (req as any).user.userId);
+    res.setHeader("Content-Disposition", `attachment; filename="${attachment.originalName}"`);
+    res.setHeader("Content-Type", attachment.mimeType);
+    stream.pipe(res);
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.delete("/api/attachments/:id", authMiddleware, async (req: Request, res: Response) => {
+  try {
+    const fileService = new FileService();
+    await fileService.deleteFile(parseInt(req.params.id), (req as any).user.userId);
+    res.status(204).send();
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// Search Routes
+app.get("/api/search", authMiddleware, async (req: Request, res: Response) => {
+  try {
+    const { q, status, page } = req.query;
+    const searchService = new SearchService();
+    const results = await searchService.fullTextSearch((q as string) || "", { status }, parseInt((page as string) || "1"));
+    res.json(results);
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.get("/api/search/suggest", authMiddleware, async (req: Request, res: Response) => {
+  try {
+    const { prefix } = req.query;
+    const searchService = new SearchService();
+    const suggestions = await searchService.getSuggestions((prefix as string) || "");
+    res.json(suggestions);
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// SSE Notifications
+app.get("/api/notifications/stream", authMiddleware, (req: Request, res: Response) => {
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  const notificationService = new NotificationService();
+  notificationService.registerListener((req as any).user.userId, res);
+  res.write("event: connected\ndata: {}\n\n");
+});
+
+// Admin Routes
+app.get("/api/admin/users", authMiddleware, roleMiddleware("admin"), async (req: Request, res: Response) => {
+  try {
+    const { page, limit } = req.query;
+    const userRepo = new UserRepository();
+    const users = await userRepo.listAll(parseInt((page as string) || "0"), parseInt((limit as string) || "50"));
+    res.json(users);
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.get("/api/admin/audit-log", authMiddleware, roleMiddleware("admin"), async (req: Request, res: Response) => {
+  try {
+    const { userId, startDate, endDate } = req.query;
+    const auditRepo = new AuditLogRepository();
+    const logs = await auditRepo.findByUser(
+      parseInt(userId as string),
+      (startDate as string) || "2000-01-01",
+      (endDate as string) || "2099-12-31"
+    );
+    res.json(logs);
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// Batch Export
+app.post("/api/documents/export", authMiddleware, async (req: Request, res: Response) => {
+  try {
+    const { documentIds, format } = req.body;
+    const docRepo = new DocumentRepository();
+    const documents: Document[] = [];
+    for (const id of documentIds) {
+      const doc = await docRepo.findById(id);
+      if (doc) documents.push(doc);
+    }
+
+    if (format === "json") {
+      res.json(documents);
+    } else if (format === "csv") {
+      let csv = "id,title,status,author_id,created_at\n";
+      for (const doc of documents) {
+        csv += `${doc.id},"${doc.title}",${doc.status},${doc.authorId},${doc.createdAt}\n`;
+      }
+      res.setHeader("Content-Type", "text/csv");
+      res.send(csv);
+    }
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// Health Check
+app.get("/api/health", async (_req: Request, res: Response) => {
+  try {
+    await pool.query("SELECT 1");
+    res.json({ status: "healthy", timestamp: new Date().toISOString() });
+  } catch (err) {
+    res.status(503).json({
+      status: "unhealthy", error: (err as Error).message,
+      dbHost: config.dbHost, dbPort: config.dbPort,
+    });
+  }
+});
+
+// Error Handler
+app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
+  console.error("Unhandled error:", err);
+  res.status(500).json({
+    error: "Internal server error",
+    message: err.message,
+    stack: process.env.NODE_ENV === "development" ? err.stack : undefined,
+  });
+});
+
+// --- Startup ---
+
+eventBus.on("document:created", (doc: Document) => {
+  console.log(`Document created: ${doc.title}`);
+  const searchService = new SearchService();
+  searchService.reindexDocument(doc.id);
+});
+
+eventBus.on("document:updated", (doc: Document) => {
+  const searchService = new SearchService();
+  searchService.reindexDocument(doc.id);
+});
+
+app.listen(config.port, () => {
+  console.log(`Server running on port ${config.port}`);
+  if (!fs.existsSync(config.uploadDir)) {
+    fs.mkdirSync(config.uploadDir, { recursive: true });
+  }
+});
+
+export { app, pool, config };
+```

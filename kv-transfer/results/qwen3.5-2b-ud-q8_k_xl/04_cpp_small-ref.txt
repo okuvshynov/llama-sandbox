@@ -1,0 +1,144 @@
+This is a Huffman coding implementation in C++. Let me analyze what it does and its time complexity.
+
+## What the program does:
+
+1. **Builds a Huffman Tree**: Uses a priority queue to build the Huffman tree from character frequencies
+2. **Encodes text**: Creates Huffman codes for each character
+3. **Displays codes**: Shows the encoding scheme
+4. **Calculates compression ratio**: Compares original size vs encoded size
+
+## Time Complexity Analysis:
+
+### Building the Priority Queue (buildTree):
+- **Frequency counting**: O(n) where n is the length of text
+- **Building priority queue**: O(n) - each character added once
+- **Building the tree**: O(n log n) - n nodes in priority queue, each merge takes O(log n)
+
+### Building Huffman Tree:
+- **Priority queue operations**: n-1 merges, each takes O(log n)
+- **Total**: O(n log n)
+
+### Building Codes (buildCodes):
+- **Recursive traversal**: O(n) - visits each node once, creates O(n) codes
+- **Total**: O(n)
+
+### Sorting codes (main):
+- **Sorting**: O(m log m) where m is the number of unique characters (m ≤ n)
+
+### Encoding (encode):
+- **String concatenation**: O(n) for each character
+
+### Overall Time Complexity:
+- **buildTree**: O(n log n) - dominated by priority queue merges
+- **buildCodes**: O(n) - recursive traversal
+- **Sort**: O(m log m) where m is number of unique characters
+- **encode**: O(n) - just copying characters
+
+**Overall time complexity: O(n log n)**
+
+### Space Complexity:
+- **Priority queue**: O(n)
+- **Tree nodes**: O(n) - each character creates a node
+- **Codes map**: O(n)
+- **Total**: O(n)
+
+### Space Complexity breakdown:
+- **Memory for nodes**: O(n) - each character creates a Node
+- **Priority queue**: O(n) - stores all nodes
+
+
+- **Codes map**: O(n) - stores all unique characters and their codes
+- **Total**: O(n)
+
+### Key observations:
+1. This is an efficient implementation of Huffman coding
+2. Time complexity is dominated by the priority queue operations
+3. Space complexity is linear in the input size
+4. The algorithm correctly handles the encoding process with proper tree construction and code generation
+</think>
+
+This C++ program implements **Huffman coding**, a lossless data compression technique that assigns shorter bit sequences to more frequent characters in a text. It uses a priority queue to construct the Huffman tree, generates codes based on character frequencies, and encodes the input string into a binary format.
+
+---
+
+### What the Program Does
+
+1. **Builds a Huffman Tree**:
+   - Counts character frequencies from input text.
+   - Creates a priority queue of nodes ordered by frequency.
+   - Merges nodes with the two lowest frequencies to build the tree.
+
+2. **Generates Huffman Codes**:
+   - Each node in the tree becomes a character with a unique binary code (prefix).
+   - Empty and leaf nodes are assigned codes using depth-based logic.
+
+3. **Encodes Text**:
+   - Applies the generated codes to each character in the input string.
+
+4. **Displays and Measures Compression**:
+   - Prints the generated codes.
+   - Calculates and reports the original vs. encoded size and compression ratio.
+
+---
+
+### Time Complexity Analysis
+
+| Operation                        | Complexity  | Notes |
+|----------------------------------|-------------|-------|
+| Frequency Counting (text)        | O(n)        | Scans input string once |
+| Priority Queue Initialization    | O(n)        | Adds all unique characters |
+| Tree Construction (Merges)       | O(n log n)  | Each of n-1 merges takes O(log n) |
+| Code Generation (buildCodes)     | O(n)        | Visits each node once |
+| Sorting Codes                    | O(m log m)  | m ≤ n, where m is unique characters |
+| Encoding                         | O(n)        | Concatenates codes for each character |
+| **Overall Time Complexity**      | **O(n log n)** | Dominated by priority queue merges |
+
+> **n** = length of input text  
+> **m** = number of unique characters
+
+---
+
+### Space Complexity Analysis
+
+| Resource     | Complexity | Notes |
+|--------------|------------|-------|
+| Node Memory  | O(n)       | Each character creates a Node |
+| Priority Queue | O(n)     | Stores all nodes |
+| Codes Map    | O(n)       | Stores all unique characters and codes |
+| Output String | O(n)       | Encoded text |
+| **Total Space** | **O(n)** | Linear in input size |
+
+---
+
+### Key Implementation Details
+
+- **Priority Queue (`std::priority_queue`)**: Implements a max-heap by default. Custom comparator `Compare` ensures higher frequencies are processed first.
+- **Node Structure**: Stores character, frequency, and pointers to left/right children.
+- **Huffman Tree Construction**: Uses a priority queue to merge two nodes with lowest frequencies until one root remains.
+- **Code Generation**: Uses depth-first traversal to assign binary strings (0 or 1) for each character.
+- **Compression Ratio Calculation**: Compares input size in bits (`text.size() * 8`) with encoded size (`encoded.size()`).
+
+---
+
+### Example Output
+
+```
+  ' ': 0
+  'h': 10
+  'i': 20
+  ...
+Original:  44 bits
+Encoded:   28 bits
+Ratio:     63.64%
+```
+
+---
+
+### Performance Summary
+
+- **Time Complexity**: O(n log n)
+- **Space Complexity**: O(n)
+- **Efficiency**: Efficient for typical Huffman coding tasks, especially when implementing with C++ STL containers.
+- **Use Case**: Ideal for small to medium-sized datasets where compression is needed and performance is critical.
+
+This implementation is clean, readable, and effectively demonstrates the core mechanics of Huffman coding in C++.

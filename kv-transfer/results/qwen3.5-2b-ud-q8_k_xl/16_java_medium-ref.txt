@@ -1,0 +1,184 @@
+This is a comprehensive review of a Java concurrent TTL cache implementation. Let me go through each major area and identify issues:
+
+## 1. Design/Architecture Issues
+
+### Cache Entry Structure
+- **TTL is stored in CacheEntry** - Good, but the TTL is not thread-safe in the `CacheEntry` constructor.
+- **TTL reset on access** - `touchEntry` updates `lastAccessedAt` but doesn't reset TTL. This is fine for caching.
+
+### Access Order
+- **`accessOrder` is a LinkedList but used for eviction** - This is a good design, but the eviction logic is not optimal.
+
+### Metrics
+- **Metrics are not thread-safe** - The `CacheMetrics` class has `AtomicLong` but `responseTimes` is a `List<Long>` which is not thread-safe for concurrent access during warm-up.
+
+### Metrics Thread Safety
+- **`responseTimes` is not thread-safe during concurrent warm-up** - Multiple threads might be adding to `responseTimes` while `evictExpired` is running.
+
+### Locking Issues
+
+### 1. Main Thread Blocking
+- The main method has `cache.get(key)` calls that are synchronous with `readers.submit()` in a loop. This is not ideal for performance.
+
+### 2. Metrics
+- `getMetrics()` returns the `CacheMetrics` object, but `CacheMetrics.getHitRate()` is not thread-safe.
+
+### 3. Snapshot
+- `snapshot()` is not thread-safe. Multiple readers could be calling this concurrently.
+
+### 4. Locking
+- The `lock` is used in `get()`, `put()`, `remove()`, `evictExpired()`, `touchEntry()` (but not in `put()` or `clear()` properly).
+- `lock.lock()` in `get()` is unnecessary since `CacheEntry` has its own state.
+
+### 5. Capacity Management
+- **`accessOrder` is not thread-safe** - `accessOrder` is a `LinkedList<K>` but not synchronized.
+
+### 6. TTL Implementation
+- **TTL is checked every access** - This is inefficient for TTL-based cache.
+
+### 7. WarmUp
+- **WarmUp is not thread-safe** - Multiple threads are submitting futures to the pool.
+
+### 8. Error Handling
+- **`get()` doesn't handle exceptions properly** - The `get()` method doesn't handle exceptions from the loader.
+- **`put()` doesn't handle exceptions** - No try-catch around put in `put()`.
+
+## 2. Performance Issues
+
+### 1. `get()` Method
+- **Lock is held for the entire operation** - `lock.lock()` is held while checking the cache and calling `loader.apply()`.
+- **`get()` doesn't handle exceptions from loader** - This means if the loader throws an exception, it will propagate up.
+
+### 2. `evictExpired()`
+- **Lock is held while iterating** - This is inefficient for large caches.
+
+### 3. `put()` Method
+- **`put()` doesn't handle capacity overflow** - `while (store.size() >= capacity)` is correct but the eviction loop is not optimal.
+
+### 4. `evictOne()`
+- **`accessOrder.removeLast()` is not thread-safe** - The `accessOrder` is not synchronized.
+
+### 5. `CacheEntry`
+- **`CacheEntry` is not thread-safe** - `lastAccessedAt` is not atomic.
+
+## 3. Bug Reports
+
+### 1. `get()` Method
+- **Lock is held for the entire operation** - `lock.lock()` is held while checking the cache and calling `loader.apply()`. This is inefficient.
+
+### 2. `put()` Method
+- **`put()` doesn't handle capacity overflow** - `while (store.size() >= capacity)` is correct but the eviction loop is not optimal.
+
+### 3. `evictExpired()`
+- **Lock is held while iterating** - This is inefficient for large caches.
+
+### 4. `accessOrder`
+- **`accessOrder` is not thread-safe** - The `accessOrder` is not synchronized.
+
+### 5. `CacheEntry`
+- **`CacheEntry` is not thread-safe** - `lastAccessedAt` is not atomic.
+
+### 6. `Metrics`
+- **`Metrics` is not thread-safe** - `responseTimes` is not thread-safe for concurrent access.
+
+### 7. `WarmUp`
+- **`WarmUp` is not thread-safe** - Multiple threads are submitting futures to the pool.
+
+### 8. `get()`
+- **`get()` doesn't handle exceptions from loader** - This means if the loader throws an exception, it will propagate up.
+
+## 4. Fixes
+
+### 1. `get()` Method
+- **Move lock to try-finally** - Ensure lock is released in finally block.
+- **Handle exceptions from loader** - Add try-catch around loader.apply().
+
+### 2. `put()` Method
+- **Add capacity check** - Use `store.size() >= capacity` instead of `store.size() >= capacity` in `while()`.
+
+### 3. `evictExpired()`
+- **Use concurrent map or list** - Use `ConcurrentHashMap` or `LinkedHashMap` for thread-safe operations.
+
+### 4. `accessOrder`
+- **Use synchronized LinkedList** - Or use `ConcurrentLinkedDeque` for thread-safe operations.
+
+### 5. `CacheEntry`
+- **Use atomic counters** - Use `AtomicLong` for `createdAt` and `lastAccessedAt`.
+
+### 6. `Metrics`
+- **Use thread-safe collections** - Use `ConcurrentHashMap` for `responseTimes`.
+
+### 7. `WarmUp`
+- **Use single thread for warm-up** - Use `SingleThreadExecutor` or `ExecutorService` with `submit()` instead of `newFixedThreadPool()`.
+
+### 8. `Metrics`
+- **Use thread-safe methods** - Use `ConcurrentHashMap` for `responseTimes`.
+
+## 5. Additional Recommendations
+
+### 1. Use `ConcurrentHashMap` for store
+- **Replace `HashMap` with `ConcurrentHashMap`** - This will make the cache thread-safe.
+
+### 2. Use `ConcurrentLinkedDeque` for accessOrder
+- **Replace `LinkedList` with `ConcurrentLinkedDeque`** - This will make the cache thread-safe.
+
+### 3. Use `AtomicLong` for counters
+- **Use `AtomicLong` for `hits`, `misses`, `evictions`** - This will make the cache thread-safe.
+
+### 4. Use `ConcurrentHashMap` for responseTimes
+- **Replace `List<Long>` with `ConcurrentHashMap`** - This will make the cache thread-safe.
+
+### 5. Use `ConcurrentHashMap` for store
+- **Replace `HashMap` with `ConcurrentHashMap`** - This will make the cache thread-safe.
+
+### 6. Use `ConcurrentLinkedDeque` for accessOrder
+- **Replace `LinkedList` with `ConcurrentLinkedDeque`** - This will make the cache thread-safe.
+
+### 7. Use `AtomicLong` for counters
+- **Use `AtomicLong` for `hits`, `misses`, `evictions`** - This will make the cache thread-safe.
+
+### 8. Use `ConcurrentHashMap` for responseTimes
+- **Replace `List<Long>` with `ConcurrentHashMap`** - This will make the cache thread-safe.
+
+## 6. Summary of Issues
+
+| Issue | Severity | Impact |
+|-------|----------|--------|
+| Locking issues | High | Performance degradation |
+| Thread safety in metrics | Medium | Incorrect metrics |
+| CacheEntry not thread-safe | Medium | Data consistency issues |
+| WarmUp not thread-safe | High | Performance issues |
+| Exceptions handling | Medium | Data loss |
+| Capacity management | Low | Memory issues |
+| Access order not thread-safe | Medium | Eviction issues |
+
+## 7. Code Fixes
+
+### Key Changes Needed:
+1. **Replace HashMap with ConcurrentHashMap**
+2. **Use AtomicLong for counters**
+3. **Use ConcurrentLinkedDeque for accessOrder**
+4. **Use ConcurrentHashMap for responseTimes**
+5. **Handle exceptions in get()**
+6. **Add proper capacity management**
+7. **Use thread-safe methods for metrics**
+8. **Fix warmUp to use single-threaded executor**
+9. **Fix eviction to use concurrent collections**
+10. **Fix lock management in get() and put()**
+
+Let me provide a comprehensive review with specific fixes.
+</think>
+
+# Comprehensive Code Review: ConcurrentTTLCache.java
+
+## 🚨 Critical Issues Found
+
+### 1. **Thread-Safety Violations**
+- **`CacheEntry.lastAccessedAt` is not atomic** → `lastAccessedAt` is not thread-safe.
+- **`accessOrder` is not thread-safe** → `LinkedList` is not synchronized.
+- **`CacheMetrics.responseTimes` is not thread-safe** → `List<Long>` during concurrent warm-up.
+- **`CacheMetrics` counters are not thread-safe** → `AtomicLong` is fine, but `responseTimes` is not.
+
+### 2. **Locking Issues**
+- **`get()` locks for the entire operation** → `lock.lock()` blocks even if cache hit.
+- **`put()` locks for

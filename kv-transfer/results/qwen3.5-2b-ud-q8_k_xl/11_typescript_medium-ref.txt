@@ -1,0 +1,276 @@
+This is a comprehensive review of a TypeScript codebase. Let me analyze it systematically:
+
+## Overall Architecture
+
+The codebase has a Pipeline system with:
+- Typed event emitter
+- Task management with status tracking
+- Dependency resolution
+- Concurrency control
+- Result tracking
+
+## Issues Found
+
+### 1. Type Safety Issues
+
+**EventMap Type Issue:**
+```typescript
+interface EventMap {
+  [event: string]: (...args: any[]) => void;
+}
+```
+The `any[]` is a major type safety problem. It allows any arguments, which defeats the purpose of type safety. The generic `T extends EventMap` doesn't provide good type safety for arguments.
+
+**PipelineEvents Type:**
+```typescript
+interface PipelineEvents extends EventMap {
+  'task:start': (task: Task) => void;
+  'task:complete': (task: Task, result: any) => void;
+  // ...
+}
+```
+The `any` type is used in the result parameter, which is problematic.
+
+**Task Interface:**
+```typescript
+interface Task<T = any> {
+  id: string;
+  name: string;
+  execute: () => Promise<T>;
+  dependencies: string[];
+  timeout: number;
+  retries: number;
+  status: TaskStatus;
+  result?: T;
+  error?: Error;
+  startTime?: number;
+  endTime?: number;
+}
+```
+The `T = any` is problematic. The `result` and `error` are optional, but the code assumes specific types.
+
+### 2. Bug Issues
+
+**EventEmitter Not Properly Typed:**
+The `on()`, `once()`, `off()`, `emit()` methods are typed but the `any` in `EventMap` causes issues.
+
+**PipelineEvents Type Mismatch:**
+The `emit` method accepts `Parameters<T[K]>`, but `PipelineEvents` uses `any` in result types.
+
+**Result Tracking:**
+```typescript
+const results: Map<string, any> = new Map();
+```
+This is not typed properly.
+
+**Task Dependencies Check:**
+```typescript
+const depsComplete = task.dependencies.every(
+  dep => this.tasks.get(dep)?.status === 'completed'
+);
+```
+This is incorrect. It should check if the dependencies exist in `this.tasks`.
+
+**Error Type:**
+```typescript
+catch (err) {
+  lastError = err instanceof Error ? err : new Error(String(err));
+}
+```
+This should handle the error type better.
+
+**Status Tracking:**
+```typescript
+getStatus(): Record<string, { status: TaskStatus; duration?: number }> {
+```
+The `duration` is calculated but not used properly.
+
+**Concurrency Control:**
+The concurrency is set but not properly enforced.
+
+### 3. Architectural Issues
+
+**EventEmitter vs TypedEmitter:**
+The code uses `TypedEventEmitter` but the `on()`, `once()`, `off()`, `emit()` methods are not consistently typed.
+
+**Missing Type Guards:**
+There's no type guard for checking if the event exists.
+
+**Missing Error Handling:**
+The `main()` function doesn't properly handle errors from the pipeline execution.
+
+**Infinite Loop Risk:**
+The `while(true)` in `run()` could cause issues if there's a deadlock.
+
+**Result Tracking:**
+The `results` map is not properly typed.
+
+**Task Dependencies:**
+The dependency check should be more robust.
+
+**Error Handling:**
+The error handling in `catch` block doesn't properly propagate errors.
+
+**Memory Leaks:**
+The `onceListeners` are never properly cleaned up.
+
+**Type Safety:**
+The `EventMap` type is too loose.
+
+**Code Reusability:**
+The `getReadyTasks()` method could be more efficient.
+
+**Error Propagation:**
+The `run()` method throws errors but doesn't properly handle them.
+
+**Concurrency Control:**
+The `concurrency` is set but not enforced properly.
+
+**Result Tracking:**
+The `results` map is used but not properly typed.
+
+## Specific Issues to Address
+
+1. **EventMap Type Safety**: Use proper generics for event types
+2. **Result Tracking**: Properly type the `results` map
+3. **Task Dependencies**: Check for actual dependency status
+4. **Error Handling**: Better error handling throughout
+5. **Type Guards**: Add type guards for event checking
+6. **Memory Management**: Clean up listeners properly
+7. **Concurrency Control**: Ensure proper concurrency enforcement
+8. **Result Tracking**: Properly track and return results
+
+Let me create a comprehensive review with specific fixes.
+</think>
+
+# TypeScript Pipeline Codebase Review
+
+## 📋 Summary
+
+This codebase implements a **task orchestration pipeline** with event-driven architecture. While the design is conceptually sound, it contains multiple **critical type safety issues**, **potential runtime bugs**, and **architectural weaknesses**.
+
+---
+
+## 🔴 Critical Issues
+
+### 1. **EventMap Type Safety** ⚠️
+```typescript
+interface EventMap {
+  [event: string]: (...args: any[]) => void;
+}
+```
+**Problem:** `any[]` allows arbitrary arguments, bypassing type safety.
+**Fix:** Use proper generics with `T[K]` and restrict argument types.
+
+### 2. **Result Tracking Type Safety** ⚠️
+```typescript
+const results: Map<string, any> = new Map();
+```
+**Problem:** `any` type prevents proper type checking of results.
+**Fix:** Define `PipelineResultsType<T>` or use generic `Map`.
+
+### 3. **Task Dependencies Check** ⚠️
+```typescript
+task.dependencies.every(dep => this.tasks.get(dep)?.status === 'completed')
+```
+**Problem:** Assumes all dependencies exist in `this.tasks`, but `Task` may not have all fields.
+**Fix:** Use `TaskDependencyMap` to validate dependencies before processing.
+
+### 4. **Error Type Handling** ⚠️
+```typescript
+catch (err) {
+  lastError = err instanceof Error ? err : new Error(String(err));
+}
+```
+**Problem:** No proper error type casting.
+**Fix:** Use `typeof err === 'object' && 'name' in err` for proper error handling.
+
+### 5. **Memory Leak Risk** ⚠️
+```typescript
+private onceListeners: Map<keyof T, Set<Function>> = new Map();
+```
+**Problem:** `onceListeners` never cleaned up in `off()`.
+**Fix:** Ensure `off()` removes listeners from both `onceListeners` and `listeners`.
+
+### 6. **Concurrency Enforcement** ⚠️
+```typescript
+const batch = ready.slice(0, this.concurrency);
+await Promise.all(batch.map(task => this.executeTask(task)));
+```
+**Problem:** No concurrency limit enforcement on task execution.
+**Fix:** Use `async` with proper timeout and error handling.
+
+---
+
+## 🟡 Architectural Issues
+
+### 7. **EventEmitter vs TypedEmitter**
+**Problem:** The `TypedEventEmitter` class is inconsistent in its `on()`, `once()`, `off()`, `emit()` methods.
+**Fix:** Use `TypedEventEmitter` consistently or create a new `TypedEventEmitter` class.
+
+### 8. **Missing Type Guards**
+**Problem:** No type guard for checking if an event exists.
+**Fix:** Add `has(event)` type guard and validate before emission.
+
+### 9. **Result Tracking**
+**Problem:** `results` map is not properly typed.
+**Fix:** Define `PipelineResultsType` or use `Map<string, TaskResult>` for type safety.
+
+### 10. **Task Dependencies**
+**Problem:** Dependency check assumes all dependencies exist in `this.tasks`.
+**Fix:** Use `TaskDependencyMap` to validate dependencies before processing.
+
+---
+
+## 🟢 Code Quality Improvements
+
+### 11. **Memory Management**
+**Fix:** Ensure `off()` properly cleans up listeners from both `listeners` and `onceListeners`.
+
+### 12. **Error Handling**
+**Fix:** Add proper error handling in `run()` and `executeTask()` to prevent uncaught exceptions.
+
+### 13. **Type Safety**
+**Fix:** Define `TaskResult<T>` and use it consistently for result tracking.
+
+### 14. **Concurrency Control**
+**Fix:** Add proper concurrency limit enforcement and timeout handling.
+
+### 15. **Code Reusability**
+**Fix:** Extract shared logic into utility functions like `checkReadyTasks()` or `validateDependencies()`.
+
+---
+
+## 🛠 Suggested Fixes
+
+### 1. **EventMap Improvements**
+```typescript
+interface EventMap<T extends EventMap> {
+  [event: string]: (...args: T[K]) => void;
+}
+```
+
+### 2. **Task Dependencies Check**
+```typescript
+const depsComplete = task.dependencies.every(dep => 
+  this.tasks.get(dep)?.status === 'completed'
+);
+```
+
+### 3. **Result Tracking Type Safety**
+```typescript
+type PipelineResult<T> = {
+  id: string;
+  result: T;
+  error?: Error;
+  startTime?: number;
+  endTime?: number;
+};
+
+interface PipelineResults<T> {
+  [id: string]: PipelineResult<T>;
+}
+```
+
+### 4. **Error Type Handling**
+```typescript

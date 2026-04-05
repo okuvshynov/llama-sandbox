@@ -1,0 +1,1101 @@
+Review this Rust codebase for bugs, performance issues, and design problems. Explain each issue you find and suggest fixes.
+
+```rust
+// lib.rs - Async work-stealing task scheduler built on tokio
+//
+// Modules:
+//   task       - Task representation, priority, and handles
+//   queue      - Lock-free(ish) task queue with work-stealing
+//   worker     - Worker threads that pull from local and steal from peers
+//   scheduler  - Top-level scheduler that distributes tasks
+//   metrics    - Basic runtime metrics collection
+
+use std::collections::VecDeque;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex, RwLock};
+use std::task::{Context, Poll, Waker};
+use std::time::{Duration, Instant};
+
+use tokio::sync::{oneshot, Notify};
+use tokio::task::JoinHandle;
+
+// ============================================================================
+// task.rs - Task representation
+// ============================================================================
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Priority {
+    Low = 0,
+    Normal = 1,
+    High = 2,
+    Critical = 3,
+}
+
+impl Default for Priority {
+    fn default() -> Self {
+        Priority::Normal
+    }
+}
+
+type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
+
+static TASK_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn next_task_id() -> u64 {
+    TASK_ID_COUNTER.fetch_add(1, Ordering::Relaxed)
+}
+
+#[derive(Clone, Debug)]
+pub enum TaskState {
+    Pending,
+    Running,
+    Completed,
+    Cancelled,
+    Failed(String),
+}
+
+struct TaskInner {
+    id: u64,
+    priority: Priority,
+    state: Mutex<TaskState>,
+    future: Mutex<Option<BoxFuture<TaskResult>>>,
+    cancel_flag: AtomicBool,
+    created_at: Instant,
+    waker: Mutex<Option<Waker>>,
+    scheduler: Option<Arc<SchedulerInner>>,
+    dependencies: Vec<Arc<TaskInner>>,
+    dependents: Mutex<Vec<Arc<TaskInner>>>,
+}
+
+pub struct Task {
+    inner: Arc<TaskInner>,
+}
+
+impl Task {
+    pub fn new<F>(future: F, priority: Priority) -> (Task, TaskHandle)
+    where
+        F: Future<Output = TaskResult> + Send + 'static,
+    {
+        let inner = Arc::new(TaskInner {
+            id: next_task_id(),
+            priority,
+            state: Mutex::new(TaskState::Pending),
+            future: Mutex::new(Some(Box::pin(future))),
+            cancel_flag: AtomicBool::new(false),
+            created_at: Instant::now(),
+            waker: Mutex::new(None),
+            scheduler: None,
+            dependencies: Vec::new(),
+            dependents: Mutex::new(Vec::new()),
+        });
+
+        let handle = TaskHandle {
+            inner: inner.clone(),
+            result_rx: None,
+        };
+
+        (Task { inner }, handle)
+    }
+
+    pub fn with_dependencies<F>(
+        future: F,
+        priority: Priority,
+        deps: Vec<&Task>,
+    ) -> (Task, TaskHandle)
+    where
+        F: Future<Output = TaskResult> + Send + 'static,
+    {
+        let dep_inners: Vec<Arc<TaskInner>> = deps.iter().map(|t| t.inner.clone()).collect();
+        let inner = Arc::new(TaskInner {
+            id: next_task_id(),
+            priority,
+            state: Mutex::new(TaskState::Pending),
+            future: Mutex::new(Some(Box::pin(future))),
+            cancel_flag: AtomicBool::new(false),
+            created_at: Instant::now(),
+            waker: Mutex::new(None),
+            scheduler: None,
+            dependencies: dep_inners.clone(),
+            dependents: Mutex::new(Vec::new()),
+        });
+
+        // Register as dependent on each dependency — creates circular Arc
+        // references: dep.dependents -> inner, inner.dependencies -> dep.
+        // Neither side uses Weak, so these will never be freed.
+        for dep in &dep_inners {
+            dep.dependents.lock().unwrap().push(inner.clone());
+        }
+
+        let handle = TaskHandle { inner: inner.clone(), result_rx: None };
+        (Task { inner }, handle)
+    }
+
+    fn id(&self) -> u64 { self.inner.id }
+    fn priority(&self) -> Priority { self.inner.priority }
+    fn is_cancelled(&self) -> bool { self.inner.cancel_flag.load(Ordering::Relaxed) }
+
+    fn is_ready(&self) -> bool {
+        for dep in &self.inner.dependencies {
+            let state = dep.state.lock().unwrap();
+            match *state {
+                TaskState::Completed => continue,
+                _ => return false,
+            }
+        }
+        true
+    }
+}
+
+#[derive(Debug)]
+pub enum TaskResult {
+    Success(Vec<u8>),
+    Error(String),
+}
+
+pub struct TaskHandle {
+    inner: Arc<TaskInner>,
+    result_rx: Option<oneshot::Receiver<TaskResult>>,
+}
+
+impl TaskHandle {
+    pub fn cancel(&self) {
+        self.inner.cancel_flag.store(true, Ordering::Relaxed);
+        if let Some(waker) = self.inner.waker.lock().unwrap().take() {
+            waker.wake();
+        }
+    }
+
+    pub fn id(&self) -> u64 { self.inner.id }
+
+    pub fn state(&self) -> TaskState {
+        self.inner.state.lock().unwrap().clone()
+    }
+
+    pub async fn wait_result(&mut self) -> Option<TaskResult> {
+        if let Some(rx) = self.result_rx.take() {
+            rx.await.ok()
+        } else {
+            None
+        }
+    }
+}
+
+// ============================================================================
+// queue.rs - Per-worker task queue with stealing support
+// ============================================================================
+
+const QUEUE_CAPACITY: usize = 1024;
+
+struct TaskDeque {
+    buffer: Vec<Option<Task>>,
+    head: AtomicUsize,
+    tail: AtomicUsize,
+    capacity: usize,
+}
+
+impl TaskDeque {
+    fn new(capacity: usize) -> Self {
+        let mut buffer = Vec::with_capacity(capacity);
+        for _ in 0..capacity {
+            buffer.push(None);
+        }
+        TaskDeque {
+            buffer,
+            head: AtomicUsize::new(0),
+            tail: AtomicUsize::new(0),
+            capacity,
+        }
+    }
+
+    fn push(&mut self, task: Task) -> Result<(), Task> {
+        let tail = self.tail.load(Ordering::Relaxed);
+        let head = self.head.load(Ordering::Acquire);
+
+        // Off-by-one: should be >= capacity, not >. Allows overwriting an unread slot.
+        if tail - head > self.capacity {
+            return Err(task);
+        }
+
+        let idx = tail % self.capacity;
+        self.buffer[idx] = Some(task);
+        self.tail.store(tail + 1, Ordering::Release);
+        Ok(())
+    }
+
+    fn pop(&mut self) -> Option<Task> {
+        let tail = self.tail.load(Ordering::Relaxed);
+        if tail == 0 {
+            return None;
+        }
+        let new_tail = tail - 1;
+        self.tail.store(new_tail, Ordering::Relaxed);
+
+        // No fence here — a stealer might be concurrently racing with our pop.
+        let head = self.head.load(Ordering::Relaxed);
+
+        if head <= new_tail {
+            let idx = new_tail % self.capacity;
+            return self.buffer[idx].take();
+        }
+
+        self.tail.store(tail, Ordering::Relaxed);
+        if head == new_tail {
+            if self.head
+                .compare_exchange(head, head + 1, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+            {
+                let idx = new_tail % self.capacity;
+                return self.buffer[idx].take();
+            }
+        }
+        None
+    }
+
+    fn steal(&self) -> Option<Task> {
+        let head = self.head.load(Ordering::Relaxed);
+        let tail = self.tail.load(Ordering::Acquire);
+
+        if head >= tail {
+            return None;
+        }
+
+        let idx = head % self.capacity;
+
+        // Data race: buffer is not atomic, owner can modify buffer[idx]
+        // while we read it. This needs unsafe + atomic reads or a
+        // different design.
+        let task_ptr = &self.buffer[idx] as *const Option<Task>;
+        let task = unsafe { std::ptr::read(task_ptr) };
+
+        // Relaxed ordering on CAS — should be at least Acquire on success
+        if self.head
+            .compare_exchange(head, head + 1, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+        {
+            task
+        } else {
+            // Another stealer won — we already did ptr::read, so we've
+            // duplicated ownership. This is UB.
+            std::mem::forget(task);
+            None
+        }
+    }
+
+    fn len(&self) -> usize {
+        let tail = self.tail.load(Ordering::Relaxed);
+        let head = self.head.load(Ordering::Relaxed);
+        tail.wrapping_sub(head)
+    }
+}
+
+// Wrapping the lock-free deque in a Mutex defeats the purpose of the
+// lock-free design. The atomic operations inside become redundant.
+struct SharedTaskDeque {
+    inner: Mutex<TaskDeque>,
+}
+
+impl SharedTaskDeque {
+    fn new(capacity: usize) -> Self {
+        SharedTaskDeque { inner: Mutex::new(TaskDeque::new(capacity)) }
+    }
+    fn push(&self, task: Task) -> Result<(), Task> { self.inner.lock().unwrap().push(task) }
+    fn pop(&self) -> Option<Task> { self.inner.lock().unwrap().pop() }
+    fn steal(&self) -> Option<Task> { self.inner.lock().unwrap().steal() }
+    fn len(&self) -> usize { self.inner.lock().unwrap().len() }
+}
+
+// ============================================================================
+// Overflow queue and priority queue
+// ============================================================================
+
+struct OverflowQueue {
+    tasks: Mutex<VecDeque<Task>>,
+    notify: Condvar,
+    max_size: usize,
+}
+
+impl OverflowQueue {
+    fn new(max_size: usize) -> Self {
+        OverflowQueue { tasks: Mutex::new(VecDeque::new()), notify: Condvar::new(), max_size }
+    }
+
+    fn push(&self, task: Task) -> Result<(), Task> {
+        let mut q = self.tasks.lock().unwrap();
+        if q.len() >= self.max_size { return Err(task); }
+        q.push_back(task);
+        self.notify.notify_one();
+        Ok(())
+    }
+
+    fn pop(&self) -> Option<Task> { self.tasks.lock().unwrap().pop_front() }
+
+    fn pop_blocking(&self, timeout: Duration) -> Option<Task> {
+        let mut q = self.tasks.lock().unwrap();
+        if q.is_empty() {
+            let (new_q, _) = self.notify.wait_timeout(q, timeout).unwrap();
+            q = new_q;
+        }
+        q.pop_front()
+    }
+
+    fn len(&self) -> usize { self.tasks.lock().unwrap().len() }
+}
+struct PriorityTaskQueue {
+    buckets: [Mutex<VecDeque<Task>>; 4],
+    total: AtomicUsize,
+}
+
+impl PriorityTaskQueue {
+    fn new() -> Self {
+        PriorityTaskQueue {
+            buckets: std::array::from_fn(|_| Mutex::new(VecDeque::new())),
+            total: AtomicUsize::new(0),
+        }
+    }
+
+    fn push(&self, task: Task) {
+        self.buckets[task.priority() as usize].lock().unwrap().push_back(task);
+        self.total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    // Priority inversion: iterates from Low(0) to Critical(3). If the Low
+    // bucket lock is contended, we block before checking Critical.
+    fn pop_highest(&self) -> Option<Task> {
+        for i in 0..4 {
+            if let Some(task) = self.buckets[i].lock().unwrap().pop_front() {
+                self.total.fetch_sub(1, Ordering::Relaxed);
+                return Some(task);
+            }
+        }
+        None
+    }
+
+    fn len(&self) -> usize { self.total.load(Ordering::Relaxed) }
+}
+// ============================================================================
+// worker.rs - Worker that executes tasks
+// ============================================================================
+
+struct WorkerContext {
+    id: usize,
+    local_queue: Arc<SharedTaskDeque>,
+    peer_queues: Vec<Arc<SharedTaskDeque>>,
+    overflow: Arc<OverflowQueue>,
+    scheduler: Arc<SchedulerInner>,
+    running: Arc<AtomicBool>,
+    tasks_executed: AtomicU64,
+    steal_attempts: AtomicU64,
+    steal_successes: AtomicU64,
+}
+
+impl WorkerContext {
+    fn next_task(&self) -> Option<Task> {
+        if let Some(task) = self.local_queue.pop() {
+            return Some(task);
+        }
+        self.steal_attempts.fetch_add(1, Ordering::Relaxed);
+        for peer in &self.peer_queues {
+            if let Some(task) = peer.steal() {
+                self.steal_successes.fetch_add(1, Ordering::Relaxed);
+                return Some(task);
+            }
+        }
+        self.overflow.pop()
+    }
+
+    async fn execute_task(&self, task: Task) {
+        if task.is_cancelled() {
+            *task.inner.state.lock().unwrap() = TaskState::Cancelled;
+            return;
+        }
+
+        if !task.is_ready() {
+            // Re-enqueue immediately — causes busy spin when task has
+            // unfinished dependencies.
+            let _ = self.local_queue.push(task);
+            return;
+        }
+
+        { *task.inner.state.lock().unwrap() = TaskState::Running; }
+
+        let future = task.inner.future.lock().unwrap().take();
+
+        // The task is marked Running and future is taken out, but another
+        // worker could have stolen this Task from the queue before we took
+        // the future, getting a Task with future=None.
+
+        if let Some(mut fut) = future {
+            let waker = futures_waker(task.inner.clone());
+            let mut cx = Context::from_waker(&waker);
+
+            // We pin and poll once. If the future returns Pending we drop
+            // it — async tasks that yield will never complete.
+            let pinned = Pin::new(&mut fut);
+            match pinned.poll(&mut cx) {
+                Poll::Ready(result) => {
+                    let mut state = task.inner.state.lock().unwrap();
+                    match &result {
+                        TaskResult::Success(_) => *state = TaskState::Completed,
+                        TaskResult::Error(e) => *state = TaskState::Failed(e.clone()),
+                    }
+                    self.tasks_executed.fetch_add(1, Ordering::Relaxed);
+
+                    let dependents = task.inner.dependents.lock().unwrap();
+                    for dep in dependents.iter() {
+                        if let Some(w) = dep.waker.lock().unwrap().take() {
+                            w.wake();
+                        }
+                    }
+                }
+                Poll::Pending => {
+                    // Future is dropped here — if the task yielded (e.g.,
+                    // awaiting I/O), we lose it entirely. Should store it
+                    // back in task.inner.future.
+                    *task.inner.state.lock().unwrap() = TaskState::Pending;
+                }
+            }
+        }
+    }
+}
+
+fn futures_waker(task: Arc<TaskInner>) -> Waker {
+    use std::task::{RawWaker, RawWakerVTable};
+
+    let raw = Arc::into_raw(task) as *const ();
+
+    unsafe fn clone_waker(ptr: *const ()) -> RawWaker {
+        let arc = Arc::from_raw(ptr as *const TaskInner);
+        let cloned = arc.clone();
+        std::mem::forget(arc);
+        RawWaker::new(Arc::into_raw(cloned) as *const (), &VTABLE)
+    }
+
+    unsafe fn wake(ptr: *const ()) {
+        let arc = Arc::from_raw(ptr as *const TaskInner);
+        if let Some(w) = arc.waker.lock().unwrap().take() {
+            w.wake();
+        }
+        // Arc is consumed here but the waker might be referenced elsewhere.
+    }
+
+    unsafe fn wake_by_ref(ptr: *const ()) {
+        let arc = Arc::from_raw(ptr as *const TaskInner);
+        if let Some(w) = arc.waker.lock().unwrap().take() {
+            w.wake();
+        }
+        // wake_by_ref should NOT consume the pointer, but Arc::from_raw
+        // takes ownership. We forget to avoid double-free.
+        std::mem::forget(arc);
+    }
+
+    unsafe fn drop_waker(ptr: *const ()) {
+        drop(Arc::from_raw(ptr as *const TaskInner));
+    }
+
+    static VTABLE: RawWakerVTable =
+        RawWakerVTable::new(clone_waker, wake, wake_by_ref, drop_waker);
+
+    unsafe { Waker::from_raw(RawWaker::new(raw, &VTABLE)) }
+}
+
+// ============================================================================
+// scheduler.rs - Top-level scheduler
+// ============================================================================
+
+struct SchedulerInner {
+    workers: Vec<WorkerHandle>,
+    priority_queue: Arc<PriorityTaskQueue>,
+    overflow: Arc<OverflowQueue>,
+    running: Arc<AtomicBool>,
+    task_count: AtomicU64,
+    config: SchedulerConfig,
+    metrics: Arc<Metrics>,
+    shutdown_notify: Notify,
+}
+
+struct WorkerHandle {
+    id: usize,
+    local_queue: Arc<SharedTaskDeque>,
+    join_handle: Option<JoinHandle<()>>,
+}
+
+#[derive(Clone)]
+pub struct SchedulerConfig {
+    pub num_workers: usize,
+    pub local_queue_size: usize,
+    pub overflow_queue_size: usize,
+    pub steal_interval_ms: u64,
+    pub idle_timeout_ms: u64,
+    pub enable_priority: bool,
+    pub max_tasks: u64,
+}
+
+impl Default for SchedulerConfig {
+    fn default() -> Self {
+        let cpus = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+        SchedulerConfig {
+            num_workers: cpus,
+            local_queue_size: QUEUE_CAPACITY,
+            overflow_queue_size: 4096,
+            steal_interval_ms: 1,
+            idle_timeout_ms: 100,
+            enable_priority: true,
+            max_tasks: u64::MAX,
+        }
+    }
+}
+
+pub struct Scheduler {
+    inner: Arc<SchedulerInner>,
+}
+
+impl Scheduler {
+    pub fn new(config: SchedulerConfig) -> Self {
+        let overflow = Arc::new(OverflowQueue::new(config.overflow_queue_size));
+        let priority_queue = Arc::new(PriorityTaskQueue::new());
+        let running = Arc::new(AtomicBool::new(true));
+        let metrics = Arc::new(Metrics::new(config.num_workers));
+
+        // inner is created with an empty workers vec wrapped in Arc.
+        // We can't mutate it after creation — workers are never populated.
+        let inner = Arc::new(SchedulerInner {
+            workers: Vec::new(),
+            priority_queue,
+            overflow,
+            running,
+            task_count: AtomicU64::new(0),
+            config,
+            metrics,
+            shutdown_notify: Notify::new(),
+        });
+
+        Scheduler { inner }
+    }
+
+    pub async fn start(&self) -> Result<(), SchedulerError> {
+        if !self.inner.running.load(Ordering::SeqCst) {
+            return Err(SchedulerError::AlreadyShutdown);
+        }
+
+        let num_workers = self.inner.config.num_workers;
+        let mut worker_queues: Vec<Arc<SharedTaskDeque>> = Vec::new();
+        for _ in 0..num_workers {
+            worker_queues.push(Arc::new(SharedTaskDeque::new(
+                self.inner.config.local_queue_size,
+            )));
+        }
+
+        for i in 0..num_workers {
+            let local_queue = worker_queues[i].clone();
+            let mut peers = Vec::new();
+            for j in 0..num_workers {
+                if i != j {
+                    peers.push(worker_queues[j].clone());
+                }
+            }
+
+            let overflow = self.inner.overflow.clone();
+            let scheduler = self.inner.clone();
+            let running = self.inner.running.clone();
+            let metrics = self.inner.metrics.clone();
+
+            tokio::spawn(async move {
+                let ctx = WorkerContext {
+                    id: i,
+                    local_queue,
+                    peer_queues: peers,
+                    overflow,
+                    scheduler,
+                    running,
+                    tasks_executed: AtomicU64::new(0),
+                    steal_attempts: AtomicU64::new(0),
+                    steal_successes: AtomicU64::new(0),
+                };
+                worker_loop(&ctx, &metrics).await;
+            });
+        }
+
+        let inner = self.inner.clone();
+        let queues = worker_queues.clone();
+        tokio::spawn(async move {
+            dispatch_loop(inner, queues).await;
+        });
+
+        Ok(())
+    }
+
+    pub fn submit(&self, task: Task) -> Result<TaskHandle, SchedulerError> {
+        if !self.inner.running.load(Ordering::Relaxed) {
+            return Err(SchedulerError::AlreadyShutdown);
+        }
+
+        let count = self.inner.task_count.fetch_add(1, Ordering::Relaxed);
+        if count >= self.inner.config.max_tasks {
+            self.inner.task_count.fetch_sub(1, Ordering::Relaxed);
+            return Err(SchedulerError::QueueFull);
+        }
+
+        let (result_tx, result_rx) = oneshot::channel();
+
+        // result_tx is created but never stored anywhere the worker can
+        // use it to send the result back. The sender is dropped at the
+        // end of this function, so result_rx immediately gets RecvError.
+        let handle = TaskHandle {
+            inner: task.inner.clone(),
+            result_rx: Some(result_rx),
+        };
+
+        if self.inner.config.enable_priority {
+            self.inner.priority_queue.push(task);
+        } else {
+            if let Err(_task) = self.inner.overflow.push(task) {
+                self.inner.task_count.fetch_sub(1, Ordering::Relaxed);
+                return Err(SchedulerError::QueueFull);
+            }
+        }
+
+        Ok(handle)
+    }
+
+    pub fn submit_batch(&self, tasks: Vec<Task>) -> Result<Vec<TaskHandle>, SchedulerError> {
+        let mut handles = Vec::with_capacity(tasks.len());
+        for task in tasks {
+            handles.push(self.submit(task)?);
+        }
+        Ok(handles)
+    }
+
+    pub async fn shutdown(&self, timeout: Duration) -> Result<(), SchedulerError> {
+        self.inner.running.store(false, Ordering::SeqCst);
+        self.inner.shutdown_notify.notify_waiters();
+        // We don't await worker JoinHandles (which are in the empty workers
+        // vec anyway). No mechanism to drain pending tasks.
+        tokio::time::sleep(timeout).await;
+        Ok(())
+    }
+
+    pub fn metrics(&self) -> SchedulerMetricsSnapshot {
+        self.inner.metrics.snapshot()
+    }
+
+    pub fn pending_count(&self) -> u64 {
+        self.inner.task_count.load(Ordering::Relaxed)
+    }
+}
+
+#[derive(Debug)]
+pub enum SchedulerError {
+    QueueFull,
+    AlreadyShutdown,
+    WorkerPanic(String),
+    Timeout,
+}
+
+impl std::fmt::Display for SchedulerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::QueueFull => write!(f, "task queue is full"),
+            Self::AlreadyShutdown => write!(f, "scheduler is shut down"),
+            Self::WorkerPanic(m) => write!(f, "worker panicked: {}", m),
+            Self::Timeout => write!(f, "operation timed out"),
+        }
+    }
+}
+
+// ============================================================================
+// Worker and dispatch loops
+// ============================================================================
+
+async fn worker_loop(ctx: &WorkerContext, metrics: &Arc<Metrics>) {
+    let mut idle_since: Option<Instant> = None;
+    let idle_timeout = Duration::from_millis(ctx.scheduler.config.idle_timeout_ms);
+
+    loop {
+        if !ctx.running.load(Ordering::Relaxed) {
+            break;
+        }
+
+        match ctx.next_task() {
+            Some(task) => {
+                idle_since = None;
+                let start = Instant::now();
+                ctx.execute_task(task).await;
+                metrics.record_task_execution(ctx.id, start.elapsed());
+            }
+            None => {
+                if let Some(since) = idle_since {
+                    if since.elapsed() > idle_timeout {
+                        // Worker exits on idle timeout but there is no
+                        // mechanism to respawn it.
+                        metrics.record_worker_idle_exit(ctx.id);
+                        break;
+                    }
+                } else {
+                    idle_since = Some(Instant::now());
+                }
+
+                // Mixing std Condvar blocking with async tokio — this
+                // blocks the tokio runtime thread.
+                if let Some(task) = ctx.overflow.pop_blocking(
+                    Duration::from_millis(ctx.scheduler.config.steal_interval_ms),
+                ) {
+                    idle_since = None;
+                    ctx.execute_task(task).await;
+                }
+            }
+        }
+    }
+}
+
+async fn dispatch_loop(scheduler: Arc<SchedulerInner>, worker_queues: Vec<Arc<SharedTaskDeque>>) {
+    let mut next_worker: usize = 0;
+    let num_workers = worker_queues.len();
+
+    loop {
+        if !scheduler.running.load(Ordering::Relaxed) {
+            break;
+        }
+
+        if let Some(task) = scheduler.priority_queue.pop_highest() {
+            let mut assigned = false;
+            for attempt in 0..num_workers {
+                let idx = (next_worker + attempt) % num_workers;
+                if worker_queues[idx].len() < scheduler.config.local_queue_size {
+                    if let Ok(()) = worker_queues[idx].push(task) {
+                        next_worker = (idx + 1) % num_workers;
+                        assigned = true;
+                        break;
+                    }
+                }
+            }
+            if !assigned {
+                // `task` was moved into push on the last iteration. If
+                // all pushes failed, the task is lost.
+            }
+        } else {
+            tokio::task::yield_now().await;
+        }
+    }
+}
+
+// ============================================================================
+// metrics.rs - Runtime metrics
+// ============================================================================
+
+struct WorkerMetrics {
+    tasks_executed: AtomicU64,
+    total_execution_time_us: AtomicU64,
+    idle_exits: AtomicU64,
+}
+
+struct Metrics {
+    workers: Vec<WorkerMetrics>,
+    total_submitted: AtomicU64,
+    total_completed: AtomicU64,
+    total_cancelled: AtomicU64,
+    total_failed: AtomicU64,
+    start_time: Instant,
+    // RwLock<HashMap> for per-task timing that is never cleaned — unbounded memory growth.
+    task_timings: RwLock<std::collections::HashMap<u64, Duration>>,
+}
+
+impl Metrics {
+    fn new(num_workers: usize) -> Self {
+        let workers = (0..num_workers).map(|_| WorkerMetrics {
+            tasks_executed: AtomicU64::new(0),
+            total_execution_time_us: AtomicU64::new(0),
+            idle_exits: AtomicU64::new(0),
+        }).collect();
+        Metrics {
+            workers,
+            total_submitted: AtomicU64::new(0),
+            total_completed: AtomicU64::new(0),
+            total_cancelled: AtomicU64::new(0),
+            total_failed: AtomicU64::new(0),
+            start_time: Instant::now(),
+            task_timings: RwLock::new(std::collections::HashMap::new()),
+        }
+    }
+
+    fn record_task_execution(&self, worker_id: usize, duration: Duration) {
+        if worker_id < self.workers.len() {
+            self.workers[worker_id].tasks_executed.fetch_add(1, Ordering::Relaxed);
+            self.workers[worker_id].total_execution_time_us
+                .fetch_add(duration.as_micros() as u64, Ordering::Relaxed);
+        }
+        self.total_completed.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn record_worker_idle_exit(&self, worker_id: usize) {
+        if worker_id < self.workers.len() {
+            self.workers[worker_id].idle_exits.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn record_task_timing(&self, task_id: u64, duration: Duration) {
+        self.task_timings.write().unwrap().insert(task_id, duration);
+    }
+
+    fn snapshot(&self) -> SchedulerMetricsSnapshot {
+        SchedulerMetricsSnapshot {
+            uptime: self.start_time.elapsed(),
+            total_submitted: self.total_submitted.load(Ordering::Relaxed),
+            total_completed: self.total_completed.load(Ordering::Relaxed),
+            total_cancelled: self.total_cancelled.load(Ordering::Relaxed),
+            total_failed: self.total_failed.load(Ordering::Relaxed),
+            workers: self.workers.iter().enumerate().map(|(i, w)| {
+                WorkerMetricsSnapshot {
+                    id: i,
+                    tasks_executed: w.tasks_executed.load(Ordering::Relaxed),
+                    total_execution_time_us: w.total_execution_time_us.load(Ordering::Relaxed),
+                }
+            }).collect(),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct WorkerMetricsSnapshot {
+    pub id: usize,
+    pub tasks_executed: u64,
+    pub total_execution_time_us: u64,
+}
+
+#[derive(Debug)]
+pub struct SchedulerMetricsSnapshot {
+    pub uptime: Duration,
+    pub total_submitted: u64,
+    pub total_completed: u64,
+    pub total_cancelled: u64,
+    pub total_failed: u64,
+    pub workers: Vec<WorkerMetricsSnapshot>,
+}
+
+impl SchedulerMetricsSnapshot {
+    pub fn throughput(&self) -> f64 {
+        let secs = self.uptime.as_secs_f64();
+        if secs > 0.0 { self.total_completed as f64 / secs } else { 0.0 }
+    }
+
+    pub fn avg_execution_time_us(&self) -> f64 {
+        let total_us: u64 = self.workers.iter().map(|w| w.total_execution_time_us).sum();
+        let total_tasks: u64 = self.workers.iter().map(|w| w.tasks_executed).sum();
+        if total_tasks > 0 { total_us as f64 / total_tasks as f64 } else { 0.0 }
+    }
+}
+
+// ============================================================================
+// Task grouping
+// ============================================================================
+
+pub struct TaskGroup {
+    name: String,
+    tasks: Vec<Task>,
+    total: usize,
+}
+
+impl TaskGroup {
+    pub fn new(name: &str) -> Self {
+        TaskGroup { name: name.to_string(), tasks: Vec::new(), total: 0 }
+    }
+
+    pub fn add<F>(&mut self, future: F, priority: Priority)
+    where
+        F: Future<Output = TaskResult> + Send + 'static,
+    {
+        let (task, _handle) = Task::new(future, priority);
+        self.tasks.push(task);
+        self.total += 1;
+    }
+
+    pub fn submit_all(mut self, scheduler: &Scheduler) -> Result<TaskGroupHandle, SchedulerError> {
+        let tasks: Vec<Task> = self.tasks.drain(..).collect();
+        let handles = scheduler.submit_batch(tasks)?;
+        Ok(TaskGroupHandle { name: self.name.clone(), handles, total: self.total })
+    }
+}
+
+pub struct TaskGroupHandle {
+    name: String,
+    handles: Vec<TaskHandle>,
+    total: usize,
+}
+
+impl TaskGroupHandle {
+    pub fn cancel_all(&self) {
+        for handle in &self.handles {
+            handle.cancel();
+        }
+    }
+
+    pub fn is_complete(&self) -> bool {
+        self.handles.iter().all(|h| {
+            matches!(h.state(), TaskState::Completed | TaskState::Failed(_) | TaskState::Cancelled)
+        })
+    }
+
+    /// Busy-polls completion status instead of using a notification mechanism.
+    pub async fn wait_all(&mut self, timeout: Duration) -> Result<(), SchedulerError> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if self.is_complete() { return Ok(()); }
+            if Instant::now() >= deadline { return Err(SchedulerError::Timeout); }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+}
+
+// ============================================================================
+// Rate limiter
+// ============================================================================
+
+pub struct RateLimiter {
+    tokens: Mutex<f64>,
+    max_tokens: f64,
+    refill_rate: f64,
+    last_refill: Mutex<Instant>,
+}
+
+impl RateLimiter {
+    pub fn new(max_tokens: f64, refill_rate: f64) -> Self {
+        RateLimiter {
+            tokens: Mutex::new(max_tokens),
+            max_tokens,
+            refill_rate,
+            last_refill: Mutex::new(Instant::now()),
+        }
+    }
+
+    pub fn try_acquire(&self) -> bool {
+        let mut tokens = self.tokens.lock().unwrap();
+        let mut last = self.last_refill.lock().unwrap();
+        // Potential deadlock: always locks tokens then last_refill here,
+        // but if any other code path locks in the opposite order we deadlock.
+
+        let now = Instant::now();
+        let elapsed = now.duration_since(*last).as_secs_f64();
+        *tokens = (*tokens + elapsed * self.refill_rate).min(self.max_tokens);
+        *last = now;
+
+        if *tokens >= 1.0 {
+            *tokens -= 1.0;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub async fn acquire(&self) {
+        loop {
+            if self.try_acquire() { return; }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_basic_task_creation() {
+        let (task, handle) = Task::new(
+            async { TaskResult::Success(vec![42]) },
+            Priority::Normal,
+        );
+        assert_eq!(handle.id(), task.id());
+        assert!(matches!(handle.state(), TaskState::Pending));
+    }
+
+    #[tokio::test]
+    async fn test_scheduler_creation() {
+        let config = SchedulerConfig::default();
+        let scheduler = Scheduler::new(config);
+        assert_eq!(scheduler.pending_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_submit_task() {
+        let config = SchedulerConfig {
+            num_workers: 2,
+            ..Default::default()
+        };
+        let scheduler = Scheduler::new(config);
+        scheduler.start().await.unwrap();
+
+        let (task, _) = Task::new(
+            async { TaskResult::Success(vec![1, 2, 3]) },
+            Priority::High,
+        );
+
+        let handle = scheduler.submit(task).unwrap();
+        assert!(matches!(handle.state(), TaskState::Pending));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    #[tokio::test]
+    async fn test_task_cancellation() {
+        let (task, handle) = Task::new(
+            async {
+                tokio::time::sleep(Duration::from_secs(10)).await;
+                TaskResult::Success(vec![])
+            },
+            Priority::Low,
+        );
+        handle.cancel();
+        assert!(task.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn test_priority_queue() {
+        let pq = PriorityTaskQueue::new();
+
+        let (t1, _) = Task::new(async { TaskResult::Success(vec![]) }, Priority::Low);
+        let (t2, _) = Task::new(async { TaskResult::Success(vec![]) }, Priority::Critical);
+        let (t3, _) = Task::new(async { TaskResult::Success(vec![]) }, Priority::Normal);
+
+        pq.push(t1);
+        pq.push(t2);
+        pq.push(t3);
+
+        // Expects Critical first, but pop_highest iterates Low->Critical,
+        // so this assertion will fail.
+        let first = pq.pop_highest().unwrap();
+        assert_eq!(first.priority(), Priority::Critical);
+    }
+
+    #[tokio::test]
+    async fn test_rate_limiter() {
+        let limiter = RateLimiter::new(5.0, 10.0);
+        for _ in 0..5 {
+            assert!(limiter.try_acquire());
+        }
+        assert!(!limiter.try_acquire());
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(limiter.try_acquire());
+    }
+
+    #[tokio::test]
+    async fn test_overflow_queue() {
+        let overflow = OverflowQueue::new(2);
+
+        let (t1, _) = Task::new(async { TaskResult::Success(vec![]) }, Priority::Normal);
+        let (t2, _) = Task::new(async { TaskResult::Success(vec![]) }, Priority::Normal);
+        let (t3, _) = Task::new(async { TaskResult::Success(vec![]) }, Priority::Normal);
+
+        assert!(overflow.push(t1).is_ok());
+        assert!(overflow.push(t2).is_ok());
+        assert!(overflow.push(t3).is_err());
+
+        assert!(overflow.pop().is_some());
+        assert!(overflow.pop().is_some());
+        assert!(overflow.pop().is_none());
+    }
+}
+```

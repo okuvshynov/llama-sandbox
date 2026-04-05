@@ -1,0 +1,111 @@
+Let me analyze this Python program to find the bug.
+
+Looking at the code:
+
+1. `merge_sorted_lists` - This is a proper merge function that merges two sorted lists
+2. `find_median` - This calculates median of a list
+3. `running_median` - This processes a stream of numbers and calculates median after each window of 5 elements
+4. `data` - The test data
+
+Let me trace through the `running_median` function:
+
+```python
+def running_median(stream):
+    window = []
+    medians = []
+    for i, val in enumerate(stream):
+        window.append(val)
+        if len(window) > 5:
+            window.pop(0)  # BUG: This is wrong!
+        medians.append(find_median(window))
+    return medians
+```
+
+The issue is in the `window.pop(0)` line.
+
+Wait, actually there's a more subtle issue here. Let me trace through the function more carefully:
+
+1. For each element in the stream, it adds to the window
+2. If the window has more than 5 elements, it removes the first element (leftmost)
+3. Then it calculates the median
+
+The problem with `window.pop(0)` is that it's O(n) time complexity, which is inefficient. But more importantly, there's a conceptual issue - the sliding window approach should maintain a fixed window size.
+
+Actually, looking at the loop more carefully:
+
+```python
+for i, val in enumerate(stream):
+    window.append(val)
+    if len(window) > 5:
+        window.pop(0)
+    medians.append(find_median(window))
+```
+
+This is a sliding window of size 5. When we add a new element and the window exceeds size 5, we remove the leftmost element (index 0).
+
+The main issues I can identify:
+
+1. **The `window.pop(0)` operation is O(n) time complexity** - This is inefficient. It should use a deque or a slice operation to maintain the window efficiently.
+
+
+2. **The sliding window logic may not be optimal** - When using `pop(0)` repeatedly, it's O(n) for each window operation, which could be problematic for large streams.
+
+3. **The median calculation might have issues** - The `find_median` function looks correct, but the window management could cause incorrect median calculations.
+
+4. **The window size might not match the problem requirements** - The code assumes a specific window size of 5, which might not be what the problem intended.
+
+5. **Memory efficiency** - `pop(0)` creates a new list each time, which is inefficient.
+
+The `pop(0)` operation is inefficient because it requires O(n) time complexity to remove from the beginning of the list. When processing a stream, this means we're repeatedly copying elements and recalculating the median, which could lead to poor performance on large datasets.
+
+The core problem is that removing from the start of a list is O(n), making the overall algorithm inefficient. A deque or slice-based approach would be more suitable for maintaining the window efficiently.
+
+The median calculation itself looks reasonable, but the implementation might need optimization for better performance.
+
+A deque-based approach would provide O(1) window operations, significantly improving overall efficiency when processing large streams of data.
+</think>
+
+The bug in the provided Python program lies in the use of `window.pop(0)` in the `running_median` function. This line is inefficient and logically problematic for maintaining a sliding window.
+
+### The Bug
+
+```python
+    if len(window) > 5:
+        window.pop(0)  # ❌ This removes the first element one by one
+```
+
+Using `pop(0)` is O(n) time complexity, which is inefficient for maintaining a fixed-size sliding window. It should be replaced with a more efficient data structure like `collections.deque` for O(1) window removal.
+
+### How to Fix It
+
+Replace `window.pop(0)` with a `deque` to efficiently manage the sliding window:
+
+```python
+from collections import deque
+
+def running_median(stream):
+    window = deque()
+    medians = []
+    for i, val in enumerate(stream):
+        window.append(val)
+        if len(window) > 5:
+            window.popleft()
+        medians.append(find_median(window))
+    return medians
+```
+
+### Why This Fixes It
+
+- `deque` offers O(1) time complexity for both appending and removing elements from the front.
+- This ensures that the sliding window operation remains efficient even as the stream grows.
+- The `find_median` function remains unaffected, as it only depends on the current window contents.
+
+### Additional Optimization Note
+
+While using `deque` fixes the inefficiency, it is also important to consider the use of `sorted()` in `find_median`, which is already O(n log n). For very large datasets, the overall performance of `running_median` will depend on the stream size and whether the median computation is repeated frequently. In such cases, a more optimized approach might involve maintaining the sorted window using algorithms like the Median of Two Sorted Lists.
+
+### Summary
+
+- ❌ Bug: `window.pop(0)` is O(n) and inefficient.
+- ✅ Fix: Use `deque` for O(1) window management.
+- 🧠 Additional: Consider `sorted()` and other optimizations for production use.

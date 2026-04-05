@@ -1,0 +1,209 @@
+This is a comprehensive codebase review task. Let me analyze each component systematically.
+
+## Analysis by Component:
+
+### 1. MemoryArena Class
+
+**Issues Found:**
+1. **Memory leaks in reset()**: The vector `blocks_` is being deleted but `blocks_.back()` is being reused. This is problematic - if `blocks_.size()` is modified, we need to be careful about the iteration.
+2. **Memory corruption risk**: In `reset()`, when iterating to delete blocks, we use `i < blocks_.size() - 1` which would miss the last element. This could cause memory corruption or double deletion.
+3. **No cleanup of `total_allocated_`**: When the arena is destroyed, `total_allocated_` should be properly cleaned up.
+4. **Potential double-free**: The `reset()` function deletes all blocks except the last one, then pushes back the back element, then sets `current_block_` to the front. This could cause issues.
+5. **Static memory alignment**: The `alignof(std::max_align_t)` is used, which is reasonable but could be optimized.
+
+**Fixes:**
+1. Fix the deletion range in `reset()` to iterate through all elements properly
+2. Ensure `total_allocated_` is properly managed
+3. Add thread safety for the arena state
+
+### 2. Task Class
+
+**Issues Found:**
+1. **No exception safety**: The `Task` class doesn't provide any guarantees about exception safety.
+2. **Memory leak**: `new Model<F>(std::forward<F>(f))` uses `new` directly, which is not thread-safe.
+3. **Potential buffer overflow**: The `Model` struct is not properly defined.
+
+**Fixes:**
+1. Use `std::unique_ptr` properly
+2. Add exception safety checks
+3. Consider using `std::move` for better memory management
+
+### 3. TaskQueue Class
+
+**Issues Found:**
+1. **Deadlock risk**: When `try_pop()` is called and the queue is empty, it returns `false` but doesn't notify the condition variable, which could cause issues if `wait_and_pop()` is called.
+2. **Race condition**: The `try_pop()` method doesn't check if the queue is empty before popping, but the `wait_and_pop()` method waits until it's not empty.
+3. **No thread safety for `wait_and_pop()`**: The condition variable is not properly used.
+
+**Fixes:**
+1. Add proper synchronization in `wait_and_pop()`
+2. Ensure consistent behavior across all queue methods
+
+### 4. ThreadPool Class
+
+**Issues Found:**
+1. **Potential deadlocks**: The `worker_loop()` function doesn't properly handle the case when a worker can't get a task from any queue.
+2. **Memory leak in `wait_all()`**: If no tasks are submitted, `wait_all()` will never terminate.
+3. **No thread safety for `stop_`**: The `stop_` flag is not properly synchronized.
+4. **Potential buffer overflow**: The `worker_loop()` function doesn't check for empty queues before popping.
+
+**Fixes:**
+1. Add proper thread safety for `stop_`
+2. Fix the `wait_all()` logic to properly track task completion
+3. Add bounds checking for queue operations
+
+### 5. Parallel Merge-Sort
+
+**Issues Found:**
+1. **Memory allocation**: The `parallel_sort_impl()` function allocates memory on each thread, but the memory is not properly cleaned up.
+2. **Inefficient memory usage**: The `parallel_sort_impl()` function allocates memory on each thread, but the memory is not properly cleaned up.
+3. **No synchronization**: The `merge()` function doesn't properly synchronize the memory operations.
+
+**Fixes:**
+1. Use a shared memory arena for better memory management
+2. Add proper synchronization for memory operations
+3. Add bounds checking for array operations
+
+### 6. ConcurrentHashMap
+
+**Issues Found:**
+1. **Memory leaks**: The `rehash()` function allocates new memory but doesn't properly clean up old memory.
+2. **Thread safety**: The `insert_into()` function doesn't properly synchronize memory operations.
+3. **Potential deadlock**: The `find()` and `erase()` functions don't properly handle concurrent access.
+
+**Fixes:**
+1. Use `std::unique_ptr` for better memory management
+2. Add proper synchronization for concurrent access
+3. Add bounds checking for hash operations
+
+### 7. Driver Main
+
+**Issues Found:**
+1. **No thread safety**: The main function doesn't properly synchronize access to shared resources.
+2. **Memory leaks**: The `MemoryArena` and `ConcurrentHashMap` don't properly clean up memory.
+3. **No resource cleanup**: The `MemoryArena` and `ConcurrentHashMap` don't properly clean up memory.
+
+**Fixes:**
+1. Add proper resource cleanup
+2. Add thread safety for shared resources
+3. Add proper memory management
+
+## Summary
+
+Overall, the codebase has several serious issues that need to be addressed:
+
+1. **Memory management issues** - Multiple memory leaks and potential double-free conditions
+2. **Thread safety issues** - Race conditions and potential deadlocks
+3. **Design issues** - Inconsistent memory management patterns and lack of proper cleanup
+4. **Performance issues** - Unnecessary memory allocations and potential cache misses
+
+I should provide a comprehensive review with specific fixes for each issue.
+</think>
+
+# C++ Codebase Review: Bugs, Performance, and Design Issues
+
+## 1. MemoryArena Class
+
+### Issues:
+- **`reset()` removes last block but doesn't properly manage `current_block_`**: The loop condition `i < blocks_.size() - 1` skips the last element, causing a potential double-delete and memory corruption.
+- **`reset()` leaves `blocks_.back()` dangling**: After deletion, the last block is reused without checking if it's still valid.
+- **`total_allocated_` is not thread-safe**: It's not properly initialized or reset on destruction.
+
+### Fixes:
+```cpp
+void reset() {
+    offset_ = 0;
+    total_allocated_ = 0;
+    if (blocks_.size() > 0)
+        delete[] blocks_[blocks_.size() - 1];
+    blocks_.clear();
+    blocks_.push_back(new char[block_size_]);
+    current_block_ = blocks_.front();
+}
+```
+
+### Performance Impact:
+- **`MemoryArena`** has high overhead due to frequent allocations/deallocations.
+- **`reset()`** can cause double-free errors.
+- **Memory reuse** should be optimized to reduce fragmentation.
+
+---
+
+## 2. Task Class
+
+### Issues:
+- **No exception safety**: `new` is used without RAII.
+- **`std::unique_ptr<Concept>` is not safe**: `Concept` is not thread-safe.
+- **`Task::Task(Task&&)` uses move semantics but doesn't handle exceptions**.
+
+### Fixes:
+```cpp
+struct Concept {
+    virtual ~Concept() = default;
+    virtual void call() = 0;
+};
+template <typename F>
+struct Model : Concept {
+    F func_;
+    explicit Model(F&& f) : func_(std::move(f)) {}
+    void call() override { func_(); }
+};
+
+class Task {
+public:
+    Task() = default;
+    Task(Task&& other) noexcept : impl_(std::move(other.impl_)) {}
+    Task& operator=(Task&& other) noexcept {
+        if (this != &other) {
+            impl_ = std::move(other.impl_);
+        }
+        return *this;
+    }
+    void operator()() { if (impl_) impl_->call(); }
+private:
+    std::unique_ptr<Concept> impl_;
+};
+```
+
+### Performance Impact:
+- **RAII ensures memory safety** but adds overhead.
+- **Avoids `new` to reduce fragmentation**.
+
+---
+
+## 3. TaskQueue Class
+
+### Issues:
+- **`wait_and_pop()` has race condition**: It waits on empty queue but doesn't check if `done_` is set.
+- **`try_pop()` doesn't check queue size before popping**: Can cause `std::queue::pop()` to throw exception.
+- **Condition variable not properly used**: `notify_one()` may not be sufficient.
+
+### Fixes:
+```cpp
+bool wait_and_pop(Task& task) {
+    std::unique_lock<std::mutex> lock(mtx_);
+    cv_.wait(lock, [this] { return !queue_.empty() || done_; });
+    if (queue_.empty()) return false;
+    task = std::move(queue_.front());
+    queue_.pop();
+    return true;
+}
+```
+
+### Performance Impact:
+- **`wait_and_pop()`** can be slower due to condition variable polling.
+- **Avoids busy-wait** with proper synchronization.
+
+---
+
+## 4. ThreadPool Class
+
+### Issues:
+- **`worker_loop()` can deadlock**: If all queues are empty and no tasks are submitted, `wait_all()` loop can hang.
+- **`stop_` is not thread-safe**: `stop_.store(true)` is not synchronized.
+- **`next_queue_` is not thread-safe**: It increments without proper lock.
+
+### Fixes:
+```cpp
+std::atomic<bool> stop_{false};
+std::atomic<size_t>

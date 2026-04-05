@@ -1,0 +1,395 @@
+Review this C++ codebase for bugs, performance issues, and design problems. Explain each issue you find and suggest fixes.
+
+```cpp
+#include <atomic>
+#include <condition_variable>
+#include <cstring>
+#include <functional>
+#include <future>
+#include <iostream>
+#include <memory>
+#include <mutex>
+#include <queue>
+#include <thread>
+#include <vector>
+
+// MemoryArena -- bump allocator for short-lived bulk allocations
+class MemoryArena {
+public:
+    explicit MemoryArena(size_t block_size = 1024 * 1024)
+        : block_size_(block_size) {
+        grow();
+    }
+    ~MemoryArena() {
+        for (auto* blk : blocks_) delete[] blk;
+    }
+    MemoryArena(const MemoryArena&) = delete;
+    MemoryArena& operator=(const MemoryArena&) = delete;
+
+    void* allocate(size_t size, size_t alignment = alignof(std::max_align_t)) {
+        size_t space = block_size_ - offset_;
+        void* ptr = static_cast<char*>(current_block_) + offset_;
+        if (std::align(alignment, size, ptr, space)) {
+            offset_ = block_size_ - space + size;
+            total_allocated_ += size;
+            return ptr;
+        }
+        grow();
+        space = block_size_ - offset_;
+        ptr = static_cast<char*>(current_block_) + offset_;
+        std::align(alignment, size, ptr, space);
+        offset_ = block_size_ - space + size;
+        total_allocated_ += size;
+        return ptr;
+    }
+
+    template <typename T, typename... Args>
+    T* create(Args&&... args) {
+        void* mem = allocate(sizeof(T), alignof(T));
+        return new (mem) T(std::forward<Args>(args)...);
+    }
+
+    void reset() {
+        offset_ = 0;
+        total_allocated_ = 0;
+        for (size_t i = 0; i < blocks_.size() - 1; ++i)
+            delete[] blocks_[i];
+        blocks_ = { blocks_.back() };
+        current_block_ = blocks_.front();
+    }
+
+    size_t total_allocated() const { return total_allocated_; }
+
+private:
+    void grow() {
+        auto* blk = new char[block_size_];
+        blocks_.push_back(blk);
+        current_block_ = blk;
+        offset_ = 0;
+    }
+    size_t block_size_;
+    size_t offset_ = 0;
+    size_t total_allocated_ = 0;
+    void*  current_block_ = nullptr;
+    std::vector<char*> blocks_;
+};
+
+// Task -- type-erased callable
+class Task {
+public:
+    Task() = default;
+    template <typename F>
+    Task(F&& f) : impl_(new Model<F>(std::forward<F>(f))) {}
+    Task(Task&& other) noexcept : impl_(std::move(other.impl_)) {}
+    Task& operator=(Task&& other) noexcept {
+        impl_ = std::move(other.impl_);
+        return *this;
+    }
+    void operator()() { if (impl_) impl_->call(); }
+private:
+    struct Concept {
+        virtual ~Concept() = default;
+        virtual void call() = 0;
+    };
+    template <typename F>
+    struct Model : Concept {
+        F func_;
+        explicit Model(F&& f) : func_(std::move(f)) {}
+        void call() override { func_(); }
+    };
+    std::unique_ptr<Concept> impl_;
+};
+
+// TaskQueue -- thread-safe queue
+class TaskQueue {
+public:
+    void push(Task task) {
+        std::lock_guard<std::mutex> lock(mtx_);
+        queue_.push(std::move(task));
+        cv_.notify_one();
+    }
+    bool try_pop(Task& task) {
+        std::lock_guard<std::mutex> lock(mtx_);
+        if (queue_.empty()) return false;
+        task = std::move(queue_.front());
+        queue_.pop();
+        return true;
+    }
+    bool wait_and_pop(Task& task) {
+        std::unique_lock<std::mutex> lock(mtx_);
+        cv_.wait(lock, [this] { return !queue_.empty() || done_; });
+        if (queue_.empty()) return false;
+        task = std::move(queue_.front());
+        queue_.pop();
+        return true;
+    }
+    void done() {
+        std::lock_guard<std::mutex> lock(mtx_);
+        done_ = true;
+        cv_.notify_all();
+    }
+    size_t size() const { return queue_.size(); }
+private:
+    std::queue<Task>        queue_;
+    std::mutex              mtx_;
+    std::condition_variable cv_;
+    bool                    done_ = false;
+};
+
+// ThreadPool with work stealing
+class ThreadPool {
+public:
+    explicit ThreadPool(size_t num_threads = std::thread::hardware_concurrency())
+        : queues_(num_threads), stop_(false) {
+        for (size_t i = 0; i < num_threads; ++i)
+            workers_.emplace_back([this, i] { worker_loop(i); });
+    }
+    ~ThreadPool() {
+        stop_.store(true);
+        for (auto& q : queues_) q.done();
+        for (auto& w : workers_)
+            if (w.joinable()) w.join();
+    }
+    ThreadPool(const ThreadPool&) = delete;
+    ThreadPool& operator=(const ThreadPool&) = delete;
+
+    template <typename F, typename... Args>
+    auto submit(F&& f, Args&&... args)
+        -> std::future<std::invoke_result_t<F, Args...>> {
+        using R = std::invoke_result_t<F, Args...>;
+        auto task = std::make_shared<std::packaged_task<R()>>(
+            std::bind(std::forward<F>(f), std::forward<Args>(args)...));
+        auto future = task->get_future();
+        auto idx = next_queue_++ % queues_.size();
+        queues_[idx].push([task] { (*task)(); });
+        return future;
+    }
+
+    void wait_all() {
+        while (true) {
+            bool all_empty = true;
+            for (auto& q : queues_) {
+                if (q.size() > 0) { all_empty = false; break; }
+            }
+            if (all_empty && pending_tasks_.load() == 0) break;
+            std::this_thread::yield();
+        }
+    }
+
+private:
+    void worker_loop(size_t idx) {
+        while (!stop_.load()) {
+            Task task;
+            if (queues_[idx].try_pop(task)) {
+                pending_tasks_.fetch_add(1);
+                task();
+                pending_tasks_.fetch_sub(1);
+            } else {
+                bool stolen = false;
+                for (size_t i = 0; i < queues_.size(); ++i) {
+                    if (i == idx) continue;
+                    if (queues_[i].try_pop(task)) {
+                        pending_tasks_.fetch_add(1);
+                        task();
+                        pending_tasks_.fetch_sub(1);
+                        stolen = true;
+                        break;
+                    }
+                }
+                if (!stolen) {
+                    queues_[idx].wait_and_pop(task);
+                    if (stop_.load()) break;
+                    pending_tasks_.fetch_add(1);
+                    task();
+                    pending_tasks_.fetch_sub(1);
+                }
+            }
+        }
+    }
+
+    std::vector<TaskQueue>   queues_;
+    std::vector<std::thread> workers_;
+    std::atomic<bool>        stop_{false};
+    std::atomic<size_t>      next_queue_{0};
+    std::atomic<int>         pending_tasks_{0};
+};
+
+// Parallel merge-sort using the thread pool + arena
+namespace detail {
+template <typename T>
+void merge(T* src, T* dst, size_t left, size_t mid, size_t right) {
+    size_t i = left, j = mid, k = left;
+    while (i < mid && j < right) {
+        if (src[i] <= src[j]) dst[k++] = src[i++];
+        else                  dst[k++] = src[j++];
+    }
+    while (i <= mid) dst[k++] = src[i++];
+    while (j < right) dst[k++] = src[j++];
+}
+
+template <typename T>
+void parallel_sort_impl(T* data, T* buf, size_t left, size_t right,
+                         int depth, ThreadPool& pool) {
+    if (right - left <= 1) return;
+    if (right - left < 1024 || depth > 4) {
+        std::sort(data + left, data + right);
+        return;
+    }
+    size_t mid = left + (right - left) / 2;
+    auto f1 = pool.submit([=, &pool] {
+        parallel_sort_impl(data, buf, left, mid, depth + 1, pool);
+    });
+    auto f2 = pool.submit([=, &pool] {
+        parallel_sort_impl(data, buf, mid, right, depth + 1, pool);
+    });
+    f1.get();
+    f2.get();
+    merge(data, buf, left, mid, right);
+    std::memcpy(data + left, buf + left, (right - left) * sizeof(T));
+}
+} // namespace detail
+
+template <typename T>
+void parallel_merge_sort(std::vector<T>& vec, ThreadPool& pool) {
+    if (vec.size() <= 1) return;
+    MemoryArena arena(vec.size() * sizeof(T) + 64);
+    T* buf = static_cast<T*>(arena.allocate(vec.size() * sizeof(T), alignof(T)));
+    detail::parallel_sort_impl(vec.data(), buf, 0, vec.size(), 0, pool);
+}
+
+// Concurrent hash map (open addressing, linear probing)
+template <typename K, typename V>
+class ConcurrentHashMap {
+public:
+    explicit ConcurrentHashMap(size_t capacity = 256)
+        : capacity_(capacity), size_(0), buckets_(new Bucket[capacity]) {
+        for (size_t i = 0; i < capacity_; ++i)
+            buckets_[i].occupied = false;
+    }
+    ~ConcurrentHashMap() { delete[] buckets_; }
+    ConcurrentHashMap(const ConcurrentHashMap&) = delete;
+    ConcurrentHashMap& operator=(const ConcurrentHashMap&) = delete;
+
+    bool insert(const K& key, const V& value) {
+        std::lock_guard<std::mutex> lock(mtx_);
+        if (size_ >= capacity_ * 3 / 4) rehash();
+        return insert_into(buckets_, capacity_, key, value);
+    }
+    bool find(const K& key, V& value) {
+        std::lock_guard<std::mutex> lock(mtx_);
+        size_t idx = std::hash<K>{}(key) % capacity_;
+        for (size_t i = 0; i < capacity_; ++i) {
+            size_t probe = (idx + i) % capacity_;
+            if (!buckets_[probe].occupied) return false;
+            if (buckets_[probe].key == key) {
+                value = buckets_[probe].value;
+                return true;
+            }
+        }
+        return false;
+    }
+    bool erase(const K& key) {
+        std::lock_guard<std::mutex> lock(mtx_);
+        size_t idx = std::hash<K>{}(key) % capacity_;
+        for (size_t i = 0; i < capacity_; ++i) {
+            size_t probe = (idx + i) % capacity_;
+            if (!buckets_[probe].occupied) return false;
+            if (buckets_[probe].key == key) {
+                buckets_[probe].occupied = false;
+                --size_;
+                return true;
+            }
+        }
+        return false;
+    }
+    size_t size() const { return size_; }
+
+private:
+    struct Bucket { K key; V value; bool occupied; };
+
+    bool insert_into(Bucket* table, size_t cap, const K& key, const V& value) {
+        size_t idx = std::hash<K>{}(key) % cap;
+        for (size_t i = 0; i < cap; ++i) {
+            size_t probe = (idx + i) % cap;
+            if (!table[probe].occupied) {
+                table[probe] = {key, value, true};
+                ++size_;
+                return true;
+            }
+            if (table[probe].key == key) {
+                table[probe].value = value;
+                return false;
+            }
+        }
+        return false;
+    }
+    void rehash() {
+        size_t new_cap = capacity_ * 2;
+        Bucket* new_buckets = new Bucket[new_cap];
+        for (size_t i = 0; i < new_cap; ++i)
+            new_buckets[i].occupied = false;
+        size_t old_size = size_;
+        size_ = 0;
+        for (size_t i = 0; i < capacity_; ++i) {
+            if (buckets_[i].occupied)
+                insert_into(new_buckets, new_cap, buckets_[i].key, buckets_[i].value);
+        }
+        delete[] buckets_;
+        buckets_ = new_buckets;
+        capacity_ = new_cap;
+    }
+
+    size_t     capacity_;
+    size_t     size_;
+    Bucket*    buckets_;
+    std::mutex mtx_;
+};
+
+// Driver
+int main() {
+    ThreadPool pool(4);
+
+    // merge sort demo
+    std::vector<int> data(50000);
+    for (size_t i = 0; i < data.size(); ++i)
+        data[i] = static_cast<int>(data.size() - i);
+    parallel_merge_sort(data, pool);
+    bool sorted = true;
+    for (size_t i = 1; i < data.size(); ++i) {
+        if (data[i] < data[i - 1]) { sorted = false; break; }
+    }
+    std::cout << "Sort: " << (sorted ? "OK" : "FAIL") << "\n";
+
+    // concurrent hash map demo
+    ConcurrentHashMap<std::string, int> map;
+    std::vector<std::future<void>> futures;
+    for (int t = 0; t < 8; ++t) {
+        futures.push_back(pool.submit([&map, t] {
+            for (int i = 0; i < 1000; ++i) {
+                std::string key = "key_" + std::to_string(t * 1000 + i);
+                map.insert(key, t * 1000 + i);
+            }
+        }));
+    }
+    for (auto& f : futures) f.get();
+    std::cout << "Map size: " << map.size() << "\n";
+
+    // arena demo
+    MemoryArena arena;
+    struct Record { int id; double value; char tag[32]; };
+    std::vector<Record*> records;
+    for (int i = 0; i < 10000; ++i) {
+        auto* r = arena.create<Record>();
+        r->id = i;
+        r->value = i * 3.14;
+        std::snprintf(r->tag, sizeof(r->tag), "record_%d", i);
+        records.push_back(r);
+    }
+    std::cout << "Arena allocated: " << arena.total_allocated() << " bytes\n";
+    arena.reset();
+    // verify records still work after reset
+    std::cout << "First record: " << records[0]->tag << "\n";
+
+    return 0;
+}
+```

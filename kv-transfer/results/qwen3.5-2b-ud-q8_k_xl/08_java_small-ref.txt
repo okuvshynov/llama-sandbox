@@ -1,0 +1,123 @@
+Here's a thinking process that leads to the explanation:
+
+1.  **Analyze the Request:**
+    *   **Input:** A Java class `LRUCache` implementing a Least Recently Used (LRU) Cache.
+    *   **Tasks:**
+        1.  Explain what the program does.
+        2.  Describe the data structure used.
+
+2.  **Deconstruct the Code:**
+
+    *   **Class:** `LRUCache<K, V>` - Generic class for caching.
+    *   **Fields:**
+        *   `capacity`: Integer limit.
+        *   `map`: `HashMap<K, Node<K, V>>` - The primary data structure for lookups.
+        *   `head`, `tail`: `Node<K, V>` - Endpoints of a doubly-linked list.
+    *   **Inner Class:** `Node<K, V>` - Represents a single entry in the cache.
+    *   **Constructor (`LRUCache`):**
+        *   Initializes `capacity`.
+        *   Initializes `map`.
+        *   Creates `head` and `tail` dummy nodes.
+        *   Links `head.next` to `tail` and `tail.prev` to `head` (creates a circular list).
+    *   **Method `get(K key)`:**
+        *   Finds the node for the key.
+        *   If not found, returns `null`.
+        *   Calls `remove(node)` (removes from list).
+        *   Calls `addToFront(node)` (moves to front).
+        *   *Logic Check:* This is the standard LRU pattern.
+    *   **Method `put(K key, V value)`:**
+        *   Checks if key exists. If so, updates value, removes old node, adds new node to front.
+        *   If key doesn't exist and list is full:
+            *   Removes tail.prev (Least Recently Used) from map and list.
+        *   Creates new Node, adds to map and front.
+    *   **Helper Methods:**
+        *   `remove`: Doubly linked list rebalancing.
+        *   `addToFront`: Updates pointers to maintain circular order.
+    *   **`printState`:** Traverses the circular list starting from `head.next` to `tail` and prints key-value pairs.
+
+3.  **Synthesize the "What does this program do?" section:**
+    *   It's a standard LRU Cache implementation.
+    *   It stores key-value pairs.
+    *   It enforces a capacity limit.
+    *   It evicts the Least Recently Used (LRU) item when capacity is exceeded.
+    *   It supports `put` (add/update) and `get` (read) operations.
+    *   *Note:* The provided code has a `main` method that demonstrates usage.
+
+4.  **Synthesize the "Data Structure" section:**
+    *   The core data structure is a **Doubly-Linked List (DLL)**.
+    *   The *cache* itself is a **HashMap** mapping keys to the DLL nodes.
+    *   *Why DLL?* For `get` (move to front) and `put` (add to front) and eviction (remove from back), the DLL is efficient.
+    *   *Why HashMap?* For O(1) key lookup.
+    *   *Why Circular?* `head` points to `tail`, `tail` points to `head`. This makes the list circular and allows easy access to the "end" for eviction.
+    *   *Wait, check the code logic carefully:*
+        *   In `remove(lru)` (when capacity exceeded): `tail.prev` is evicted.
+        *   In `addToFront`: `head.next` points to the new node.
+        *   This is a classic implementation of LRU using a circular doubly-linked list and a HashMap.
+
+5.  **Drafting the Explanation:**
+
+    *   *Introduction:* Identify the class purpose (LRU Cache).
+    *   *Functionality:* Explain `get` and `put`.
+    *   *Data Structure:* Detail the components (Map + DLL).
+    *   *Mechanism:* Explain how `get` moves to front and `put` adds to front. Explain eviction logic (removes from back).
+
+6.  **Refining the Explanation:**
+    *   Make sure to mention the specific methods used (`addToFront`, `remove`).
+    *   Clarify the circular nature of the list.
+    *   Clarify the `head` and `tail` nodes (dummy nodes).
+
+7.  **Review against Constraints:**
+    *   Did I explain what the program does? Yes.
+    *   Did I describe the data structure? Yes.
+
+8.  **Final Polish (Self-Correction/Edge Case Check):**
+    *   *Correction:* In the provided code, `head` and `tail` are initialized as dummy nodes. `head.next` is initialized to `tail` and `tail.prev` to `head`.
+    *   *Wait, check `addToFront`:* `node.next = head.next; node.prev = head; head.next.prev = node; head.next = node;`
+    *   *Wait, check `remove`:* `node.prev.next = node.next; node.next.prev = node.prev;`
+    *   *Is it correct?* Yes. `head` is a dummy node at the beginning of the list. `tail` is a dummy node at the end.
+    *   *Wait, check `printState`:* It prints from `head.next` to `tail`. This means the actual data starts at the first real node and goes to the last real node.
+    *   *Wait, `put` logic:* When `map.size() >= capacity`, it removes `tail.prev`. `tail.prev` is the *most recently used* node. Wait.
+    *   *Standard LRU Logic:*
+        *   Head = Newest.
+        *   Tail = Oldest.
+        *   Wait, usually:
+            *   `head.next` is the *newest* item.
+            *   `tail.prev` is the *oldest* item.
+        *   Let's trace `addToFront`. `node.next = head.next`. `head.next` is the current head. So `node` becomes the new Head.
+        *   So `head.next` is the *most recently used*.
+        *   `tail.prev` is the *least recently used*.
+        *   When capacity is full, `tail.prev` is evicted.
+        *   This is the standard behavior for a circular linked list where `head` is the front and `tail` is the back.
+        *   *Wait, check `addToFront` logic again:*
+            *   `node.next = head.next` (Connects new node to the current head's next).
+            *   `node.prev = head` (Connects new node to the head).
+            *   `head.next.prev = node` (Updates the previous pointer of the old head to the new node).
+            *   `head.next = node` (Updates the new head).
+            *   So `head.next` becomes the *newest*. `tail.prev` is the *oldest*.
+            *   When `size >= capacity`, `remove(lru)` removes `tail.prev` (the oldest).
+            *   Wait, if `tail.prev` is evicted, then `tail` becomes the new `tail`.
+            *   Let's re-read the standard LRU implementation logic.
+            *   Usually: `head` is newest, `tail` is oldest.
+            *   If I add to front, `head` moves forward.
+            *   If I evict, I remove the `tail.prev`.
+            *   So `head` is indeed the *most recently used*.
+            *   Okay, this matches the code provided.
+
+9.  **Final Output Structure:**
+    *   **Overview:** What is the program?
+    *   **Functionality:** `put`, `get`, `printState`, `main`.
+    *   **Data Structure:** Detailed breakdown (Linked List + HashMap).
+    *   **Key Mechanisms:** How it tracks LRU.
+
+10. **Writing the response.** (Proceeding to generate output based on these thoughts).
+
+    *   *Self-Correction on `printState`:* `curr = head.next`. The loop goes `curr != tail`. It prints `head.next` to `tail`.
+    *   *Self-Correction on `tail`:* `tail` is initialized as `new Node<>(null, null)`. `tail.prev` points to `head`. So `tail` is the node *after* the last item.
+    *   *Wait, `head.next` is tail initially.*
+    *   *Wait, `addToFront`:* `node.next = head.next`.
+    *   *Wait, `head.next` is `tail`.*
+    *   *So `head.next` is the node after `head`.*
+    *   *Wait, `head` is the first node. `head.next` is the second node.*
+    *   *Wait, `tail` is the last node.*
+    *   *Wait, `tail.prev` is the node before `tail`.*
+    *   *Wait, `tail

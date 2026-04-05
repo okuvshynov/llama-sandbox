@@ -1,0 +1,284 @@
+Review this Java codebase for bugs, performance issues, and design problems. Explain each issue you find and suggest fixes.
+
+```java
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.*;
+import java.util.concurrent.locks.*;
+import java.util.function.*;
+
+public class ConcurrentTTLCache<K, V> {
+    private static final int DEFAULT_CAPACITY = 1024;
+    private static final long DEFAULT_TTL_MS = 60_000;
+    private static final long CLEANUP_INTERVAL_MS = 5_000;
+
+    private final int capacity;
+    private final long defaultTtlMs;
+    private final Map<K, CacheEntry<K, V>> store;
+    private final LinkedList<K> accessOrder;
+    private final ReentrantLock lock = new ReentrantLock();
+    private final CacheMetrics metrics;
+    private final ScheduledExecutorService cleanupExecutor;
+    private final Function<K, V> loader;
+    private volatile boolean closed = false;
+
+    public ConcurrentTTLCache(int capacity, long defaultTtlMs, Function<K, V> loader) {
+        this.capacity = capacity;
+        this.defaultTtlMs = defaultTtlMs;
+        this.store = new HashMap<>(capacity);
+        this.accessOrder = new LinkedList<>();
+        this.metrics = new CacheMetrics();
+        this.loader = loader;
+        this.cleanupExecutor = Executors.newScheduledThreadPool(1);
+        cleanupExecutor.scheduleAtFixedRate(this::evictExpired,
+            CLEANUP_INTERVAL_MS, CLEANUP_INTERVAL_MS, TimeUnit.MILLISECONDS);
+    }
+
+    public ConcurrentTTLCache(Function<K, V> loader) {
+        this(DEFAULT_CAPACITY, DEFAULT_TTL_MS, loader);
+    }
+
+    public V get(K key) {
+        if (closed) throw new IllegalStateException("Cache is closed");
+        lock.lock();
+        try {
+            CacheEntry<K, V> entry = store.get(key);
+            if (entry != null && !entry.isExpired()) {
+                metrics.recordHit();
+                touchEntry(key);
+                return entry.getValue();
+            }
+        } finally {
+            lock.unlock();
+        }
+        metrics.recordMiss();
+        V value = loader.apply(key);
+        if (value != null) {
+            put(key, value);
+        }
+        return value;
+    }
+
+    public void put(K key, V value) {
+        put(key, value, defaultTtlMs);
+    }
+
+    public void put(K key, V value, long ttlMs) {
+        if (closed) throw new IllegalStateException("Cache is closed");
+        lock.lock();
+        try {
+            if (store.containsKey(key)) {
+                store.put(key, new CacheEntry<>(key, value, ttlMs));
+                touchEntry(key);
+                return;
+            }
+            while (store.size() >= capacity) {
+                evictOne();
+            }
+            store.put(key, new CacheEntry<>(key, value, ttlMs));
+            accessOrder.addFirst(key);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    public boolean remove(K key) {
+        lock.lock();
+        try {
+            CacheEntry<K, V> removed = store.remove(key);
+            if (removed != null) {
+                accessOrder.remove(key);
+                metrics.recordEviction();
+                return true;
+            }
+            return false;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    public Map<K, V> snapshot() {
+        Map<K, V> result = new HashMap<>();
+        for (Map.Entry<K, CacheEntry<K, V>> e : store.entrySet()) {
+            if (!e.getValue().isExpired()) {
+                result.put(e.getKey(), e.getValue().getValue());
+            }
+        }
+        return result;
+    }
+
+    public int size() {
+        return store.size();
+    }
+
+    public boolean containsKey(K key) {
+        CacheEntry<K, V> entry = store.get(key);
+        return entry != null && !entry.isExpired();
+    }
+
+    public V computeIfAbsent(K key, Function<K, V> mappingFunction) {
+        V existing = get(key);
+        if (existing != null) {
+            return existing;
+        }
+        V computed = mappingFunction.apply(key);
+        if (computed != null) {
+            put(key, computed);
+        }
+        return computed;
+    }
+
+    private void touchEntry(K key) {
+        accessOrder.remove(key);
+        accessOrder.addFirst(key);
+    }
+
+    private void evictOne() {
+        if (accessOrder.isEmpty()) return;
+        K victim = accessOrder.removeLast();
+        store.remove(victim);
+        metrics.recordEviction();
+    }
+
+    private void evictExpired() {
+        lock.lock();
+        try {
+            Iterator<Map.Entry<K, CacheEntry<K, V>>> it = store.entrySet().iterator();
+            while (it.hasNext()) {
+                Map.Entry<K, CacheEntry<K, V>> entry = it.next();
+                if (entry.getValue().isExpired()) {
+                    it.remove();
+                    accessOrder.remove(entry.getKey());
+                    metrics.recordEviction();
+                }
+            }
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    public CacheMetrics getMetrics() { return metrics; }
+
+    public void clear() {
+        lock.lock();
+        try {
+            store.clear();
+            accessOrder.clear();
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    public void close() {
+        closed = true;
+        cleanupExecutor.shutdown();
+        clear();
+    }
+
+    public void warmUp(List<K> keys) {
+        ExecutorService pool = Executors.newFixedThreadPool(
+            Math.min(keys.size(), Runtime.getRuntime().availableProcessors()));
+        List<Future<?>> futures = new ArrayList<>();
+        for (K key : keys) {
+            futures.add(pool.submit(() -> {
+                try {
+                    get(key);
+                } catch (Exception e) {
+                    System.err.println("Failed to warm key: " + key);
+                }
+            }));
+        }
+        for (Future<?> f : futures) {
+            try {
+                f.get(5, TimeUnit.SECONDS);
+            } catch (TimeoutException e) {
+                f.cancel(true);
+            } catch (Exception e) {
+                // ignore
+            }
+        }
+    }
+
+    // ----- Cache Entry -----
+    static class CacheEntry<K, V> {
+        private final K key;
+        private V value;
+        private final long createdAt;
+        private final long ttlMs;
+        private long lastAccessedAt;
+
+        CacheEntry(K key, V value, long ttlMs) {
+            this.key = key; this.value = value; this.ttlMs = ttlMs;
+            this.createdAt = System.currentTimeMillis(); this.lastAccessedAt = createdAt;
+        }
+
+        boolean isExpired() {
+            return System.currentTimeMillis() - createdAt > ttlMs;
+        }
+
+        V getValue() {
+            lastAccessedAt = System.currentTimeMillis();
+            return value;
+        }
+
+        K getKey() { return key; }
+        long getAge() { return System.currentTimeMillis() - createdAt; }
+    }
+
+    // ----- Metrics -----
+    static class CacheMetrics {
+        private AtomicLong hits = new AtomicLong(0);
+        private AtomicLong misses = new AtomicLong(0);
+        private AtomicLong evictions = new AtomicLong(0);
+        private List<Long> responseTimes = new ArrayList<>();
+
+        void recordHit() { hits.incrementAndGet(); }
+        void recordMiss() { misses.incrementAndGet(); }
+        void recordEviction() { evictions.incrementAndGet(); }
+
+        void recordResponseTime(long millis) {
+            responseTimes.add(millis);
+        }
+
+        double getHitRate() {
+            long total = hits.get() + misses.get();
+            if (total == 0) return 0.0;
+            return (double) hits.get() / total;
+        }
+
+        double getAverageResponseTime() {
+            if (responseTimes.isEmpty()) return 0.0;
+            long sum = 0;
+            for (Long t : responseTimes) { sum += t; }
+            return (double) sum / responseTimes.size();
+        }
+
+        void reset() { hits.set(0); misses.set(0); evictions.set(0); responseTimes.clear(); }
+
+        @Override
+        public String toString() {
+            return "CacheMetrics{hits=" + hits.get() + ", misses=" + misses.get() +
+                   ", evictions=" + evictions.get() +
+                   ", hitRate=" + String.format("%.2f", getHitRate()) + "}";
+        }
+    }
+
+    public static void main(String[] args) throws Exception {
+        ConcurrentTTLCache<String, String> cache = new ConcurrentTTLCache<>(10, 3000,
+            key -> { try { Thread.sleep(100); } catch (InterruptedException e) {} return "v-" + key; });
+        cache.warmUp(Arrays.asList("a", "b", "c", "d", "e"));
+        ExecutorService readers = Executors.newFixedThreadPool(4);
+        for (int i = 0; i < 20; i++) {
+            final String key = "key-" + (i % 8);
+            readers.submit(() -> cache.get(key));
+        }
+        readers.shutdown();
+        readers.awaitTermination(10, TimeUnit.SECONDS);
+        System.out.println("Metrics: " + cache.getMetrics());
+        System.out.println("Snapshot: " + cache.snapshot().size());
+        Thread.sleep(4000);
+        System.out.println("After expiry, size=" + cache.size());
+        cache.close();
+    }
+}
+```

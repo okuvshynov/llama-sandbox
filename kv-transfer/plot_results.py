@@ -25,7 +25,7 @@ QUANT_COLORS = [
 ]
 
 MEDIUM_PROMPT_THRESHOLD = 1500
-XLARGE_PROMPT_THRESHOLD = 5000
+LARGE_PROMPT_THRESHOLD = 5000
 
 THEMES = {
     'light': {
@@ -88,7 +88,7 @@ def read_summary(path):
 
 
 def prompt_marker(n_prompt):
-    if n_prompt >= XLARGE_PROMPT_THRESHOLD:
+    if n_prompt >= LARGE_PROMPT_THRESHOLD:
         return 'D'
     elif n_prompt >= MEDIUM_PROMPT_THRESHOLD:
         return 's'
@@ -183,11 +183,11 @@ def plot_combined(rows, output_path, title, theme='light',
         Patch(facecolor=COLORS_TARGET, alpha=0.5, label='Target (no transfer)'),
         Patch(facecolor=COLORS_HANDOFF, alpha=0.5, label='Handoff (KV transfer)'),
         Line2D([0], [0], marker='o', color=t['bg'], markerfacecolor=t['text_light'],
-               markersize=7, label='short prompt'),
+               markersize=7, label='small prompt'),
         Line2D([0], [0], marker='s', color=t['bg'], markerfacecolor=t['text_light'],
                markersize=7, label='medium prompt'),
         Line2D([0], [0], marker='D', color=t['bg'], markerfacecolor=t['text_light'],
-               markersize=7, label='xlarge prompt'),
+               markersize=7, label='large prompt'),
     ]
     ax.legend(handles=handles, loc='lower right', fontsize=8,
               facecolor=t['bg'], edgecolor=t['grid'], labelcolor=t['text'])
