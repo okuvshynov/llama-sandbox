@@ -166,6 +166,7 @@ int cmd_handoff(int argc, char ** argv) {
             (double)state_size / (1024 * 1024), params.state_path.c_str());
 
     // free ref model
+    llama_perf_context_print(ref_ctx);
     llama_batch_free(batch);
     llama_free(ref_ctx);
     llama_model_free(ref_model);
@@ -217,34 +218,35 @@ int cmd_handoff(int argc, char ** argv) {
 
     std::vector<double> log_p_ref, log_p_tgt;
 
-    // replay generation tokens one by one, computing KL inline
-    batch = llama_batch_init(1, 0, 1);
+    // replay generation tokens in batches, computing KL inline
+    const int32_t tgt_n_batch = llama_n_batch(tgt_ctx);
+    batch = llama_batch_init(tgt_n_batch, 0, 1);
 
-    for (int32_t i = 0; i < n_gen; i++) {
-        int32_t pos = n_prompt + i;
-        llama_token tok = rp.tokens[pos];
-
+    int32_t n_gen_processed = 0;
+    while (n_gen_processed < n_gen) {
         common_batch_clear(batch);
-        common_batch_add(batch, tok, pos, {0}, true);
-
+        int32_t batch_end = std::min(n_gen, n_gen_processed + tgt_n_batch);
+        for (int32_t i = n_gen_processed; i < batch_end; i++) {
+            int32_t pos = n_prompt + i;
+            common_batch_add(batch, rp.tokens[pos], pos, {0}, true);
+        }
         if (llama_decode(tgt_ctx, batch) != 0) {
-            fprintf(stderr, "handoff: target decode failed at generation step %d\n", i);
+            fprintf(stderr, "handoff: target decode failed at generation step %d\n", n_gen_processed);
             break;
         }
+        // compute KL for each position in this batch
+        for (int32_t i = n_gen_processed; i < batch_end; i++) {
+            const float * tgt_logits = llama_get_logits_ith(tgt_ctx, i - n_gen_processed);
+            const float * ref_logits = rp.logits.data() + (size_t)i * n_vocab;
 
-        const float * tgt_logits = llama_get_logits_ith(tgt_ctx, 0);
-        const float * ref_logits = rp.logits.data() + (size_t)i * n_vocab;
+            log_softmax_temp(ref_logits, n_vocab, temp, log_p_ref);
+            log_softmax_temp(tgt_logits, n_vocab, temp, log_p_tgt);
 
-        log_softmax_temp(ref_logits, n_vocab, temp, log_p_ref);
-        log_softmax_temp(tgt_logits, n_vocab, temp, log_p_tgt);
-
-        kl_per_token[i] = (float)kl_divergence(log_p_ref, log_p_tgt, n_vocab);
-        top1_per_token[i] = (argmax(ref_logits, n_vocab) == argmax(tgt_logits, n_vocab)) ? 1 : 0;
-
-        if ((i + 1) % 100 == 0 || i == n_gen - 1) {
-            fprintf(stderr, "handoff: generation %d / %d\r", i + 1, n_gen);
-            fflush(stderr);
+            kl_per_token[i] = (float)kl_divergence(log_p_ref, log_p_tgt, n_vocab);
+            top1_per_token[i] = (argmax(ref_logits, n_vocab) == argmax(tgt_logits, n_vocab)) ? 1 : 0;
         }
+        n_gen_processed = batch_end;
+        fprintf(stderr, "handoff: processed %d / %d gen tokens\r", n_gen_processed, n_gen);
     }
     fprintf(stderr, "\n");
 
@@ -268,6 +270,7 @@ int cmd_handoff(int argc, char ** argv) {
     fprintf(stderr, "handoff: wrote %s (%d gen tokens, per-token stats)\n",
             params.output_path.c_str(), n_gen);
 
+    llama_perf_context_print(tgt_ctx);
     llama_batch_free(batch);
     llama_free(tgt_ctx);
     llama_model_free(tgt_model);

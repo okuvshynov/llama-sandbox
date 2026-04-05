@@ -14,9 +14,12 @@ set -euo pipefail
 #   TOP_P       — top-p sampling (default: 0.95)
 #   NGL         — GPU layers (default: 99)
 #   THREADS     — inference threads (default: not set, llama.cpp default)
+#   PROMPT_FILTER — glob pattern to filter prompts (default: *, all prompts)
+#                   e.g. PROMPT_FILTER="01_*" for a single prompt
 #
 # Usage: source config, then call this script. Or use a wrapper like:
 #   ./run-qwen3.5-2b.sh
+#   PROMPT_FILTER="01_*" ./run-qwen3.5-35b-a3b.sh   # single prompt
 # ==============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -31,6 +34,7 @@ TOP_K="${TOP_K:-40}"
 TOP_P="${TOP_P:-0.95}"
 NGL="${NGL:-99}"
 THREADS="${THREADS:-0}"
+PROMPT_FILTER="${PROMPT_FILTER:-*}"
 
 THREAD_ARGS=()
 if [ "$THREADS" -gt 0 ] 2>/dev/null; then
@@ -98,7 +102,7 @@ print(total)
 # --- Run ref for each prompt -------------------------------------------------
 
 echo "=== Reference: ${REF_TAG} ==="
-for prompt_file in "$PROMPTS"/*.txt; do
+for prompt_file in "$PROMPTS"/${PROMPT_FILTER}.txt; do
     name=$(basename "$prompt_file" .txt)
     ref_bin="${REF_DIR}/${name}-ref.bin"
 
@@ -131,7 +135,7 @@ for tgt_entry in "${TARGETS[@]}"; do
 
     echo "=== Target: ${tgt_tag} ==="
 
-    for prompt_file in "$PROMPTS"/*.txt; do
+    for prompt_file in "$PROMPTS"/${PROMPT_FILTER}.txt; do
         name=$(basename "$prompt_file" .txt)
         ref_bin="${REF_DIR}/${name}-ref.bin"
         tgt_bin="${tgt_dir}/${name}-target.bin"
@@ -190,7 +194,7 @@ for tgt_entry in "${TARGETS[@]}"; do
     TGT_BYTES=$(model_size_bytes "$tgt_model")
     TGT_MB=$(echo "$TGT_BYTES" | awk '{printf "%.0f", $1/1048576}')
 
-    for prompt_file in "$PROMPTS"/*.txt; do
+    for prompt_file in "$PROMPTS"/${PROMPT_FILTER}.txt; do
         name=$(basename "$prompt_file" .txt)
         tgt_bin="${tgt_dir}/${name}-target.bin"
         hoff_bin="${tgt_dir}/${name}-handoff.bin"
@@ -242,7 +246,7 @@ for tgt_entry in "${TARGETS[@]}"; do
     tgt_tag="${tgt_entry%%:*}"
     tgt_dir="${REF_DIR}/${tgt_tag}"
 
-    for prompt_file in "$PROMPTS"/*.txt; do
+    for prompt_file in "$PROMPTS"/${PROMPT_FILTER}.txt; do
         name=$(basename "$prompt_file" .txt)
         tgt_bin="${tgt_dir}/${name}-target.bin"
         hoff_bin="${tgt_dir}/${name}-handoff.bin"
@@ -267,3 +271,80 @@ for tgt_entry in "${TARGETS[@]}"; do
     done
 done
 echo "Decay CSV written to: $DECAY_CSV"
+
+# --- Timing summary from logs ------------------------------------------------
+
+echo ""
+echo "=== Timing summary (from llama_perf logs) ==="
+python3 -c "
+import os, re, sys
+
+log_dir = sys.argv[1]
+if not os.path.isdir(log_dir):
+    print('  No logs directory found'); sys.exit(0)
+
+pat_load  = re.compile(r'load time\s*=\s*([\d.]+)\s*ms')
+pat_total = re.compile(r'total time\s*=\s*([\d.]+)\s*ms\s*/\s*(\d+)\s*tokens')
+
+totals = {}  # phase -> { load_ms, total_ms, count }
+
+for fn in sorted(os.listdir(log_dir)):
+    if not fn.endswith('.log'):
+        continue
+    path = os.path.join(log_dir, fn)
+    text = open(path).read()
+
+    loads  = pat_load.findall(text)
+    totals_m = pat_total.findall(text)
+    if not loads or not totals_m:
+        continue
+
+    if '-ref.log' in fn:
+        phase = 'ref'
+        load_ms  = float(loads[0])
+        total_ms = float(totals_m[0][0])
+        n_tok    = int(totals_m[0][1])
+    elif '-target.log' in fn:
+        phase = 'target'
+        load_ms  = float(loads[0])
+        total_ms = float(totals_m[0][0])
+        n_tok    = int(totals_m[0][1])
+    elif '-handoff.log' in fn:
+        # two perf prints: ref context, then target context
+        if len(loads) >= 2 and len(totals_m) >= 2:
+            for sub_phase, idx in [('handoff-ref', 0), ('handoff-tgt', 1)]:
+                d = totals.setdefault(sub_phase, {'load_ms': 0, 'total_ms': 0, 'count': 0})
+                d['load_ms']  += float(loads[idx])
+                d['total_ms'] += float(totals_m[idx][0])
+                d['count']    += 1
+        continue
+    else:
+        continue
+
+    d = totals.setdefault(phase, {'load_ms': 0, 'total_ms': 0, 'count': 0})
+    d['load_ms']  += load_ms
+    d['total_ms'] += total_ms
+    d['count']    += 1
+
+if not totals:
+    print('  No perf data found in logs'); sys.exit(0)
+
+print(f'  {\"phase\":<15s} {\"runs\":>5s} {\"avg load\":>10s} {\"avg total\":>10s} {\"load %\":>8s} {\"sum total\":>10s}')
+print(f'  {\"-\"*15:<15s} {\"-----\":>5s} {\"----------\":>10s} {\"----------\":>10s} {\"--------\":>8s} {\"----------\":>10s}')
+for phase in ['ref', 'target', 'handoff-ref', 'handoff-tgt']:
+    d = totals.get(phase)
+    if not d or d['count'] == 0:
+        continue
+    n = d['count']
+    avg_load  = d['load_ms'] / n
+    avg_total = d['total_ms'] / n
+    pct = (d['load_ms'] / d['total_ms'] * 100) if d['total_ms'] > 0 else 0
+    sum_total = d['total_ms']
+    print(f'  {phase:<15s} {n:>5d} {avg_load:>9.0f}s {avg_total:>9.0f}s {pct:>7.1f}% {sum_total:>9.0f}s'.replace('s ', 'ms ').rstrip('s') + 'ms')
+
+grand_total = sum(d['total_ms'] for d in totals.values())
+grand_load  = sum(d['load_ms'] for d in totals.values())
+print(f'  {\"\":<15s} {\"\":>5s} {\"\":>10s} {\"\":>10s} {\"\":>8s} {\"----------\":>10s}')
+print(f'  {\"TOTAL\":<15s} {\"\":>5s} {\"\":>10s} {\"\":>10s} {grand_load/grand_total*100 if grand_total else 0:>7.1f}% {grand_total:>9.0f}ms')
+print(f'  Model loading: {grand_load/1000:.0f}s of {grand_total/1000:.0f}s total ({grand_load/grand_total*100 if grand_total else 0:.0f}% overhead)')
+" "$LOG_DIR"

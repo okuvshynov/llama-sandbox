@@ -174,6 +174,7 @@ int cmd_target(int argc, char ** argv) {
     fprintf(stderr, "target: wrote %s (%d gen tokens, per-token stats)\n",
             params.output_path.c_str(), n_gen);
 
+    llama_perf_context_print(ctx);
     llama_batch_free(batch);
     llama_free(ctx);
     llama_model_free(model);

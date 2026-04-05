@@ -242,6 +242,7 @@ int cmd_ref(int argc, char ** argv) {
         fprintf(stderr, "ref: wrote %s\n", txt_path.c_str());
     }
 
+    llama_perf_context_print(ctx);
     llama_batch_free(batch);
     llama_sampler_free(smpl);
     llama_free(ctx);
