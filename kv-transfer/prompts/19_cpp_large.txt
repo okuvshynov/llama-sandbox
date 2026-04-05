@@ -1,0 +1,1099 @@
+Review this C++ codebase for bugs, performance issues, memory safety problems, and design flaws. Explain each issue you find and suggest fixes.
+
+```cpp
+#include <atomic>
+#include <cassert>
+#include <cstddef>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
+#include <functional>
+#include <iostream>
+#include <memory>
+#include <mutex>
+#include <new>
+#include <optional>
+#include <random>
+#include <thread>
+#include <vector>
+#include <chrono>
+#include <algorithm>
+#include <array>
+#include <stdexcept>
+
+// =============================================================================
+// Slab Allocator / Memory Pool
+// =============================================================================
+
+static constexpr size_t CACHE_LINE_SIZE = 64;
+
+struct alignas(CACHE_LINE_SIZE) SlabBlock {
+    SlabBlock* next;
+    char padding[CACHE_LINE_SIZE - sizeof(SlabBlock*)];
+};
+
+class SlabAllocator {
+public:
+    SlabAllocator(size_t object_size, size_t initial_capacity = 1024)
+        : object_size_(object_size < sizeof(SlabBlock) ? sizeof(SlabBlock) : object_size),
+          capacity_(initial_capacity),
+          allocated_count_(0),
+          freed_count_(0) {
+        grow(initial_capacity);
+    }
+
+    ~SlabAllocator() {
+        for (auto* chunk : chunks_) {
+            std::free(chunk);
+        }
+    }
+
+    SlabAllocator(const SlabAllocator&) = delete;
+    SlabAllocator& operator=(const SlabAllocator&) = delete;
+
+    void* allocate() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!free_list_) {
+            grow(capacity_);
+            capacity_ *= 2;
+        }
+        SlabBlock* block = free_list_;
+        free_list_ = block->next;
+        allocated_count_++;
+        return static_cast<void*>(block);
+    }
+
+    void deallocate(void* ptr) {
+        if (!ptr) return;
+        std::lock_guard<std::mutex> lock(mutex_);
+        SlabBlock* block = static_cast<SlabBlock*>(ptr);
+        block->next = free_list_;
+        free_list_ = block;
+        freed_count_++;
+    }
+
+    size_t allocated() const { return allocated_count_; }
+    size_t freed() const { return freed_count_; }
+    size_t in_use() const { return allocated_count_ - freed_count_; }
+
+private:
+    void grow(size_t count) {
+        size_t alloc_size = object_size_ * count;
+        char* chunk = static_cast<char*>(std::aligned_alloc(CACHE_LINE_SIZE, alloc_size));
+        if (!chunk) {
+            throw std::bad_alloc();
+        }
+        chunks_.push_back(chunk);
+
+        for (size_t i = 0; i < count; ++i) {
+            SlabBlock* block = reinterpret_cast<SlabBlock*>(chunk + i * object_size_);
+            block->next = free_list_;
+            free_list_ = block;
+        }
+    }
+
+    size_t object_size_;
+    size_t capacity_;
+    size_t allocated_count_;
+    size_t freed_count_;
+    SlabBlock* free_list_ = nullptr;
+    std::vector<char*> chunks_;
+    std::mutex mutex_;
+};
+
+// =============================================================================
+// Hazard Pointer Manager
+// =============================================================================
+
+static constexpr int MAX_THREADS = 128;
+static constexpr int HAZARD_POINTERS_PER_THREAD = 2;
+static constexpr int SCAN_THRESHOLD = 64;
+
+struct HazardPointerRecord {
+    std::atomic<std::thread::id> owner;
+    std::atomic<void*> pointers[HAZARD_POINTERS_PER_THREAD];
+    HazardPointerRecord* next;
+};
+
+class HazardPointerDomain {
+public:
+    static HazardPointerDomain& instance() {
+        static HazardPointerDomain domain;
+        return domain;
+    }
+
+    HazardPointerRecord* acquire_for_current_thread() {
+        auto tid = std::this_thread::get_id();
+
+        // Try to reuse existing record
+        for (HazardPointerRecord* p = head_.load(std::memory_order_relaxed); p; p = p->next) {
+            std::thread::id empty{};
+            if (p->owner.load(std::memory_order_relaxed) == empty) {
+                if (p->owner.compare_exchange_strong(empty, tid,
+                        std::memory_order_relaxed, std::memory_order_relaxed)) {
+                    return p;
+                }
+            }
+        }
+
+        // Allocate new record
+        auto* rec = new HazardPointerRecord();
+        rec->owner.store(tid, std::memory_order_relaxed);
+        for (int i = 0; i < HAZARD_POINTERS_PER_THREAD; ++i) {
+            rec->pointers[i].store(nullptr, std::memory_order_relaxed);
+        }
+
+        // Push to list (lock-free)
+        HazardPointerRecord* old_head = head_.load(std::memory_order_relaxed);
+        do {
+            rec->next = old_head;
+        } while (!head_.compare_exchange_weak(old_head, rec,
+                    std::memory_order_release, std::memory_order_relaxed));
+
+        return rec;
+    }
+
+    void release_record(HazardPointerRecord* rec) {
+        for (int i = 0; i < HAZARD_POINTERS_PER_THREAD; ++i) {
+            rec->pointers[i].store(nullptr, std::memory_order_relaxed);
+        }
+        rec->owner.store(std::thread::id{}, std::memory_order_relaxed);
+    }
+
+    void retire(void* ptr, std::function<void(void*)> deleter) {
+        thread_local std::vector<std::pair<void*, std::function<void(void*)>>> retired;
+        retired.emplace_back(ptr, std::move(deleter));
+
+        if (retired.size() >= SCAN_THRESHOLD) {
+            scan(retired);
+        }
+    }
+
+    void scan(std::vector<std::pair<void*, std::function<void(void*)>>>& retired) {
+        // Collect all hazard pointers
+        std::vector<void*> hazard_ptrs;
+        for (HazardPointerRecord* p = head_.load(std::memory_order_relaxed); p; p = p->next) {
+            for (int i = 0; i < HAZARD_POINTERS_PER_THREAD; ++i) {
+                void* hp = p->pointers[i].load(std::memory_order_relaxed);
+                if (hp) {
+                    hazard_ptrs.push_back(hp);
+                }
+            }
+        }
+
+        std::sort(hazard_ptrs.begin(), hazard_ptrs.end());
+
+        // Partition retired list
+        auto it = retired.begin();
+        while (it != retired.end()) {
+            if (!std::binary_search(hazard_ptrs.begin(), hazard_ptrs.end(), it->first)) {
+                it->second(it->first);
+                // Remove from list by swapping with back
+                if (it != retired.end() - 1) {
+                    *it = std::move(retired.back());
+                }
+                retired.pop_back();
+            } else {
+                ++it;
+            }
+        }
+    }
+
+    ~HazardPointerDomain() {
+        HazardPointerRecord* p = head_.load();
+        while (p) {
+            HazardPointerRecord* next = p->next;
+            delete p;
+            p = next;
+        }
+    }
+
+private:
+    HazardPointerDomain() = default;
+    std::atomic<HazardPointerRecord*> head_{nullptr};
+};
+
+class HazardPointerGuard {
+public:
+    HazardPointerGuard() : record_(nullptr), index_(-1) {}
+
+    explicit HazardPointerGuard(HazardPointerRecord* rec, int idx)
+        : record_(rec), index_(idx) {}
+
+    ~HazardPointerGuard() {
+        if (record_ && index_ >= 0) {
+            record_->pointers[index_].store(nullptr, std::memory_order_release);
+        }
+    }
+
+    HazardPointerGuard(HazardPointerGuard&& other) noexcept
+        : record_(other.record_), index_(other.index_) {
+        other.record_ = nullptr;
+        other.index_ = -1;
+    }
+
+    HazardPointerGuard& operator=(HazardPointerGuard&& other) noexcept {
+        record_ = other.record_;
+        index_ = other.index_;
+        other.record_ = nullptr;
+        other.index_ = -1;
+        return *this;
+    }
+
+    template <typename T>
+    T* protect(std::atomic<T*>& source) {
+        T* ptr;
+        do {
+            ptr = source.load(std::memory_order_relaxed);
+            record_->pointers[index_].store(ptr, std::memory_order_relaxed);
+        } while (ptr != source.load(std::memory_order_relaxed));
+        return ptr;
+    }
+
+    void reset() {
+        if (record_ && index_ >= 0) {
+            record_->pointers[index_].store(nullptr, std::memory_order_relaxed);
+        }
+    }
+
+private:
+    HazardPointerRecord* record_;
+    int index_;
+};
+
+// =============================================================================
+// Lock-Free Hash Map with Linear Probing
+// =============================================================================
+
+template <typename K, typename V>
+class LockFreeHashMap {
+public:
+    static constexpr uint64_t EMPTY_KEY = 0;
+    static constexpr uint64_t TOMBSTONE_KEY = ~uint64_t(0);
+
+    struct Entry {
+        std::atomic<uint64_t> key;
+        std::atomic<V*> value;
+        uint32_t hash_cache;
+        bool occupied;
+    };
+
+    explicit LockFreeHashMap(size_t capacity = 1024)
+        : capacity_(capacity),
+          size_(0),
+          tombstone_count_(0),
+          pool_(sizeof(V), capacity * 2) {
+        // Ensure capacity is power of two
+        capacity_ = next_power_of_two(capacity);
+        table_ = new Entry[capacity_];
+        for (size_t i = 0; i < capacity_; ++i) {
+            table_[i].key.store(EMPTY_KEY, std::memory_order_relaxed);
+            table_[i].value.store(nullptr, std::memory_order_relaxed);
+            table_[i].hash_cache = 0;
+            table_[i].occupied = false;
+        }
+    }
+
+    ~LockFreeHashMap() {
+        for (size_t i = 0; i < capacity_; ++i) {
+            V* val = table_[i].value.load(std::memory_order_relaxed);
+            if (val) {
+                val->~V();
+                pool_.deallocate(val);
+            }
+        }
+        delete[] table_;
+    }
+
+    LockFreeHashMap(const LockFreeHashMap&) = delete;
+    LockFreeHashMap& operator=(const LockFreeHashMap&) = delete;
+
+    bool insert(const K& key, const V& value) {
+        uint64_t k = hash_key(key);
+        if (k == EMPTY_KEY || k == TOMBSTONE_KEY) {
+            k = k ^ 0x1;  // Avoid sentinel values
+        }
+
+        if (load_factor() > 0.75) {
+            resize();
+        }
+
+        uint32_t h = hash(k);
+        size_t idx = h & (capacity_ - 1);
+
+        for (size_t i = 0; i < capacity_; ++i) {
+            size_t probe = (idx + i) & (capacity_ - 1);
+            uint64_t existing = table_[probe].key.load(std::memory_order_relaxed);
+
+            if (existing == EMPTY_KEY || existing == TOMBSTONE_KEY) {
+                // Try to claim this slot
+                uint64_t expected = existing;
+                if (table_[probe].key.compare_exchange_strong(expected, k,
+                        std::memory_order_relaxed, std::memory_order_relaxed)) {
+                    // Allocate value from pool
+                    void* mem = pool_.allocate();
+                    V* new_val = new(mem) V(value);
+
+                    table_[probe].value.store(new_val, std::memory_order_relaxed);
+                    table_[probe].hash_cache = h;
+                    table_[probe].occupied = true;
+
+                    if (existing == TOMBSTONE_KEY) {
+                        tombstone_count_.fetch_sub(1, std::memory_order_relaxed);
+                    }
+                    size_.fetch_add(1, std::memory_order_relaxed);
+                    return true;
+                }
+                // CAS failed, another thread claimed the slot — retry this probe
+                existing = table_[probe].key.load(std::memory_order_relaxed);
+            }
+
+            if (existing == k) {
+                // Key already exists — update value
+                void* mem = pool_.allocate();
+                V* new_val = new(mem) V(value);
+                V* old_val = table_[probe].value.exchange(new_val,
+                    std::memory_order_relaxed);
+                if (old_val) {
+                    // Retire old value through hazard pointer scheme
+                    HazardPointerDomain::instance().retire(old_val,
+                        [this](void* p) {
+                            static_cast<V*>(p)->~V();
+                            pool_.deallocate(p);
+                        });
+                }
+                return true;
+            }
+        }
+        return false;  // Table full
+    }
+
+    std::optional<V> find(const K& key) {
+        uint64_t k = hash_key(key);
+        if (k == EMPTY_KEY || k == TOMBSTONE_KEY) {
+            k = k ^ 0x1;
+        }
+
+        thread_local HazardPointerRecord* hp_rec =
+            HazardPointerDomain::instance().acquire_for_current_thread();
+
+        uint32_t h = hash(k);
+        size_t idx = h & (capacity_ - 1);
+
+        for (size_t i = 0; i < capacity_; ++i) {
+            size_t probe = (idx + i) & (capacity_ - 1);
+            uint64_t existing = table_[probe].key.load(std::memory_order_acquire);
+
+            if (existing == EMPTY_KEY) {
+                return std::nullopt;
+            }
+
+            if (existing == k) {
+                // Protect the value with hazard pointer
+                HazardPointerGuard guard(hp_rec, 0);
+                V* val = guard.protect(table_[probe].value);
+                if (val) {
+                    V result = *val;
+                    return result;
+                }
+                return std::nullopt;
+            }
+            // Skip tombstones and keep probing
+        }
+        return std::nullopt;
+    }
+
+    bool erase(const K& key) {
+        uint64_t k = hash_key(key);
+        if (k == EMPTY_KEY || k == TOMBSTONE_KEY) {
+            k = k ^ 0x1;
+        }
+
+        uint32_t h = hash(k);
+        size_t idx = h & (capacity_ - 1);
+
+        for (size_t i = 0; i < capacity_; ++i) {
+            size_t probe = (idx + i) & (capacity_ - 1);
+            uint64_t existing = table_[probe].key.load(std::memory_order_relaxed);
+
+            if (existing == EMPTY_KEY) {
+                return false;
+            }
+
+            if (existing == k) {
+                // Mark as tombstone
+                if (table_[probe].key.compare_exchange_strong(existing, TOMBSTONE_KEY,
+                        std::memory_order_relaxed, std::memory_order_relaxed)) {
+                    V* old_val = table_[probe].value.exchange(nullptr,
+                        std::memory_order_relaxed);
+                    if (old_val) {
+                        HazardPointerDomain::instance().retire(old_val,
+                            [this](void* p) {
+                                static_cast<V*>(p)->~V();
+                                pool_.deallocate(p);
+                            });
+                    }
+                    table_[probe].occupied = false;
+                    size_.fetch_sub(1, std::memory_order_relaxed);
+                    tombstone_count_.fetch_add(1, std::memory_order_relaxed);
+                    return true;
+                }
+                return false;  // Another thread modified it
+            }
+        }
+        return false;
+    }
+
+    size_t size() const { return size_.load(std::memory_order_relaxed); }
+    size_t capacity() const { return capacity_; }
+    double load_factor() const {
+        return static_cast<double>(size_.load(std::memory_order_relaxed) +
+               tombstone_count_.load(std::memory_order_relaxed)) / capacity_;
+    }
+
+    // Iterator for the hash map
+    class Iterator {
+    public:
+        Iterator(Entry* table, size_t capacity, size_t index)
+            : table_(table), capacity_(capacity), index_(index) {
+            advance_to_valid();
+        }
+
+        std::pair<uint64_t, V*> operator*() const {
+            return {table_[index_].key.load(std::memory_order_relaxed),
+                    table_[index_].value.load(std::memory_order_relaxed)};
+        }
+
+        Iterator& operator++() {
+            ++index_;
+            advance_to_valid();
+            return *this;
+        }
+
+        bool operator!=(const Iterator& other) const {
+            return index_ != other.index_;
+        }
+
+    private:
+        void advance_to_valid() {
+            while (index_ < capacity_) {
+                uint64_t k = table_[index_].key.load(std::memory_order_relaxed);
+                if (k != EMPTY_KEY && k != TOMBSTONE_KEY) {
+                    break;
+                }
+                ++index_;
+            }
+        }
+
+        Entry* table_;
+        size_t capacity_;
+        size_t index_;
+    };
+
+    Iterator begin() { return Iterator(table_, capacity_, 0); }
+    Iterator end() { return Iterator(table_, capacity_, capacity_); }
+
+private:
+    static size_t next_power_of_two(size_t n) {
+        n--;
+        n |= n >> 1;
+        n |= n >> 2;
+        n |= n >> 4;
+        n |= n >> 8;
+        n |= n >> 16;
+        n++;
+        return n;
+    }
+
+    uint64_t hash_key(const K& key) const {
+        return std::hash<K>{}(key);
+    }
+
+    uint32_t hash(uint64_t key) const {
+        // MurmurHash3 finalizer
+        key ^= key >> 33;
+        key *= 0xff51afd7ed558ccdULL;
+        key ^= key >> 33;
+        key *= 0xc4ceb9fe1a85ec53ULL;
+        key ^= key >> 33;
+        return static_cast<uint32_t>(key);
+    }
+
+    void resize() {
+        size_t new_capacity = capacity_ * 2;
+        Entry* new_table = new Entry[new_capacity];
+        for (size_t i = 0; i < new_capacity; ++i) {
+            new_table[i].key.store(EMPTY_KEY, std::memory_order_relaxed);
+            new_table[i].value.store(nullptr, std::memory_order_relaxed);
+            new_table[i].hash_cache = 0;
+            new_table[i].occupied = false;
+        }
+
+        // Rehash existing entries
+        for (size_t i = 0; i < capacity_; ++i) {
+            uint64_t k = table_[i].key.load(std::memory_order_relaxed);
+            if (k != EMPTY_KEY && k != TOMBSTONE_KEY) {
+                V* v = table_[i].value.load(std::memory_order_relaxed);
+                uint32_t h = hash(k);
+                size_t idx = h & (new_capacity - 1);
+
+                for (size_t j = 0; j < new_capacity; ++j) {
+                    size_t probe = (idx + j) & (new_capacity - 1);
+                    uint64_t expected = EMPTY_KEY;
+                    if (new_table[probe].key.compare_exchange_strong(expected, k,
+                            std::memory_order_relaxed)) {
+                        new_table[probe].value.store(v, std::memory_order_relaxed);
+                        new_table[probe].hash_cache = h;
+                        new_table[probe].occupied = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        delete[] table_;
+        table_ = new_table;
+        capacity_ = new_capacity;
+        tombstone_count_.store(0, std::memory_order_relaxed);
+    }
+
+    Entry* table_;
+    size_t capacity_;
+    std::atomic<size_t> size_;
+    std::atomic<size_t> tombstone_count_;
+    SlabAllocator pool_;
+};
+
+// =============================================================================
+// Lock-Free Stack (for work distribution in benchmark)
+// =============================================================================
+
+template <typename T>
+class LockFreeStack {
+    struct Node {
+        T data;
+        Node* next;
+        Node(const T& d) : data(d), next(nullptr) {}
+    };
+
+public:
+    LockFreeStack() : head_(nullptr), size_(0) {}
+
+    ~LockFreeStack() {
+        while (pop().has_value()) {}
+    }
+
+    void push(const T& value) {
+        Node* new_node = new Node(value);
+        Node* old_head = head_.load(std::memory_order_relaxed);
+        do {
+            new_node->next = old_head;
+        } while (!head_.compare_exchange_weak(old_head, new_node,
+                    std::memory_order_release, std::memory_order_relaxed));
+        size_.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    std::optional<T> pop() {
+        Node* old_head = head_.load(std::memory_order_relaxed);
+        do {
+            if (!old_head) return std::nullopt;
+        } while (!head_.compare_exchange_weak(old_head, old_head->next,
+                    std::memory_order_relaxed, std::memory_order_relaxed));
+        T value = old_head->data;
+        delete old_head;
+        size_.fetch_sub(1, std::memory_order_relaxed);
+        return value;
+    }
+
+    size_t size() const { return size_.load(std::memory_order_relaxed); }
+    bool empty() const { return size() == 0; }
+
+private:
+    std::atomic<Node*> head_;
+    std::atomic<size_t> size_;
+};
+
+// =============================================================================
+// Simple Ring Buffer (for logging in benchmark)
+// =============================================================================
+
+template <typename T, size_t Capacity>
+class RingBuffer {
+public:
+    RingBuffer() : head_(0), tail_(0) {}
+
+    bool push(const T& item) {
+        size_t head = head_.load(std::memory_order_relaxed);
+        size_t next_head = (head + 1) % Capacity;
+        if (next_head == tail_.load(std::memory_order_relaxed)) {
+            return false;  // Full
+        }
+        buffer_[head] = item;
+        head_.store(next_head, std::memory_order_relaxed);
+        return true;
+    }
+
+    std::optional<T> pop() {
+        size_t tail = tail_.load(std::memory_order_relaxed);
+        if (tail == head_.load(std::memory_order_relaxed)) {
+            return std::nullopt;  // Empty
+        }
+        T item = buffer_[tail];
+        tail_.store((tail + 1) % Capacity, std::memory_order_relaxed);
+        return item;
+    }
+
+    size_t size() const {
+        size_t h = head_.load(std::memory_order_relaxed);
+        size_t t = tail_.load(std::memory_order_relaxed);
+        return (h - t + Capacity) % Capacity;
+    }
+
+    bool empty() const { return size() == 0; }
+    bool full() const { return size() == Capacity; }
+
+private:
+    std::array<T, Capacity> buffer_;
+    std::atomic<size_t> head_;
+    std::atomic<size_t> tail_;
+};
+
+// =============================================================================
+// Statistics Collector
+// =============================================================================
+
+struct BenchmarkStats {
+    std::atomic<uint64_t> inserts{0};
+    std::atomic<uint64_t> insert_failures{0};
+    std::atomic<uint64_t> finds{0};
+    std::atomic<uint64_t> find_hits{0};
+    std::atomic<uint64_t> find_misses{0};
+    std::atomic<uint64_t> erases{0};
+    std::atomic<uint64_t> erase_successes{0};
+
+    double elapsed_seconds{0.0};
+    double ops_per_second{0.0};
+
+    void reset() {
+        inserts.store(0);
+        insert_failures.store(0);
+        finds.store(0);
+        find_hits.store(0);
+        find_misses.store(0);
+        erases.store(0);
+        erase_successes.store(0);
+        elapsed_seconds = 0.0;
+        ops_per_second = 0.0;
+    }
+
+    void merge(const BenchmarkStats& other) {
+        inserts += other.inserts.load();
+        insert_failures += other.insert_failures.load();
+        finds += other.finds.load();
+        find_hits += other.find_hits.load();
+        find_misses += other.find_misses.load();
+        erases += other.erases.load();
+        erase_successes += other.erase_successes.load();
+    }
+
+    void print() const {
+        std::cout << "=== Results ===\n"
+                  << "Ins: " << inserts.load() << " (fail:" << insert_failures.load() << ") "
+                  << "Find: " << finds.load() << " (hit:" << find_hits.load() << " miss:" << find_misses.load() << ") "
+                  << "Del: " << erases.load() << " (ok:" << erase_successes.load() << ")\n"
+                  << elapsed_seconds << "s, " << ops_per_second << " ops/s\n";
+    }
+};
+
+// =============================================================================
+// Log Entry for the Ring Buffer
+// =============================================================================
+
+struct LogEntry {
+    enum class Type : uint8_t { INSERT, FIND, ERASE, RESIZE, ERROR };
+    Type type;
+    uint64_t key;
+    bool success;
+    uint64_t timestamp_ns;
+    int thread_id;
+
+    static LogEntry make(Type t, uint64_t k, bool s, int tid) {
+        auto now = std::chrono::high_resolution_clock::now();
+        return LogEntry{
+            t, k, s,
+            static_cast<uint64_t>(now.time_since_epoch().count()),
+            tid
+        };
+    }
+};
+
+// =============================================================================
+// Thread-Local Random Number Generator
+// =============================================================================
+
+class ThreadLocalRng {
+public:
+    ThreadLocalRng() : gen_(std::random_device{}()) {}
+
+    uint64_t next_key(uint64_t max_key) {
+        std::uniform_int_distribution<uint64_t> dist(1, max_key);
+        return dist(gen_);
+    }
+
+    double next_double() {
+        std::uniform_real_distribution<double> dist(0.0, 1.0);
+        return dist(gen_);
+    }
+
+    int next_int(int min, int max) {
+        std::uniform_int_distribution<int> dist(min, max);
+        return dist(gen_);
+    }
+
+private:
+    std::mt19937_64 gen_;
+};
+
+// =============================================================================
+// Benchmark Configuration
+// =============================================================================
+
+struct BenchmarkConfig {
+    int num_threads = 4;
+    int ops_per_thread = 100000;
+    size_t initial_capacity = 4096;
+    uint64_t max_key = 100000;
+    double insert_ratio = 0.4;
+    double find_ratio = 0.4;
+    double erase_ratio = 0.2;
+    bool enable_logging = true;
+    int warmup_ops = 1000;
+
+    void validate() const {
+        double total = insert_ratio + find_ratio + erase_ratio;
+        if (total < 0.99 || total > 1.01) {
+            throw std::invalid_argument(
+                "Operation ratios must sum to 1.0");
+        }
+        if (num_threads <= 0 || num_threads > MAX_THREADS) {
+            throw std::invalid_argument(
+                "Thread count must be between 1 and " +
+                std::to_string(MAX_THREADS));
+        }
+    }
+};
+
+// =============================================================================
+// Benchmark Worker
+// =============================================================================
+
+class BenchmarkWorker {
+public:
+    BenchmarkWorker(int id, LockFreeHashMap<uint64_t, uint64_t>& map,
+                    const BenchmarkConfig& config,
+                    BenchmarkStats& global_stats,
+                    RingBuffer<LogEntry, 65536>& log_buffer)
+        : id_(id), map_(map), config_(config),
+          global_stats_(global_stats), log_(log_buffer) {}
+
+    void operator()() {
+        ThreadLocalRng rng;
+        BenchmarkStats local_stats;
+        // Warmup
+        for (int i = 0; i < config_.warmup_ops; ++i)
+            map_.insert(rng.next_key(config_.max_key), i * 17);
+        // Main loop
+        for (int i = 0; i < config_.ops_per_thread; ++i) {
+            double r = rng.next_double();
+            uint64_t key = rng.next_key(config_.max_key);
+            if (r < config_.insert_ratio) {
+                bool ok = map_.insert(key, key * 17 + id_);
+                local_stats.inserts++;
+                if (!ok) local_stats.insert_failures++;
+                if (config_.enable_logging)
+                    log_.push(LogEntry::make(LogEntry::Type::INSERT, key, ok, id_));
+            } else if (r < config_.insert_ratio + config_.find_ratio) {
+                auto result = map_.find(key);
+                local_stats.finds++;
+                result.has_value() ? local_stats.find_hits++ : local_stats.find_misses++;
+                if (config_.enable_logging)
+                    log_.push(LogEntry::make(LogEntry::Type::FIND, key, result.has_value(), id_));
+            } else {
+                bool ok = map_.erase(key);
+                local_stats.erases++;
+                if (ok) local_stats.erase_successes++;
+                if (config_.enable_logging)
+                    log_.push(LogEntry::make(LogEntry::Type::ERASE, key, ok, id_));
+            }
+        }
+        global_stats_.merge(local_stats);
+    }
+
+private:
+    int id_;
+    LockFreeHashMap<uint64_t, uint64_t>& map_;
+    const BenchmarkConfig& config_;
+    BenchmarkStats& global_stats_;
+    RingBuffer<LogEntry, 65536>& log_;
+};
+
+// =============================================================================
+// Benchmark Runner
+// =============================================================================
+
+class BenchmarkRunner {
+public:
+    explicit BenchmarkRunner(const BenchmarkConfig& config)
+        : config_(config), map_(config.initial_capacity) {
+        config_.validate();
+    }
+
+    void run() {
+        stats_.reset();
+        std::cout << "Benchmark: " << config_.num_threads << " threads, "
+                  << config_.ops_per_thread << " ops/thread\n";
+        auto start = std::chrono::high_resolution_clock::now();
+        std::vector<std::thread> threads;
+        threads.reserve(config_.num_threads);
+        for (int i = 0; i < config_.num_threads; ++i) {
+            threads.emplace_back(BenchmarkWorker(
+                i, map_, config_, stats_, log_buffer_));
+        }
+        for (auto& t : threads) t.join();
+        auto end = std::chrono::high_resolution_clock::now();
+        std::chrono::duration<double> elapsed = end - start;
+        stats_.elapsed_seconds = elapsed.count();
+        uint64_t total_ops = stats_.inserts.load() + stats_.finds.load() + stats_.erases.load();
+        stats_.ops_per_second = total_ops / elapsed.count();
+        stats_.print();
+        std::cout << "Map size: " << map_.size() << "/" << map_.capacity()
+                  << " (load=" << map_.load_factor() << ")\n";
+    }
+
+    void dump_log(size_t max_entries = 100) {
+        std::cout << "\n=== Operation Log ===\n";
+        size_t count = 0;
+        while (count < max_entries) {
+            auto entry = log_buffer_.pop();
+            if (!entry.has_value()) break;
+            const char* type_str = "???";
+            switch (entry->type) {
+                case LogEntry::Type::INSERT: type_str = "INS"; break;
+                case LogEntry::Type::FIND:   type_str = "GET"; break;
+                case LogEntry::Type::ERASE:  type_str = "DEL"; break;
+                case LogEntry::Type::RESIZE: type_str = "RSZ"; break;
+                case LogEntry::Type::ERROR:  type_str = "ERR"; break;
+            }
+            std::cout << "[T" << entry->thread_id << "] " << type_str
+                      << " k=" << entry->key
+                      << (entry->success ? " OK" : " FAIL") << "\n";
+            ++count;
+        }
+    }
+
+    void run_iterator_test() {
+        std::cout << "\n=== Iterator Test ===\n";
+        for (uint64_t i = 1; i <= 20; ++i) map_.insert(i, i * 100);
+        // Iterate while another thread modifies the map
+        std::thread modifier([this]() {
+            for (uint64_t i = 5; i <= 15; ++i) {
+                map_.erase(i);
+                std::this_thread::sleep_for(std::chrono::microseconds(10));
+            }
+        });
+        size_t count = 0;
+        for (auto it = map_.begin(); it != map_.end(); ++it) {
+            auto [key, val] = *it;
+            if (val) { std::cout << "  k=" << key << " v=" << *val << "\n"; count++; }
+        }
+        std::cout << "Iterated " << count << " entries\n";
+        modifier.join();
+    }
+
+private:
+    BenchmarkConfig config_;
+    LockFreeHashMap<uint64_t, uint64_t> map_;
+    BenchmarkStats stats_;
+    RingBuffer<LogEntry, 65536> log_buffer_;
+};
+
+// =============================================================================
+// Correctness Tests
+// =============================================================================
+
+class CorrectnessTests {
+public:
+    static void run_all() {
+        std::cout << "\n=== Running Correctness Tests ===\n";
+        test_basic_insert_find();
+        test_overwrite();
+        test_erase();
+        test_concurrent_insert();
+        test_slab_allocator();
+        test_lock_free_stack();
+        std::cout << "All tests passed!\n";
+    }
+
+private:
+    static void test_basic_insert_find() {
+        LockFreeHashMap<uint64_t, uint64_t> map(64);
+        for (uint64_t i = 1; i <= 32; ++i) {
+            assert(map.insert(i, i * 10));
+        }
+        for (uint64_t i = 1; i <= 32; ++i) {
+            auto val = map.find(i);
+            assert(val.has_value());
+            assert(*val == i * 10);
+        }
+        assert(!map.find(999).has_value());
+        std::cout << "  test_basic_insert_find: PASSED\n";
+    }
+
+    static void test_overwrite() {
+        LockFreeHashMap<uint64_t, uint64_t> map(64);
+        map.insert(42, 100);
+        map.insert(42, 200);
+        auto val = map.find(42);
+        assert(val.has_value());
+        assert(*val == 200);
+        std::cout << "  test_overwrite: PASSED\n";
+    }
+
+    static void test_erase() {
+        LockFreeHashMap<uint64_t, uint64_t> map(64);
+        map.insert(10, 100);
+        map.insert(20, 200);
+        assert(map.erase(10));
+        assert(!map.find(10).has_value());
+        assert(map.find(20).has_value());
+        assert(!map.erase(10));  // Already erased
+        std::cout << "  test_erase: PASSED\n";
+    }
+
+    static void test_concurrent_insert() {
+        LockFreeHashMap<uint64_t, uint64_t> map(4096);
+        constexpr int NT = 8, OPS = 1000;
+        std::vector<std::thread> threads;
+        for (int t = 0; t < NT; ++t) {
+            threads.emplace_back([&map, t]() {
+                for (int i = 0; i < OPS; ++i) {
+                    uint64_t key = t * OPS + i + 1;
+                    map.insert(key, key);
+                }
+            });
+        }
+        for (auto& t : threads) t.join();
+        int found = 0;
+        for (int t = 0; t < NT; ++t)
+            for (int i = 0; i < OPS; ++i)
+                if (map.find(uint64_t(t * OPS + i + 1)).has_value()) found++;
+        assert(found > NT * OPS * 0.9);
+        std::cout << "  test_concurrent_insert: PASSED (" << found << "/" << NT*OPS << ")\n";
+    }
+
+    static void test_slab_allocator() {
+        SlabAllocator alloc(128, 16);
+        std::vector<void*> ptrs;
+        for (int i = 0; i < 100; ++i) {
+            ptrs.push_back(alloc.allocate());
+        }
+        assert(alloc.in_use() == 100);
+        for (auto* p : ptrs) {
+            alloc.deallocate(p);
+        }
+        assert(alloc.in_use() == 0);
+        std::cout << "  test_slab_allocator: PASSED\n";
+    }
+
+    static void test_lock_free_stack() {
+        LockFreeStack<int> stack;
+        for (int i = 0; i < 1000; ++i) {
+            stack.push(i);
+        }
+        assert(stack.size() == 1000);
+        int count = 0;
+        while (stack.pop().has_value()) count++;
+        assert(count == 1000);
+        std::cout << "  test_lock_free_stack: PASSED\n";
+    }
+};
+
+// =============================================================================
+// Stress Test — High Contention Scenario
+// =============================================================================
+
+class StressTest {
+public:
+    static void run(int duration_seconds = 5) {
+        std::cout << "\n=== Stress Test (" << duration_seconds << "s) ===\n";
+        LockFreeHashMap<uint64_t, uint64_t> map(256);
+        std::atomic<bool> stop{false};
+        std::atomic<uint64_t> total_ops{0};
+        constexpr int num_threads = 8;
+        std::vector<std::thread> threads;
+        for (int t = 0; t < num_threads; ++t) {
+            threads.emplace_back([&map, &stop, &total_ops, t]() {
+                ThreadLocalRng rng;
+                uint64_t local_ops = 0;
+                while (!stop.load(std::memory_order_relaxed)) {
+                    uint64_t key = rng.next_key(32);
+                    int op = rng.next_int(0, 2);
+                    switch (op) {
+                        case 0: map.insert(key, key + t); break;
+                        case 1: map.find(key); break;
+                        case 2: map.erase(key); break;
+                    }
+                    local_ops++;
+                }
+                total_ops.fetch_add(local_ops, std::memory_order_relaxed);
+            });
+        }
+        std::this_thread::sleep_for(std::chrono::seconds(duration_seconds));
+        stop.store(true, std::memory_order_relaxed);
+        for (auto& t : threads) t.join();
+        std::cout << "Completed " << total_ops.load() << " ops, "
+                  << (total_ops.load() / duration_seconds) << " ops/s\n";
+    }
+};
+
+// =============================================================================
+// Main
+// =============================================================================
+
+int main(int argc, char* argv[]) {
+    try {
+        std::cout << "Lock-Free Hash Map Benchmark Suite\n";
+        std::cout << "===================================\n\n";
+
+        // Run correctness tests first
+        CorrectnessTests::run_all();
+
+        // Configure and run benchmark
+        BenchmarkConfig config;
+        config.num_threads = 4;
+        config.ops_per_thread = 50000;
+        config.initial_capacity = 4096;
+        config.max_key = 10000;
+        config.insert_ratio = 0.4;
+        config.find_ratio = 0.4;
+        config.erase_ratio = 0.2;
+
+        if (argc > 1) config.num_threads = std::atoi(argv[1]);
+        if (argc > 2) config.ops_per_thread = std::atoi(argv[2]);
+        std::cout << "\n";
+        BenchmarkRunner runner(config);
+        runner.run();
+        runner.dump_log(50);
+        runner.run_iterator_test();
+
+        // Stress test
+        StressTest::run(3);
+
+        std::cout << "\nDone.\n";
+        return 0;
+    } catch (const std::exception& e) {
+        std::cerr << "Fatal error: " << e.what() << "\n";
+        return 1;
+    }
+}
+```

@@ -54,6 +54,10 @@ REF_DIR="${RESULTS}/${REF_TAG}"
 LOG_DIR="${REF_DIR}/logs"
 mkdir -p "$REF_DIR" "$LOG_DIR"
 
+# --- Helper: timestamp -------------------------------------------------------
+
+ts() { date "+%H:%M:%S"; }
+
 # --- Helper: read token counts from .bin file --------------------------------
 
 read_token_counts() {
@@ -99,22 +103,21 @@ for prompt_file in "$PROMPTS"/*.txt; do
     ref_bin="${REF_DIR}/${name}-ref.bin"
 
     if [ -f "$ref_bin" ]; then
-        echo "  [ref] $name — skip (exists)"
+        echo "  $(ts) [ref] $name — skip (exists)"
         continue
     fi
 
     log_file="${LOG_DIR}/${name}-ref.log"
-    echo -n "  [ref] $name — running... "
     prompt=$(cat "$prompt_file")
     if ! "$BINARY" ref \
         -m "$REF_MODEL" \
         -p "$prompt" \
         -n "$N_PREDICT" --temp "$TEMP" --top-k "$TOP_K" --top-p "$TOP_P" -ngl "$NGL" ${THREAD_ARGS[@]+"${THREAD_ARGS[@]}"} \
         -o "$ref_bin" > /dev/null 2>"$log_file"; then
-        echo "FAILED (see $log_file)"
+        echo "  $(ts) [ref] $name — FAILED (see $log_file)"
         exit 1
     fi
-    echo "done"
+    echo "  $(ts) [ref] $name — done"
 done
 echo ""
 
@@ -136,35 +139,33 @@ for tgt_entry in "${TARGETS[@]}"; do
 
         # target
         if [ -f "$tgt_bin" ]; then
-            echo "  [target] $name — skip"
+            echo "  $(ts) [target] $name — skip"
         else
             log_file="${LOG_DIR}/${name}-${tgt_tag}-target.log"
-            echo -n "  [target] $name — running... "
             if ! "$BINARY" target \
                 -m "$tgt_model" \
                 -i "$ref_bin" \
                 -o "$tgt_bin" -ngl "$NGL" ${THREAD_ARGS[@]+"${THREAD_ARGS[@]}"} > /dev/null 2>"$log_file"; then
-                echo "FAILED (see $log_file)"
+                echo "  $(ts) [target] $name — FAILED (see $log_file)"
                 exit 1
             fi
-            echo "done"
+            echo "  $(ts) [target] $name — done"
         fi
 
         # handoff
         if [ -f "$hoff_bin" ]; then
-            echo "  [handoff] $name — skip"
+            echo "  $(ts) [handoff] $name — skip"
         else
             log_file="${LOG_DIR}/${name}-${tgt_tag}-handoff.log"
-            echo -n "  [handoff] $name — running... "
             if ! "$BINARY" handoff \
                 -m-ref "$REF_MODEL" \
                 -m-tgt "$tgt_model" \
                 -i "$ref_bin" \
                 -o "$hoff_bin" -ngl "$NGL" ${THREAD_ARGS[@]+"${THREAD_ARGS[@]}"} > /dev/null 2>"$log_file"; then
-                echo "FAILED (see $log_file)"
+                echo "  $(ts) [handoff] $name — FAILED (see $log_file)"
                 exit 1
             fi
-            echo "done"
+            echo "  $(ts) [handoff] $name — done"
         fi
     done
     echo ""
@@ -250,7 +251,6 @@ for tgt_entry in "${TARGETS[@]}"; do
             continue
         fi
 
-        echo -n "  ${tgt_tag}/${name}... "
         tmp_csv=$(mktemp)
         log_file="${LOG_DIR}/${name}-${tgt_tag}-decay.log"
         "$BINARY" decay \
@@ -263,7 +263,7 @@ for tgt_entry in "${TARGETS[@]}"; do
             echo "${name},${tgt_tag},${n_prompt_val},${line}" >> "$DECAY_CSV"
         done
         rm -f "$tmp_csv"
-        echo "done"
+        echo "  $(ts) [decay] ${tgt_tag}/${name} — done"
     done
 done
 echo "Decay CSV written to: $DECAY_CSV"

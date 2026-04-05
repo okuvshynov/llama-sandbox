@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KV decay compare</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace; background: #f5f5f5; color: #333; padding: 16px; max-width: 1200px; }
+  h1 { font-size: 1.4em; margin-bottom: 4px; color: #111; }
+  .subtitle { color: #777; margin-bottom: 20px; font-size: 0.9em; }
+  .controls { margin-bottom: 16px; display: flex; gap: 16px; flex-wrap: wrap; align-items: center; }
+  .controls label { font-size: 0.85em; color: #666; }
+  .controls select { background: #fff; color: #333; border: 1px solid #bbb; padding: 4px 8px; border-radius: 4px; font-size: 0.85em; }
+  .quant-toggles { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
+  .quant-toggle { display: flex; align-items: center; gap: 4px; cursor: pointer; font-size: 0.85em; padding: 3px 8px; border-radius: 4px; border: 2px solid #ddd; background: #f0f0f0; color: #999; user-select: none; opacity: 0.5; }
+  .quant-toggle.active { border-color: currentColor; background: #fff; font-weight: 600; opacity: 1; }
+  .quant-toggle .swatch { width: 12px; height: 12px; border-radius: 2px; }
+  .section { margin-bottom: 32px; }
+  .section p { font-size: 0.85em; color: #777; margin-bottom: 12px; }
+  .chart-container { margin: 16px 0; }
+  canvas { display: block; background: #fff; border: 1px solid #ddd; border-radius: 4px; width: 100%; }
+  .legend { display: flex; gap: 16px; font-size: 0.85em; color: #666; margin: 8px 0; flex-wrap: wrap; }
+  .legend-item { display: flex; align-items: center; gap: 5px; }
+  .legend-swatch { width: 20px; height: 3px; border-radius: 1px; }
+  .legend-swatch-dashed { width: 20px; height: 0; border-top: 2px dashed; }
+  #tooltip { font-size: 0.82em; color: #555; min-height: 1.2em; margin-top: 4px; }
+</style>
+</head>
+<body>
+
+<h1>KV Decay Compare</h1>
+<div class="subtitle">Absolute KL divergence across generation position — target vs handoff per quant</div>
+
+<div class="controls">
+  <label>Data: <select id="csv-select"><option value="">Loading...</option></select></label>
+</div>
+
+<div id="content" style="display:none">
+  <div class="quant-toggles" id="quant-toggles"></div>
+
+  <div class="section">
+    <p>Solid line = target (no transfer). Dashed line = handoff (KV transfer). Compare across quants to see where handoff at a lower quant beats plain target at a higher quant.</p>
+    <div class="chart-container"><canvas id="chart"></canvas></div>
+    <div class="legend" id="legend"></div>
+    <div id="tooltip"></div>
+  </div>
+</div>
+
+<script>
+const DPR = window.devicePixelRatio || 1;
+const QUANT_ORDER = [
+  'ud-iq1_m','ud-iq2_m','ud-iq2_xxs','ud-q2_k_xl','ud-iq3_xss','ud-iq3_xxs',
+  'ud-q3_k_xl','ud-iq4_xs','ud-q4_k_xl','ud-q5_k_xl','ud-q6_k_xl','ud-q8_k_xl',
+];
+const LINE_COLORS = [
+  '#e03030','#e07840','#d0a030','#40a050','#2090a0',
+  '#2070c0','#6050c0','#a040a0','#c06080','#888','#333','#446688',
+];
+
+let allData = null;
+let activeQuants = new Set();
+
+function quantSortKey(q) {
+  const i = QUANT_ORDER.indexOf(q);
+  return i >= 0 ? i : 999;
+}
+
+function quantColor(q) {
+  const targets = [...activeQuants].sort((a, b) => quantSortKey(a) - quantSortKey(b));
+  // use a stable color per quant based on QUANT_ORDER position
+  const i = QUANT_ORDER.indexOf(q);
+  return LINE_COLORS[(i >= 0 ? i : 0) % LINE_COLORS.length];
+}
+
+function parseCSV(text) {
+  const lines = text.trim().split('\n');
+  return lines.slice(1).map(line => {
+    const c = line.split(',');
+    if (c.length >= 9) {
+      return {
+        prompt: c[0], target: c[1], n_prompt: parseInt(c[2]),
+        window_start: parseInt(c[3]), window_end: parseInt(c[4]),
+        kl_target: parseFloat(c[5]), top1_target: parseFloat(c[6]),
+        kl_handoff: parseFloat(c[7]), top1_handoff: parseFloat(c[8]),
+      };
+    }
+    return null;
+  }).filter(Boolean);
+}
+
+function getTargets(rows) {
+  const seen = new Set();
+  const result = [];
+  for (const r of rows) {
+    if (!seen.has(r.target)) { seen.add(r.target); result.push(r.target); }
+  }
+  return result.sort((a, b) => quantSortKey(a) - quantSortKey(b));
+}
+
+function getWindows(rows) {
+  const seen = new Set();
+  const result = [];
+  for (const r of rows) {
+    const key = `${r.window_start}-${r.window_end}`;
+    if (!seen.has(key)) { seen.add(key); result.push({ start: r.window_start, end: r.window_end }); }
+  }
+  return result.sort((a, b) => a.start - b.start);
+}
+
+function aggregate(rows) {
+  const key = (r) => `${r.target}|${r.window_start}`;
+  const groups = {};
+  for (const r of rows) {
+    const k = key(r);
+    if (!groups[k]) groups[k] = { ...r, _count: 1 };
+    else {
+      groups[k].kl_target += r.kl_target;
+      groups[k].kl_handoff += r.kl_handoff;
+      groups[k].top1_target += r.top1_target;
+      groups[k].top1_handoff += r.top1_handoff;
+      groups[k]._count++;
+    }
+  }
+  return Object.values(groups).map(g => ({
+    ...g,
+    kl_target: g.kl_target / g._count,
+    kl_handoff: g.kl_handoff / g._count,
+    top1_target: g.top1_target / g._count,
+    top1_handoff: g.top1_handoff / g._count,
+  }));
+}
+
+function buildToggles(targets) {
+  const container = document.getElementById('quant-toggles');
+  container.innerHTML = '';
+  for (const q of targets) {
+    const el = document.createElement('div');
+    el.className = 'quant-toggle active';
+    el.dataset.quant = q;
+    const color = quantColor(q);
+    el.style.color = color;
+    el.innerHTML = `<div class="swatch" style="background:${color}"></div>${q}`;
+    el.addEventListener('click', () => {
+      if (activeQuants.has(q)) { activeQuants.delete(q); el.classList.remove('active'); }
+      else { activeQuants.add(q); el.classList.add('active'); }
+      drawChart();
+    });
+    container.appendChild(el);
+  }
+}
+
+// line hit detection for tooltip
+let chartLines = [];
+
+function drawChart() {
+  if (!allData) return;
+
+  const agg = aggregate(allData);
+  const windows = getWindows(agg);
+  const visibleQuants = [...activeQuants].sort((a, b) => quantSortKey(a) - quantSortKey(b));
+
+  // build series: for each quant, two lines (target=solid, handoff=dashed)
+  const series = [];
+  for (const q of visibleQuants) {
+    const qRows = agg.filter(r => r.target === q);
+    const tgtPoints = windows.map(w => {
+      const r = qRows.find(r => r.window_start === w.start);
+      return r ? r.kl_target : null;
+    });
+    const hoffPoints = windows.map(w => {
+      const r = qRows.find(r => r.window_start === w.start);
+      return r ? r.kl_handoff : null;
+    });
+    series.push({ name: q, type: 'target', points: tgtPoints, dashed: false });
+    series.push({ name: q, type: 'handoff', points: hoffPoints, dashed: true });
+  }
+
+  const canvas = document.getElementById('chart');
+  const W = Math.min(1000, window.innerWidth - 32);
+  const H = 500;
+  canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+  canvas.width = W * DPR; canvas.height = H * DPR;
+  const ctx = canvas.getContext('2d');
+  ctx.scale(DPR, DPR);
+  ctx.clearRect(0, 0, W, H);
+
+  const pad = { top: 20, right: 20, bottom: 45, left: 60 };
+  const cw = W - pad.left - pad.right;
+  const ch = H - pad.top - pad.bottom;
+
+  // y range from all visible values
+  const allVals = series.flatMap(s => s.points.filter(p => p !== null));
+  if (allVals.length === 0) return;
+
+  // use log scale for KL
+  const logVals = allVals.filter(v => v > 0).map(v => Math.log10(v));
+  const logMin = Math.floor(Math.min(...logVals) * 2) / 2;
+  const logMax = Math.ceil(Math.max(...logVals) * 2) / 2;
+
+  const toX = (i) => pad.left + (i / Math.max(windows.length - 1, 1)) * cw;
+  const toY = (v) => {
+    if (v <= 0) return pad.top + ch;
+    const lv = Math.log10(v);
+    return pad.top + ch - ((lv - logMin) / (logMax - logMin)) * ch;
+  };
+
+  // grid
+  ctx.strokeStyle = '#e0e0e0'; ctx.lineWidth = 0.5;
+  ctx.fillStyle = '#aaa'; ctx.font = '12px monospace';
+  ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+  for (let p = Math.ceil(logMin * 2) / 2; p <= logMax; p += 0.5) {
+    const v = Math.pow(10, p);
+    const y = toY(v);
+    ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(W - pad.right, y); ctx.stroke();
+    const label = v >= 1 ? v.toFixed(1) : v >= 0.01 ? v.toFixed(2) : v.toFixed(3);
+    ctx.fillText(label, pad.left - 6, y);
+  }
+
+  // x labels
+  ctx.fillStyle = '#aaa'; ctx.font = '11px monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+  const xStep = Math.max(1, Math.floor(windows.length / 15));
+  for (let i = 0; i < windows.length; i += xStep) {
+    ctx.fillText(`${windows[i].start}`, toX(i), H - pad.bottom + 6);
+  }
+  ctx.fillText('generation token offset', pad.left + cw / 2, H - 8);
+
+  // y-axis label
+  ctx.save();
+  ctx.fillStyle = '#777'; ctx.font = '12px monospace';
+  ctx.translate(14, pad.top + ch / 2);
+  ctx.rotate(-Math.PI / 2);
+  ctx.textBaseline = 'middle'; ctx.textAlign = 'center';
+  ctx.fillText('KL divergence (log scale)', 0, 0);
+  ctx.restore();
+
+  // draw lines and record segments for hit detection
+  chartLines = [];
+  for (const s of series) {
+    const color = quantColor(s.name);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = s.dashed ? 2 : 2.5;
+    ctx.setLineDash(s.dashed ? [6, 4] : []);
+    ctx.beginPath();
+    let started = false;
+    const screenPts = [];
+    for (let i = 0; i < s.points.length; i++) {
+      if (s.points[i] === null || s.points[i] <= 0) { screenPts.push(null); continue; }
+      const x = toX(i);
+      const y = toY(s.points[i]);
+      screenPts.push({ x, y, val: s.points[i], win: windows[i] });
+      if (!started) { ctx.moveTo(x, y); started = true; }
+      else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // dots
+    ctx.fillStyle = color;
+    for (const pt of screenPts) {
+      if (!pt) continue;
+      ctx.beginPath(); ctx.arc(pt.x, pt.y, s.dashed ? 2 : 2.5, 0, Math.PI * 2); ctx.fill();
+    }
+
+    chartLines.push({ name: s.name, type: s.type, screenPts });
+  }
+
+  // legend
+  const legendDiv = document.getElementById('legend');
+  const quantItems = visibleQuants.map(q =>
+    `<div class="legend-item"><div class="legend-swatch" style="background:${quantColor(q)}"></div>${q}</div>`
+  ).join('');
+  const styleItems =
+    `<div class="legend-item"><div class="legend-swatch" style="background:#666"></div>target (solid)</div>` +
+    `<div class="legend-item"><div class="legend-swatch-dashed" style="border-color:#666"></div>handoff (dashed)</div>`;
+  legendDiv.innerHTML = quantItems + styleItems;
+}
+
+function initTooltip() {
+  const canvas = document.getElementById('chart');
+  const tip = document.getElementById('tooltip');
+
+  const handler = (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+
+    let best = null;
+    let bestDist = 20; // max hit distance in px
+    for (const line of chartLines) {
+      for (const pt of line.screenPts) {
+        if (!pt) continue;
+        const dx = mx - pt.x, dy = my - pt.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < bestDist) {
+          bestDist = dist;
+          best = { ...pt, name: line.name, type: line.type };
+        }
+      }
+    }
+
+    if (best) {
+      tip.textContent = `${best.name} ${best.type} — window ${best.win.start}-${best.win.end}: KL = ${best.val.toFixed(4)}`;
+    } else {
+      tip.textContent = '';
+    }
+  };
+
+  canvas.addEventListener('mousemove', handler);
+  canvas.addEventListener('touchstart', (e) => {
+    e.preventDefault();
+    handler({ clientX: e.touches[0].clientX, clientY: e.touches[0].clientY });
+  });
+}
+
+async function init() {
+  const html = await (await fetch('./')).text();
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(html, 'text/html');
+  const links = [...doc.querySelectorAll('a')].map(a => a.getAttribute('href'));
+
+  const csvFiles = [];
+  const dirs = links.filter(h => h && h.endsWith('/') && h !== '../');
+  for (const dir of dirs) {
+    try {
+      const subHtml = await (await fetch(dir)).text();
+      const subDoc = parser.parseFromString(subHtml, 'text/html');
+      const subLinks = [...subDoc.querySelectorAll('a')].map(a => a.getAttribute('href'));
+      if (subLinks.includes('decay.csv')) csvFiles.push(dir + 'decay.csv');
+    } catch (e) {}
+  }
+  if (links.includes('decay.csv')) csvFiles.unshift('decay.csv');
+
+  const select = document.getElementById('csv-select');
+  select.innerHTML = '';
+  if (csvFiles.length === 0) { select.innerHTML = '<option>No decay.csv found</option>'; return; }
+  for (const f of csvFiles) {
+    const opt = document.createElement('option');
+    opt.value = f; opt.textContent = f; select.appendChild(opt);
+  }
+
+  const load = async (url) => {
+    const text = await (await fetch(url)).text();
+    allData = parseCSV(text);
+    const targets = getTargets(allData);
+    activeQuants = new Set(targets);
+    buildToggles(targets);
+    document.getElementById('content').style.display = 'block';
+    drawChart();
+  };
+
+  select.addEventListener('change', () => load(select.value));
+  load(csvFiles[0]);
+  initTooltip();
+}
+
+init();
+</script>
+</body>
+</html>
