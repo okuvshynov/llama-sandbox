@@ -3,6 +3,7 @@
 #include "handoff.h"
 #include "compare.h"
 #include "decay.h"
+#include "batch.h"
 
 #include <cstdio>
 #include <cstring>
@@ -16,7 +17,8 @@ static void print_usage(const char * prog) {
         "  target   Run target model on existing tokens, compute KL vs ref inline\n"
         "  handoff  Process prompt with ref model, transfer KV, generate with target, compute KL inline\n"
         "  compare  Summarize a per-token stats file (mean/p95/p99 KL + top-1)\n"
-        "  decay    Analyze KL decay across generation position from stats files\n",
+        "  decay    Analyze KL decay across generation position from stats files\n"
+        "  batch    Process all prompts with ref+target models loaded together\n",
         prog);
 }
 
@@ -42,6 +44,9 @@ int main(int argc, char ** argv) {
     }
     if (strcmp(cmd, "decay") == 0) {
         return cmd_decay(argc - 1, argv + 1);
+    }
+    if (strcmp(cmd, "batch") == 0) {
+        return cmd_batch(argc - 1, argv + 1);
     }
 
     fprintf(stderr, "Unknown command: %s\n\n", cmd);

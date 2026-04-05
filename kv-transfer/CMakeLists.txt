@@ -28,6 +28,7 @@ add_executable(kv-transfer
     src/handoff.cpp
     src/compare.cpp
     src/decay.cpp
+    src/batch.cpp
 )
 
 target_include_directories(kv-transfer PRIVATE
