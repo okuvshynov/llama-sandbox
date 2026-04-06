@@ -1,0 +1,100 @@
+<|channel>thought
+
+*   Language: Java.
+    *   Class Name: `LRUCache<K, V>`.
+    *   Key Components:
+        *   `capacity`: Maximum number of items allowed.
+        *   `map`: A `HashMap` mapping keys to `Node` objects.
+        *   `head`, `tail`: Dummy nodes for a doubly linked list.
+        *   `Node` class: Inner static class containing `key`, `value`, `prev`, and `next`.
+    *   Methods:
+        *   Constructor: Initializes capacity, map, and the dummy head/tail pointers.
+        *   `get(K key)`: Retrieves value. If found, moves the node to the "front" (most recently used).
+        *   `put(K key, V value)`: Adds or updates a value. If updated, moves to "front". If new and capacity is reached, evicts the "tail" (least recently used).
+        *   `remove(Node node)`: Unlinks a node from the doubly linked list.
+        *   `addToFront(Node node)`: Inserts a node right after the dummy `head`.
+        *   `printState()`: Utility to view the list order.
+        *   `main()`: Test cases demonstrating eviction and reordering.
+
+    *   *What does it do?* It implements a Least Recently Used (LRU) Cache.
+    *   *What is an LRU Cache?* A data structure that stores a limited number of items. When the limit is reached, it removes the item that hasn't been accessed for the longest time to make room for new items.
+    *   *Core Logic:*
+        *   Accessing an item (`get`) makes it "new" again.
+        *   Adding an item (`put`) makes it "new" again.
+        *   If full, the "oldest" item is deleted.
+
+    *   *The Hybrid Structure:* It's a combination of two fundamental data structures:
+        1.  **`HashMap`**: Provides $O(1)$ average time complexity for lookups. It stores the `key` and a pointer to the `Node` in the linked list.
+        2.  **Doubly Linked List**: Provides $O(1)$ time complexity for adding/removing nodes when you already have the reference. It maintains the *order* of usage (Most Recently Used at the head, Least Recently Used at the tail).
+    *   *The "Why":*
+        *   If we used only a `HashMap`, we couldn't keep track of order/age.
+        *   If we used only a `LinkedList`, `get()` would take $O(n)$ because we'd have to search for the element.
+        *   Combining them gives $O(1)$ for both `get` and `put`.
+
+    *   *Structure:*
+        1.  High-level Summary.
+        2.  Data Structure Breakdown (The "How").
+        3.  Complexity Analysis (Big O).
+        4.  Step-by-Step Walkthrough of the Code Logic.
+
+    *   *Correction:* Initially, I might just say "it uses a linked list." I must specify it's a *doubly* linked list with *dummy nodes* (`head` and `tail`). Dummy nodes are crucial because they prevent null checks during node insertion/deletion.
+    *   *Detail:* Explain the `get` and `put` logic clearly. Mention that `get` isn't just a read; it's an update to the usage order.<channel|>### High-Level Summary
+This Java program implements an **LRU (Least Recently Used) Cache**. 
+
+An LRU Cache is a fixed-capacity data structure that discards the least recently accessed items first when it reaches its limit. It is widely used in real-world systems (like database buffering or web servers) to keep frequently used data in fast memory while discarding old, stale data.
+
+---
+
+### The Data Structure: A Hybrid Approach
+To achieve high performance, this program combines two fundamental data structures into one hybrid structure. This allows both **searching** and **reordering** to happen in constant time.
+
+#### 1. `HashMap<K, Node<K, V>>` (The "Map")
+*   **Purpose:** Provides $O(1)$ (constant time) access to any element.
+*   **Role:** The Map stores the `key` as the key and a reference to the actual `Node` in the linked list as the value. This prevents us from having to "search" through a list to find an item, which would be slow ($O(n)$).
+
+#### 2. Doubly Linked List (The "List")
+*   **Purpose:** Maintains the chronological order of usage.
+*   **Role:** 
+    *   **The Head:** Represents the **Most Recently Used (MRU)** item.
+    *   **The Tail:** Represents the **Least Recently Used (LRU)** item.
+*   **Why Doubly Linked?** Each `Node` has a `prev` and `next` pointer. This allows the program to remove a node from the middle of the list in $O(1)$ time because a node "knows" who its neighbors are.
+*   **Dummy Nodes:** The code uses "dummy" `head` and `tail` nodes. These are empty nodes that act as sentinels, ensuring that the list is never truly empty, which simplifies the logic by removing the need to check for `null` during every insertion or deletion.
+
+---
+
+### How the Operations Work
+
+#### `get(K key)`
+1.  Check the `HashMap` for the key.
+2.  If the key doesn't exist, return `null`.
+3.  If it **does** exist:
+    *   The item was just used, so it is now the "Most Recently Used."
+    *   The node is **removed** from its current position in the Doubly Linked List.
+    *   The node is **added to the front** (just after the dummy `head`).
+    *   Return the value.
+
+#### `put(K key, V value)`
+1.  **If the key already exists:**
+    *   Update the existing node's value.
+    *   Move the node to the front (it's now the most recently used).
+2.  **If the key is new:**
+    *   **Check Capacity:** If the cache is full (`map.size() >= capacity`):
+        *   Identify the LRU item (the node right before the dummy `tail`).
+        *   Remove that node from both the `HashMap` and the Doubly Linked List.
+    *   **Create New Node:** Create a new node, add it to the `HashMap`, and insert it at the front of the list.
+
+---
+
+### Complexity Analysis
+
+| Operation | Time Complexity | Reason |
+| :--- | :--- | :--- |
+| **`get(key)`** | $O(1)$ | HashMap lookup is $O(1)$; moving a node in a Doubly Linked List is $O(1)$. |
+| **`put(key, val)`** | $O(1)$ | HashMap insertion/deletion is $O(1)$; adding/removing nodes from the list is $O(1)$. |
+| **Space Complexity** | $O(C)$ | Where $C$ is the capacity. We store at most $C$ nodes in both the Map and the List. |
+
+### Visual Walkthrough of the `main` method logic:
+1.  `put(a,1), put(b,2), put(c,3)` $\rightarrow$ List: `[c, b, a]`
+2.  `get(a)` $\rightarrow$ `a` moves to front. List: `[a, c, b]`
+3.  `put(d,4)` $\rightarrow$ Cache full! `b` (at the tail) is evicted. `d` added to front. List: `[d, a, c]`
+4.  `put(b,5)` $\rightarrow$ Cache full! `c` (at the tail) is evicted. `b` added to front. List: `[b, d, a]`
