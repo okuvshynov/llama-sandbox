@@ -1,0 +1,155 @@
+<|channel>thought
+Here's a thinking process for reviewing the provided TypeScript codebase:
+
+1.  **Understand the Goal:** The request asks for a review of a TypeScript codebase for bugs, type safety issues, and architectural problems, along with suggested improvements. The code implements a `Pipeline` class based on an event emitter pattern.
+
+2.  **Analyze the Core Components:**
+
+    *   **`EventMap` Interface:** `[event: string]: (...args: any[]) => void;` (Basic event definition).
+    *   **`TypedEventEmitter<T>` Class:** Handles standard `on`, `once`, `off`, and `emit`.
+    *   **`Task` Interface:** Defines the structure of a unit of work (id, name, execute, dependencies, timeout, retries, status, result, error, timing).
+    *   **`PipelineEvents` Interface:** Defines specific events for the pipeline flow.
+    *   **`Pipeline` Class:** The main orchestrator. Manages tasks, dependencies, execution logic (`run`, `executeTask`), and state.
+
+3.  **Review `TypedEventEmitter` (Low-Level Layer):**
+
+    *   *Type Safety:*
+        *   `listeners: Map<keyof T, Set<Function>>`. This is good, using `keyof T` ensures the event names are valid keys of the specific event map `T`.
+        *   `on`/`off`/`emit`: The implementation looks standard and correct for handling function listeners and managing `once` listeners.
+    *   *Bugs/Logic:*
+        *   The use of `keyof T` is correct.
+        *   The `emit` logic correctly handles both standard listeners and clearing `onceListeners`.
+    *   *Improvement:* The `any[]` in `EventMap` is a weak point. While necessary for a generic event map, it limits type safety at the event handler level.
+
+4.  **Review `Pipeline` (High-Level Logic & Architecture):**
+
+    *   **State Management:** `tasks`, `results`, `running`, `concurrency`. Seems appropriate.
+    *   **`addTask`:** Handles task setup and initialization correctly.
+    *   **`getReadyTasks`:**
+        *   It iterates over `this.tasks`.
+        *   It checks `task.status !== 'pending'`. (Good)
+        *   It checks `task.dependencies.every(...)`.
+        *   *Potential Issue:* It uses `this.tasks.get(dep)?.status === 'completed'`. This relies heavily on `Task` definitions and the internal state management being flawless. It implicitly assumes dependency IDs exist.
+    *   **`executeTask`:** (The core execution logic)
+        *   Handles retries (`for (let attempt = 0; attempt <= task.retries; attempt++)`).
+        *   Handles backoff timing (`Math.pow(2, attempt) * 1000`).
+        *   Handles timeout using `Promise.race`. (Looks correct)
+        *   Error handling: Correctly catches and stores the error.
+        *   Event emissions (`task:start`, `task:complete`, `task:fail`, `task:retry`) are properly placed.
+    *   **`run`:** (The workflow engine)
+        *   Uses an infinite `while (true)` loop, which is typical for a scheduler.
+        *   *Deadlock Detection:* The logic `if (pending.length > 0 && running.length === 0)` is a rudimentary check for dependency issues. It correctly throws an error.
+        *   Concurrency management: It selects a `batch` of `ready.slice(0, this.concurrency)`.
+        *   Execution: `await Promise.all(batch.map(task => this.executeTask(task)))`. This correctly runs concurrent tasks.
+        *   Termination logic: Checks for final failures and emits `pipeline:complete`.
+        *   Error handling (`try/catch/finally`): Correctly catches errors, emits `pipeline:fail`, and ensures `this.running` is reset.
+    *   **Dependency Injection/Access:**
+        *   Look at `addTask` usage:
+            ```typescript
+            // Inside merge-data execute function:
+            const users = pipeline['results'].get('fetch-users');
+            ```
+            **CRITICAL ISSUE:** The `Pipeline` instance is not being explicitly passed or injected into the tasks. Tasks are created standalone. This means the `execute` function relies on global knowledge of the pipeline's state (`pipeline['results']`), which is brittle and breaks encapsulation.
+
+5.  **Identify Specific Issues & Propose Solutions:** (Structuring the findings for the final output.)
+
+    *   *Type Safety:* Focus on `any` and internal state consistency.
+    *   *Encapsulation/Architecture:* Focus on the task execution dependency on the pipeline instance.
+    *   *Code Quality/Bugs:* Look for race conditions, edge cases (e.g., concurrent access, deadlock handling, data handling).
+
+6.  **Final Review & Refinement:** Ensure the suggested improvements are actionable and address the identified weaknesses comprehensively. (Self-Correction: The usage example shows a type issue where `pipeline['results']` is accessed, which confirms the architectural flaw.)<channel|>This codebase presents a solid foundation for a task-based pipeline system, utilizing an effective event emitter pattern. However, it has several critical issues related to type safety, encapsulation, and architectural flexibility.
+
+Here is a detailed review, categorized by area.
+
+---
+
+## 1. Type Safety and TypeScript Issues
+
+### Issue 1.1: Over-reliance on `any` in Event Handlers
+
+The `EventMap` interface uses `(...args: any[]) => void`. While this allows maximum flexibility, it bypasses TypeScript's benefits entirely for event payload handling.
+
+**Why it's a problem:** If a developer emits an event with a specific payload (e.g., `task:complete` should contain a `Task` object and a `Result`), TypeScript cannot enforce this structure, leading to runtime errors.
+
+**Suggested Improvement:**
+Define specific interfaces for the payload of each event type, or use generics if the emitter class is generalized.
+
+```typescript
+// Instead of EventMap
+interface TaskCompleteEvent {
+  task: Task;
+  result: any;
+}
+
+interface PipelineEvents extends EventMap {
+  'task:complete': TaskCompleteEvent; // Use specific types
+  // ... other events
+}
+```
+
+### Issue 1.2: Weak Typing in Task Results and Dependencies
+
+The `Task<T = any>` interface is too generic. The `T` parameter allows the task result type to be anything, which weakens the type safety of the entire pipeline data flow.
+
+**Why it's a problem:** When retrieving results (e.g., `pipeline['results'].get('fetch-users')`), the type is inferred as `any`, forcing developers to perform manual casting or runtime checks.
+
+**Suggested Improvement:**
+Use generics more strictly. If possible, make the `Pipeline` itself generic, or ensure that the task type is strongly defined when adding tasks.
+
+### Issue 1.3: Implicit Type Handling in `executeTask`
+
+In `executeTask`, error handling uses a weak guard:
+
+```typescript
+lastError = err instanceof Error ? err : new Error(String(err));
+```
+
+This is often necessary in JS environments, but in a strongly typed system, we should strive to maintain `Error` objects throughout.
+
+**Suggested Improvement:**
+Ensure that the `execute` function signatures are strictly typed to return `Promise<T>` (or `Promise<any>`), which helps the `catch` block handle standard `Error` objects automatically.
+
+---
+
+## 2. Architectural and Encapsulation Problems
+
+### Issue 2.1: Violation of Encapsulation in Task Execution (Critical)
+
+The most significant architectural flaw lies in how tasks access shared pipeline state within their `execute` functions.
+
+**Example of the flaw:**
+
+```typescript
+// Inside addTask setup:
+.addTask({
+  // ...
+  execute: async () => {
+    const users = pipeline['results'].get('fetch-users'); // Accessing external state
+    // ...
+  },
+})
+```
+
+**Why it's a problem:**
+1. **Tight Coupling:** Tasks are tightly coupled to the concrete `Pipeline` instance. They cannot be easily tested or reused outside the pipeline context.
+2. **Lack of Data Flow Control:** The pipeline orchestrator controls the flow of data (`results`), but the task itself needs access to that data. This mixing of responsibilities makes the system fragile.
+3. **Type Safety Loss:** As noted above, accessing `pipeline['results']` bypasses the type system entirely.
+
+**Suggested Improvement: Dependency Injection (The "Pipeline Context")**
+
+Tasks should not be standalone functions. They should be objects or classes that receive the necessary context (e.g., the `results` map, or a method to retrieve results) upon execution.
+
+**Refactoring Suggestion:**
+
+1. **Define a Task Runner Interface:**
+   ```typescript
+   interface TaskRunnerContext {
+     getResults(): Map<string, any>;
+     // Potentially add logging, pipeline event access, etc.
+   }
+   ```
+2. **Modify `Task` Interface:** The `execute` method should accept the context.
+   ```typescript
+   interface Task<T> {
+     // ... other fields
+     execute: (context:

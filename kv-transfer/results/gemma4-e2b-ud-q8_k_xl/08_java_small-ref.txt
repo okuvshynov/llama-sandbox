@@ -1,0 +1,110 @@
+<|channel>thought
+Here's a thinking process to construct the explanation:
+
+1.  **Understand the Goal:** The request asks for an explanation of what the provided Java program does and a description of the data structure used.
+
+2.  **Analyze the Code Structure (Identify the Core Concept):**
+    *   The class is named `LRUCache<K, V>`. This immediately indicates a specific caching algorithm: **Least Recently Used (LRU)**.
+    *   It uses generics `<K, V>` (Key and Value).
+    *   It has a `capacity` limit.
+    *   It uses a `Map` (`map`) and custom `Node` structures.
+
+3.  **Analyze the Data Structure Implementation (How LRU is achieved):**
+    *   **`Node<K, V>`:** Contains `key`, `value`, `prev`, and `next`. This confirms it's a doubly linked list node.
+    *   **`head` and `tail`:** These are sentinel nodes (dummy nodes). `head.next` points to the Most Recently Used (MRU) item, and `tail.prev` points to the Least Recently Used (LRU) item (or null if empty).
+    *   **`map` (HashMap):** Stores the key and a reference to the corresponding `Node` in the linked list. This allows for O(1) lookups.
+    *   **Operations (`get`, `put`):**
+        *   `get(key)`: If found, it removes the node from its current position and re-adds it to the front (MRU position).
+        *   `put(key, value)`:
+            *   If the key exists: Update the value, move the node to the front (MRU).
+            *   If the key is new:
+                *   Check capacity. If full, identify the LRU element (`tail.prev`), remove it from the map and the list.
+                *   Create a new node, add it to the map, and add it to the front (MRU).
+
+4.  **Synthesize the Explanation (What does it do?):**
+    *   The program implements an LRU Cache.
+    *   It manages a fixed-size cache.
+    *   When an item is accessed (`get`) or updated (`put`), it is marked as the Most Recently Used.
+    *   When the cache overflows, the Least Recently Used item is evicted.
+
+5.  **Describe the Data Structure (Focus on the combined structure):**
+    *   The structure is a combination of two components working together:
+        1.  **Hash Map:** Provides fast O(1) access to find a node based on its key.
+        2.  **Doubly Linked List:** Provides fast O(1) insertion, deletion, and movement of nodes (crucial for maintaining the LRU order).
+
+6.  **Review and Refine (Ensure clarity and address all parts of the prompt):** (The current structure is clear. I will present the explanation in a logical flow.) (Self-Correction: Make sure to emphasize why the doubly linked list is used—it makes the "move to front" operation O(1).)
+
+7.  **Final Output Generation.** (This matches the detailed explanation provided below.)<channel|>This Java program implements a **Least Recently Used (LRU) Cache**.
+
+An LRU Cache is a design pattern used to efficiently manage a fixed-size cache. The core principle is that when the cache reaches its capacity and a new item needs to be inserted, the item that has not been accessed for the longest time (the Least Recently Used item) is automatically evicted.
+
+## 1. What the Program Does
+
+The `LRUCache` class allows users to store key-value pairs (`K` and `V`) in a cache with a defined maximum `capacity`.
+
+### Key Functionalities:
+
+1. **`LRUCache(int capacity)` (Constructor):** Initializes the cache with a specific maximum size. It sets up the necessary data structures (the map and the doubly linked list).
+2. **`get(K key)`:** Retrieves the value associated with the given key.
+    * If the key exists, it marks that node as the Most Recently Used (MRU) by moving it to the front of the list.
+    * If the key does not exist, it returns `null`.
+3. **`put(K key, V value)`:** Inserts or updates a key-value pair.
+    * **If the key already exists:** It updates the value and moves the existing node to the front (MRU).
+    * **If the key is new:**
+        * It checks if the cache is full (`map.size() >= capacity`).
+        * If full, it identifies the LRU element (the node just before the `tail`) and removes it from both the linked list and the map (eviction).
+        * It creates a new node, adds it to the map, and places it at the front of the list (MRU position).
+
+### Example Walkthrough (`main` method):
+
+The `main` method demonstrates the LRU behavior:
+
+1. **`cache.put("a", 1); cache.put("b", 2); cache.put("c", 3);`**
+   * Cache state: `[c=3, b=2, a=1]` (a is LRU)
+
+2. **`cache.get("a");`**
+   * "a" is accessed. It moves to the front (MRU).
+   * Cache state: `[a=1, c=3, b=2]` (b is now LRU)
+
+3. **`cache.put("d", 4);`**
+   * Cache is full (capacity 3). "b" (the LRU item) is evicted.
+   * "d" is inserted at the front.
+   * Cache state: `[d=4, a=1, c=3]` (b is evicted)
+
+4. **`cache.put("b", 5);`**
+   * Cache is full. "c" (the new LRU item) is evicted.
+   * "b" is inserted at the front.
+   * Cache state: `[b=5, d=4, a=1]` (c is evicted)
+
+---
+
+## 2. Data Structure Description
+
+The `LRUCache` uses a combination of two fundamental data structures to achieve its O(1) time complexity for both `get` and `put` operations:
+
+### A. Hash Map (`Map<K, Node<K, V>> map`)
+
+* **Purpose:** Provides fast lookup (O(1) average time complexity) to quickly find the actual `Node` object corresponding to a given key.
+* **Contents:** Maps the cache key (`K`) to the actual node object in the linked list.
+
+### B. Doubly Linked List (Implemented via `Node` and `head`/`tail`)
+
+* **Purpose:** Maintains the **order of usage**. This structure is crucial for identifying the Most Recently Used (MRU) item (the one linked to the `head`) and the Least Recently Used (LRU) item (the one linked to the `tail`).
+* **Structure:**
+    * **Nodes:** Each `Node` holds the key, value, and pointers to its `prev` and `next` nodes.
+    * **Sentinel Nodes (`head` and `tail`):** Dummy nodes are used to simplify boundary checks.
+        * `head.next` always points to the **MRU** element.
+        * `tail.prev` always points to the **LRU** element.
+* **Functionality:**
+    * **Movement:** The core efficiency comes from the ability to perform **O(1) deletion and insertion**. When an item is accessed (`get` or `put`), its node is instantly removed from its current position and re-inserted at the `head` (MRU position).
+    * **Eviction:** When the cache is full, the LRU item is easily identified as `tail.prev` and removed in O(1) time.
+
+### Summary of Efficiency
+
+By combining these two structures, the LRU Cache achieves high performance:
+
+| Operation | Time Complexity | Reason |
+| :--- | :--- | :--- |
+| `get(key)` | O(1) | Map lookup is O(1), and linked list reordering is O(1). |
+| `put(key, value)`| O(1) | Map lookup/update is O(1), and linked list insertion/deletion is O(1). |
+| Space Complexity | O(Capacity) | The storage scales linearly with the maximum capacity. |
