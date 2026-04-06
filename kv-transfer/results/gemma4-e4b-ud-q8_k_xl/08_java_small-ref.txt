@@ -1,0 +1,108 @@
+<|channel>thought
+Here's a thinking process to construct the explanation:
+
+1.  **Understand the Goal:** The request asks for an explanation of what the provided Java program does and a description of the data structure it uses.
+
+2.  **Analyze the Code Structure (High Level):**
+    *   It's a class named `LRUCache<K, V>`.
+    *   The name "LRU" immediately signals "Least Recently Used."
+    *   It maintains a `capacity`.
+    *   It uses a `Map` (`HashMap`).
+    *   It uses two special nodes, `head` and `tail`, and a custom `Node` class.
+    *   The methods are `get`, `put`, `remove`, and `addToFront`.
+
+3.  **Determine the Purpose (What does it do?):**
+    *   The program implements an **LRU Cache**.
+    *   *Function:* An LRU cache is a caching mechanism that stores a fixed number of key-value pairs (the capacity). When the cache reaches its capacity and a new item needs to be added, it evicts the item that has been accessed the least recently.
+    *   *Operation:*
+        *   `put(key, value)`: Adds or updates an item. If full, it evicts the LRU item.
+        *   `get(key)`: Retrieves an item. Accessing an item makes it the *most* recently used.
+
+4.  **Analyze the Data Structure (How does it work?):**
+    *   *Components:*
+        1.  `Map<K, Node<K, V>> map`: This provides $O(1)$ lookup time (essential for fast `get` operations). It maps the key to its corresponding node in the linked list.
+        2.  The Doubly Linked List (using `Node`): This structure maintains the *order* of usage.
+            *   The node closest to the `head` is the Most Recently Used (MRU).
+            *   The node closest to the `tail` is the Least Recently Used (LRU).
+        3.  `head` and `tail`: Sentinel nodes (dummy nodes) used to simplify edge cases (like adding to an empty list or removing the only item).
+
+    *   *Efficiency:*
+        *   Lookup (`get`): $O(1)$ (Map lookup). Then $O(1)$ (List operation to move the node). Total: $O(1)$.
+        *   Insertion/Update (`put`): $O(1)$ (Map lookup/insert). Then $O(1)$ (List operation). Total: $O(1)$.
+
+5.  **Analyze the Methods (Walkthrough):**
+    *   `put`:
+        *   Check if the key exists. If yes, update value, move node to front (`remove` then `addToFront`).
+        *   If new, check capacity. If full, evict the tail's previous node (the LRU).
+        *   Create new node, put in Map, add to front.
+    *   `get`:
+        *   Check Map for the node. If found, remove it from its current position, and add it to the front (making it MRU).
+    *   `remove`/`addToFront`: These are standard doubly linked list manipulation routines.
+
+6.  **Structure the Explanation:** Organize the findings into clear sections.
+
+    *   **Introduction/Summary:** State the overall purpose (LRU Cache).
+    *   **Program Functionality:** Describe `put` and `get` in detail, focusing on the LRU mechanism.
+    *   **Data Structure Description:** Detail the combination of HashMap and Doubly Linked List, explaining *why* they are used together.
+    *   **Time Complexity (Optional but helpful):** Mention the $O(1)$ efficiency.
+    *   **Execution Example:** Briefly explain how the `main` method demonstrates the eviction policy. (Self-Correction: The provided `main` method is perfect for this.)
+
+7.  **Refine Language:** Ensure technical terms (sentinel node, MRU, LRU, $O(1)$ time complexity) are used accurately. (Review against the initial code structure for accuracy.) (The plan looks solid.)<channel|>This Java program implements an **LRU Cache** (Least Recently Used Cache).
+
+An LRU Cache is a data structure designed to store a fixed number of key-value pairs (defined by `capacity`). Its primary function is to ensure that when the cache is full and a new item needs to be stored, the item that has gone the longest without being accessed (the Least Recently Used item) is evicted.
+
+---
+
+## 🧠 Program Functionality
+
+The `LRUCache` class provides two main operations: `put` and `get`.
+
+### 1. `get(K key)` (Accessing Data)
+When you request a value by its key:
+1. The cache first checks if the key exists in the underlying map.
+2. If it exists, the corresponding node is retrieved.
+3. Crucially, the node is then **moved to the front of the linked list** (making it the Most Recently Used, or MRU).
+4. The value is returned.
+5. If the key does not exist, `null` is returned.
+
+### 2. `put(K key, V value)` (Inserting or Updating Data)
+When you insert or update a key-value pair:
+1. **Update:** If the key already exists, the value is updated, and the node is immediately moved to the front (MRU position).
+2. **Eviction Check:** If the key is new, the cache checks if it is already at capacity (`map.size() >= capacity`).
+3. **Evict LRU:** If the cache is full, the node at the **tail of the linked list** (the LRU item) is removed from both the linked list and the map.
+4. **Insertion:** A new node is created, placed into the map, and added to the front of the linked list (MRU position).
+
+The `printState()` method simply visualizes the current state of the cache, showing items ordered from MRU (left) to LRU (right).
+
+---
+
+## 🏗️ Data Structure Description
+
+The LRU Cache is implemented by combining two core data structures: a **HashMap** and a **Doubly Linked List**. This combination allows for both fast lookups and fast order maintenance, giving the cache an optimal time complexity of $O(1)$ for both `get` and `put` operations.
+
+### 1. The HashMap (`Map<K, Node<K, V>> map`)
+*   **Role:** Provides instant (average $O(1)$) access to any node based on its key.
+*   **Mechanism:** The map stores the `key` and maps it directly to a reference of the corresponding `Node` object in the linked list. This allows the cache to jump immediately to the location of an item without iterating through the list.
+
+### 2. The Doubly Linked List (using `Node<K, V>`)
+*   **Role:** Maintains the usage order of all items in the cache.
+*   **Mechanism:** Each `Node` contains pointers to its `prev` (previous) and `next` nodes.
+    *   **MRU:** The node closest to the `head` (the beginning of the list) is the Most Recently Used.
+    *   **LRU:** The node closest to the `tail` (the end of the list) is the Least Recently Used.
+*   **Sentinels:** The program uses two special, non-data-holding nodes, `head` and `tail`. These are called **sentinel nodes**. They act as fixed boundaries for the list, which greatly simplifies the logic for inserting, removing, and managing edge cases (e.g., an empty list or a list with only one item).
+
+### Summary of Interaction
+
+*   When an operation occurs, the **HashMap** finds the target `Node` instantly.
+*   The **Doubly Linked List** uses the node reference to efficiently bypass and rearrange pointers (via `remove` and `addToFront`), ensuring the list order is always correct.
+
+---
+
+## 🔬 Time Complexity
+
+| Operation | Time Complexity | Why? |
+| :--- | :--- | :--- |
+| `get()` | $O(1)$ | Map lookup is $O(1)$, and list pointer manipulation (`remove` and `addToFront`) is $O(1)$. |
+| `put()` | $O(1)$ | Map lookup/insert is $O(1)$, and list pointer manipulation (for update or eviction) is $O(1)$. |
+| `remove()` | $O(1)$ | Simple pointer updates in the doubly linked list. |
+| `addToFront()` | $O(1)$ | Simple pointer updates at the head sentinel. |

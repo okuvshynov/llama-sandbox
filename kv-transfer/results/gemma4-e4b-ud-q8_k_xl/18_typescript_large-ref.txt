@@ -1,0 +1,113 @@
+<|channel>thought
+Here's a thinking process that leads to the detailed review:
+
+1.  **Understand the Goal:** The request asks for a comprehensive review of a TypeScript/Express/PostgreSQL codebase (a Document Management System). The review must cover bugs, performance issues, security vulnerabilities, and design problems, with suggested fixes for everything found.
+
+2.  **Initial Code Scan & Context Setting (Architecture):**
+    *   **Framework:** Express.js, TypeScript.
+    *   **Database:** PostgreSQL (`pg` pool).
+    *   **Functionality:** Auth, Document Management (CRUD, Versioning, Tagging), File Upload/Download, Folder Structure, Search, Notifications (SSE).
+    *   **Architecture:** Classic tiered approach (Config -> Types -> DB/Repo -> Service -> Middleware -> Routes). This is generally good practice.
+
+3.  **Deep Dive Analysis (Section by Section):**
+
+    *   **Configuration (`config`):**
+        *   *Vulnerability:* Hardcoded defaults (`default-secret-change-me`, `admin`, `admin123`).
+        *   *Bug/Design:* `parseInt(process.env.DB_PORT || "5432")` is fine, but type safety could be improved.
+        *   *Security:* Configuration is not secured (e.g., environment variable validation).
+    *   **Types:** Generally well-defined. No major issues, but consistency (e.g., using `number` vs `string` for IDs) should be checked in implementation.
+    *   **Database (`Pool`):** Standard use of `pg.Pool`. Looks okay.
+    *   **Event Bus:** Singleton pattern (`AppEventBus`). Standard, but potential coupling concern.
+    *   **Repository Layer:** (Crucial for bugs/security)
+        *   `UserRepository.findByEmail`: **CRITICAL SQL INJECTION VULNERABILITY** (string concatenation: `WHERE email = '" + email + "'`).
+        *   `DocumentRepository.create`: Fine, uses parameterization for inputs, but relies on `JSON.stringify` in the database call (a potential anti-pattern if full array/object support is needed via native PG types).
+        *   `DocumentRepository.update`: Good use of dynamic query building, but needs careful security review.
+        *   `DocumentRepository.search`: **CRITICAL SQL INJECTION VULNERABILITY** (using `%${query}%` directly in the string). The logic for dynamic parameters and offset calculation is extremely complex and error-prone.
+        *   `DocumentRepository.getDocumentsWithAuthors`: **Performance issue (N+1 query problem).** Loops and calls `findById` inside the loop.
+        *   `FolderRepository.getFolderTree`: **Performance issue.** Recursive database calls are inefficient for large trees. Should use CTEs (Common Table Expressions) for hierarchical data.
+        *   `AuditLogRepository.findByUser`: **SQL Injection/Type safety issue** (using template literals for dates: `BETWEEN '${startDate}' AND '${endDate}'`).
+    *   **Service Layer:**
+        *   `AuthService.register`: **Security vulnerability (Hashing).** Using SHA256 *without* a proper key derivation function (like bcrypt or Argon2) is insufficient for password storage. The salt usage is also unorthodox (appending it to the password before hashing, rather than mixing it into the derived hash).
+        *   `DocumentService.checkFolderAccess`: This function relies on permission logic, but this logic needs to be robustly integrated into the repository/query layer for performance (e.g., filtering results based on permissions directly in SQL).
+        *   `DocumentService.bulkUpdateTags`: **Performance issue.** Iterating and calling `findById` and `update` sequentially for every document in the batch is very slow. A single transactional query would be better.
+        *   `FileService.uploadFile`: **Bug/Design:** Using `file.path` in memory/filesystem is dangerous (if `multer` config wasn't handled perfectly) and is synchronous file streaming/writing (which can block the event loop if files are large).
+        *   `FileService.deleteFile`: **Bug:** Uses callback `fs.unlink`, which is asynchronous but not awaited, meaning the caller assumes deletion is instantaneous, but the function returns immediately.
+
+    *   **Middleware & Routes:**
+        *   `rateLimiter`: Global state (`Map`) is not thread-safe or scalable across multiple instances (if deployed in a cluster).
+        *   Type Casting: Extensive use of `(req as any).user`. This is a common TypeScript workaround but is poor practice; proper type definitions for `Request` are needed.
+        *   Error Handling: Some routes dump stack traces in production (`stack: (err as Error).stack`). This is a security risk.
+    *   **Search Service:**
+        *   `fullTextSearch`: Caching mechanism is simple (in-memory map), not resilient, and might lead to stale data.
+        *   `getSuggestions`: **SQL Injection Vulnerability** (`ILIKE '${prefix}%'`).
+    *   **SSE Notifications:** Uses Express `Response` object directly. This is fragile and couples the notification logic tightly to the HTTP layer.
+    *   **Startup:** Directory creation is synchronous (`fs.mkdirSync`), which is blocking, though acceptable for startup.
+
+4.  **Structuring the Review:** Organize findings by category (Security, Bugs/Correctness, Performance, Design/Maintainability) and provide clear, actionable fixes. (Self-Correction: Ensure I don't just list problems, but explain *why* they are problems.)
+
+5.  **Final Polish:** Review the tone and ensure the suggestions are high-quality and professional. (This leads to the detailed structure presented in the final output.)<channel|>This codebase represents a complex, functional application. The overall architecture (Repository $\rightarrow$ Service $\rightarrow$ Router) is well-structured, which is excellent for maintainability.
+
+However, given the complexity, there are numerous critical issues across security, performance, and design that need immediate attention.
+
+Here is a detailed review, categorized by issue type.
+
+---
+
+## 🛡️ Security Vulnerabilities (CRITICAL)
+
+These issues expose the system to direct attack vectors and should be addressed immediately.
+
+### 1. SQL Injection Vulnerabilities
+**Location:** `UserRepository.findByEmail`, `DocumentRepository.search`, `SearchService.getSuggestions`, `AuditLogRepository.findByUser`.
+
+**Problem:** Several repository methods construct SQL queries by directly concatenating user input strings. This allows an attacker to inject malicious SQL commands (e.g., `'; DROP TABLE users; --`).
+
+**Example (UserRepository):**
+```typescript
+// Vulnerable line:
+const result = await pool.query("SELECT * FROM users WHERE email = '" + email + "'");
+```
+
+**Fix:** **Always use parameterized queries (`$1`, `$2`, etc.)** for all user-supplied data.
+
+**Example Fix (UserRepository):**
+```typescript
+async findByEmail(email: string): Promise<User | null> {
+  // Safe:
+  const result = await pool.query("SELECT * FROM users WHERE email = $1", [email]);
+  return result.rows[0] || null;
+}
+```
+
+### 2. Weak Password Hashing
+**Location:** `AuthService.register`, `AuthService.login`.
+
+**Problem:** The service uses SHA256 with a self-generated salt. While this incorporates a salt, SHA256 is a fast hashing algorithm, making it highly susceptible to brute-force attacks using modern GPU hardware. This is completely inadequate for password storage.
+
+**Fix:** **Use a robust, slow, key-derivation function (KDF).** The industry standard is **Bcrypt** or **Argon2**. These libraries are designed to be intentionally slow, mitigating brute-force attacks.
+
+**Suggestion:** Replace `crypto.createHash("sha256")` with a library like `bcrypt`.
+
+### 3. Exposure of Internal Errors (Production Risk)
+**Location:** Multiple route handlers, especially `app.post("/api/auth/register")`, `app.use` error handler.
+
+**Problem:** In the catch blocks, the code often sends `(err as Error).message` and sometimes the entire `stack` trace to the client. This leaks valuable internal information about the database schema, file paths, and application logic, aiding attackers in reconnaissance.
+
+**Fix:** **Standardize generic error responses.** In production, catch errors and only return a non-specific message ("Internal Server Error") to the client. Log the detailed error internally.
+
+**Example Fix (Route Handler):**
+```typescript
+// Instead of:
+res.status(500).json({ error: (err as Error).message, stack: (err as Error).stack });
+
+// Use this:
+res.status(500).json({ error: "An unexpected server error occurred." });
+console.error("Error detail:", err); // Log only internally
+```
+
+### 4. Missing Authorization Checks on Operations
+**Location:** Document and Folder routes.
+
+**Problem:** While some routes use `roleMiddleware("admin")`, many critical operations rely only on `authMiddleware`. For instance, the document update logic has some permission checks, but many services perform implicit actions (like deletion or version history modification) without a clear check that the user has *any* required permissions (read/write/admin) for the resource they are touching.
+
+**Fix:** Implement granular access control
