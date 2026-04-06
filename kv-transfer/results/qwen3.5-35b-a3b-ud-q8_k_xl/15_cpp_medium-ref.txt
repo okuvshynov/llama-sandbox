@@ -1,0 +1,76 @@
+Here's a thinking process that leads to the code review:
+
+1.  **Understand the Goal:** The user wants a review of the provided C++ codebase. I need to identify bugs, performance issues, and design problems, explain them, and suggest fixes. The code includes a `MemoryArena` (bump allocator), `Task`, `TaskQueue`, `ThreadPool`, `parallel_merge_sort`, and `ConcurrentHashMap`.
+
+2.  **Initial Scan & Categorization:**
+    *   `MemoryArena`: Bump allocator. Looks mostly okay but has potential issues with `reset` and memory management.
+    *   `Task`: Type-erased callable. Standard `std::function` alternative. Looks mostly fine, but `move` semantics need checking.
+    *   `TaskQueue`: Thread-safe queue. Mutex-protected.
+    *   `ThreadPool`: Worker threads, work stealing, `submit`.
+    *   `parallel_merge_sort`: Uses the pool and arena.
+    *   `ConcurrentHashMap`: Open addressing, linear probing.
+    *   `main`: Driver code.
+
+3.  **Detailed Analysis by Component:**
+
+    *   **`MemoryArena`**:
+        *   *Constructor*: `grow()` is called. `block_size_` is 1MB. `blocks_` is `std::vector<char*>`.
+        *   *Destructor*: Deletes blocks.
+        *   *`allocate`*: Uses `std::align`. Logic looks generally correct for bump allocation.
+        *   *`reset`*: **CRITICAL BUG**. It deletes blocks `0` to `size-2`, keeps the back one. But `blocks_` is reassigned to `{ blocks_.back() }`. This creates a vector with one pointer. If `reset` is called multiple times, `blocks_.back()` might be dangling if the original vector was destroyed or reallocated? No, it's a reference. Wait. `blocks_ = { blocks_.back() }`. If `blocks_` has only 1 element, it keeps it. If `blocks_` has more, it keeps the last one.
+        *   *Wait, check `reset` logic again*:
+            ```cpp
+            void reset() {
+                offset_ = 0;
+                total_allocated_ = 0;
+                for (size_t i = 0; i < blocks_.size() - 1; ++i)
+                    delete[] blocks_[i]; // Deletes all but last
+                blocks_ = { blocks_.back() }; // Keeps last one.
+                current_block_ = blocks_.front();
+            }
+            ```
+            This logic is okay for memory reuse, *except* if `blocks_` is empty (it shouldn't be due to constructor).
+            *Major Bug*: In `main`, `arena.reset()` is called. Then `records[0]->tag` is accessed. `records` holds pointers to memory allocated *inside* the arena. `reset()` deletes the chunks that memory belongs to (or rather, it releases them back to the system, but the pointers remain valid *until* the memory is overwritten or the arena is destroyed).
+            *Wait, `reset` deletes old blocks.* If I allocated memory in Block 0, then call `reset`, Block 0 is deleted. The pointer in `records[0]` now points to freed memory. Accessing it is **Use-After-Free (UB)**.
+            *Design Issue*: `reset` invalidates all existing allocations. The demo code demonstrates this UB immediately.
+        *   *Alignment*: `std::align` returns bool. If it fails in the first block, it calls `grow()`. In the second call (after `grow`), `std::align` is called but return value is ignored. If it fails there (space too small), it returns invalid pointer (offset beyond block).
+        *   *Performance*: `std::vector` reallocation when growing blocks might be slow if many small blocks are created.
+
+    *   **`Task`**:
+        *   `unique_ptr<Concept>`. Move semantics look okay.
+        *   `impl_` default constructed? `Task()` default ctor leaves `impl_` default constructed. `impl_->call()` checks `if (impl_)`. This is safe.
+        *   *Issue*: `Task` stores `std::unique_ptr`. Copying is deleted. Moving is defined.
+        *   *Issue*: `TaskQueue::try_pop` moves the task. `TaskQueue::wait_and_pop` moves the task. This is correct for ownership transfer.
+
+    *   **`TaskQueue`**:
+        *   `wait_and_pop`: Uses `cv_.wait`.
+        *   *Issue*: `done_` flag logic. If `done_` is true and queue is empty, it returns false.
+        *   *Issue*: `wait_and_pop` returns false if `queue_.empty()`. But inside the wait, it checks `!queue_.empty() || done_`. If `done_` becomes true, it wakes up. If queue is empty, it returns false. This is correct for shutdown.
+        *   *Issue*: `try_pop` and `push` use `std::lock_guard`. `wait_and_pop` uses `std::unique_lock`. This is fine.
+        *   *Bug*: `TaskQueue` is copied in `ThreadPool`'s `queues_`. `std::queue` is not copyable. `TaskQueue` needs to be move-only or use `std::deque` inside. Wait, `std::queue` is not copyable. `std::vector<TaskQueue> queues_` will fail to compile if `TaskQueue` has no copy constructor. `TaskQueue` inherits default copy ctor. `std::queue`'s copy ctor depends on underlying container (`std::deque` by default). `std::deque` is copyable. So `std::queue` is copyable.
+        *   *Wait*: `std::queue` is copyable. So `TaskQueue` is copyable.
+        *   *Performance*: Copying `TaskQueue` involves copying the whole queue. If we copy `TaskQueue` in `ThreadPool` constructor? No, `queues_` is `std::vector<TaskQueue>`. `emplace_back` constructs it. `queues_[idx]` is accessed.
+        *   *Wait*: `ThreadPool` constructor: `queues_(num_threads)`. This uses default constructor.
+        *   *Wait*: `ThreadPool` destructor calls `q.done()`.
+        *   *Wait*: `ThreadPool` has `std::vector<TaskQueue> queues_`. If `TaskQueue` is copyable, this works.
+        *   *Wait*: `TaskQueue` destructor? `std::queue` destructor cleans up.
+        *   *Issue*: `TaskQueue` is *not* thread-safe for concurrent access from multiple threads without external locking, but `ThreadPool` controls access. `queues_[idx]` is accessed by worker `idx`. Work stealing accesses `queues_[i]` (other threads).
+        *   *Race Condition*: In `worker_loop`, `queues_[i].try_pop(task)` is called. `try_pop` locks `mtx_`. This is correct.
+        *   *Bug*: `next_queue_` in `submit`. `next_queue_++ % queues_.size()`. `next_queue_` is `std::atomic`. `queues_.size()` is `const` but `queues_` is not protected by a mutex. If `ThreadPool` is modified (not allowed by design), this is safe.
+        *   *Bug*: `wait_all()` checks `q.size()`. `size()` is not thread-safe (it reads `queue_.size()` inside lock). `size()` in `TaskQueue` is `const` but accesses `queue_` without lock. **Race Condition**. `size()` is not safe to call concurrently.
+
+    *   **`ThreadPool`**:
+        *   `submit`: Uses `std::make_shared<std::packaged_task>`.
+        *   *Bug*: `std::invoke_result_t` (C++17). If the code is compiled with C++14, this fails. Assuming C++17/20.
+        *   *Bug*: `queues_[idx].push([task] { (*task)(); })`. `task` is `shared_ptr`. Capture by value. `packaged_task` is move-only. `std::shared_ptr` handles the lifetime.
+        *   *Bug*: `wait_all()`: `q.size()` is not thread-safe.
+        *   *Bug*: `wait_all()` busy waits with `yield`. If `pending_tasks_` is 0, but `queues_` are not empty (tasks waiting to be picked up), it might spin. Actually `pending_tasks_` counts *currently executing* tasks. It does not count *queued* tasks. The loop checks `all_empty` (queue size) AND `pending_tasks_`. This seems logically correct for "wait until all work is done". But `q.size()` is unsafe.
+        *   *Design*: `ThreadPool` destructor sets `stop_` then `done()`. Threads wake up.
+        *   *Bug*: `worker_loop`:
+            ```cpp
+            if (stop_.load()) break;
+            pending_tasks_.fetch_add(1);
+            task();
+            pending_tasks_.fetch_sub(1);
+            ```
+            This is inside `if (!stolen) { queues_[idx].wait

@@ -1,0 +1,119 @@
+<|channel>thought
+
+*   Input: A string (`text`).
+    *   Goal: Implement Huffman Encoding.
+    *   Core Components: `Node` struct, `Compare` functor, `buildTree` function, `buildCodes` function, `encode` function, and `main`.
+
+        *   `Node`: Represents a tree node with character, frequency, and children.
+        *   `Compare`: A priority queue comparator to ensure the node with the *lowest* frequency is at the top (min-heap).
+
+        *   Counts frequency of each character using an `unordered_map`.
+        *   Pushes each character as a leaf node into a min-priority queue.
+        *   Iteratively pops the two smallest nodes, merges them into a parent node (summing frequencies), and pushes the parent back.
+        *   Returns the root of the final tree.
+
+        *   Traverses the tree recursively.
+        *   Going left adds '0', going right adds '1'.
+        *   Leaf nodes store the accumulated prefix as the binary code for that character.
+
+        *   Iterates through the input text and replaces each character with its corresponding Huffman code.
+
+        *   Defines a sample string.
+        *   Builds the tree $\rightarrow$ Generates codes $\rightarrow$ Sorts codes by length for display $\rightarrow$ Encodes the string $\rightarrow$ Calculates bit reduction ratio.
+
+    *   Let $N$ be the length of the input string (`text.size()`).
+    *   Let $K$ be the number of *unique* characters in the string (the alphabet size).
+
+    *   *Step 1: Frequency Counting (`buildTree` start)*
+        *   Iterating through the string: $O(N)$.
+        *   Map insertions: $O(K)$ (average case).
+        *   Total: $O(N)$.
+
+    *   *Step 2: Building the Tree (`buildTree` loop)*
+        *   Initial priority queue push: $K$ elements $\times$ $O(\log K)$ = $O(K \log K)$.
+        *   While loop: Runs $K-1$ times. Inside the loop, two pops and one push. Each PQ operation is $O(\log K)$.
+        *   Total: $O(K \log K)$.
+
+    *   *Step 3: Generating Codes (`buildCodes`)*
+        *   The tree has $2K-1$ nodes.
+        *   Traversing each node once: $O(K)$.
+        *   String concatenations: The max depth is $K$ (in a skewed tree), but average depth is $\log K$. For analysis, it's roughly $O(K \times \text{avg depth})$.
+        *   Total: $O(K)$.
+
+    *   *Step 4: Encoding the Text (`encode`)*
+        *   Iterate through the string: $O(N)$.
+        *   Appending to result string: $O(N \times \text{avg code length})$. Since the max code length is $K$, but realistically it's much smaller, we typically treat the lookup as $O(1)$ average.
+        *   Total: $O(N)$.
+
+    *   *Step 5: Sorting codes for display (`main`)*
+        *   Sorting $K$ elements: $O(K \log K)$.
+
+    *   *Overall Time Complexity:*
+        *   $O(N + K \log K)$.
+        *   Since $K$ (unique characters) is usually much smaller than $N$ (text length) and is capped by the character set (e.g., 256 for ASCII), $O(N)$ is the dominant factor.
+
+    *   Frequency map: $O(K)$.
+    *   Priority Queue: $O(K)$.
+    *   Huffman Tree: $O(K)$ nodes.
+    *   Codes Map: $O(K \times \text{avg code length})$.
+    *   Total: $O(K)$.
+
+    *   Ensure clear sections: "What it does" and "Time Complexity Analysis".
+    *   Use a step-by-step breakdown for the algorithm.
+    *   Use Big O notation clearly.<channel|>### What This Program Does
+
+This program implements **Huffman Coding**, a famous greedy algorithm used for **lossless data compression**. The goal is to assign variable-length binary codes to characters based on their frequency: characters that appear more often get shorter codes, and characters that appear less often get longer codes.
+
+Here is the step-by-step breakdown of the logic:
+
+1.  **Frequency Analysis (`buildTree` part 1):**
+    The program first scans the input text and counts how many times each character appears using a `std::unordered_map`.
+
+2.  **Building the Huffman Tree (`buildTree` part 2):**
+    *   It creates a "leaf node" for every unique character and puts them into a **Min-Priority Queue**. The node with the lowest frequency always stays at the top.
+    *   The algorithm repeatedly removes the two nodes with the lowest frequencies, creates a new internal "parent" node with a frequency equal to the sum of the two, and pushes this parent back into the queue.
+    *   This continues until only one node remains: the **Root** of the Huffman Tree.
+
+3.  **Generating Binary Codes (`buildCodes`):**
+    The program traverses the resulting tree from the root to the leaves. 
+    *   Moving **left** appends a `'0'` to the code.
+    *   Moving **right** appends a `'1'` to the code.
+    *   When a leaf node is reached, the accumulated string of 0s and 1s becomes the unique prefix code for that character.
+
+4.  **Encoding and Calculation (`encode` and `main`):**
+    *   The program replaces every character in the original text with its new binary code.
+    *   Finally, it compares the size of the original text (assuming 8 bits per character) against the size of the encoded binary string to show the compression ratio.
+
+---
+
+### Time Complexity Analysis
+
+Let $N$ be the total number of characters in the input string and $K$ be the number of **unique** characters (the alphabet size).
+
+#### 1. `buildTree`
+*   **Frequency Counting:** Iterating through the string takes $O(N)$.
+*   **Initial PQ Population:** Pushing $K$ unique characters into the priority queue takes $O(K \log K)$.
+*   **Tree Construction:** The `while` loop runs $K-1$ times. Inside the loop, `pop` and `push` operations on the priority queue take $O(\log K)$. Total: $O(K \log K)$.
+*   **Subtotal:** $O(N + K \log K)$.
+
+#### 2. `buildCodes`
+*   The function visits every node in the Huffman tree exactly once. A binary tree with $K$ leaves has $2K-1$ nodes.
+*   **Subtotal:** $O(K)$.
+
+#### 3. `encode`
+*   The program iterates through the input string of length $N$. For each character, it performs a map lookup (average $O(1)$) and appends the code to the result string.
+*   **Subtotal:** $O(N)$.
+
+#### 4. Main Function Sorting
+*   The program sorts the unique codes for display purposes. Sorting $K$ elements takes $O(K \log K)$.
+*   **Subtotal:** $O(K \log K)$.
+
+### Final Complexity Summary
+
+| Aspect | Time Complexity | Space Complexity |
+| :--- | :--- | :--- |
+| **Total Time** | **$O(N + K \log K)$** | **$O(K)$** |
+
+**Key Takeaways:**
+*   **Time:** Since $K$ (the number of unique characters) is usually small and constant (e.g., max 256 for standard ASCII), the complexity is effectively **linear $O(N)$** relative to the input text size.
+*   **Space:** The space complexity is $O(K)$ because we store the frequency map, the priority queue, and the final Huffman tree, all of which are proportional to the number of unique characters, not the length of the input string.

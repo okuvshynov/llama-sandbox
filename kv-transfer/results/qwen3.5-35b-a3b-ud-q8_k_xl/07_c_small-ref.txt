@@ -1,0 +1,195 @@
+Let me analyze this C program for memory-related bugs. I'll go through each function and identify potential issues.
+
+1. **`table_create` function:**
+   - No error checking on `malloc` calls - if malloc fails, it will return NULL and subsequent dereferences will crash
+   - This is a common issue but not necessarily a memory leak, more of a robustness issue
+
+2. **`table_put` function:**
+   - No error checking on `malloc`/`realloc`/`strdup` calls
+   - When updating an existing key (lines 31-33), it calls `strdup(value)` but doesn't free the old value first - **MEMORY LEAK**
+   - After `realloc` fails, `t->entries` might be NULL or point to old memory, and we continue using it - **USE AFTER FREE / MEMORY CORRUPTION**
+   - If `strdup` fails for key or value after realloc, we have a partially initialized entry
+
+3. **`table_delete` function:**
+   - When deleting an entry, it does `t->entries[i] = t->entries[t->size - 1];` which copies the Entry struct (including pointers)
+   - **CRITICAL BUG**: This moves the key and value pointers from the last entry to the deleted position, but doesn't free the old key/value at the deleted position
+   - The last entry's key/value are now orphaned (no longer reachable) - **MEMORY LEAK**
+   - Additionally, after this operation, `t->size` is decremented, so the last entry won't be freed in `table_free` - **DOUBLE FREE** risk if we were to try to free it elsewhere
+
+4. **`table_free` function:**
+   - No error checking on pointer validity
+   - The `table_delete` bug means some entries won't be freed (the last entry that was moved)
+   - If `table_free` is called on a NULL table pointer, it will crash - **NULL POINTER DEREFERENCE**
+
+5. **`main` function:**
+   - No error checking on `table_create` return value
+   - No error checking on `table_put` return value (though it doesn't return anything)
+   - No error checking on `table_get` return value when using it in printf
+
+Let me trace through the `table_delete` issue more carefully:
+
+When we call `table_delete(t, "city")`:
+- It finds "city" at some index `i`
+- It copies `t->entries[t->size - 1]` to `t->entries[i]`
+- This copies the pointers (key and value) from the last entry to position `i`
+- The last entry's original key/value are now lost (no one points to them anymore)
+- `t->size--` means the last entry is no longer counted
+- In `table_free`, we only iterate up to the new `t->size`, so the moved-to-last-position entry's key/value are never freed
+
+This creates:
+1. **Memory leak**: The original key/value of the last entry that was moved are leaked
+2. **Potential double-free**: If the table is freed and then the program tries to access or free again (though not shown here)
+
+Let me also check if there are any issues with the `table_put` function when updating an existing key:
+
+```c
+for (int i = 0; i < t->size; i++) {
+    if (strcmp(t->entries[i].key, key) == 0) {
+        t->entries[i].value = strdup(value);
+        return;
+    }
+}
+```
+
+Yes, when updating an existing entry, the old `t->entries[i].value` is not freed before being overwritten. This is a **memory leak**.
+
+Let me compile a complete list:
+
+1. **Memory leak in `table_put`**: When updating an existing key, the old value is not freed
+2. **Memory leak in `table_delete`**: When moving the last entry to replace a deleted entry, the original key/value of the last entry are leaked
+3. **NULL pointer dereference risk**: `table_free` doesn't check if `t` is NULL
+4. **No malloc/realloc/strdup error checking**: All allocation functions could fail but aren't checked
+5. **Potential use-after-free in `table_put`**: If `realloc` fails, `t->entries` might be NULL but code continues to use it
+
+Let me make sure I'm not missing anything...
+
+Actually, there's another subtle issue in `table_put`:
+
+```c
+if (t->size >= t->capacity) {
+    t->capacity *= 2;
+    t->entries = realloc(t->entries, sizeof(Entry) * t->capacity);
+}
+```
+
+If `realloc` fails, it returns NULL and the original `t->entries` is still valid. But the code assigns the NULL to `t->entries` and continues, which will cause a crash when trying to access `t->entries[t->size]`. This is a **NULL pointer dereference / use-after-free** scenario.
+
+Also, if `strdup(key)` or `strdup(value)` fails after `realloc` succeeds, we have a partially initialized entry that will leak memory when `table_free` is called.
+
+Let me finalize my list of memory-related bugs:
+
+1. **Memory leak in `table_put`**: Old value not freed when updating existing key
+2. **Memory leak in `table_delete`**: Original key/value of last entry leaked when moving it
+3. **NULL pointer dereference in `table_free`**: No NULL check for `t`
+4. **No malloc error checking in `table_create`**: Could crash if malloc fails
+5. **NULL pointer dereference in `table_put`**: If realloc fails, t->entries becomes NULL but code continues
+6. **Partial initialization leak**: If strdup fails after realloc, memory is leaked
+7. **No malloc error checking in `table_put`**: strdup could fail
+
+These are the main memory-related bugs I can identify.
+</think>
+
+Here are all the memory-related bugs identified in the provided C program:
+
+---
+
+### 1. Memory Leak in `table_put` (Updating Existing Key)
+
+**Issue:** When a key already exists, the old `value` is overwritten without freeing the previous allocation.
+
+```c
+if (strcmp(t->entries[i].key, key) == 0) {
+    t->entries[i].value = strdup(value);  // Old value is leaked
+    return;
+}
+```
+
+**Fix:**
+```c
+if (strcmp(t->entries[i].key, key) == 0) {
+    free(t->entries[i].value);
+    t->entries[i].value = strdup(value);
+    return;
+}
+```
+
+---
+
+### 2. Memory Leak in `table_delete` (Moving Last Entry)
+
+**Issue:** When deleting an entry, the last entry's key/value pointers are moved to the deleted position, but their original memory is never freed.
+
+```c
+t->entries[i] = t->entries[t->size - 1];  // Old key/value lost
+t->size--;
+```
+
+**Fix:**
+```c
+free(t->entries[i].key);
+free(t->entries[i].value);
+t->entries[i] = t->entries[t->size - 1];
+t->size--;
+```
+
+---
+
+### 3. NULL Pointer Dereference in `table_free`
+
+**Issue:** `table_free` does not check if the `Table` pointer is `NULL`, leading to a potential crash.
+
+**Fix:**
+```c
+void table_free(Table* t) {
+    if (t == NULL) return;
+    for (int i = 0; i < t->size; i++) {
+        free(t->entries[i].key);
+        free(t->entries[i].value);
+    }
+    free(t->entries);
+    free(t);
+}
+```
+
+---
+
+### 4. No Error Checking on `malloc` in `table_create`
+
+**Issue:** If `malloc` fails, the function returns a `NULL` pointer, and `main` proceeds to use it without checking.
+
+**Fix:**
+```c
+Table* table_create(int capacity) {
+    Table* t = malloc(sizeof(Table));
+    if (t == NULL) return NULL;
+    t->entries = malloc(sizeof(Entry) * capacity);
+    if (t->entries == NULL) {
+        free(t);
+        return NULL;
+    }
+    t->size = 0;
+    t->capacity = capacity;
+    return t;
+}
+```
+
+---
+
+### 5. NULL Pointer Dereference in `table_put` (After `realloc` Failure)
+
+**Issue:** If `realloc` fails, `t->entries` becomes `NULL`, but the function continues to use it.
+
+```c
+t->entries = realloc(t->entries, sizeof(Entry) * t->capacity);  // Could be NULL
+t->entries[t->size].key = strdup(key);  // Crash
+```
+
+**Fix:**
+```c
+if (t->size >= t->capacity) {
+    t->capacity *= 2;
+    Entry* new_entries = realloc(t->entries, sizeof(Entry) * t->capacity);
+    if (new_entries == NULL) {
+        return;  // Handle allocation failure
+    }
+    t->

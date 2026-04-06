@@ -1,0 +1,72 @@
+Here's a thinking process that leads to the code review:
+
+1.  **Understand the Goal:** The user wants a review of a Rust codebase implementing an async work-stealing task scheduler built on `tokio`. I need to identify bugs, performance issues, and design problems, explain them, and suggest fixes.
+
+2.  **Initial Scan & Structure Analysis:**
+    *   **Language:** Rust.
+    *   **Async Runtime:** `tokio`.
+    *   **Architecture:**
+        *   `task.rs`: Task definition, state, handles.
+        *   `queue.rs`: Work-stealing queues (lock-free attempt, wrapped in Mutex), overflow, priority.
+        *   `worker.rs`: Worker threads, execution loop, waker implementation.
+        *   `scheduler.rs`: Top-level logic, dispatch loop, lifecycle management.
+        *   `metrics.rs`: Tracking stats.
+        *   `lib.rs`: Imports and module organization (implied, though the code block looks like `lib.rs` containing everything).
+    *   **Key Concepts:** Work-stealing, dependency management, priority queues, cancellation, metrics.
+
+3.  **Detailed Code Review - Section by Section:**
+
+    *   **Imports & Setup:**
+        *   `use std::task::{Context, Poll, Waker};` vs `futures_waker`.
+        *   `BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>`.
+        *   `TaskResult` is defined inside `task.rs` but used elsewhere.
+
+    *   **`task.rs` (Task Representation):**
+        *   *Dependencies:* `dependencies` and `dependents` use `Arc<TaskInner>`.
+        *   *Bug:* Circular references. `dep.dependents.push(inner)` and `inner.dependencies.push(dep)`. Neither uses `Weak`. This creates a memory leak (cycle). `Arc` reference count will never reach 0.
+        *   *State:* `state: Mutex<TaskState>`. `Mutex` is fine for state, but `state` is accessed frequently.
+        *   *Cancellation:* `cancel_flag: AtomicBool`. `cancel()` wakes a waker. But where is the waker set? `waker: Mutex<Option<Waker>>`.
+        *   *Result Handling:* `TaskHandle` has `result_rx: Option<oneshot::Receiver<TaskResult>>`. In `submit`, a `result_tx` is created but *never used*. The worker execution logic (`execute_task`) does not send the result to this channel. It just updates state. `wait_result` will likely return `None` or error immediately because the sender is dropped.
+        *   *Priority:* `Priority` enum. `PartialOrd`/`Ord` implemented? Yes.
+
+    *   **`queue.rs` (Work-Stealing):**
+        *   *Lock-Free Attempt:* `TaskDeque` uses `AtomicUsize` for head/tail.
+        *   *Bug:* `push` logic `tail - head > self.capacity`. `tail` and `head` are `AtomicUsize`. Subtraction on unsigned integers wraps. If `head > tail`, this becomes huge. Should use `wrapping_sub` or check differently.
+        *   *Bug:* `push` check `if tail - head > self.capacity`. `head` and `tail` are loaded with `Relaxed`/`Acquire`. Race condition: `tail` increments, `head` increments. `tail - head` might be stale.
+        *   *Bug:* `pop` logic. `tail` is decremented *before* checking `head`. This is a classic "steal" race condition (the "herd" problem).
+        *   *Bug:* `steal` logic. `std::ptr::read(task_ptr)` inside `steal`. If another thread succeeds the CAS, this task is read twice (once here, once by the other). `std::mem::forget(task)` is used, but `ptr::read` creates a new copy. If the original slot is taken by another thread after `read` but before `forget`, UB occurs (double free? No, `Option<Task>` moved out). Actually, `ptr::read` creates a copy. If the slot is cleared by the owner, the owner might drop `None` (no-op) or try to drop `Some`. Wait, `steal` reads the value. If `compare_exchange` fails, another stealer took it. The current thread has a copy. `forget` prevents double free *of the copy*. But the slot in the buffer might have been invalidated.
+        *   *Design:* `SharedTaskDeque` wraps `TaskDeque` in `Mutex`. This completely defeats the purpose of the lock-free implementation. It's just a `Mutex<VecDeque>` with extra atomic ops inside.
+        *   *OverflowQueue:* `pop_blocking` uses `std::Condvar`. This blocks the *tokio* runtime thread. This is a major performance killer. You cannot block tokio threads on `Condvar` wait.
+        *   *PriorityTaskQueue:* `pop_highest` iterates 0..4. Lock contention on lower priorities blocks higher priorities. This is "Priority Inversion" (commented in code, but it's a bug).
+
+    *   **`worker.rs` (Execution):**
+        *   *Execution:* `execute_task` polls the future *once*.
+        *   *Critical Bug:* Async futures yield. They return `Poll::Pending`. The code currently drops the future in `Poll::Pending`. It should be stored back in `task.inner.future` so it can be polled later. Currently, async tasks (like `tokio::time::sleep`) will never complete.
+        *   *Waker:* `futures_waker` implementation is sketchy.
+            *   `clone_waker`: Creates a new `Arc` from raw ptr. `Arc::into_raw` consumes the Arc. `clone_waker` is called when the waker is cloned.
+            *   `wake`: Consumes the `Arc` (`Arc::from_raw`). If the task is cancelled or state changes, this might be called multiple times?
+            *   `wake_by_ref`: Consumes the `Arc` (`Arc::from_raw`). This is WRONG. `wake_by_ref` is supposed to *not* consume ownership. It should clone the Arc or just wake the waker inside.
+            *   *UB:* `Arc::from_raw` expects the pointer to be valid. If the `TaskInner` is dropped elsewhere, this is use-after-free.
+        *   *Dependencies:* `is_ready` checks dependencies. If a dependency is `Failed`, the dependent task is stuck in `Pending` forever.
+        *   *State:* `Running` state is set. If a worker steals the task, the `future` field is taken out. But `Task` is `Clone` (Arc). The queue stores `Task`. `pop` returns `Task`. `execute_task` takes `task` by value (move). `inner.future.lock().unwrap().take()` takes the future out of the shared state.
+        *   *Race:* If a task is stolen, `future` is `None`. `execute_task` checks `if let Some(mut fut) = future`. If `None`, it does nothing? It drops the task. The task is lost.
+
+    *   **`scheduler.rs` (Orchestration):**
+        *   *Lifecycle:* `Scheduler::new` creates `inner`. `Scheduler::start` spawns workers.
+        *   *Bug:* `workers` vector in `SchedulerInner` is never populated with `JoinHandle`s. `WorkerHandle` struct exists but isn't used to store handles. `shutdown` just sleeps. It doesn't join workers.
+        *   *Submit:* `result_tx` created, `result_rx` put in handle. `result_tx` is dropped immediately. `wait_result` returns `None`.
+        *   *Dispatch:* `dispatch_loop` takes tasks from `priority_queue`. If `priority_queue` is empty, it yields. If `priority_queue` has tasks, it pushes to workers.
+        *   *Logic:* `submit` checks `max_tasks`. `dispatch_loop` pushes to `local_queue`. `local_queue` is `SharedTaskDeque` (Mutex).
+        *   *Shutdown:* `shutdown_notify` is notified. Workers check `running` atomic bool. No drain of queues. Pending tasks are abandoned.
+
+    *   **`metrics.rs`:**
+        *   *Leak:* `task_timings` HashMap is never cleaned. `record_task_timing` is called... wait, is it called? `record_task_execution` is called. `record_task_timing` is defined but not used in `execute_task`.
+        *   *Performance:* `RwLock<HashMap>` on the hot path.
+
+    *   **`lib.rs` (Top level):**
+        *   `TaskGroup`: `submit_all` moves tasks. `wait_all` busy polls.
+        *   `RateLimiter`: `try_acquire` locks `tokens` then `last_refill`. `acquire` loops.
+        *   *Deadlock:* `try_acquire` locks `tokens` then `last_refill`. If another thread locks `last_refill` then `tokens`, deadlock. (Though currently only `try_acquire` exists).
+        *   *Bug:* `acquire` uses `tokio::time::sleep`. This is fine.
+
+    *   **

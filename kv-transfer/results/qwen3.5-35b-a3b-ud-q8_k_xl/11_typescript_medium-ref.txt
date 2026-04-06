@@ -1,0 +1,87 @@
+Here's a thinking process that leads to the code review:
+
+1.  **Understand the Goal:** The user wants a review of the provided TypeScript codebase. The review needs to cover bugs, type safety issues, and architectural problems. For each issue, I need to explain it and suggest improvements.
+
+2.  **First Pass - High-Level Scan:**
+    *   **Structure:** It's a TypeScript project with a custom `TypedEventEmitter`, a `Task` interface, a `Pipeline` class extending the emitter, and a usage example.
+    *   **Purpose:** It looks like a task execution pipeline with dependency management, concurrency control, retries, timeouts, and event broadcasting.
+    *   **Initial Impression:** The code is reasonably well-structured but has several critical type safety issues (especially with `any`), potential race conditions, memory leaks (listeners), and architectural coupling issues (accessing private state from outside).
+
+3.  **Detailed Analysis - Section by Section:**
+
+    *   **`EventMap` & `TypedEventEmitter`:**
+        *   *Issue:* `EventMap` uses `[event: string]: (...args: any[]) => void;`. This defeats the purpose of a "Typed" emitter.
+        *   *Issue:* `private listeners: Map<keyof T, Set<Function>>`. `Function` is too broad. It should be `T[K]`.
+        *   *Issue:* `off` returns `void`. Usually, it's good practice to return a boolean (did it remove?) or a cleanup function (if it wasn't already). The `on` method returns a cleanup function, but `off` doesn't.
+        *   *Issue:* `once` listeners aren't cleaned up immediately after firing if `emit` throws. (Minor, but `emit` logic clears them).
+        *   *Issue:* `onceListeners` Map logic. It uses `clear()` after iteration. This is fine for one-off, but if `emit` fails in the middle of iterating, listeners are lost.
+        *   *Issue:* `emit` logic. `this.listeners.get(event)?.forEach(fn => fn(...args));`. If one listener throws, the rest are skipped. This is standard event emitter behavior, but worth noting.
+
+    *   **`Task` Interface:**
+        *   *Issue:* `execute: () => Promise<T>`. This is generic, but `Task<T>` generic is defined in the interface.
+        *   *Issue:* `dependencies: string[]`. This assumes IDs are unique strings.
+        *   *Issue:* `result?: T`. `any` is used elsewhere (`PipelineEvents`).
+
+    *   **`PipelineEvents` & `Pipeline` Class:**
+        *   *Issue:* `PipelineEvents` extends `EventMap` which has `any[]`. This weakens the typing of the events.
+        *   *Issue:* `private results: Map<string, any>`. The `any` here is problematic. It should be `Map<string, T>` but `T` varies per task. A `Record<string, unknown>` or similar is better, but `any` hides type errors.
+        *   *Issue:* `addTask<T>`. The `Task` interface is defined outside, but `addTask` creates a `Task<T>`. However, `Task` interface has `result?: T`. This is consistent.
+        *   *Issue:* `getReadyTasks`. Accessing `this.tasks` directly.
+        *   *Issue:* `executeTask`. `task.execute()` is called.
+        *   *Issue:* `cancel()`. It sets status to 'cancelled'. However, if a task is currently running (`status === 'running'`), setting status to 'cancelled' doesn't actually cancel the underlying `Promise` in `execute`. The `execute` function will finish, and the `Pipeline` will treat it as `completed` (if no error) or `failed`. The `cancel` logic is superficial.
+        *   *Issue:* `getStatus`. Returns a record.
+        *   *Issue:* Usage example accesses `pipeline['results']`. This requires casting or public access. It's using bracket notation to access private. This is a code smell.
+
+    *   **Concurrency & Logic:**
+        *   *Issue:* `Promise.all(batch.map(...))`. If one task fails, `Promise.all` rejects immediately. However, `executeTask` swallows errors and sets status to `failed`. `Promise.all` will resolve successfully even if tasks fail, *unless* the task throws.
+        *   *Wait, check `executeTask`:* It catches errors inside the loop. It does *not* re-throw. So `Promise.all` will resolve.
+        *   *Issue:* In `run()`, `Promise.all` resolves. Then `const failed = ...`. Then `if (failed.length > 0) throw ...`. This logic works, but it waits for *all* tasks in the batch to finish before checking.
+        *   *Issue:* `Promise.race` for timeout. `reject` inside the race. If timeout happens, `executeTask` catches it.
+        *   *Issue:* Concurrency control. `ready.slice(0, this.concurrency)`. `Promise.all` runs them. Then the loop continues. This is correct for concurrency limiting.
+        *   *Issue:* Deadlock detection. `if (pending.length > 0 && running.length === 0)`. This detects cycles.
+        *   *Issue:* `setTimeout` in `run` loop. `await new Promise(r => setTimeout(r, 100))`. This is a busy-wait loop with a delay. It's okay for simple pipelines but inefficient compared to using a Queue or an async wait mechanism.
+
+    *   **Type Safety (The big one):**
+        *   `EventMap` uses `any`.
+        *   `PipelineEvents` relies on `EventMap`.
+        *   `results: Map<string, any>`.
+        *   `executeTask` uses `any` in `result`.
+        *   Usage example accesses `pipeline['results']`.
+        *   `TypedEventEmitter` has `Set<Function>` instead of `T[K]`.
+
+    *   **Memory Leaks:**
+        *   `on` returns a cleanup function.
+        *   `off` removes listeners.
+        *   `once` listeners are cleared in `emit`.
+        *   *Issue:* `emit` clears `onceListeners` *after* calling them. If `emit` throws, `onceListeners` might be partially cleared or left in a bad state? Actually, the code does `onceSet.forEach... onceSet.clear()`. If `forEach` throws, `clear` might not run.
+        *   *Issue:* `on` adds to `this.listeners`. `off` removes. If `off` is never called, listeners accumulate.
+
+    *   **Architecture:**
+        *   Tight coupling: `Pipeline` stores `results` and exposes them via private access hack in usage.
+        *   `cancel` doesn't actually cancel async operations.
+        *   `executeTask` handles retries and timeouts, but `Pipeline` handles the orchestration. This separation is okay.
+        *   No dependency injection or configuration management.
+
+4.  **Drafting the Review:**
+
+    *   **Structure:**
+        1.  **Summary:** Brief overview.
+        2.  **Critical Bugs & Logic Errors:** Things that break functionality or cause data loss.
+        3.  **Type Safety Issues:** Where `any` is abused or types are loose.
+        4.  **Architectural & Design Problems:** Coupling, cancellation, scalability.
+        5.  **Refactored Code Example:** Provide a corrected version of key parts.
+
+    *   **Specific Points to Elaborate:**
+        *   **Type Safety:** The `TypedEventEmitter` is not actually typed well because `EventMap` uses `any`. `Set<Function>` should be `Set<T[K]>`.
+        *   **Cancellation:** `cancel()` sets a flag but doesn't stop the `Promise` in `executeTask`. Needs `AbortController`.
+        *   **Error Handling:** `Promise.all` swallows individual task failures (because `executeTask` catches them). The check happens *after* the batch.
+        *   **Private Access:** Usage example `pipeline['results']` is bad practice. Expose a method or property.
+        *   **Cleanup:** `once` listeners aren't cleared if the event loop throws.
+        *   **Concurrency:** The `ready.slice` approach is okay, but `Promise.all` waits for the whole batch. If one hangs, the whole batch hangs (until timeout).
+        *   **Return Types:** `on` returns a cleanup function, `off` returns void. Inconsistent.
+
+5.  **Refining the Suggestions:**
+
+    *   *Fix `EventMap`:* Make it strict. `type EventMap<T> = { [E in keyof T]: (arg: T[E]) => void }`. Actually, `T` in `TypedEventEmitter` should be the map of callbacks. `interface EventMap { [event: string]: (...args: any[]) => void; }` is the root cause.
+    *   *Fix `cancel`:* Pass `AbortSignal` to `execute`.
+    *   *Fix `results`:* Map `id` to `result`. Keep it typed if possible, or use `

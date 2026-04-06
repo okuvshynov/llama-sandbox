@@ -1,0 +1,123 @@
+Here's a thinking process that leads to the code review:
+
+1.  **Understand the Goal:** The user wants a comprehensive review of the provided TypeScript codebase (a Document Management System API). I need to identify bugs, performance issues, security vulnerabilities, and design problems, explain them, and suggest fixes.
+
+2.  **Initial Scan & High-Level Assessment:**
+    *   **Technology Stack:** Node.js, Express, TypeScript, PostgreSQL (`pg`), JWT, Multer, Crypto.
+    *   **Architecture:** Looks like a layered architecture (Controller/Route -> Service -> Repository), but it's a bit mixed. Some logic is in Repositories, some in Services.
+    *   **Overall Impression:** It's a functional prototype, but it has several critical security flaws (SQL Injection, hardcoded secrets, weak auth), performance bottlenecks (N+1 queries, blocking file I/O), and architectural issues (tight coupling, missing error handling). It's not production-ready.
+
+3.  **Detailed Analysis by Category:**
+
+    *   **Security Vulnerabilities (Critical):**
+        *   *SQL Injection:* `findByEmail` in `UserRepository` uses string interpolation (`'${email}'`). This is a huge red flag.
+        *   *Hardcoded Secrets:* `JWT_SECRET` has a fallback default value. `dbPassword` has a default value.
+        *   *Weak Password Hashing:* Using `sha256` directly on the password is insecure. Needs a salt and a slow hash function like `bcrypt`.
+        *   *Authorization Bypass:* `deleteDocument` checks `authorId`. What if the folder has admin permissions? (Actually, `checkFolderAccess` exists but isn't called in `deleteDocument` logic, it only checks author).
+        *   *Sensitive Data Exposure:* Stack traces are returned to the client (`(err as Error).stack`).
+        *   *Path Traversal:* File uploads use `originalName`. Need to sanitize filenames to prevent `../../` attacks.
+        *   *Input Validation:* No validation on input data (e.g., `req.body` types).
+        *   *Information Leakage:* `health` endpoint exposes DB host/port.
+
+    *   **Bugs & Functional Issues:**
+        *   *Race Conditions:* File upload logic (`createReadStream` -> `pipe` -> `createWriteStream`) happens asynchronously, but the code proceeds to DB insert immediately. If the write fails, the DB record exists but the file doesn't.
+        *   *Logic Error in `findByEmail`:* SQL Injection prevents login for specific characters.
+        *   *Logic Error in `update` (Repo):* Dynamic SQL construction for `UPDATE` might have issues with reserved keywords or escaping if not careful, though parameterized queries are mostly used.
+        *   *Logic Error in `getFolderTree`:* Recursive function without depth limit. Could crash on circular references or deep trees.
+        *   *Logic Error in `auditRepo.findByUser`:* SQL Injection again (`'${startDate}'`).
+        *   *Logic Error in `Suggestion` Search:* SQL Injection (`'${prefix}%'`).
+        *   *Event Bus:* `AppEventBus` is a Singleton, but `SearchService` is instantiated per request in the `eventBus.on` listeners.
+        *   *Notification Service:* `registerListener` stores `Response` objects. In Express, response objects shouldn't be stored for long periods (memory leak potential, connection closure issues).
+        *   *Rate Limiter:* In-memory map. If the app scales horizontally, rate limits won't work.
+
+    *   **Performance Issues:**
+        *   *N+1 Queries:* `getDocumentsWithAuthors` fetches documents, then loops to fetch authors individually.
+        *   *Blocking I/O:* `fs` operations are blocking in some contexts (though `createReadStream` is stream-based, `unlink` uses callback without promise wrapper in `deleteFile`).
+        *   *Memory:* `searchCache` grows indefinitely.
+        *   *Database:* No connection pool tuning (default might be okay, but `max` is hardcoded). No connection error handling.
+        *   *Search:* `ILIKE '%...%'` prevents index usage on large tables.
+
+    *   **Design Problems:**
+        *   *Tight Coupling:* Repositories use `pool` directly. Services instantiate Repositories directly (hard to mock).
+        *   *Type Safety:* Heavy use of `any` (`(req as any).user`, `Record<string, any>`).
+        *   *Error Handling:* Generic `catch` blocks return 500s. Specific errors aren't handled well.
+        *   *Middleware:* `authMiddleware` casts `req` to `any`.
+        *   *Global State:* `config` is global.
+        *   *Architecture:* Services create new Repository instances (`new DocumentRepository()`) inside methods. This is inefficient and makes dependency injection hard.
+        *   *File Storage:* Storing files on the local filesystem (`./uploads`) is bad for containerized/cloud deployments. Needs S3/MinIO.
+
+4.  **Drafting the Review:**
+    *   *Structure:* Group findings by category (Security, Bugs, Performance, Design).
+    *   *Format:* Issue -> Explanation -> Fix/Suggestion.
+    *   *Tone:* Professional, constructive, critical but helpful.
+
+5.  **Refining Specific Findings (Self-Correction during drafting):**
+    *   *Correction:* I noticed `findByEmail` uses string interpolation. I need to highlight that specifically.
+    *   *Correction:* The `deleteFile` function uses a callback for `fs.unlink`. It doesn't await it. If an error happens, the DB transaction (if any) might be out of sync, and the error is just logged.
+    *   *Correction:* The `SearchService` reindex logic uses `to_tsvector`. This requires Postgres extensions. Is it installed? Probably not in all environments.
+    *   *Correction:* `config.jwtSecret` fallback is dangerous. I should emphasize environment variables.
+    *   *Correction:* The `NotificationService` storing Express `Response` objects is a major anti-pattern. It prevents garbage collection and causes memory leaks.
+
+6.  **Final Review of the Output:**
+    *   Did I cover security? Yes (SQLi, Auth, Secrets).
+    *   Did I cover performance? Yes (N+1, Caching, DB).
+    *   Did I cover design? Yes (DI, Architecture).
+    *   Did I provide code snippets for fixes? Yes, where appropriate.
+
+7.  **Final Polish:** Check formatting (Markdown, code blocks). Ensure the distinction between "Critical" and "Medium" issues is clear. (Decided to group by category instead of severity to make it easier to read, but highlight critical ones).
+
+*(Self-Correction on `deleteFile`)*: Wait, `fs.unlink` is in `FileService.deleteFile`. It uses a callback and doesn't `await`. This means the function returns before deletion is confirmed. If the DB delete happens after, and the file delete fails, we have a dangling DB record.
+*(Self-Correction on `config`)*: The config object has defaults. `dbPassword || "admin123"` is a massive security risk.
+
+Let's organize the response.
+1. **Critical Security Vulnerabilities**
+2. **Functional Bugs & Logic Errors**
+3. **Performance Bottlenecks**
+4. **Architectural & Design Flaws**
+5. **General Best Practices**
+
+Proceed to generate the response based on these points.
+</think>
+
+This code review identifies several critical security vulnerabilities, functional bugs, performance bottlenecks, and design flaws. While the code demonstrates a functional layered architecture, it is **not production-ready**.
+
+### 1. Critical Security Vulnerabilities
+
+#### A. SQL Injection
+**Issue:** Multiple repositories construct SQL queries using string interpolation instead of parameterized queries.
+*   **Location:** `UserRepository.findByEmail`, `AuditLogRepository.findByUser`, `SearchService.getSuggestions`.
+*   **Risk:** Attackers can bypass authentication, modify data, or delete the database.
+*   **Fix:** Use parameterized queries (`$1`, `$2`) for all dynamic inputs.
+
+```typescript
+// ❌ Bad
+const result = await pool.query(
+  "SELECT * FROM users WHERE email = '" + email + "'"
+);
+
+// ✅ Good
+const result = await pool.query(
+  "SELECT * FROM users WHERE email = $1",
+  [email]
+);
+```
+
+#### B. Hardcoded Secrets & Weak Defaults
+**Issue:** The `config` object provides default values for sensitive credentials (JWT Secret, DB Password).
+*   **Location:** `config` object definition.
+*   **Risk:** If these defaults are used in production, credentials are static and easily guessable.
+*   **Fix:** Enforce environment variables. Exit the process if secrets are missing.
+
+```typescript
+// ❌ Bad
+jwtSecret: process.env.JWT_SECRET || "default-secret-change-me",
+dbPassword: process.env.DB_PASSWORD || "admin123",
+
+// ✅ Good
+if (!process.env.JWT_SECRET) throw new Error("JWT_SECRET is required");
+if (!process.env.DB_PASSWORD) throw new Error("DB_PASSWORD is required");
+```
+
+#### C. Weak Password Hashing
+**Issue:** Passwords are hashed using `sha256` directly.
+*   **Location:** `AuthService.register

@@ -1,0 +1,106 @@
+Here's a thinking process that leads to the explanation of the Java program:
+
+1.  **Understand the Goal:** The user wants an explanation of what the provided Java program does and a description of the data structure used within it.
+
+2.  **Analyze the Code:**
+    *   **Class Name:** `LRUCache<K, V>`. The name itself is a huge hint. LRU = Least Recently Used. It's a generic class (Generics `K` for Key, `V` for Value).
+    *   **Fields:**
+        *   `capacity`: Max items allowed.
+        *   `map`: A `HashMap<K, Node<K, V>>`. This maps keys to Doubly Linked List nodes.
+        *   `head`, `tail`: Dummy nodes for the Doubly Linked List.
+    *   **Inner Class `Node`:** Standard Doubly Linked List node with `key`, `value`, `prev`, `next`.
+    *   **Constructor:** Initializes capacity, map, and links head/tail together.
+    *   **`get(K key)`:**
+        *   Look up key in map.
+        *   If found: Remove node from list, Add to front (mark as recently used), return value.
+        *   If not found: Return null.
+    *   **`put(K key, V value)`:**
+        *   If key exists: Update value, move node to front.
+        *   If key doesn't exist:
+            *   Check capacity. If full, remove `tail.prev` (Least Recently Used) from map and list.
+            *   Create new node, add to map, add to front.
+    *   **Helper Methods:** `remove` (unlink node), `addToFront` (insert after head).
+    *   **`printState`:** Iterates list from head to tail to print contents.
+    *   **`main`:** Demonstrates usage (put, get, eviction).
+
+3.  **Synthesize the "What it does" Section:**
+    *   Core functionality: It implements an LRU (Least Recently Used) Cache.
+    *   Purpose: Store key-value pairs with a maximum size limit.
+    *   Behavior: When the limit is reached, it removes the item that hasn't been accessed (read or written) for the longest time.
+    *   Performance implication (Mental Check): `get` and `put` are O(1) time complexity because they combine a Hash Map (O(1) lookup) and a Doubly Linked List (O(1) insertion/deletion).
+    *   Usage example: Walk through the `main` method output to illustrate behavior (insertion, access changing order, eviction).
+
+4.  **Synthesize the "Data Structure" Section:**
+    *   It's a hybrid structure.
+    *   **Component 1: Hash Map (`HashMap<K, Node<K, V>>`):** Used for O(1) fast lookup of a node given a key.
+    *   **Component 2: Doubly Linked List:** Used to maintain the *order* of usage.
+        *   Head: Most Recently Used (MRU).
+        *   Tail: Least Recently Used (LRU).
+    *   **Integration:** The Map points to the specific nodes in the List.
+    *   **Why this combination?**
+        *   Map gives speed of access.
+        *   List gives order of usage (move to front on access, remove from back on eviction).
+        *   Together they ensure O(1) operations for both lookup and reordering.
+
+5.  **Draft the Explanation (Iterative refinement):**
+
+    *   *Drafting "What it does":* Start strong. It's an LRU Cache. Explain the logic. Mention the `main` method trace.
+    *   *Drafting "Data Structure":* Be specific. It's not *just* a list or *just* a map. It's a combination. Call it a "Hash Map + Doubly Linked List" hybrid. Explain the roles of Head and Tail. Explain the `Node` class.
+    *   *Refining Complexity:* Explicitly mention Time Complexity (O(1)) and Space Complexity (O(capacity)). This adds technical depth.
+    *   *Refining the `main` trace:* The comments in the code say `c=3, b=2, a=1`. Wait, looking at `addToFront`, `head.next` is the first real node. So `head -> new -> old -> ... -> tail`.
+        *   `put(a)`: head -> a -> tail
+        *   `put(b)`: head -> b -> a -> tail
+        *   `put(c)`: head -> c -> b -> a -> tail
+        *   `get(a)`: Move a to front. head -> a -> c -> b -> tail.
+        *   `put(d)`: Full (3). Remove `tail.prev` which is `b`. Add d. head -> d -> a -> c -> tail.
+        *   Wait, the comments in the code say: `printState() // c=3, b=2, a=1`.
+        *   Let's check `addToFront`.
+            *   `node.next = head.next;`
+            *   `node.prev = head;`
+            *   `head.next.prev = node;`
+            *   `head.next = node;`
+            *   This inserts *after* head. So `head -> New -> Old -> ... -> tail`.
+            *   So `put(a)` -> `head -> a -> tail`.
+            *   `put(b)` -> `head -> b -> a -> tail`.
+            *   `put(c)` -> `head -> c -> b -> a -> tail`.
+            *   `printState()` iterates `curr = head.next`. So it prints `c`, then `b`, then `a`.
+            *   Comment says `c=3, b=2, a=1`. This matches.
+            *   `get(a)`: Remove `a`, Add to front. Order: `head -> a -> c -> b -> tail`.
+            *   Comment says `a=1, c=3, b=2`. Matches.
+            *   `put(d)`: Capacity is 3. Current size 3. Evict `tail.prev` (which is `b`). Add `d`. Order: `head -> d -> a -> c -> tail`.
+            *   Comment says `d=4, a=1, c=3 (b evicted)`. Matches.
+            *   `put(b, 5)`: Key `b` exists? No, `b` was evicted. Wait.
+            *   In `put(d)`, `b` was removed from map. So `map.get("b")` returns null.
+            *   So it treats `b` as new. Size is 3. Evict `tail.prev` (which is `c`). Add `b`.
+            *   Order: `head -> b -> d -> a -> tail`.
+            *   Comment says `b=5, d=4, a=1 (c evicted)`. Matches.
+    *   *Correction on `put` logic:* The code handles existing keys separately (`if (existing != null)`). But in the trace `put(b, 5)`, `b` was evicted in the previous step. So it goes to the `else` branch (new key). This logic holds up.
+
+6.  **Final Polish:** Organize with clear headings. Use code blocks for emphasis where needed. Ensure the distinction between the Map and List roles is clear. (Self-Correction: Make sure to mention the Dummy Head/Tail nodes simplify edge cases).
+
+7.  **Final Output Generation:** (matches the structure of the provided good response).
+    *   Overview.
+    *   Data Structure Breakdown.
+    *   How Operations Work.
+    *   Complexity Analysis.
+    *   Main Method Walkthrough.
+
+8.  **Review against constraints:** The user asked for "what it does" and "describe the data structure". Ensure both are covered comprehensively.
+
+**(Self-Correction during drafting):** I should clarify *why* dummy nodes are used. They remove the need to check if `head.next` is null or if `tail.prev` is null during insertion/deletion, making the code cleaner.
+
+9.  **Finalizing text.** (Proceed to generate output).
+</think>
+
+### 1. What the Program Does
+
+This Java program implements a **Least Recently Used (LRU) Cache**.
+
+An LRU Cache is a data structure that stores a fixed number of key-value pairs. When the cache reaches its maximum capacity (`capacity`), it automatically removes the item that has not been accessed (via `get` or `put`) for the longest time to make room for new items.
+
+**Key Behaviors:**
+1.  **Storage:** It stores key-value pairs up to a specified limit.
+2.  **Access (`get`):** Retrieves a value by key. If the key exists, the item is marked as "most recently used" (moved to the front). If not found, it returns `null`.
+3.  **Update/Insert (`put`):** Adds or updates a key-value pair.
+    *   If the key exists, it updates the value and marks it as recently used.
+    *   If

@@ -1,0 +1,104 @@
+This is a Rust program that demonstrates Run-Length Encoding (RLE) compression. Let me break down each function and the main function step by step.
+
+**Overall Structure:**
+1. `compress` - Compresses data using RLE
+2. `decompress` - Reverses the compression
+3. `analyze` - Counts frequency of each byte
+4. `main` - Orchestrates everything and shows results
+
+Let me explain each part in detail.
+</think>
+
+This Rust program demonstrates a simple **Run-Length Encoding (RLE)** compression system. It compresses data by grouping consecutive identical bytes, decompresses it back to the original, and analyzes the byte frequency in the original input. Here's a step-by-step breakdown:
+
+---
+
+### 1. `compress` Function (RLE Compression)
+```rust
+fn compress(input: &[u8]) -> Vec<(u8, u16)>
+```
+- **Purpose:** Converts a byte slice into a list of (byte, count) tuples.
+- **Logic:**
+  - If the input is empty, return an empty vector.
+  - Track the current byte and how many times it repeats.
+  - If the next byte is the same and the count hasn't reached `u16::MAX`, increment the count.
+  - Otherwise, push the (byte, count) pair to the result and start tracking the new byte.
+- **Output:** A `Vec<(u8, u16)>` representing compressed data.
+
+---
+
+### 2. `decompress` Function (RLE Decompression)
+```rust
+fn decompress(data: &[(u8, u16)]) -> Vec<u8>
+```
+- **Purpose:** Reconstructs the original byte sequence from RLE data.
+- **Logic:**
+  - For each (byte, count) pair, append the byte to the result `count` times.
+- **Output:** A `Vec<u8>` matching the original input.
+
+---
+
+### 3. `analyze` Function (Byte Frequency)
+```rust
+fn analyze(input: &[u8]) -> HashMap<u8, usize>
+```
+- **Purpose:** Counts how many times each byte appears in the input.
+- **Logic:**
+  - Iterates over the input bytes and updates counts in a `HashMap`.
+- **Output:** A `HashMap<u8, usize>` mapping each byte to its frequency.
+
+---
+
+### 4. `main` Function (Execution & Output)
+```rust
+fn main() { ... }
+```
+- **Input Data:** `b"AAABBBCCCCDDDDDEEEEE"`
+- **Execution Flow:**
+  1. Compress the input using `compress`.
+  2. Decompress it using `decompress`.
+  3. Analyze byte frequencies using `analyze`.
+  4. Print:
+     - Original size in bytes.
+     - Number of RLE entries.
+     - Compression ratio (estimated space savings).
+     - Whether decompression matches the original.
+     - Sorted byte frequency distribution.
+
+- **Sample Output:**
+```
+Original size: 21
+Compressed entries: 5
+Ratio: 71.4%
+Roundtrip OK: true
+  'D': 5
+  'E': 5
+  'A': 3
+  'B': 3
+  'C': 4
+```
+
+---
+
+### Key Concepts and Observations
+
+- **Run-Length Encoding (RLE):**
+  - Simple compression technique ideal for data with long runs of identical values.
+  - Stores each run as a (value, count) pair.
+
+- **Compression Ratio:**
+  - The ratio is calculated assuming each compressed entry takes 3 bytes (1 for byte, 2 for count).
+  - Original: 21 bytes → Compressed: 5 entries × 3 bytes = 15 bytes.
+  - Ratio: 15 / 21 × 100 ≈ 71.4% (i.e., 28.6% space saved).
+
+- **Data Limitations:**
+  - `count` is limited to `u16::MAX` (65535) to prevent overflow.
+  - Compression is most effective with repeated patterns. Random data may not compress well or may even expand.
+
+- **Use Cases:**
+  - Simple formats like BMP images, basic text logs, or repetitive data.
+  - Not suitable for complex or high-entropy data.
+
+---
+
+This program is an educational example of how RLE compression works, how to implement it in Rust, and how to evaluate its effectiveness on a known dataset.

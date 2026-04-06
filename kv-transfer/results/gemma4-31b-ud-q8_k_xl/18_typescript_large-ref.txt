@@ -1,0 +1,109 @@
+<|channel>thought
+Document Management System (API Backend).
+TypeScript, Express, PostgreSQL (`pg`), JWT, Multer.
+Bugs, Performance, Security, Design.
+
+    *   *Config:* Simple object, defaults provided.
+    *   *Types:* Standard interfaces for entities.
+    *   *Database:* Using `pg` Pool.
+    *   *Repositories:* Separate classes for DB access (`UserRepository`, `DocumentRepository`, etc.).
+    *   *Services:* Business logic (`AuthService`, `DocumentService`, etc.).
+    *   *Middleware:* Auth, Role, Rate Limiting.
+    *   *Routes:* REST endpoints.
+    *   *Misc:* Event bus, SSE for notifications.
+
+    *   **Security Vulnerabilities (The most critical)**
+        *   *SQL Injection:* Look at how queries are built.
+            *   `UserRepository.findByEmail`: `SELECT * FROM users WHERE email = '" + email + "'"` -> **CRITICAL**.
+            *   `DocumentRepository.search`: `whereClause += " AND (title ILIKE '%${query}%' OR content ILIKE '%${query}%')"` -> **CRITICAL**.
+            *   `SearchService.getSuggestions`: `WHERE title ILIKE '${prefix}%'` -> **CRITICAL**.
+            *   `AuditLogRepository.findByUser`: `BETWEEN '${startDate}' AND '${endDate}'` -> **CRITICAL**.
+        *   *Password Hashing:*
+            *   `AuthService.register`: Using `crypto.createHash("sha256")`. This is a fast hash, vulnerable to rainbow tables/brute force. It uses a salt, but SHA-256 isn't meant for passwords. Should use `bcrypt` or `argon2`.
+            *   `AuthService.login`: `crypto.createHash("sha256").update(password).digest("hex")`. Wait, the login doesn't use the salt! It just hashes the password. It will *never* match the salted hash from registration. -> **BUG/SECURITY**.
+        *   *JWT Secret:* Default provided in code.
+        *   *File Uploads:* `multer` destination is `/tmp/uploads`. `FileService.uploadFile` uses `fs.createReadStream` and `fs.createWriteStream` to move the file. Potential for Path Traversal if `uniqueName` was user-controlled (it's not here, but good to check). However, `fs.unlink` is called without checking if the user actually owns the file.
+        *   *Information Disclosure:* `/api/health` returns `dbHost` and `dbPort` on failure. This is a security leak.
+        *   *Input Validation:* Very little validation on `req.body`. For example, `role` in `register` can be passed as "admin" by any user.
+
+    *   **Bugs**
+        *   *Password Matching:* (Already noted) Login fails because it doesn't use the salt.
+        *   *AuditLogRepository.create:* `pool.query(...)` is called but not `await`ed. The request might finish before the log is written, or it might crash and not be caught.
+        *   *UserRepository.updateLastLogin:* Same as above, not `await`ed.
+        *   *FolderRepository.getFolderTree:* Recursive function. If folders are nested deeply or there is a circular reference (though `parentId` logic usually prevents this), it could cause a stack overflow.
+        *   *DocumentRepository.update:* Uses `Object.entries(updates)`. If `updates` contains properties not in the DB (like `authorId` or `id`), the SQL query will fail.
+
+    *   **Performance Issues**
+        *   *N+1 Query Problem:* `DocumentRepository.getDocumentsWithAuthors` loops through documents and calls `UserRepository.findById` for each. This is a classic N+1 issue. Use a JOIN.
+        *   *Memory Leak:* `NotificationService` stores `Response` objects in a Map. When a user disconnects, the `Response` object is never removed from the map. The server will eventually run out of memory.
+        *   *Search Cache:* `SearchService.searchCache` is a simple `Map`. It grows indefinitely. Needs an LRU cache or a TTL mechanism.
+        *   *Large File Handling:* `express.json({ limit: "10mb" })` is fine, but the file upload logic reads the whole file again via streams after Multer already saved it to `/tmp`. This is redundant IO.
+
+    *   **Design Problems**
+        *   *Dependency Injection:* Services create their own repositories (`private userRepo = new UserRepository()`). This makes unit testing nearly impossible. Repositories should be injected.
+        *   *Global State:* `eventBus` is a singleton.
+        *   *Error Handling:* Generic `try-catch` blocks returning 500. No centralized error handling for business logic vs. system errors.
+        *   *Hardcoded Logic:* Roles are hardcoded as strings in multiple places.
+        *   *Type Safety:* Heavy use of `any` (e.g., `(req as any).user`). Should extend the Express `Request` interface.
+
+    *   Organize by category: Security, Bugs, Performance, Design.
+    *   For each issue: Explain why it's a problem and how to fix it.
+    *   Provide code snippets for the most critical fixes (SQLi, Passwords).<channel|>This codebase has several critical issues, ranging from severe security vulnerabilities (SQL Injection) to significant memory leaks and architectural flaws.
+
+Below is the detailed review categorized by severity and type.
+
+---
+
+### 1. Critical Security Vulnerabilities
+
+#### A. SQL Injection (High Severity)
+There are multiple locations where user input is concatenated directly into SQL strings instead of using parameterized queries. An attacker could drop tables, steal the entire database, or bypass authentication.
+*   **Locations:** 
+    *   `UserRepository.findByEmail`: `WHERE email = '" + email + "'"`
+    *   `DocumentRepository.search`: `ILIKE '%${query}%'`
+    *   `SearchService.getSuggestions`: `ILIKE '${prefix}%'`
+    *   `AuditLogRepository.findByUser`: `BETWEEN '${startDate}' AND '${endDate}'`
+*   **Fix:** Always use parameterized queries (e.g., `WHERE email = $1`).
+
+#### B. Broken Password Hashing & Authentication (High Severity)
+The authentication logic is fundamentally broken and insecure.
+1.  **Algorithm:** It uses `sha256`, which is too fast and vulnerable to GPU-accelerated brute-force attacks.
+2.  **Logic Bug:** In `register`, you create a salt and store a salted hash. However, in `login`, you hash the password **without the salt**. The login will always fail because the hashes will never match.
+3.  **Fix:** Use `bcrypt` or `argon2`. These libraries handle salting automatically and are computationally expensive to prevent brute-forcing.
+
+#### C. Privilege Escalation (Medium Severity)
+In the `/api/auth/register` route, the `role` is taken directly from `req.body`. Any user can send `{ "role": "admin" }` during registration to gain full administrative access.
+*   **Fix:** Hardcode the registration role to `"viewer"` and require an existing admin to promote users via a protected endpoint.
+
+#### D. Sensitive Information Disclosure (Low Severity)
+The `/api/health` endpoint returns the `dbHost` and `dbPort` when the database is down. This provides attackers with internal network topology.
+*   **Fix:** Return a generic "Database unavailable" message.
+
+---
+
+### 2. Bugs & Reliability Issues
+
+#### A. Unawaited Promises (Race Conditions)
+Several database calls are made without `await`. This means the API response may be sent before the data is saved, or errors will become "unhandled promise rejections," potentially crashing the process.
+*   **Locations:** `UserRepository.updateLastLogin` and `AuditLogRepository.create`.
+*   **Fix:** Add `await` before `pool.query`.
+
+#### B. Document Update Crash
+In `DocumentRepository.update`, you iterate over `Object.entries(updates)`. If a client sends an extra field in the JSON body that doesn't exist as a column in the DB (e.g., `{ "foo": "bar" }`), the generated SQL will be invalid and the request will crash.
+*   **Fix:** Use a whitelist of allowed fields to update.
+
+#### C. Incorrect Password Verification Logic
+As mentioned in security, the `login` method ignores the salt stored in the database.
+*   **Fix:** Use `bcrypt.compare(password, passwordHash)`.
+
+---
+
+### 3. Performance Issues
+
+#### A. The N+1 Query Problem (High Impact)
+In `DocumentRepository.getDocumentsWithAuthors`, you fetch a list of documents and then perform a separate DB query for every single document to find its author. If a folder has 100 documents, you make 101 queries.
+*   **Fix:** Use a SQL `JOIN`: 
+    `SELECT d.*, u.username FROM documents d JOIN users u ON d.author_id = u.id WHERE d.folder_id = $1`.
+
+#### B. Massive Memory Leak (High Impact)
+The

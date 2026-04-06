@@ -1,0 +1,91 @@
+<|channel>thought
+A distributed task scheduler written in Go.
+Review for bugs, race conditions, performance issues, and design problems.
+Explain each issue and suggest fixes.
+
+    *   `scheduler.go`: Priority queue for tasks, worker health checks, dependency management, task lifecycle.
+    *   `ratelimiter.go`: Token bucket and sliding window implementations.
+    *   `circuitbreaker.go`: State machine (Closed, Open, Half-Open) for failure handling.
+    *   `workerpool.go`: Managed worker lifecycle, auto-scaling, task execution loop.
+
+    *   **`scheduler.go`**
+        *   *Race Condition:* `CompleteTask` starts a goroutine for retries. Inside that goroutine, it locks `s.mu`, updates `task.State`, and pushes to the heap. Wait... is `task` modified safely elsewhere? Yes, `s.mu` is used. But wait, the goroutine is spawned *inside* `CompleteTask` while `s.mu` is held. That's okay, but the goroutine is a "fire and forget". If the scheduler stops, these retry goroutines might leak or crash.
+        *   *Race Condition/Bug:* `AssignTask` calls `s.AssignTask(workerID)` recursively if a task is cancelled. If the queue is full of cancelled tasks, this could cause a stack overflow (though unlikely with a heap, it's still bad practice).
+        *   *Dependency Bug:* In `SubmitTask`, if a task has dependencies, it's added to `s.tasks` but *not* the queue. In `CompleteTask`, when a dependency is finished, it checks if others are resolved and pushes to the queue. *However*, what if a task is submitted *after* its dependency is already completed? The logic seems to handle this: `allResolved` is checked, and if true, it's pushed. Wait, look at the `if !allResolved` block: it returns `nil` without pushing. If `allResolved` is true, it *still* doesn't hit the bottom `heap.Push` if it entered the `len(task.Dependencies) > 0` block.
+            *   *Check again:*
+                ```go
+                if len(task.Dependencies) > 0 {
+                    // ... (logic to set depGraph)
+                    if !allResolved {
+                        s.tasks[task.ID] = task
+                        return nil // Correct
+                    }
+                    // If allResolved is true, it falls through to the bottom
+                }
+                s.tasks[task.ID] = task
+                heap.Push(&s.queue, task)
+                ```
+                Actually, the logic is mostly fine, but there is a potential for double-adding to `s.tasks`.
+        *   *Performance:* `cleanupCompletedTasks` uses a simple loop. If `s.completed` is huge, this is $O(N)$ under a write lock.
+        *   *Design:* `Task` contains `index` which is used by `container/heap`. This is correct.
+        *   *Bug:* `AssignTask` doesn't check if the worker is actually alive *before* popping from the heap? No, it does. But it pops a task, and if it's cancelled, it recurses. If the queue is empty after popping the last (cancelled) task, it returns `nil, nil`.
+
+    *   **`ratelimiter.go`**
+        *   *Performance/Memory Leak:* `TokenBucketLimiter` and `SlidingWindowLimiter` both have cleanup loops.
+        *   *Race Condition:* In `TokenBucketLimiter.getBucket`, the map is accessed *without* a lock. `AllowN` locks, but `getBucket` is called inside `AllowN`. Wait, `AllowN` locks `tbl.mu`. `getBucket` is a helper. That's safe.
+        *   *Sliding Window Performance:* `AllowN` creates a new slice `valid := make([]time.Time, 0, len(entry.timestamps))` on *every* request. For high-throughput keys, this is a massive amount of allocation/GC pressure.
+
+    *   **`circuitbreaker.go`**
+        *   *Race Condition:* `canExecute` locks, then `recordResult` locks. This is fine.
+        *   *Design:* `halfOpenMaxConcurrent` is 1. If one request is in flight and fails, it goes back to `Open`. If it succeeds, it increments `successCount`. This is a standard implementation.
+
+    *   **`workerpool.go`**
+        *   *Race Condition:* `Worker.Run()` accesses `w.pool.scheduler.handlers[task.Name]` without a lock. The `handlers` map in `Scheduler` is only written to in `RegisterHandler` (which locks), but it is read in `Run` without a lock. **Major Race Condition.**
+        *   *Deadlock/Leak:* `Worker.Run` has a `time.Sleep(100 * time.Millisecond)` when no task is found. This is "polling". A channel-based approach would be better.
+        *   *Bug:* `removeWorker` looks for an idle worker. It checks `atomic.LoadInt32(&w.running) == 0`. Then it removes it from the slice. However, the worker goroutine is still running `Run()`. The `Stop()` method cancels the context, which is good.
+        *   *Design:* `WorkerPool.addWorker` calls `s.RegisterWorker`. If the pool scales up and down frequently, the `s.workers` map in the scheduler grows or contains dead entries. The scheduler has a `checkWorkerHealth` loop, but it doesn't *delete* workers from the map, only marks them `IsAlive = false`. This is a memory leak.
+
+    *   **`scheduler.go`**:
+        *   Recursive `AssignTask` $\rightarrow$ Iterative loop.
+        *   Retry goroutine $\rightarrow$ Need a way to track these or use a timer wheel/delay queue.
+        *   Task state transitions $\rightarrow$ Ensure consistency.
+
+    *   **`workerpool.go`**:
+        *   Map access in `Run()` $\rightarrow$ Use `RLock` or a concurrent map.
+        *   Polling loop $\rightarrow$ Replace with a channel or `sync.Cond`.
+
+    *   **`ratelimiter.go`**:
+        *   Slice reallocation in sliding window $\rightarrow$ Use a ring buffer or filter in-place.
+
+    *   *Category 1: Race Conditions.* (The handlers map, the retry goroutines).
+    *   *Category 2: Bugs/Logic Errors.* (Recursive AssignTask, Memory leaks in worker map).
+    *   *Category 3: Performance.* (Sliding window allocations, Polling in workers).
+    *   *Category 4: Design.* (Polling vs Notification).<channel|>This is a comprehensive review of the provided distributed task scheduler. The code is well-structured and implements several advanced patterns (Priority Queues, Circuit Breakers, Token Buckets), but it contains several critical race conditions, memory leaks, and performance bottlenecks.
+
+---
+
+### 1. Critical Bugs & Race Conditions
+
+#### A. Concurrent Map Access (The "Handlers" Race)
+**Issue:** In `workerpool.go`, the `Worker.Run()` method accesses `w.pool.scheduler.handlers[task.Name]` without any synchronization. Simultaneously, `Scheduler.RegisterHandler` modifies this map under a lock.
+**Impact:** This will cause a panic (`fatal error: concurrent map read and map write`) in production when a handler is registered while tasks are being executed.
+**Fix:** Use a `sync.RWMutex` in the `Scheduler` to protect the `handlers` map and call `s.mu.RLock()` before accessing the handler in the worker loop.
+
+#### B. The "Retry" Goroutine Leak
+**Issue:** In `CompleteTask`, when a task fails and is eligible for retry, a goroutine is spawned: `go func() { ... time.Sleep(...) ... s.mu.Lock() ... }`. 
+**Impact:** 
+1. **Zombie Goroutines:** If the `Scheduler` is stopped via `Stop()`, these goroutines continue to live until their sleep timer expires.
+2. **Race Condition:** The goroutine accesses `task` and `s.mu` after a long delay. If the task was deleted by `cleanupCompletedTasks` during the sleep, the goroutine will attempt to push a "ghost" task back into the heap.
+**Fix:** Use a `time.Timer` and a centralized "delay queue" or check if the scheduler is still running/task still exists before re-queueing.
+
+#### C. Recursive Stack Overflow in `AssignTask`
+**Issue:** In `AssignTask`, if the popped task is `TaskCancelled`, the function calls itself recursively: `return s.AssignTask(workerID)`.
+**Impact:** If a large batch of tasks is cancelled (e.g., 10,000 tasks), the scheduler will hit a stack overflow and crash.
+**Fix:** Replace the recursion with a `for` loop.
+
+---
+
+### 2. Memory & Resource Leaks
+
+#### A. Worker Registry Growth
+**Issue:** `Scheduler.RegisterWorker`

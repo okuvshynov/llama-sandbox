@@ -1,0 +1,86 @@
+<|channel>thought
+
+*   Language: Java.
+    *   Class Name: `LRUCache<K, V>`.
+    *   Key components: `capacity` (int), `map` (HashMap), `head` and `tail` (Node references), and an inner class `Node`.
+    *   Methods: `get(K key)`, `put(K key, V value)`, `remove(Node node)`, `addToFront(Node node)`, `printState()`, and `main()`.
+
+    *   `Node<K, V>`: A typical doubly linked list node containing a key, a value, and pointers to the previous and next nodes.
+    *   `LRUCache` constructor: Initializes a HashMap and a doubly linked list with dummy `head` and `tail` nodes. This is a common technique to avoid null checks during insertions and deletions.
+    *   `get(K key)`:
+        1. Checks the map for the key.
+        2. If it doesn't exist, returns null.
+        3. If it does exist, it "refreshes" the node by removing it from its current position and moving it to the front.
+        4. Returns the value.
+    *   `put(K key, V value)`:
+        1. Checks if the key already exists.
+        2. If it exists: update value, move it to the front.
+        3. If it doesn't exist:
+            a. Check if the cache is full (`map.size() >= capacity`).
+            b. If full, remove the node right before the `tail` (the Least Recently Used item) from both the list and the map.
+            c. Create a new node, add it to the map, and place it at the front.
+    *   `remove` and `addToFront`: Helper methods for manipulating the doubly linked list.
+
+    *   *What is it?* It's an LRU (Least Recently Used) Cache.
+    *   *What is the purpose?* To store a limited number of items and automatically discard the oldest/least accessed item when the limit is reached to make room for new items.
+    *   *Time Complexity:* `get` and `put` both operate in $O(1)$ constant time. This is the primary goal of this specific implementation.
+
+    *   It's a hybrid data structure: **HashMap + Doubly Linked List**.
+    *   *HashMap:* Provides $O(1)$ lookup to find the node associated with a key.
+    *   *Doubly Linked List:* Maintains the order of access. The "most recent" item is at the front (after `head`), and the "least recent" is at the back (before `tail`).<channel|>### Overview
+This Java program implements an **LRU (Least Recently Used) Cache**. 
+
+An LRU Cache is a specialized cache that stores a limited number of items. Once the cache reaches its maximum capacity, it automatically removes the item that hasn't been accessed for the longest time whenever a new item is added. This is widely used in memory management, web browsers, and database caching.
+
+---
+
+### The Data Structure
+The program uses a **hybrid data structure** combining two different types to achieve high performance:
+
+#### 1. HashMap (`Map<K, Node<K, V>>`)
+*   **Purpose:** Provides fast lookups.
+*   **Function:** It maps a key directly to a specific node in the linked list. This allows the program to check if an item exists and locate it in the list in **$O(1)$ constant time**, rather than searching through the list linearly.
+
+#### 2. Doubly Linked List (`Node<K, V>`)
+*   **Purpose:** Maintains the "recency" order of the items.
+*   **Structure:** Each node contains a key, a value, and pointers to both the `prev` (previous) and `next` nodes.
+*   **Logic:**
+    *   **The Front (Head):** Represents the **Most Recently Used (MRU)** items.
+    *   **The Back (Tail):** Represents the **Least Recently Used (LRU)** items.
+*   **Dummy Nodes:** The program uses "dummy" `head` and `tail` nodes. These are sentinel nodes that never hold data but simplify the logic by ensuring the list is never truly empty, eliminating the need for null checks when adding or removing nodes.
+
+---
+
+### How the Methods Work
+
+#### `get(K key)`
+1. Checks the HashMap for the key.
+2. If the key doesn't exist, it returns `null`.
+3. If it does exist, the item is now "recently used." To reflect this, the program **removes** the node from its current position in the list and **moves it to the front** (immediately after the head).
+4. Returns the value.
+
+#### `put(K key, V value)`
+1. **If the key already exists:** It updates the value and moves the node to the front (since it was just accessed).
+2. **If the key is new:**
+    *   **Capacity Check:** If the cache is full (`map.size() >= capacity`), it identifies the node immediately before the `tail` (the least recently used item). It removes this node from both the doubly linked list and the HashMap.
+    *   **Insertion:** It creates a new node, adds it to the HashMap, and inserts it at the front of the list.
+
+#### Helper Methods
+*   `remove(Node node)`: Unlinks a node by connecting its neighbors to each other.
+*   `addToFront(Node node)`: Splices a node in between the `head` and the current first element.
+
+---
+
+### Time and Space Complexity
+
+| Operation | Time Complexity | Why? |
+| :--- | :--- | :--- |
+| **get()** | $O(1)$ | HashMap lookup is constant; moving a node in a linked list is constant. |
+| **put()** | $O(1)$ | HashMap insertion/deletion is constant; adding/removing from the ends of a list is constant. |
+| **Space** | $O(C)$ | Where $C$ is the capacity. We store $C$ items in both the map and the list. |
+
+### Summary of the `main` execution:
+1. **Put a, b, c:** Cache is `[c, b, a]` (c is most recent).
+2. **Get a:** `a` moves to front. Cache is `[a, c, b]`.
+3. **Put d:** Cache is full. `b` (the oldest) is evicted. Cache is `[d, a, c]`.
+4. **Put b:** Cache is full. `c` (the oldest) is evicted. Cache is `[b, d, a]`.
