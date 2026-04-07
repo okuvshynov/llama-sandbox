@@ -76,9 +76,9 @@ def read_decay(path):
 def plot_model_comparison(all_models, output_path, title, theme='light'):
     """One line per model, KL ratio aggregated across all quants.
 
-    Center line: ratio-of-means(kl_handoff, kl_target) across all
-    prompts and quants per window.
-    Band: IQR of per-(prompt, quant) ratios — shows combined variation.
+    Compute ratio per (prompt, quant) first, then average the ratios.
+    This avoids high-KL quants (e.g. Q2) dominating the aggregate.
+    Band: IQR of per-(prompt, quant) ratios.
     """
     t = THEMES[theme]
     fig, ax = plt.subplots(figsize=(11, 5.5))
@@ -87,32 +87,21 @@ def plot_model_comparison(all_models, output_path, title, theme='light'):
     for i, (model_name, rows) in enumerate(all_models):
         color = MODEL_COLORS[i % len(MODEL_COLORS)]
 
-        # collect per-window: mean KL target, mean KL handoff (across all quants + prompts)
-        by_window_agg = defaultdict(lambda: {'kl_target': 0.0, 'kl_handoff': 0.0, 'count': 0})
-        # also per-(prompt, quant) ratios for spread
+        # collect per-(prompt, quant) ratios per window
         by_window_ratios = defaultdict(list)
 
         window_size = rows[0]['window_end'] - rows[0]['window_start']
 
         for r in rows:
             w = r['window_start']
-            by_window_agg[w]['kl_target'] += r['kl_target']
-            by_window_agg[w]['kl_handoff'] += r['kl_handoff']
-            by_window_agg[w]['count'] += 1
             ratio = r['kl_handoff'] / r['kl_target'] if r['kl_target'] > 0 else 0.0
             by_window_ratios[w].append(ratio)
 
-        windows = sorted(by_window_agg.keys())
+        windows = sorted(by_window_ratios.keys())
         x = [w + window_size / 2 for w in windows]
 
-        # ratio of means (robust center line)
-        means = []
-        for w in windows:
-            d = by_window_agg[w]
-            mean_t = d['kl_target'] / d['count']
-            mean_h = d['kl_handoff'] / d['count']
-            means.append(mean_h / mean_t if mean_t > 0 else 0.0)
-
+        # mean of ratios (each prompt×quant contributes equally)
+        means = [np.mean(by_window_ratios[w]) for w in windows]
         p25 = [np.percentile(by_window_ratios[w], 25) for w in windows]
         p75 = [np.percentile(by_window_ratios[w], 75) for w in windows]
 
