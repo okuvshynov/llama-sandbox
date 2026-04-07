@@ -1,0 +1,53 @@
+Here's a thinking process that leads to the review of the Go distributed task scheduler:
+
+1.  **Understand the Goal:** The user wants a code review of a Go-based distributed task scheduler. I need to identify bugs, race conditions, performance issues, and design problems across four provided files (`scheduler.go`, `ratelimiter.go`, `circuitbreaker.go`, `workerpool.go`). For each issue found, I must explain it and suggest a fix.
+
+2.  **Initial Scan & Architecture Overview:**
+    *   **`scheduler.go`:** Core logic. Manages tasks, queues, workers, handlers, dependencies, retries. Uses `container/heap` for priority.
+    *   **`ratelimiter.go`:** Token bucket and sliding window implementations.
+    *   **`circuitbreaker.go`:** Circuit breaker pattern.
+    *   **`workerpool.go`:** Manages worker goroutines, auto-scaling based on load.
+    *   **Architecture:** Centralized scheduler with a pool of workers. Workers poll the scheduler for tasks.
+
+3.  **Detailed Analysis - File by File:**
+
+    *   **`scheduler.go`**
+        *   *Concurrency/Locks:* Heavy use of `s.mu.Lock()`.
+        *   *Task Submission:* `SubmitTask` locks. Checks dependencies. If dependencies aren't met, it stores task but doesn't push to queue.
+        *   *Dependency Logic:* `depGraph` maps `depID` -> `[]taskID`. When a task completes, it checks dependents.
+        *   *Race Condition (Critical):* In `CompleteTask`, there's a `go func()` for retries. It locks `s.mu`, modifies `task.State`, and pushes to queue. However, `CompleteTask` *already* holds `s.mu`. Go doesn't support re-entrant locks (`sync.Mutex` is not re-entrant). **Deadlock!**
+        *   *Race Condition (Worker Health):* `checkWorkerHealth` locks `s.mu`. It modifies `task.State` and `heap.Push`. If `AssignTask` is running concurrently, it also holds `s.mu`. Wait, `AssignTask` holds the lock too. So `checkWorkerHealth` and `AssignTask` cannot run simultaneously. This is safe regarding the lock, but...
+        *   *Heap Safety:* `heap.Push` and `heap.Pop` modify the slice. `s.queue` is protected by `s.mu`. Inside `SubmitTask`, `AssignTask`, `CompleteTask`, locks are held.
+        *   *Issue:* In `CompleteTask`, the retry goroutine acquires `s.mu` *inside* the function that already holds `s.mu`. This causes a deadlock.
+        *   *Issue:* `CancelTask` sets state to `Cancelled`. `AssignTask` checks `task.State == TaskCancelled` immediately after popping. This is okay, but what if `AssignTask` pops, releases lock (wait, it holds lock until return), then processes? No, `AssignTask` returns the task. The worker processes it outside the lock. If `CancelTask` is called while worker is processing, `task.State` changes. The worker calls `CompleteTask`. `CompleteTask` checks error. If task was cancelled, should it count as failure or ignore?
+        *   *Dependency Logic:* `SubmitTask` checks dependencies. If dependencies are pending, it saves task but doesn't queue. When dependency completes, `CompleteTask` checks `depGraph`. It pushes dependent tasks to queue.
+        *   *Performance:* `s.tasks` map is accessed frequently. `s.completed` map grows indefinitely (until cleanup). `cleanupCompletedTasks` runs every 5 mins.
+        *   *Memory Leak:* `s.tasks` is never cleaned up for completed tasks? `cleanupCompletedTasks` deletes from `s.completed` AND `s.tasks`. Good. But `depGraph` is never cleaned. Old dependency references accumulate.
+        *   *Context:* `s.ctx` is used for stopping the scheduler. `SubmitTask` doesn't use it.
+        *   *Task ID Generation:* `time.Now().UnixNano()` + `atomic`. Safe.
+        *   *Worker Registration:* `RegisterWorker` stores `WorkerStatus`. `Heartbeat` updates it.
+        *   *AssignTask Logic:* If queue is empty, returns `nil, nil`. Worker sleeps. If worker is dead, returns error.
+        *   *Retry Logic:* `go func()` inside `CompleteTask` (which holds lock). **DEADLOCK**.
+        *   *Retry Logic (Logic):* `task.State = TaskRetrying`. Then goroutine changes to `TaskPending`.
+        *   *Cancellation:* `CancelTask` sets `CompletedAt`. But state is `TaskCancelled`.
+        *   *Dependency Check:* In `SubmitTask`, it checks `s.completed`. If a dependency is in `s.tasks` but not `s.completed`, it waits. If dependency is submitted *after* dependent task, the dependent task waits forever unless `SubmitTask` is called again or logic handles it. Actually, `depGraph` is built on submit. If `Task B` depends on `Task A`, and `B` is submitted first, `depGraph[A]` gets `B`. When `A` completes, `B` is queued. This works.
+        *   *Issue:* `SubmitTask` checks `s.completed`. If dependency `A` is running (`TaskRunning`), `allResolved` is false. `B` waits. When `A` completes, `CompleteTask` checks `depGraph`. It pushes `B`. This seems okay.
+        *   *Issue:* `s.depGraph` cleanup. It stores `depID -> []taskID`. When `taskID` is completed, the entry in `depGraph` remains. Memory grows with every dependency ever defined.
+        *   *Issue:* `heap` package requires the slice to be valid. `TaskQueue` is a slice of pointers. `Swap` updates `index`. This is standard.
+        *   *Issue:* `AssignTask` pops from heap. If the worker crashes before `CompleteTask` is called, `checkWorkerHealth` re-queues the task. But `AssignTask` sets `task.State = TaskRunning`. `checkWorkerHealth` sets `task.State = TaskPending`. If `CompleteTask` is called *after* `checkWorkerHealth` re-queues it, `CompleteTask` might see a task that is "Pending" but thinks it's "Running" (because `StartedAt` is set). Or `CompleteTask` might try to complete a task that is already in the queue again (if `checkWorkerHealth` pushed it).
+            *   Scenario: Worker gets task (State=Running). Worker dies. `checkWorkerHealth` sees timeout. Sets State=Pending. Pushes to queue.
+            *   Meanwhile, Worker (ghost) calls `CompleteTask` (network lag). `CompleteTask` sees State=Pending (due to race with health check? No, `CompleteTask` holds lock).
+            *   Wait, `checkWorkerHealth` holds `s.mu`. `CompleteTask` holds `s.mu`. They are serialized.
+            *   If Health Check runs first: Task becomes Pending, pushed to queue.
+            *   Then `CompleteTask` runs: It sees Task is Pending (not Running). It sets `CompletedAt`. It adds to `s.completed`. It triggers dependencies.
+            *   *Problem:* The task is now in `s.completed` AND in `s.queue`. Next `AssignTask` will pick it up again. **Duplicate Execution.**
+            *   Fix: `checkWorkerHealth` should check if task is still in `s.tasks`? No, it removes from `s.completed`? No.
+            *   Fix: `checkWorkerHealth` needs to ensure the task isn't already being completed. Or `CompleteTask` needs to check if task is already in queue.
+            *   Actually, `checkWorkerHealth` sets `task.State = TaskPending`. `CompleteTask` checks `task.State`? No, `CompleteTask` assumes it's running. It checks `taskError`.
+            *   If `checkWorkerHealth` re-queues it, `CompleteTask` should be prevented from completing it *again* if it's already re-queued.
+            *   Better fix: When re-queuing, don't change state immediately? Or mark as `TaskRequeued`.
+            *   Actually, the main issue is `CompleteTask` logic doesn't handle the case where the task was re-queued due to timeout. It will mark it completed while it's sitting in the queue to be run again.
+        *   *Issue:* `AssignTask` returns `nil, nil` if queue empty. Worker sleeps 100ms. High CPU usage if queue is empty and many workers? 100ms sleep is okay, but busy-looping with sleep is better than `select` on a channel.
+        *   *Issue:* `SubmitTask` generates ID if empty. But `task.State = TaskPending`. If ID was empty, it generates one.
+        *   *Issue:* `SubmitTask` checks `s.maxQueueSize`. `len(s.queue)`. This excludes tasks waiting for dependencies. Is that intended? Yes, usually "queue" means ready-to-run.
+        *   *Issue:* `cleanupCompletedTasks` deletes from `s.tasks`. `depGraph` is not cleaned. `s.tasks` is used in `CompleteTask` to find

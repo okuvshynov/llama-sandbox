@@ -1,0 +1,70 @@
+Here's a thinking process that leads to the review of the TypeScript codebase:
+
+1.  **Understand the Goal:** The user wants a review of the provided TypeScript codebase. I need to identify bugs, type safety issues, and architectural problems. For each issue found, I must explain it and suggest improvements.
+
+2.  **Initial Scan & High-Level Assessment:**
+    *   **Components:** `TypedEventEmitter` (generic event system), `Pipeline` (task execution engine), `Task`/`PipelineEvents` interfaces, and a `main` usage example.
+    *   **Functionality:** It looks like a job queue/pipeline system that handles task dependencies, concurrency, retries, timeouts, and events.
+    *   **Language:** TypeScript.
+    *   **First Impression:** It looks functional but has several red flags regarding type safety (lots of `any`), potential race conditions, memory leaks (event listeners), and logic errors in the execution loop.
+
+3.  **Detailed Analysis - Section by Section:**
+
+    *   **`TypedEventEmitter`:**
+        *   *Type Safety:* `EventMap` uses `[event: string]: (...args: any[]) => void`. This defeats the purpose of `TypedEventEmitter`. The generic `T` restricts keys, but the index signature allows *any* string key with *any* args.
+        *   *Listener Storage:* `Set<Function>`. `Function` is too broad. It should be `Set<T[K]>`.
+        *   *Memory Leaks:* `off` removes listeners. But if `once` listeners aren't cleaned up properly or if `off` is called incorrectly, listeners stick around. The `on` method returns an unsubscribe function, which is good.
+        *   *Bug:* In `off`, it tries to delete from `onceListeners` too. This is fine, but `onceListeners` logic in `emit` clears the set *after* calling. If `off` is called *during* emit, there could be issues (though less critical here).
+        *   *Type Safety:* `T[K]` is a function type. Storing it in a `Set` is okay, but comparing function references for removal relies on strict identity. If a user defines a function inline for `on` and tries to `off` it later without keeping a reference, it won't work. This is standard behavior but worth noting.
+        *   *Major Issue:* The `EventMap` interface definition `[event: string]: ...` allows adding events not defined in `T`. The generic constraint `T extends EventMap` doesn't prevent adding extra keys if the implementation is loose. Actually, `T` is the specific map. The index signature in `EventMap` is the problem. It allows `on('unknown', fn)` if `T` allows it, but `T` is passed in. Wait, `TypedEventEmitter<T>` expects `T` to extend `EventMap`. `EventMap` has an index signature. This means `T` *must* have an index signature or extend one. But `PipelineEvents` extends `EventMap`.
+        *   *Refinement:* The `EventMap` interface is actually quite weak. It allows `on('random', fn)` if the compiler isn't strict about the index signature vs the generic constraint.
+        *   *Correction:* The `EventMap` interface allows *any* string key. This means `TypedEventEmitter<PipelineEvents>` technically allows `on('non-existent', ...)` because `EventMap` index signature overrides the specific keys in `PipelineEvents` in terms of structural typing if not careful. Actually, `PipelineEvents` extends `EventMap`. Since `EventMap` has `[event: string]`, `PipelineEvents` implicitly has it too. This means `on` accepts *any* string, not just keys of `T`. This breaks the generic typing promise.
+
+    *   **`Pipeline` Class:**
+        *   *State Management:* `private results: Map<string, any>`. It's `any`.
+        *   *Type Safety:* `Task<T = any>`. `T` is generic but often ignored.
+        *   *Logic Bug (Critical):* `executeTask` uses `Promise.race` for timeout. If the task resolves, fine. If it rejects, `lastError` is captured.
+        *   *Logic Bug (Critical):* `run()` loop.
+            *   `while (true)` loop.
+            *   `getReadyTasks()` checks dependencies.
+            *   `Promise.all(batch.map(task => this.executeTask(task)))`.
+            *   *Race Condition/Logic Flaw:* `executeTask` updates `task.status`. However, the loop waits for the *batch* to finish before re-evaluating `getReadyTasks`. This is generally okay for concurrency control, *but*...
+            *   *Deadlock Detection:* The deadlock check logic is flawed. `pending.length > 0 && running.length === 0`. If a task is pending but waiting for a dependency that is *also* pending (circular dependency), this triggers. But if the dependency is *failed*, the pending task should also fail, not deadlock. The code doesn't propagate failure.
+            *   *Concurrency:* `batch.slice(0, this.concurrency)`. If `executeTask` finishes early (e.g., timeout), does the loop pick up new ready tasks immediately? No, it waits for the whole batch to resolve. This reduces throughput (slot starvation). Better to have a worker pool or queue.
+        *   *Cancellation:* `cancel()` sets status to `cancelled`. But `executeTask` is running `await`. It won't stop the `execute` promise. It just marks the task as cancelled. The `run()` loop won't pick it up, but the running promise continues until completion/timeout. This is a resource leak.
+        *   *Accessing Private State:* In `main`, `pipeline['results'].get(...)`. This accesses private members via bracket notation. Bad practice.
+        *   *Dependency Resolution:* The `dependencies` array contains IDs. If a dependency fails, the dependent task remains `pending` forever (unless the deadlock check catches it, but it might timeout first). It should probably propagate failure.
+        *   *Timeout Logic:* `setTimeout` in `Promise.race` creates a timer. If `executeTask` is cancelled or the pipeline stops, these timers might not be cleared (though `setTimeout` garbage collects if not referenced, here it's inside a promise).
+        *   *Retry Logic:* `Math.pow(2, attempt) * 1000`. `attempt` starts at 0. If retries=1, loop runs 0, 1. Wait happens at `attempt > 0`. So 1 retry = 1 wait. Wait time: `2^1 * 1000` = 2000ms. Seems okay.
+        *   *Type Safety:* `Task` interface has `execute: () => Promise<T>`. In `addTask`, `config.execute` matches this. But `Pipeline` stores `Task` in `Map<string, Task>`. It loses the generic `T` on the Task instance level because it's stored as a base `Task`. This means `results` map is `Map<string, any>`.
+        *   *Result Retrieval:* In `main`, `pipeline['results'].get` is used inside `execute`. This is tight coupling and exposes internal state. Tasks shouldn't need to know about the pipeline's internal results map.
+
+    *   **Architecture:**
+        *   *EventEmitter:* Standard Node.js pattern, but the implementation is custom.
+        *   *Pipeline:* Monolithic class. Hard to test `executeTask` in isolation.
+        *   *Tasks:* Tasks are closures (`execute` function). They reach out to `pipeline` internals. This creates circular dependencies and makes tasks non-portable.
+
+4.  **Consolidating Issues & Categorizing:**
+
+    *   **Type Safety:**
+        1.  `EventMap` index signature allows invalid events.
+        2.  `Set<Function>` in EventEmitter is too loose.
+        3.  `Map<string, any>` for results loses type information.
+        4.  `Task<T>` generic is lost when stored in `Map<string, Task>`.
+        5.  Accessing private members (`['results']`) in usage.
+    *   **Bugs/Logic:**
+        1.  Dependency failure propagation (Task waits forever for failed dep).
+        2.  Cancellation doesn't actually stop running tasks.
+        3.  Concurrency slot starvation (waiting for whole batch).
+        4.  Deadlock detection logic is incomplete (doesn't distinguish failed deps).
+        5.  `once` listeners in `off` (minor, but redundant).
+    *   **Architecture:**
+        1.  Tasks accessing internal Pipeline state (`results` map).
+        2.  `TypedEventEmitter` implementation could be simpler or use `node:events`.
+        3.  `run()` loop structure (blocking `Promise.all` inside `while`).
+
+5.  **Drafting the Review:**
+
+    *   *Structure:* Introduction -> Type Safety Issues -> Logic/Bugs -> Architectural Concerns -> Refactored Code Snippet (or key fixes).
+    *   *Tone:* Professional, constructive, technical.
+    *   *Code Examples:* Show the "Before" and "

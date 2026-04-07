@@ -1,0 +1,110 @@
+Let me analyze this Python program to find the bug.
+
+The program has three functions:
+1. `merge_sorted_lists` - merges two sorted lists
+2. `find_median` - finds the median of a list
+3. `running_median` - calculates running medians with a sliding window
+
+Looking at the code:
+
+1. `merge_sorted_lists` - This function looks correct for merging two sorted lists, but it's actually not being used anywhere in the program. This isn't necessarily a bug, just unused code.
+
+2. `find_median` - This function looks correct for finding the median of a list.
+
+3. `running_median` - This function maintains a sliding window of size 5 and calculates the median for each window.
+
+Wait, let me think about what "running median" typically means. There are two common interpretations:
+1. Running median of all elements seen so far (cumulative)
+2. Running median of a sliding window of fixed size
+
+Looking at the implementation, it's using a sliding window of size 5. This is a valid approach for one interpretation of running median.
+
+However, I notice that `merge_sorted_lists` is defined but never used. This isn't really a bug that affects functionality, but it's dead code.
+
+Let me look more carefully at the actual logic...
+
+Actually, I think the main issue is that the `merge_sorted_lists` function is completely unused. But that's not really a "bug" in terms of incorrect behavior - it's just unnecessary code.
+
+Wait, let me reconsider what the program is supposed to do. The function is called `running_median` which typically means we want to calculate the median of all elements seen so far, not a sliding window. 
+
+Looking at the `running_median` function:
+- It maintains a `window` list
+- It adds each new value to the window
+- It removes the oldest value if the window exceeds size 5
+- It calculates the median of the current window
+
+This is actually calculating a "sliding window median" rather than a true "running median" (which would accumulate all elements).
+ 
+The variable name `running_median` is misleading - it suggests cumulative median calculation, but the implementation uses a fixed-size sliding window instead. This naming mismatch could confuse users about what the function actually does.
+
+While the code technically works as written, the semantics don't align with the function name. If this is intentional, the name should be changed to `sliding_window_median`. If it's meant to be a true running median, the window logic needs to be removed entirely.
+
+The `merge_sorted_lists` function is also completely unused, which is dead code but not a functional bug.
+
+The most significant issue is the misleading function name that doesn't match the actual implementation behavior.
+</think>
+
+# Bug Analysis
+
+## Primary Issue: Misleading Function Name
+
+The main bug is a **semantic mismatch** between the function name and its behavior:
+
+- **Function name**: `running_median` suggests calculating the median of all elements seen so far (cumulative)
+- **Actual behavior**: Calculates the median over a **fixed-size sliding window** of 5 elements
+
+This creates confusion because:
+1. The name implies one behavior (cumulative median)
+2. The implementation does something different (sliding window median)
+
+## Secondary Issue: Unused Function
+
+The `merge_sorted_lists` function is defined but **never used** anywhere in the program. This is dead code that should be removed.
+
+## How to Fix It
+
+### Option 1: Rename the Function (Recommended)
+If the sliding window behavior is intentional, rename the function to accurately reflect what it does:
+
+```python
+def sliding_window_median(stream, window_size=5):
+    window = []
+    medians = []
+    for val in stream:
+        window.append(val)
+        if len(window) > window_size:
+            window.pop(0)
+        medians.append(find_median(window))
+    return medians
+```
+
+### Option 2: Implement True Running Median
+If you actually want a cumulative running median:
+
+```python
+def running_median(stream):
+    all_elements = []
+    medians = []
+    for val in stream:
+        all_elements.append(val)
+        medians.append(find_median(all_elements))
+    return medians
+```
+
+### Option 3: Remove Unused Code
+Delete the `merge_sorted_lists` function since it's not used:
+
+```python
+# Remove this entirely as it's not called anywhere
+# def merge_sorted_lists(list1, list2):
+#     ...
+```
+
+## Summary
+
+| Issue | Severity | Fix |
+|-------|----------|-----|
+| Misleading function name | High | Rename to `sliding_window_median` |
+| Unused function | Low | Remove `merge_sorted_lists` |
+
+The corrected program would be clearer and more maintainable with these changes.

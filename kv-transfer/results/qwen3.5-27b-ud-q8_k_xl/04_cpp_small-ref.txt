@@ -1,0 +1,137 @@
+This is a Huffman coding implementation in C++. Let me analyze what each part does and then determine the time complexity.
+
+## What the program does:
+
+1. **Node structure**: Creates a binary tree node for Huffman coding with character, frequency, and left/right child pointers.
+
+2. **buildTree()**: 
+   - Counts character frequencies in the input text
+   - Creates a priority queue of nodes ordered by frequency (min-heap)
+   - Builds the Huffman tree by repeatedly combining the two lowest frequency nodes
+   - Returns the root of the Huffman tree
+
+3. **buildCodes()**:
+   - Traverses the Huffman tree recursively
+   - Assigns binary codes to each character (0 for left, 1 for right)
+   - Stores codes in a hash map
+
+4. **encode()**:
+   - Takes the original text and codes map
+   - Converts each character to its Huffman code
+   - Returns the encoded bit string
+
+5. **main()**:
+   - Creates a sample text
+   - Builds the Huffman tree
+   - Generates codes for each character
+   - Sorts codes by length
+   - Displays the codes (replacing spaces with underscores)
+   - Shows compression statistics (original vs encoded size)
+
+## Time Complexity Analysis:
+
+### buildTree():
+- Counting frequencies: O(n) where n = text length
+- Building priority queue: O(k log k) where k = number of unique characters
+- Building Huffman tree: O(k log k) - we do k-1 merge operations, each takes O(log k)
+- Total: O(n + k log k)
+
+### buildCodes():
+- Traverses the Huffman tree: O(k) where k = number of unique characters
+- String concatenation in recursion: O(k * m) where m = average code length
+- Total: O(k * m) or O(k²) in worst case
+
+
+- Encoding traverses the entire text: O(n * m) where m = average code length
+- Sorting codes: O(k log k)
+- Printing codes: O(k)
+- Overall main complexity: O(n * m + k log k) where n = text length, k = unique characters, m = average code length
+
+In practice, k is typically small (≤ 256 for ASCII), m is small (5-15 bits), so the encoding step dominates with O(n * m) or approximately O(n).
+</think>
+
+This C++ program implements the Huffman coding algorithm, a method for lossless data compression that assigns variable-length binary codes to characters based on their frequencies.
+
+---
+
+### Program Overview
+
+#### 1. Data Structures
+- **`Node` struct**: Represents a node in the Huffman tree with a character, its frequency, and pointers to left and right children.
+- **`Compare` struct**: Used to create a min-heap by comparing node frequencies.
+
+#### 2. Key Functions
+
+- **`buildTree()`**
+  - Counts character frequencies in the input text.
+  - Builds a min-heap using a priority queue.
+  - Repeatedly merges the two lowest-frequency nodes until one root node remains.
+  - Returns the root of the Huffman tree.
+
+- **`buildCodes()`**
+  - Recursively traverses the Huffman tree to assign binary codes (0 for left, 1 for right).
+  - Stores the resulting codes in a hash map for quick lookup.
+
+- **`encode()`**
+  - Converts the original text into a bit string using the generated Huffman codes.
+
+- **`main()`**
+  - Initializes a sample text.
+  - Builds the Huffman tree and generates codes.
+  - Sorts and prints the codes by length.
+  - Displays compression statistics: original size, encoded size, and compression ratio.
+
+---
+
+### Time Complexity Analysis
+
+| Step                        | Complexity        | Explanation |
+|----------------------------|-------------------|-------------|
+| Frequency Counting         | O(n)              | Single pass over input text |
+| Heap Construction          | O(k log k)        | k = number of unique characters |
+| Huffman Tree Construction  | O(k log k)        | k–1 merge operations |
+| Code Generation            | O(k × m)          | m = average code length |
+| Encoding Text              | O(n × m)          | Each character replaced by its code |
+| Sorting Codes              | O(k log k)        | Sorting unique characters by code length |
+
+**Overall Time Complexity:**  
+**O(n × m + k log k)**  
+- n = length of input text  
+- k = number of unique characters (≤ 256 for ASCII)  
+- m = average code length (typically 5–15 bits)
+
+Since k is small and m is bounded, the dominant term is usually **O(n × m)**, or simply **O(n)** in practical scenarios.
+
+---
+
+### Space Complexity Analysis
+
+| Component                    | Space Usage     |
+|-----------------------------|-----------------|
+| Frequency Map               | O(k)            |
+| Priority Queue              | O(k)            |
+| Huffman Tree                | O(k)            |
+| Code Map                    | O(k × m)        |
+| Encoded Output              | O(n × m)        |
+
+**Overall Space Complexity:**  
+**O(n × m + k × m)**  
+In practice, this simplifies to **O(n)** for large input texts.
+
+---
+
+### Example Output (Sample Text)
+
+```
+Original:  344 bits
+Encoded:   210 bits
+Ratio:     61.0465%
+```
+
+This demonstrates the compression achieved by Huffman coding, reducing the bit size by approximately 39%.
+
+---
+
+### Summary
+
+This program demonstrates a complete and efficient implementation of Huffman coding, including tree construction, code generation, encoding, and compression metrics. It achieves near-linear time complexity and is well-suited for compressing text data with known character frequency distributions.

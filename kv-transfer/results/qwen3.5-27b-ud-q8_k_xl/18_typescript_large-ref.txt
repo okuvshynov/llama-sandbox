@@ -1,0 +1,106 @@
+Here's a thinking process that leads to the review of the TypeScript codebase:
+
+1.  **Understand the Goal:** The user wants a comprehensive review of the provided TypeScript codebase (a Document Management System API backend). I need to identify bugs, performance issues, security vulnerabilities, and design problems. For each issue, I must explain *why* it's a problem and suggest a *fix*.
+
+2.  **Initial Scan & Architecture Overview:**
+    *   **Tech Stack:** Node.js, Express, PostgreSQL (via `pg`), JWT, Multer, Crypto.
+    *   **Structure:** Monolithic file (all logic in one file).
+    *   **Layers:** Config, Types, DB (Pool), Event Bus, Repositories, Services, Middleware, Routes, Startup.
+    *   **Key Functionality:** Auth, Document CRUD, Folder Management, Attachments, Search, Notifications (SSE), Audit Logging.
+
+3.  **Detailed Analysis by Category:**
+
+    *   **Security (Critical Priority):**
+        *   *SQL Injection:* I see string interpolation in SQL queries in `UserRepository.findByEmail` and `AuditLogRepository.findByUser`. This is a huge red flag.
+        *   *Password Hashing:* Using `crypto.createHash("sha256")` with a salt stored *alongside* the hash (implied, though not explicitly shown how salt is stored, but the logic `password + salt` is weak). `bcrypt` or `argon2` is standard. SHA256 is too fast for password hashing.
+        *   *JWT Secret:* Defaulting to `"default-secret-change-me"` in config is dangerous.
+        *   *Access Control:* `roleMiddleware` checks roles, but `checkFolderAccess` logic seems incomplete (doesn't check ownership explicitly in some places).
+        *   *File Upload:* `multer` destination is `/tmp/uploads` (server temp) but `FileService` moves it to `config.uploadDir`. No validation on file type (mimetypes) beyond `file.mimetype` which is easily spoofed. No size limits on the *database* side, though multer has one.
+        *   *Path Traversal:* `path.join` is used, but `file.originalname` is used directly in storage path generation without sanitization.
+        *   *Error Handling:* Stack traces are exposed in `/api/auth/register` error handler (`stack: (err as Error).stack`).
+        *   *CORS/HTTPS:* Not configured (assumed handled elsewhere, but worth noting).
+        *   *Rate Limiting:* In-memory rate limiter (`new Map`) will fail in clustered environments or restarts.
+
+    *   **Performance:**
+        *   *N+1 Query Problem:* `DocumentRepository.getDocumentsWithAuthors` loops through documents and fetches authors individually.
+        *   *Folder Tree Recursion:* `FolderRepository.getFolderTree` is recursive. Deep folder structures will cause stack overflows or timeouts. Needs CTE (Common Table Expression).
+        *   *Search:* `ILIKE '%query%'` is a full table scan (unless GIN/GiST indexes exist, but `ILIKE` with wildcards usually prevents index usage).
+        *   *Caching:* `SearchService` uses a simple in-memory `Map`. Not scalable across instances.
+        *   *Database Pool:* `max: 20` is okay for dev, might need tuning for prod.
+        *   *Async/Await:* Some places ignore await (e.g., `updateLastLogin` in `AuthService.login` doesn't await).
+
+    *   **Bugs & Logic Errors:**
+        *   *Password Verification:* In `AuthService.login`, it hashes the *input* password (`crypto.createHash("sha256").update(password).digest("hex")`) but compares it to the stored hash which was `password + salt`. This will **never match** unless the salt is empty or handled differently (but the salt logic isn't stored).
+        *   *Audit Log SQL:* `findByUser` uses string interpolation for dates (`'${startDate}'`), vulnerable to injection.
+        *   *Search SQL:* `DocumentRepository.search` constructs `WHERE` clauses dynamically. While it uses `$` params for values, the `ILIKE` part uses string interpolation (`'%${query}%'`), which is SQL Injection risk.
+        *   *Transaction Safety:* `createDocument`, `updateDocument`, `deleteFile` involve multiple DB writes and file system operations. If one fails, the other might succeed (e.g., DB record created, file move fails). No transactions.
+        *   *Folder Permissions:* `getFolderTree` doesn't filter by permissions. Users might see folders they shouldn't.
+        *   *Delete Logic:* `FolderRepository.delete` doesn't check for children or documents inside.
+        *   *Versioning:* `incrementVersion` is called before `update`. If update fails, version is incremented unnecessarily.
+        *   *Event Bus:* Singleton `AppEventBus` might leak memory if listeners aren't removed.
+
+    *   **Design & Maintainability:**
+        *   *God File:* Everything is in one file. Hard to test, hard to read.
+        *   *Global State:* `config`, `pool`, `eventBus` are global. Hard to mock for testing.
+        *   *Type Safety:* `req as any` used frequently. `Record<string, any>` used often.
+        *   *Error Handling:* Generic `500` errors everywhere. No distinction between validation errors vs. internal errors.
+        *   *Dependency Injection:* Services instantiate Repositories directly. Hard to swap implementations.
+
+4.  **Drafting the Review:**
+    *   Organize by category (Security, Performance, Bugs, Design).
+    *   Be specific: Quote the code line/section.
+    *   Provide concrete code snippets for fixes.
+    *   Prioritize: Security first, then Critical Bugs, then Performance, then Design.
+
+5.  **Refining Specific Findings (Self-Correction/Verification):**
+    *   *Correction on Password:* Looking closely at `AuthService.register`: `salt = random`, `hash = sha256(pass + salt)`. `UserRepo.create` stores `passwordHash`. `AuthService.login`: `hash = sha256(pass)`. It compares `sha256(pass)` vs `sha256(pass + salt)`. This is definitely a bug. It will always fail login.
+    *   *Correction on SQL Injection:* `UserRepository.findByEmail` uses `WHERE email = '" + email + "'`. Definitely injection.
+    *   *Correction on Audit Log:* `findByUser` uses `'${startDate}'`. Definitely injection.
+    *   *Correction on Search:* `DocumentRepository.search` uses `'%${query}%'`. Definitely injection.
+    *   *Correction on File Upload:* `FileService.uploadFile` uses `fs.createReadStream(file.path)`. Multer saves to `/tmp/uploads`. Then it pipes to `config.uploadDir`. This is a move operation. If it fails halfway, file is lost.
+    *   *Correction on Folder Tree:* Recursive JS function for DB tree traversal is bad practice.
+
+6.  **Final Polish:**
+    *   Ensure tone is constructive.
+    *   Make sure the fixes are realistic (e.g., suggesting `bcrypt` instead of `crypto`).
+    *   Check if I missed anything obvious. (e.g., `req.ip` reliability, missing `helmet` middleware).
+
+7.  **Output Generation:** (Proceed to generate the response based on these points.)
+</think>
+
+This codebase implements a functional Document Management System but contains **critical security vulnerabilities**, **significant logic bugs**, and **architectural anti-patterns** that make it unsafe for production.
+
+Below is a detailed review categorized by severity.
+
+---
+
+### 1. Security Vulnerabilities (Critical)
+
+#### A. SQL Injection Vulnerabilities
+**Issue:** Several queries use string interpolation instead of parameterized queries, allowing attackers to manipulate database commands.
+*   **Location:** `UserRepository.findByEmail`, `AuditLogRepository.findByUser`, `DocumentRepository.search`, `SearchService.getSuggestions`.
+*   **Example:**
+    ```typescript
+    // UserRepository.findByEmail
+    "SELECT * FROM users WHERE email = '" + email + "'"
+    ```
+    **Impact:** An attacker can log in as `admin' --` and bypass authentication or dump the database.
+*   **Fix:** Use parameterized queries (`$1`, `$2`) consistently.
+    ```typescript
+    // Fixed
+    "SELECT * FROM users WHERE email = $1", [email]
+    ```
+
+#### B. Broken Password Authentication
+**Issue:** The password verification logic in `AuthService.login` does not match the hashing logic in `register`.
+*   **Location:** `AuthService.login` vs `AuthService.register`.
+*   **Logic:**
+    1.  **Register:** `hash = sha256(password + salt)`
+    2.  **Login:** `hash = sha256(password)` (Salt is ignored during verification).
+*   **Impact:** **No user can ever log in.**
+*   **Fix:** Store the salt alongside the hash (or use a library like `bcrypt` which handles salt automatically). If using custom crypto, verify against the stored salt.
+    ```typescript
+    // Recommended Fix: Use bcrypt
+    import bcrypt from "bcrypt";
+    // Register
+    const passwordHash = await bcrypt.hash(password, 1

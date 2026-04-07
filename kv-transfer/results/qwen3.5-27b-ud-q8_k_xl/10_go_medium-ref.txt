@@ -1,0 +1,100 @@
+Here's a thinking process that leads to the code review:
+
+1.  **Understand the Goal:** The user wants a review of a provided Go codebase. I need to identify bugs, race conditions, and design issues, explain them, and suggest fixes.
+
+2.  **Initial Scan & High-Level Overview:**
+    *   **Package:** `main` (CLI/Server application).
+    *   **Components:** `WorkerPool` (job queue system), `RateLimiter` (token bucket), `Job` struct, HTTP handlers.
+    *   **Concurrency:** Uses goroutines (`worker`), channels (`jobQueue`), mutexes (`mu`), and `sync.WaitGroup`.
+    *   **Logic:** Jobs are submitted via HTTP, queued, processed by workers, potentially retried, and status is tracked.
+    *   **Immediate Red Flags:**
+        *   `wp.results` map access without locking in `processJob`?
+        *   `wp.middleware` slice access without locking in `processJob`?
+        *   `wp.handlers` map access without locking in `processJob`?
+        *   `wp.jobQueue` write in `processJob` (retry logic) without checking context or queue fullness?
+        *   `wp.mu` usage in `GetJob` vs `Submit` vs `processJob` vs `stats`.
+        *   `wp.results` stores pointers to `Job`. If `Submit` modifies the struct passed in vs the stored one?
+        *   `wp.Stop()` closes channel while workers might still be writing to it (retry logic).
+        *   `http.ListenAndServe` blocks, so `pool.Stop()` is never called.
+        *   `rand` usage without seeding.
+
+3.  **Detailed Analysis - Component by Component:**
+
+    *   **`Job` Struct:**
+        *   Looks okay. Standard JSON tags.
+        *   `time.Time` defaults to zero value, handled reasonably.
+
+    *   **`WorkerPool` Struct:**
+        *   `results` map: Stores `*Job`.
+        *   `mu` mutex: Protects `results`.
+        *   `handlers` map: No protection.
+        *   `middleware` slice: No protection.
+        *   `jobQueue` channel: Unbuffered or buffered (buffered in constructor).
+
+    *   **`NewWorkerPool`:**
+        *   Initializes context. Good.
+
+    *   **`RegisterHandler` & `Use`:**
+        *   **Race Condition:** These modify `wp.handlers` and `wp.middleware` without locking `wp.mu`.
+        *   **Issue:** `processJob` reads these maps/slices concurrently. If a handler is registered *after* `Start()` but *before* a worker reads `handlers`, it might panic or see stale data. Although usually registration happens before start, it's unsafe if dynamic.
+        *   **Fix:** Lock `wp.mu` during registration or use RWMutex.
+
+    *   **`Submit`:**
+        *   Modifies `job.Status`, `job.CreatedAt`.
+        *   Locks `wp.mu`, puts `job` in `wp.results`.
+        *   **Critical Race:** `wp.results[job.ID] = job`. This stores the *pointer* passed to `Submit`.
+        *   **Critical Issue:** If the caller modifies the `job` struct *after* `Submit` returns, the worker sees those changes. This is generally okay for pointers, but `wp.results` acts as the source of truth.
+        *   **Queue Block:** `wp.jobQueue <- job`. If the queue is full, this blocks indefinitely. No context check.
+        *   **Fix:** Use `select` with `ctx.Done()` to avoid blocking forever if the pool is shutting down or queue is full.
+
+    *   **`GetJob`:**
+        *   Locks `mu`. Safe.
+        *   Returns `*Job`. The caller gets a pointer to the internal state.
+        *   **Race Condition:** If the caller reads `job.Status` *after* `GetJob` returns, but *before* the worker updates it, they might see a stale value. Since it's a pointer, the memory is shared. This is standard Go pattern, but the caller must expect concurrent modification.
+
+    *   **`Start` & `Stop`:**
+        *   `Start`: Spawns workers.
+        *   `Stop`: Calls `cancel()`, closes `jobQueue`, waits.
+        *   **Deadlock/Panic Risk:** `close(wp.jobQueue)` is called. However, `processJob` (retry logic) does `wp.jobQueue <- job`.
+        *   **Panic:** If `Stop()` is called while a worker is retrying a job, the worker tries to send to a closed channel -> **Panic**.
+        *   **Fix:** Check `wp.ctx.Done()` before sending to queue in retry logic. Also, `Stop()` should not close the channel until workers are sure they aren't sending. Or, just rely on context cancel to stop the select loop. Closing the channel is tricky with retries. Better to just cancel context and let workers drain or stop. If closing, ensure no writers exist.
+
+    *   **`worker`:**
+        *   Select on `ctx.Done()` and `jobQueue`. Good.
+        *   Calls `processJob`.
+
+    *   **`processJob`:**
+        *   **Race Condition:** Iterates `wp.middleware` and accesses `wp.handlers` without locking `wp.mu`.
+        *   **Race Condition:** Updates `job.Status`, `job.Result`, etc. The `job` pointer is shared. If `GetJob` is called concurrently, it sees partial updates. This is usually acceptable for status flags, but `wp.results` isn't updated here.
+        *   **Logic Bug:** `wp.results` is updated in `Submit` and `GetJob`, but *never updated in `processJob`*. Wait, `processJob` modifies the `job` struct fields directly. Since `wp.results` holds the *pointer*, the changes reflect in `wp.results`. So `GetJob` will see the updates.
+        *   **Retry Logic:** `time.Sleep` blocks the worker. This is bad for throughput.
+        *   **Retry Logic:** `wp.jobQueue <- job`. If `Stop()` was called, this panics (as noted above).
+        *   **Retry Logic:** No context check before retrying. If context is cancelled, it shouldn't retry.
+        *   **Rate Limiting:** The `RateLimiter` is shared. `Allow()` is thread-safe.
+
+    *   **`RateLimiter`:**
+        *   `tokens` is `float64`. `Allow()` subtracts 1.
+        *   `mu` protects it. Looks okay.
+        *   **Drift:** `time.Now()` drift is handled.
+        *   **Precision:** Floating point math is okay for this use case.
+
+    *   **`main`:**
+        *   `pool.Start()` starts workers.
+        *   `http.ListenAndServe` blocks.
+        *   **Graceful Shutdown:** There is no signal handling. `pool.Stop()` is never called. The channel is never closed. Workers run until process kill.
+        *   **HTTP Handlers:**
+            *   `/submit`: `pool.Submit` might block if queue full. HTTP server will timeout.
+            *   `/stats`: Locks `mu`. Safe.
+        *   **Rand:** `rand.Intn` and `rand.Float64` use global rand without seed. Deterministic in tests, but okay for main. `math/rand/v2` is preferred now (Go 1.20+), but `math/rand` is okay for this snippet. *Correction:* In Go 1.20+, `math/rand` is not seeded automatically by default in `rand.Intn` unless `rand.Seed` was called (deprecated). Actually, `math/rand` uses a global source seeded with current time in newer versions, but explicit seeding is best practice.
+        *   **Pointer Safety:** `Submit` takes `*Job`. The HTTP handler decodes into `job` (value) then passes `&job`. This is fine, but `job` is on stack in handler. `Submit` stores the pointer. The HTTP request ends, stack frame pops. The pointer in `wp.results` becomes a dangling pointer to stack memory?
+            *   **CRITICAL BUG:** `var job Job` is on the stack in the HTTP handler. `pool.Submit(&job)` stores `&job` in `wp.results`. When the HTTP handler returns, the stack memory for `job` is invalid. The worker reads garbage or crashes.
+            *   **Fix:** Allocate `job` on heap (`new(Job)`) or copy it into a new struct before submitting.
+
+4.  **Synthesizing the Findings:**
+
+    *   **Critical Bug:** Dangling pointer in HTTP Handler (`Submit`).
+    *   **Race Condition:** `handlers` and `middleware` maps/slices accessed without locks in `processJob`.
+    *   **Panic:** Writing to closed channel in `processJob` (retry) vs `Stop()`.
+    *   **Blocking:** `Submit` blocks indefinitely if queue is full.
+    *   **Graceful Shutdown:** `Stop()` never called, no signal handling.
+    *   **Concurrency:** `
