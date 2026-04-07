@@ -1,0 +1,106 @@
+<|channel>thought
+Here's a thinking process to construct the explanation:
+
+1.  **Understand the Goal:** The request asks for an explanation of what the provided Java program does and a description of the data structure used.
+
+2.  **Analyze the Code Structure (The `LRUCache` class):**
+    *   **Generics:** `<K, V>` indicates it can store any type of Key (`K`) and Value (`V`).
+    *   **Fields:**
+        *   `capacity`: The maximum number of items the cache can hold.
+        *   `map`: `Map<K, Node<K, V>>`. This allows O(1) lookup of a node given a key.
+        *   `head`, `tail`: These are special sentinel nodes used to manage the doubly linked list.
+    *   **Inner Class (`Node<K, V>`):** Contains `key`, `value`, `prev`, and `next`. This confirms the structure is a node in a doubly linked list.
+    *   **Constructor (`LRUCache(int capacity)`):** Initializes the capacity, the map, and sets up the doubly linked list (`head` and `tail` pointing to each other).
+    *   **Core Methods:**
+        *   `get(K key)`:
+            *   Finds the node in the map.
+            *   If found, it removes the node from its current position and re-adds it to the front (most recently used).
+            *   Returns the value. (This is the LRU mechanism: accessing an item makes it MRU).
+        *   `put(K key, V value)`:
+            *   *Case 1 (Existing Key):* Updates the value, removes, and re-adds to the front (MRU).
+            *   *Case 2 (New Key, Full Cache):* Checks if capacity is reached. If so, it identifies the Least Recently Used (LRU) item (which is `tail.prev`), removes it from the list and the map.
+            *   Adds the new node to the map and to the front of the list.
+        *   **Helper Methods (`remove`, `addToFront`):** These handle the manipulation of the doubly linked list pointers efficiently (O(1)).
+
+3.  **Identify the Data Structure:**
+    *   The program combines two structures:
+        1.  A `HashMap` (for fast O(1) lookup of keys).
+        2.  A Doubly Linked List (for fast O(1) insertion, deletion, and reordering of nodes based on usage/recency).
+    *   The combination is the standard implementation for an **LRU Cache**.
+
+4.  **Analyze the Execution Flow (`main` method):**
+    *   Capacity is 3.
+    *   `put("a", 1)`, `put("b", 2)`, `put("c", 3)`. List order (MRU to LRU): c, b, a.
+    *   `get("a")`. "a" becomes MRU. List order: a, c, b.
+    *   `put("d", 4)`. Cache is full. "b" (LRU) is evicted. List order: d, a, c.
+    *   `put("b", 5)`. Cache is full. "c" (LRU) is evicted. List order: b, d, a.
+
+5.  **Synthesize the Explanation (Structure the Answer):**
+    *   **Part 1: Program Function:** Define what the overall program is (an LRU Cache).
+    *   **Part 2: Mechanism/Logic:** Explain how the `get` and `put` methods work, emphasizing the usage of the map and the linked list.
+    *   **Part 3: Data Structure:** Detail the specific components (HashMap + Doubly Linked List) and why they are used.
+
+6.  **Review and Refine:** Ensure the language is clear, technically accurate, and directly addresses both parts of the prompt. (Self-Correction: Make sure to explicitly state that the linked list keeps track of usage order—the head is MRU, the tail is LRU.) (Looks good.)<channel|>This Java program implements a **Least Recently Used (LRU) Cache**.
+
+An LRU Cache is a data structure designed to store a limited number of items and ensure that when the cache reaches its capacity, the item that has not been accessed for the longest time (the Least Recently Used item) is evicted to make room for new data.
+
+---
+
+## 1. Program Functionality
+
+The `LRUCache` class allows users to perform standard cache operations: `get` (retrieve a value) and `put` (insert or update a key-value pair).
+
+### How the Cache Works:
+
+1.  **Capacity Management:** The cache is initialized with a maximum `capacity`.
+2.  **`get(K key)` Operation:**
+    *   If the key exists, its corresponding value is returned.
+    *   Crucially, accessing an item means it has just been used. Therefore, the node containing that key is moved to the "Most Recently Used" (MRU) position in the cache structure.
+3.  **`put(K key, V value)` Operation:**
+    *   **If the key already exists:** The value is updated, and the node is moved to the MRU position.
+    *   **If the key is new:**
+        *   The cache checks if it is at capacity.
+        *   If the cache is full, it identifies the **Least Recently Used (LRU)** item (which is the node immediately preceding the `tail` of the list) and removes it from both the list and the map.
+        *   The new key-value pair is added to the map and placed at the MRU position (the front of the list).
+
+### Execution Flow Example (from `main`):
+
+1.  **Initialization (Capacity = 3):**
+    *   `put("a", 1)`, `put("b", 2)`, `put("c", 3)`.
+    *   State: {c=3, b=2, a=1}. (Order: c is MRU, a is LRU).
+2.  **`get("a")`:** "a" is accessed and moved to the MRU position.
+    *   State: {a=1, c=3, b=2}. (Order: a is MRU, b is LRU).
+3.  **`put("d", 4)`:** Cache is full. The LRU item ("b") is evicted. "d" is added as the new MRU item.
+    *   State: {d=4, a=1, c=3}. (Order: d is MRU, c is LRU).
+4.  **`put("b", 5)`:** Cache is full. The LRU item ("c") is evicted. "b" is added as the new MRU item.
+    *   State: {b=5, d=4, a=1}. (Order: b is MRU, a is LRU).
+
+---
+
+## 2. Data Structure Description
+
+The `LRUCache` uses a combined structure consisting of two primary components to achieve efficient $O(1)$ time complexity for both `get` and `put` operations.
+
+### A. HashMap (`map`)
+
+*   **Type:** `Map<K, Node<K, V>>` (specifically, a `HashMap`).
+*   **Purpose:** Provides very fast lookups (average $O(1)$ time) to find a specific `Node` given its `key`. This is essential for quickly determining if a key exists and locating the corresponding node for updates or deletions.
+
+### B. Doubly Linked List (DLL)
+
+*   **Type:** A custom structure implemented using the `Node` class, with pointers (`prev` and `next`) allowing bidirectional traversal.
+*   **Purpose:** Manages the order of usage (recency).
+    *   The list maintains the current ordering of all items in the cache.
+    *   **Head:** A sentinel node used to mark the beginning of the list. The node immediately following the `head` is the **Most Recently Used (MRU)** item.
+    *   **Tail:** A sentinel node used to mark the end of the list. The node immediately preceding the `tail` is the **Least Recently Used (LRU)** item.
+*   **Efficiency:** Because it is a *doubly* linked list, deleting a node from the middle (required when a node is accessed or evicted) only requires manipulating the pointers of its neighbors, which is an $O(1)$ operation.
+
+### Summary of Structure
+
+The LRU Cache effectively links the two structures:
+
+| Operation | Structure Used | Time Complexity | Rationale |
+| :--- | :--- | :--- | :--- |
+| **Lookup (Get)** | HashMap | $O(1)$ | Quickly find the node location. |
+| **Recency Update** | Doubly Linked List | $O(1)$ | Remove the existing node and re-insert it at the head (MRU). |
+| **Eviction (Put)** | Doubly Linked List | $O(1)$ | Identify and remove the node right before the tail (LRU). |

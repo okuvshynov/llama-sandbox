@@ -1,0 +1,126 @@
+<|channel>thought
+Here's a thinking process for reviewing the provided TypeScript codebase:
+
+1.  **Understand the Goal:** The request asks for a review of a TypeScript codebase for bugs, type safety issues, and architectural problems, along with suggested improvements. The code implements a `Pipeline` class based on an `EventEmitter`.
+
+2.  **Review `TypedEventEmitter` (The Core Utility):**
+    *   **Interface (`EventMap`):** `[event: string]: (...args: any[]) => void;`
+        *   *Issue:* `...args: any[]` is extremely loose. It should use generics or a more structured approach if possible, but for a generic event emitter, this might be acceptable, though loss of type safety is the tradeoff.
+    *   **Class Structure:** Uses two maps (`listeners`, `onceListeners`).
+    *   **`on`:**
+        *   `listener: T[K]` ensures the listener function signature matches the expected signature for that event. Good.
+        *   Returns cleanup function: `() => this.off(event, listener)`. Good pattern.
+    *   **`once`:** Standard implementation. Good.
+    *   **`off`:** Handles deletion from both maps. Good.
+    *   **`emit`:**
+        *   `emit<K extends keyof T>(event: K, ...args: Parameters<T[K]>): void`
+        *   *Check:* Does `Parameters<T[K]>` correctly capture the arguments for the specific event type? Yes, because `T[K]` is the function type, and `Parameters` extracts the argument types. This is generally correct for event emitters.
+        *   *Implementation:* Handles regular listeners and consumes/clears `onceListeners`. Looks logically sound.
+
+    *   *Conclusion for EventEmitter:* Mostly solid, but the reliance on `any[]` in the interface definition is a minor weakness.
+
+3.  **Review Data Structures (`Task`, `TaskStatus`, `PipelineEvents`):**
+    *   **`TaskStatus`:** Good, strong literal union.
+    *   **`Task` Interface:**
+        *   Uses generic `T = any`. This is common but defeats the purpose of strong typing unless explicitly handled.
+        *   `execute: () => Promise<T>`: Fine.
+        *   `dependencies: string[]`: Dependencies are keyed by string IDs. This is typical, but relies on runtime validation (i.e., checking if the dependency ID exists in `this.tasks`).
+        *   `result?: T`, `error?: Error`: Standard.
+    *   **`PipelineEvents`:** Defines event signatures well.
+
+4.  **Review `Pipeline` Class (The Architecture):**
+    *   **Inheritance:** `extends TypedEventEmitter<PipelineEvents>`. Correct.
+    *   **State:** `tasks`, `results`, `running`, `concurrency`. Seems appropriate.
+    *   **`addTask`:**
+        *   Input typing for `config` is good.
+        *   Correctly initializes `Task` properties (defaults for timeout/retries/status). Good.
+    *   **`getReadyTasks`:**
+        *   Logic: Checks `status !== 'pending'` and verifies all dependencies are `'completed'`.
+        *   *Potential Issue:* It relies on `this.tasks.get(dep)?.status === 'completed'`. If `dep` doesn't exist (a bad dependency ID), `get()` returns `undefined`, and `undefined?.status` is `undefined`, which fails the check, correctly preventing execution. This is robust.
+    *   **`executeTask` (The Core Logic):**
+        *   **Retry Loop:** `for (let attempt = 0; attempt <= task.retries; attempt++)`. Correct loop boundary.
+        *   **Retry Delay:** `Math.pow(2, attempt) * 1000`. Exponential backoff. Good pattern.
+        *   **Status Updates/Events:** Emits `task:start`, handles `task:retry`, `task:complete`, `task:fail`. Correct.
+        *   **Execution:** Uses `Promise.race` between `task.execute()` and a timeout promise. Correct implementation of timeout mechanism.
+        *   **Error Handling:** Converts generic errors into `Error` objects. Looks acceptable.
+    *   **`run` (The Orchestrator):**
+        *   **State Check:** Prevents concurrent runs. Good.
+        *   **Main Loop (`while (true)`):**
+            *   Handles deadlock detection (`pending.length > 0 && running.length === 0`). This is a necessary feature for dependency graphs.
+            *   Handles idling (waiting `100ms`) when no tasks are ready.
+            *   Batching: Uses `ready.slice(0, this.concurrency)` and `Promise.all`. Correct use of concurrency limit.
+        *   **Completion/Failure Handling:** Checks for failed tasks after the loop ends. Correct error propagation.
+        *   **Cleanup (`finally`):** Sets `this.running = false`. Crucial.
+
+5.  **Review Usage Example:**
+    *   **Problem:** The usage example is the *most critical* area for type safety and architectural issues.
+    *   `merge-data` task:
+        ```typescript
+        const users = pipeline['results'].get('fetch-users'); // Runtime access
+        const orders = pipeline['results'].get('fetch-orders');
+        ```
+        *   *Issue:* Accessing `pipeline['results']` bypasses the strong typing established in the class. `results` is a `Map<string, any>`, so TypeScript cannot ensure `'fetch-users'` exists or that its value is an array of users. This requires aggressive type casting or a better API design.
+
+6.  **Synthesize Findings and Recommendations:** Group the findings into the requested categories (Bugs, Type Safety, Architecture) and provide actionable improvements. (Self-Correction: Ensure the suggested fixes address the biggest pain points, which are primarily around the loose typing in `Task` and the reliance on runtime string lookups.)<channel|>This codebase provides a solid foundation for a task pipeline orchestrator, successfully combining event-driven architecture with asynchronous task management (dependency resolution, concurrency, retries, timeouts).
+
+However, there are several areas where type safety, runtime robustness, and overall architectural clarity can be significantly improved.
+
+Here is a detailed review organized by category.
+
+---
+
+## 1. Type Safety and TypeScript Issues
+
+The primary weakness of the codebase lies in the use of `any` and the reliance on string keys for data retrieval, which bypasses the benefits of TypeScript.
+
+### Issue 1.1: Over-reliance on `any` in `Task` Interface
+
+The `Task` interface uses `T = any`, which makes it impossible for the compiler to enforce what the task's result type (`T`) should be across the pipeline.
+
+**Code Snippet:**
+```typescript
+interface Task<T = any> {
+  // ...
+  execute: () => Promise<T>;
+  result?: T;
+  error?: Error;
+}
+```
+
+**Problem:** When tasks pass results between stages (like `merge-data` accessing results from `fetch-users`), the compiler cannot verify that the expected type matches the actual returned type. This forces consumers (like the `merge-data` task) to cast or rely on runtime checks.
+
+**Improvement:** Introduce a more structured mechanism, perhaps by making `Task` generic only in the context of its specific outcome, or by defining a strict payload structure.
+
+*   **Suggestion A (More Generic):** Keep the generic, but enforce that the result type is explicit in the `addTask` method input.
+*   **Suggestion B (Strict Structure):** Define a union of all possible pipeline result types, and ensure that `Task` uses this union.
+
+### Issue 1.2: Weak Typing in `EventMap`
+
+The `EventMap` interface uses `(...args: any[]) => void`.
+
+**Code Snippet:**
+```typescript
+interface EventMap {
+  [event: string]: (...args: any[]) => void;
+}
+```
+
+**Problem:** While necessary for a flexible EventEmitter, this is extremely loose. When a consumer uses `pipeline.on('task:complete', (task, result) => { ... })`, TypeScript cannot guarantee that `task` is a `Task` object and that `result` matches what the `task:complete` event is supposed to provide.
+
+**Improvement:** Use a discriminated union or a separate type definition for each event signature, rather than a monolithic `any[]`.
+
+### Issue 1.3: Runtime Access to Results (The Biggest Type Violation)
+
+In the usage example, the `merge-data` task accesses results directly using bracket notation on the `pipeline` instance, which is a `Map<string, any>`.
+
+**Code Snippet (Usage Example):**
+```typescript
+// Inside addTask for 'merge-data'
+const users = pipeline['results'].get('fetch-users'); // <- Runtime access, 'any' type
+const orders = pipeline['results'].get('fetch-orders');
+```
+
+**Problem:** This is a massive type safety hole. If you mistype the key (`'fetch-users'`), TypeScript will not catch it; the pipeline will fail silently or crash at runtime.
+
+**Improvement:**
+1.  **Refactor API:** Instead of allowing tasks to directly

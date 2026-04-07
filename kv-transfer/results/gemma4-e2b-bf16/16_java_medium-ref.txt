@@ -1,0 +1,123 @@
+<|channel>thought
+Here's a plan for reviewing the provided Java codebase:
+
+1.  **Understand the Goal:** The code implements a concurrent, time-to-live (TTL) cache.
+2.  **Analyze Concurrency/Thread Safety:** Check how shared state (`store`, `accessOrder`, `closed`) is accessed and modified. Identify potential race conditions or deadlocks.
+3.  **Analyze Performance/Efficiency:** Look for unnecessary locking, inefficient data structure operations, and potential bottlenecks (especially in `get`, `put`, and cleanup).
+4.  **Analyze Design/API:** Review the class structure, separation of concerns, clarity of methods, and overall maintainability.
+5.  **Analyze Specific Bugs:** Look for logic errors (e.g., incorrect eviction, state management).
+
+---
+
+**Detailed Review Pass:**
+
+**A. Concurrency & Thread Safety:**
+*   `store` (HashMap) and `accessOrder` (LinkedList) are accessed under `lock` (ReentrantLock). This ensures atomicity for mutations.
+*   `get(K key)`: Reads from `store`. Acquires lock. Calls `touchEntry` (which modifies `accessOrder`). Seems safe.
+*   `put(K key, V value, long ttlMs)`: Modifies `store` and `accessOrder`. Acquires lock. Handles capacity eviction. Seems safe.
+*   `evictExpired()`: Acquires lock. Iterates over `store` and modifies both `store` and `accessOrder`. This is critical and correctly protected by the lock.
+*   `CacheEntry.getValue()`: Modifies `lastAccessedAt`. This needs to be consistent with the locking strategy.
+
+**B. Performance:**
+*   **Lock Granularity:** A single global `ReentrantLock` protects the entire cache (`store` and `accessOrder`). This is simple but highly contentious. Any operation (read, write, touch, eviction, cleanup) requires this lock.
+*   **`get(K key)`:**
+    *   Acquires lock.
+    *   Gets entry. Checks expiry. If valid, calls `touchEntry` (which removes and re-adds to the LinkedList).
+    *   Releasing and re-adding to a LinkedList (especially `remove(key)` and `addFirst(key)`) is $O(N)$ for `LinkedList` unless we store a reference to the node in the list (which we don't). Iterating through the `accessOrder` to remove an element is the main performance concern here.
+*   **`evictExpired()`:** Iterates over `store` and calls `accessOrder.remove(entry.getKey())`. If `accessOrder` is a `LinkedList`, `remove(Object)` requires traversing the list, making this operation potentially $O(N)$ inside a scheduled task.
+*   **`CacheMetrics`:** Uses `AtomicLong` for counters, which is good. However, `recordResponseTime` adds to an `ArrayList` without synchronization, which is a subtle concurrency issue if multiple threads call `get` simultaneously.
+*   **`snapshot()`:** Iterates over the entire `store` map. Fine, but the iteration itself happens outside the lock (Wait, no, it doesn't acquire the lock in the provided code snippet. Let's re-read `snapshot()`: `for (Map.Entry<K, CacheEntry<K, V>> e : store.entrySet())`. **CRITICAL BUG:** `store` is modified concurrently by `put`, `remove`, and `evictExpired`. The iterator in `snapshot()` will throw a `ConcurrentModificationException` if the cache is modified while snapshotting.
+
+**C. Design & API:**
+*   **`CacheEntry`:** Simple and effective. The `getValue()` method updates the access time, which is necessary for LRU/access tracking.
+*   **`warmUp()`:** Uses an external thread pool and waits for futures. This is acceptable for a testing/initialization hook, but the error handling (`System.err.println`) is weak.
+*   **Metric Handling:** The metric implementation lacks thread safety for `responseTimes`.
+*   **Constructor Initialization:** The `cleanupExecutor` is started immediately. This is fine, but proper shutdown/cancellation handling (e.g., in `close()`) is necessary.
+
+---
+
+**Synthesis of Issues and Fixes:** (Structuring the output)<channel|>This Java codebase provides a functional, albeit basic, implementation of a concurrent Time-To-Live (TTL) cache. While the fundamental structure is sound, there are significant issues related to concurrency correctness, performance bottlenecks, and general design hygiene that need addressing.
+
+Here is a detailed review, categorized by issue type, along with suggested fixes.
+
+---
+
+## 1. Concurrency and Thread Safety Issues (Critical)
+
+The primary concern is the inconsistent handling of shared data structures, particularly when combined with the single global lock.
+
+### Issue 1.1: Non-Thread-Safe Metrics Accumulation
+
+The `CacheMetrics.responseTimes` list is an `ArrayList` and is modified by multiple threads (via `get()`) without any synchronization.
+
+**Explanation:** If multiple threads call `get()` concurrently, they might attempt to add response times to `responseTimes` simultaneously, leading to a `ConcurrentModificationException` or data corruption in the underlying `ArrayList`.
+
+**Fix:** Synchronize access to the `responseTimes` list, or use a concurrent collection if performance is paramount.
+
+```java
+// In CacheMetrics class:
+private final List<Long> responseTimes = Collections.synchronizedList(new ArrayList<>());
+
+void recordResponseTime(long millis) {
+    responseTimes.add(millis); // Synchronization handled by Collections.synchronizedList
+}
+
+// Alternatively, if performance is critical and you don't need synchronization overhead:
+// Use a specialized thread-safe queue or mechanism, or use an AtomicLong for sum/count
+// and accept that response times might be sampled or processed asynchronously.
+```
+
+### Issue 1.2: ConcurrentModificationException in `snapshot()` (Critical)
+
+The `snapshot()` method iterates over the `store` map without acquiring the global lock.
+
+**Explanation:** The `store` map is actively modified by several methods (`put`, `remove`, and the scheduled `evictExpired`) which all acquire the lock. If `snapshot()` runs concurrently with a modification, the iterator will fail, throwing a `ConcurrentModificationException`.
+
+**Fix:** The snapshot operation must acquire the lock to ensure a consistent view of the cache state.
+
+```java
+public Map<K, V> snapshot() {
+    lock.lock(); // Acquire lock
+    try {
+        Map<K, V> result = new HashMap<>();
+        for (Map.Entry<K, CacheEntry<K, V>> e : store.entrySet()) {
+            if (!e.getValue().isExpired()) {
+                result.put(e.getKey(), e.getValue().getValue());
+            }
+        }
+        return result;
+    } finally {
+        lock.unlock(); // Release lock
+    }
+}
+```
+
+---
+
+## 2. Performance and Efficiency Issues
+
+The cache implementation uses global locking and linear data structures, which leads to poor performance under high concurrency or large capacity.
+
+### Issue 2.1: Coarse-Grained Locking (Bottleneck)
+
+The entire cache operation (read, write, eviction, cleanup) is protected by a single `ReentrantLock`.
+
+**Explanation:** This design severely limits concurrency. If one thread is performing a long operation (like a `put` involving eviction or an `evictExpired` sweep), all other threads, even simple `get` operations, must wait.
+
+**Fix:** Implement finer-grained locking or use more specialized concurrent data structures.
+1. **Read/Write Lock:** Replace `ReentrantLock` with a `ReentrantReadWriteLock`. Reads (`get`, `containsKey`) could proceed concurrently, only blocking when a write operation (`put`, `remove`, `evictExpired`) is taking place.
+2. **Concurrent Map:** Use `ConcurrentHashMap` for the `store` if possible, reducing the need for the global lock for simple lookups and insertions. However, this still complicates the maintenance of the `accessOrder` linked list.
+
+### Issue 2.2: Inefficient Access Order Management (O(N) Operations)
+
+The cache uses a `LinkedList<K>` (`accessOrder`) to maintain the access order (acting like an LRU queue). Operations on this list are inefficient.
+
+**Explanation:**
+1. **`touchEntry(K key)`:** This method calls `accessOrder.remove(key)` followed by `accessOrder.addFirst(key)`. Removing an arbitrary element from a `LinkedList` requires traversing the list, making this operation $O(N)$ where $N$ is the capacity.
+2. **`evictExpired()`:** When an entry expires, it calls `accessOrder.remove(entry.getKey())`. This is also $O(N)$.
+
+**Fix:** To achieve $O(1)$ time complexity for updating access order (necessary for an efficient LRU cache), the `accessOrder` structure must be a **Doubly Linked List** (like `java.util.LinkedHashMap`'s internal structure) where we store a direct reference to the node in the list within the `CacheEntry` itself.
+
+If sticking to `LinkedList`, you would need a separate `Map<K, LinkedList.Node<K>>` to allow $O(1)$ node removal, significantly complicating the implementation.
+
+### Issue 2.3: Inefficient `get

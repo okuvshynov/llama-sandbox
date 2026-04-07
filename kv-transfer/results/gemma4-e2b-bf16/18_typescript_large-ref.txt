@@ -1,0 +1,146 @@
+<|channel>thought
+Here's a thinking process for reviewing the provided TypeScript codebase:
+
+1.  **Understand the Goal:** The request asks for a review of a TypeScript/Express API backend focusing on bugs, performance, security vulnerabilities, and design problems, along with suggested fixes.
+
+2.  **Initial Scan & Structure Review (The Big Picture):**
+    *   **Technology Stack:** Node.js, Express, PostgreSQL (via `pg`), JWT (`jsonwebtoken`), Multer, File System (`fs`), Event Emitter.
+    *   **Architecture:** Classic MVC/layered structure (Routes -> Services -> Repositories).
+    *   **Configuration:** Uses environment variables, which is good practice.
+    *   **Data Modeling:** Interfaces are defined (User, Document, Folder, etc.).
+    *   **Dependencies:** Standard and necessary.
+
+3.  **Deep Dive Review - Area by Area:**
+
+    *   **Configuration (`config`):**
+        *   *Issue:* Hardcoded defaults (e.g., `jwtSecret: "default-secret-change-me"`, `dbPassword: "admin123"`).
+        *   *Issue:* Type safety for environment variables is missing (they are read as strings).
+    *   **Types (Interfaces):** Look good, generally descriptive.
+    *   **Database/Pool:**
+        *   *Issue (Security/Design):* Connection pooling parameters are basic.
+    *   **Event Bus (`AppEventBus`):**
+        *   *Design Issue:* Singleton pattern for the event bus is fine, but reliance on global state can make testing harder.
+    *   **Repository Layer (Data Access):**
+        *   *Bug/Security (UserRepository.findByEmail):* Using string concatenation for SQL query (`"SELECT * FROM users WHERE email = '" + email + "'"`). **CRITICAL SQL Injection vulnerability.**
+        *   *Design/Performance (DocumentRepository.update):* Dynamic query building is used, which is prone to errors (though reasonably safe here since inputs come from `updates`).
+        *   *Performance (DocumentRepository.getDocumentsWithAuthors):* N+1 query problem. It iterates through documents and performs a separate database query (`new UserRepository().findById(doc.authorId)`) for *each* document. **Major performance bottleneck.**
+        *   *Performance/Security (DocumentRepository.search):* Using string interpolation (`ILIKE '%${query}%'`) for full-text search is often inefficient and might break if not handled carefully (though PG handles `$1` parameterized queries better). The complex handling of dynamic parameters (`paramIdx`, `JSON.stringify(filters.tags)`) is messy and hard to maintain.
+        *   *Bug (AuditLogRepository.findByUser):* **CRITICAL SQL Injection vulnerability.** It uses string concatenation for date ranges (`timestamp BETWEEN '${startDate}' AND '${endDate}'`).
+    *   **Service Layer (Business Logic):**
+        *   *Design Issue (Tight Coupling):* Services are instantiated inside route handlers (`const docService = new DocumentService();`). This violates Dependency Injection principles, making testing difficult and increasing overhead.
+        *   *Security (AuthService.register/login):* **Weak Password Hashing.** Using `crypto.createHash("sha256").update(password + salt).digest("hex")` is *not* a proper password hashing scheme (like bcrypt or Argon2). This is a major security flaw.
+        *   *Design/Performance (DocumentService.updateDocument):* Logic for version increment and content update is complex but conceptually sound.
+        *   *Design (FolderRepository.getFolderTree):* Recursive function for tree structure retrieval can lead to stack overflow issues on very deep folder structures (though unlikely in most scenarios).
+        *   *Design (FileService.uploadFile):* Stream piping is good, but error handling on stream failure is missing.
+    *   **Middleware:**
+        *   *Design (Middleware):* `rateLimiter` is implemented correctly for a basic sliding window log, but storing state in an in-memory `Map` means it doesn't work across multiple Node.js processes (horizontal scaling).
+    *   **Routes:**
+        *   *Design (Route Logic):* Repositories and Services are instantiated locally in the route handlers.
+        *   *Bug/Design (Search Query Parsing):* The parsing of query parameters (`(q as string) || ""`, `parseInt((page as string) || "1")`) is messy and relies on runtime type casting, which is fragile.
+        *   *Security:* General lack of robust input validation (e.g., checking if `documentIds` in `bulk-tag` are actually integers/array).
+
+4.  **Synthesize and Structure the Feedback:** Group findings into the requested categories (Bugs, Performance, Security, Design) and provide concrete, actionable fixes. (Self-Correction: Ensure the most critical issues (SQL Injection, weak hashing, N+1) are highlighted first.) (This leads directly to the final structured output.)<channel|>This codebase provides a solid foundation for a document management system, utilizing a clear separation of concerns (Repository, Service, Controller/Routes). However, it contains several critical security vulnerabilities, significant performance bottlenecks, and architectural design flaws that need addressing before production deployment.
+
+Here is a detailed review organized by category.
+
+---
+
+## 1. Security Vulnerabilities (Critical)
+
+### Issue 1. SQL Injection in Repository Layer
+The code uses string concatenation to build SQL queries with user-provided input, which makes the application highly susceptible to SQL injection attacks.
+
+**Locations:**
+1.  `UserRepository.findByEmail(email: string)`
+    ```typescript
+    // VULNERABLE CODE
+    const result = await pool.query(
+      "SELECT * FROM users WHERE email = '" + email + "'"
+    );
+    ```
+2.  `AuditLogRepository.findByUser(userId: number, startDate: string, endDate: string)`
+    ```typescript
+    // VULNERABLE CODE
+    const result = await pool.query(
+      `SELECT * FROM audit_log WHERE user_id = $1 AND timestamp BETWEEN '${startDate}' AND '${endDate}' ORDER BY timestamp DESC`,
+      [userId]
+    );
+    ```
+
+**Fix:**
+**Always use parameterized queries** provided by the `pg` library (`$1`, `$2`, etc.) for *all* dynamic values.
+
+```typescript
+// Fixed UserRepository.findByEmail
+async findByEmail(email: string): Promise<User | null> {
+  const result = await pool.query("SELECT * FROM users WHERE email = $1", [email]);
+  return result.rows[0] || null;
+}
+
+// Fixed AuditLogRepository.findByUser
+async findByUser(userId: number, startDate: string, endDate: string): Promise<AuditLogEntry[]> {
+  // Ensure dates are correctly parameterized, even if they are simple strings.
+  const query = `SELECT * FROM audit_log WHERE user_id = $1 AND timestamp BETWEEN $2 AND $3 ORDER BY timestamp DESC`;
+  const result = await pool.query(query, [userId, startDate, endDate]);
+  return result.rows;
+}
+```
+
+### Issue 2. Weak Password Hashing (Critical)
+The `AuthService` uses a custom, weak hashing function (`sha256` with a salt) instead of industry-standard, computationally expensive, and salted hashing algorithms like **Bcrypt** or **Argon2**.
+
+**Location:** `AuthService.register` and `AuthService.login`
+
+**Fix:**
+Integrate a robust hashing library (like `bcrypt`).
+
+```typescript
+// Requires installing 'bcrypt'
+import * as bcrypt from 'bcrypt';
+
+// Inside AuthService.register
+async register(email: string, username: string, password: string, role: string): Promise<{ user: User; token: string }> {
+  // ... existing checks ...
+  const salt = await bcrypt.genSalt(10); // 10 rounds is a good default
+  const passwordHash = await bcrypt.hash(password, salt); // Use bcrypt hash
+  const user = await this.userRepo.create(email, username, passwordHash, role);
+  // ...
+}
+
+// Inside AuthService.login
+async login(email: string, password: string): Promise<{ user: User; token: string }> {
+  const user = await this.userRepo.findByEmail(email);
+  if (!user) {
+    throw new Error("Invalid credentials");
+  }
+  // Compare the provided password against the stored hash
+  const match = await bcrypt.compare(password, user.passwordHash);
+  if (!match) {
+    throw new Error("Invalid credentials");
+  }
+  // ...
+}
+```
+
+### Issue 3. JWT Secret Management
+The JWT secret is hardcoded as a default value.
+
+**Location:** `config.jwtSecret: process.env.JWT_SECRET || "default-secret-change-me"`
+
+**Fix:**
+Ensure the environment variable is strictly required and fails startup if missing.
+
+```typescript
+// Configuration check (in initialization or config file):
+const jwtSecret = process.env.JWT_SECRET;
+if (!jwtSecret) {
+  throw new Error("FATAL: JWT_SECRET environment variable is not set.");
+}
+```
+
+---
+
+## 2. Performance Issues
+
+### Issue 4. N+1 Query Problem
+In `DocumentRepository.getDocumentsWithAuthors`,

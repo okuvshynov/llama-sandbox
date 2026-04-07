@@ -1,0 +1,118 @@
+<|channel>thought
+Here's a thinking process to construct the explanation:
+
+1.  **Understand the Goal:** The request asks for an explanation of a Python program, focusing on what it does and describing the algorithms used.
+
+2.  **Analyze the Input Data:** The input is a list of directed edges, represented as tuples of strings (e.g., `("compile", "link")`). This immediately suggests a graph problem.
+
+3.  **Analyze `build_graph(edges)`:**
+    *   It initializes an adjacency list (`graph`), an in-degree counter (`in_degree`), and a set of all unique nodes (`nodes`).
+    *   It iterates through edges $(u, v)$:
+        *   Adds $v$ to $u$'s list (directed edge $u \to v$).
+        *   Increments the in-degree of $v$.
+        *   Adds both $u$ and $v$ to the set of nodes.
+    *   It handles isolated nodes (nodes that exist but have no incoming edges) by ensuring their in-degree is initialized to 0 if they weren't counted in the `in_degree` dictionary initialization (though the logic handles this reasonably well by iterating over `nodes`).
+    *   *Conclusion:* This function constructs the standard representation of a Directed Acyclic Graph (DAG) or a general Directed Graph, calculating in-degrees.
+
+4.  **Analyze `solve(edges)`:**
+    *   It calls `build_graph`.
+    *   It initializes a queue (`deque`) with all nodes having an in-degree of 0 (the starting points).
+    *   It uses a `while queue:` loop (a standard BFS/Topological Sort structure).
+    *   It dequeues a node, adds it to the `result`.
+    *   For every neighbor of the dequeued node, it decrements the neighbor's in-degree.
+    *   If a neighbor's in-degree drops to 0, it is added to the queue.
+    *   *Check:* It verifies if the length of the result equals the total number of nodes. If not, it means a cycle exists (and thus no topological sort is possible), and it returns `None`.
+    *   *Conclusion:* This implements **Kahn's Algorithm** for Topological Sorting.
+
+5.  **Analyze `find_all(edges)`:**
+    *   It calls `build_graph`.
+    *   It uses a recursive helper function `backtrack`.
+    *   The goal is to find *all* valid topological orderings.
+    *   `backtrack(path, remaining_in_degree)`:
+        *   **Base Case:** If the `path` length equals the total number of nodes, a full ordering is found, so it's stored.
+        *   **Recursive Step:** It iterates through all nodes.
+        *   **Constraint Check:** A node can be chosen only if it hasn't been visited (`node not in path`) AND its `remaining_in_degree` is 0.
+        *   **Action:** If chosen, update the path, calculate the `new_degrees` (crucially, this creates a copy of the state), recurse, and then backtrack (remove the node from the path).
+    *   *Conclusion:* This function uses a **backtracking search** approach combined with topological sort principles to find all possible linear orderings of the nodes.
+
+6.  **Synthesize the Overall Context and Algorithm:**
+    *   The problem is essentially finding a topological sort of a dependency graph.
+    *   `solve` finds *one* valid order (using Kahn's Algorithm).
+    *   `find_all` finds *all* valid orders (using Backtracking/DFS).
+
+7.  **Draft the Explanation (Structuring the Output):** Start with a high-level summary, detail each function, and then focus on the main algorithms. (Self-Correction: Ensure clear distinction between the single solution algorithm and the all-solutions algorithm.) (This leads directly to the final structured answer.)<channel|>This Python program deals with **Topological Sorting** of a directed graph. A topological sort is a linear ordering of vertices in a Directed Acyclic Graph (DAG) such that for every directed edge $u \to v$, vertex $u$ comes before vertex $v$ in the ordering.
+
+The program defines three functions:
+1. `build_graph`: Sets up the graph structure and calculates initial in-degrees.
+2. `solve`: Finds a single valid topological order.
+3. `find_all`: Finds every possible valid topological order.
+
+The input is a list of directed edges, representing dependencies between tasks (e.g., "compile" must happen before "link").
+
+---
+
+## 1. Function Breakdown
+
+### `build_graph(edges)`
+
+**Purpose:** To transform the list of edges into a usable graph representation (adjacency list) and calculate the in-degree for every node.
+
+**Mechanism:**
+1. **Initialization:** It initializes an adjacency list (`graph`), a dictionary to store in-degrees (`in_degree`), and a set to track all unique nodes (`nodes`).
+2. **Processing Edges:** It iterates through every edge $(u, v)$:
+    * It adds $v$ to the list of neighbors of $u$ in the `graph`.
+    * It increments the in-degree count for node $v$ (since $v$ has an incoming edge from $u$).
+    * It records both $u$ and $v$ as nodes.
+3. **Finalization:** It ensures that any node present in the graph structure but without an incoming edge is initialized with an in-degree of 0.
+
+**Output:** The function returns the graph structure, the in-degree map, and the set of all nodes.
+
+### `solve(edges)`
+
+**Purpose:** To find **one** valid topological ordering of the graph.
+
+**Algorithm:** This function implements **Kahn's Algorithm** for topological sorting.
+
+1. **Initialization:**
+    * It first builds the graph and in-degrees.
+    * It initializes a queue (`deque`) with all nodes that have an initial in-degree of 0 (these are the starting tasks with no dependencies).
+2. **Processing (BFS):**
+    * While the queue is not empty, it dequeues a node.
+    * This node is added to the `result` list (the topological order).
+    * For every neighbor of the dequeued node:
+        * Its in-degree is decremented (because the dependency on the current node has been satisfied).
+        * If a neighbor's in-degree drops to 0, that neighbor is added to the queue, as it is now ready to be processed.
+3. **Cycle Detection:** After the process is complete, it checks if the length of the resulting order matches the total number of nodes.
+    * If the lengths are equal, a valid topological sort was found, and it returns the result.
+    * If the lengths are unequal, it means the graph contains a **cycle** (a deadlock), and no topological sort is possible, so it returns `None`.
+
+### `find_all(edges)`
+
+**Purpose:** To find **all possible** valid topological orderings of the graph.
+
+**Algorithm:** This function uses a **Backtracking Search** approach.
+
+1. **Initialization:** It builds the graph and in-degrees. It uses a recursive helper function, `backtrack`.
+2. **Backtracking Logic (`backtrack(path, remaining_in_degree)`):**
+    * **Base Case:** If the current path contains all nodes (`len(path) == len(nodes)`), a complete valid order has been found. It is added to the `results` list.
+    * **Iteration:** It iterates through all available nodes (sorted for consistent output, though not strictly necessary for correctness).
+    * **Constraint Check:** A node is considered only if:
+        a. It has not been included in the current `path`.
+        b. Its `remaining_in_degree` is currently 0 (meaning all its prerequisites have been satisfied).
+    * **Action (Choose):** If the node is valid:
+        * It is added to the current `path`.
+        * A *copy* of the current in-degrees is created (`new_degrees`) to preserve the state for backtracking.
+        * The in-degrees of all neighbors of the chosen node are decremented in this copy.
+        * The function recursively calls itself with the updated path and new degrees.
+    * **Backtrack (Unchoose):** After the recursive call returns, the chosen node is removed from the current `path` (`path.pop()`), allowing the search to explore other possibilities.
+
+**Output:** A list containing every unique list representing a valid topological ordering.
+
+---
+
+## 2. Summary of Algorithms
+
+| Function | Core Problem Solved | Algorithm Used | Complexity Notes |
+| :--- | :--- | :--- | :--- |
+| `solve` | Finding **One** valid order. | **Kahn's Algorithm** (BFS-based Topological Sort) | Time complexity is $O(V + E)$, where $V$ is the number of vertices (nodes) and $E$ is the number of edges. |
+| `find_all` | Finding **All** valid orders. | **Backtracking Search** (DFS-based exploration of valid states) | In the worst case, the complexity can be exponential, $O(V!)$, as it explores all permutations
