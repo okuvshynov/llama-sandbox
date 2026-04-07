@@ -1,0 +1,135 @@
+<|channel>thought
+Document Management System (DMS) API Backend.
+TypeScript, Express, `pg` (PostgreSQL), `jsonwebtoken`, `multer`, `fs`, `crypto`, `events`.
+Identify bugs, performance issues, security vulnerabilities, and design problems. Provide explanations and fixes.
+
+    *   *Imports & Config:* Standard. `jwtSecret` has a default (risk). `dbPassword` has a default (risk).
+    *   *Interfaces:* Standard TypeScript interfaces.
+    *   *Database Layer (Pool):* Standard.
+    *   *Event Bus:* Singleton pattern for an `EventEmitter`.
+    *   *Repositories:*
+        *   `UserRepository`: `findByEmail` uses string concatenation (SQL Injection!). `updateLastLogin` doesn't `await`.
+        *   `DocumentRepository`: `update` builds query dynamically (safe from injection if keys are validated, but keys come from `updates` object). `search` uses string interpolation for `query` (SQL Injection!). `getDocumentsWithAuthors` has an $N+1$ query problem (calling `findById` in a loop).
+        *   `FolderRepository`: `getFolderTree` is recursive and performs a DB call for every child (Performance issue/N+1).
+        *   `AuditLogRepository`: `findByUser` uses string interpolation for dates (SQL Injection risk, though less likely to be exploited than text, still bad practice).
+    *   *Service Layer:*
+        *   `AuthService`: Password hashing uses `sha256` with a salt (Weak/Insecure. Should use `bcrypt` or `argon2`). `login` doesn't use the salt stored in the DB (Logic bug: it compares the hash of just the password vs the hash of password+salt).
+        *   `DocumentService`: `bulkUpdateTags` does $N$ queries in a loop (Performance).
+        *   `FileService`: `uploadFile` uses streams but doesn't handle errors/cleanup well. `deleteFile` uses `fs.unlink` without awaiting or handling completion properly. `downloadFile` doesn't check if the user has permission to view the file/document.
+        *   `SearchService`: `searchCache` is an in-memory `Map`. In a multi-instance environment (Kubernetes/scaling), this won't work (Design). `getSuggestions` has SQL Injection.
+        *   `NotificationService`: `listeners` holds `Response` objects. This is a massive memory leak risk. If a client disconnects, the `res` object remains in the map forever.
+    *   *Middleware:*
+        *   `authMiddleware`: Casts to `any`.
+        *   `rateLimiter`: In-memory map. Again, won't work with scaling (Design).
+    *   *Route Handlers:*
+        *   `register`: Returns `stack` in error (Information Leak).
+        *   `export`: Builds CSV by string concatenation in a loop (Memory issue for large datasets).
+        *   `health`: Returns DB credentials in error response (Security vulnerability).
+
+    *   **Category 1: Security (High Priority)**
+        *   SQL Injection (Multiple locations: `findByEmail`, `search`, `findByUser`, `getSuggestions`).
+        *   Weak Hashing (`sha256` instead of `bcrypt`).
+        *   Broken Auth Logic (Salt is generated but not used during verification/comparison).
+        *   Information Leakage (Stack traces in production, DB credentials in health check).
+        *   Insecure Defaults (`jwtSecret`, `dbPassword`).
+        *   Broken Access Control (Downloads/Files don't check document ownership/permissions).
+
+    *   **Category 2: Performance (Medium/High Priority)**
+        *   $N+1$ Query Problem (`getDocumentsWithAuthors`, `getFolderTree`).
+        *   Inefficient Loops (`bulkUpdateTags`, `export` CSV).
+        *   In-memory Caching/Rate Limiting (Does not scale horizontally).
+        *   Memory Leak (Notification service `res` objects).
+
+    *   **Category 3: Bugs/Design (Medium Priority)**
+        *   Missing `await` (`updateLastLogin`).
+        *   Error Handling (Uncaught errors in streams/file deletion).
+        *   Hardcoded paths/limits.
+        *   Dynamic SQL building (`DocumentRepository.update`) without validation.
+
+    *   *SQL Injection Fix:* Always use parameterized queries (`$1`, `$2`).
+    *   *Hashing Fix:* Use `bcrypt`.
+    *   *N+1 Fix:* Use `JOIN` or `IN` clauses.
+    *   *Memory Leak Fix:* Listen to the `close` or `finish` event on the response object to remove it from the map.
+    *   *Scaling Fix:* Use Redis for caching and rate-limiting.
+    *   *Auth Fix:* Use a proper password verification function provided by a library.
+
+    *   Organize by "Security," "Performance," "Bugs/Logic," and "Design/Architecture."
+    *   For each issue: **Problem**, **Impact**, **Fix**.<channel|>This review identifies several critical issues ranging from severe security vulnerabilities (SQL Injection, weak cryptography) to performance bottlenecks ($N+1$ queries) and memory leaks.
+
+---
+
+### 1. Critical Security Vulnerabilities
+
+#### A. SQL Injection
+**Problem:** Multiple methods use string concatenation or template literals to build SQL queries instead of parameterized queries.
+*   `UserRepository.findByEmail`: `... WHERE email = '" + email + "'"`
+*   `DocumentRepository.search`: `... ILIKE '%${query}%'`
+*   `AuditLogRepository.findByUser`: `... BETWEEN '${startDate}' AND '${endDate}'`
+*   `SearchService.getSuggestions`: `... ILIKE '${prefix}%'`
+
+**Impact:** An attacker can bypass authentication, extract the entire database, or even gain shell access (depending on DB permissions).
+
+**Fix:** Always use parameterized queries provided by `pg`.
+```typescript
+// Correct way
+const result = await pool.query("SELECT * FROM users WHERE email = $1", [email]);
+```
+
+#### B. Broken Authentication & Weak Hashing
+**Problem 1:** The `AuthService.register` method generates a `salt` but **does not save it** to the database.
+**Problem 2:** The `AuthService.login` method attempts to verify the password by hashing it without the salt, meaning it will never match the stored hash.
+**Problem 3:** `sha256` is a fast cryptographic hash, making it vulnerable to brute-force attacks.
+
+**Impact:** Users cannot log in, and even if they could, the password storage is insecure.
+
+**Fix:** Use `bcrypt` or `argon2`. These libraries handle salt generation and storage automatically within the hash string.
+```typescript
+import bcrypt from "bcrypt";
+
+// In register
+const passwordHash = await bcrypt.hash(password, 12);
+
+// In login
+const isMatch = await bcrypt.compare(password, user.passwordHash);
+```
+
+#### C. Information Leakage
+**Problem:** 
+1. `auth/register` returns `err.stack` in the response.
+2. `health` check returns `dbHost` and `dbPort` in the error response.
+
+**Impact:** Attackers can learn about your file structure, library versions, and internal network topology to craft specific exploits.
+
+**Fix:** Never return stack traces or internal configuration to the client. Log them internally and return a generic error message.
+
+#### D. Broken Access Control (IDOR)
+**Problem:** The `downloadFile` and `deleteFile` methods in `FileService` do not verify if the `userId` has permission to access the specific `documentId` associated with the attachment.
+
+**Impact:** Any logged-in user can download any file in the system simply by guessing the `attachmentId`.
+
+**Fix:** In the service layer, check if the user has `read` access to the parent document before serving the file.
+
+---
+
+### 2. Performance Issues
+
+#### A. The $N+1$ Query Problem
+**Problem:** 
+1. `DocumentRepository.getDocumentsWithAuthors`: It fetches $N$ documents, then loops through them to run a separate SQL query for every single author.
+2. `FolderRepository.getFolderTree`: This is a recursive function that performs a database query for every single child node in the tree.
+
+**Impact:** As the number of documents or folders grows, the API response time will increase exponentially, eventually crashing the database.
+
+**Fix:** 
+1. Use a `JOIN` in SQL to fetch documents and authors in a single query.
+2. For folders, use a Common Table Expression (CTE) to fetch the entire tree in one query.
+
+#### B. In-Memory Scaling Issues (Rate Limiter & Search Cache)
+**Problem:** `rateLimiter` and `SearchService.searchCache` use local `Map` objects.
+
+**Impact:** If you deploy this app in a containerized environment (like Kubernetes) with multiple instances, the rate limit and cache will not be shared. A user could hit 100 requests per instance, effectively bypassing your limit.
+
+**Fix:** Use an external store like **Redis** for distributed caching and rate limiting.
+
+#### C. Memory Leak in `NotificationService`
+**Problem:** `registerListener` pushes `res` (the response object) into a

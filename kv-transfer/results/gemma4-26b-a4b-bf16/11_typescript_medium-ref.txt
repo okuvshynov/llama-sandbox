@@ -1,0 +1,92 @@
+<|channel>thought
+
+    *   `TypedEventEmitter`: A generic event emitter using a map of sets.
+    *   `Task`: Interface defining task properties.
+    *   `PipelineEvents`: Interface defining specific event shapes.
+    *   `Pipeline`: A class extending `TypedEventEmitter` to manage task execution with dependencies, concurrency, retries, and timeouts.
+    *   `main`: Usage example.
+
+    *   *TypedEventEmitter*:
+        *   `listeners: Map<keyof T, Set<Function>>`: `Function` is too broad. It loses type safety.
+        *   `onceListeners`: This implementation has a logical flaw. When `once` is called, it adds to `onceListeners`. When `emit` is called, it executes and clears. However, there's no way to remove a `once` listener via `off` effectively if the logic isn't perfectly synced? Wait, `off` removes from both. That's okay.
+        *   *Major Bug:* In `emit`, the `once` listeners are executed *after* the regular listeners. But they are never actually "swapped" or integrated. If I call `once`, and then `emit`, the listener runs. But what if I call `on` and `once` for the same event? They both work.
+        *   *Potential Issue:* `once` doesn't actually wrap the function to remove itself. It relies on a separate Set and a manual `clear()`. This means if I call `once('event', fn)`, it will run once and *all* `once` listeners for that event will be cleared, not just the one specific `fn`. **CRITICAL BUG.**
+
+    *   *Pipeline/Task Interface*:
+        *   `Task<T = any>`: Using `any` is a smell.
+        *   `PipelineEvents`: `task:complete` takes `any` for result. This breaks end-to-end type safety.
+        *   `Pipeline.results`: `Map<string, any>`. Again, `any`.
+        *   `Pipeline.addTask`: Returns `this`. This is fine for chaining.
+
+    *   *Pipeline Execution Logic (`run` method)*:
+        *   `while(true)` loop with `setTimeout(100)`: This is a polling-based approach. It's inefficient. A better way is to trigger the next check when a task finishes.
+        *   `concurrency` handling: `await Promise.all(batch.map(task => this.executeTask(task)))`. This is a **MAJOR BUG**. `Promise.all` waits for the *entire batch* to finish before checking for new ready tasks. If `concurrency` is 4, and 4 tasks start, but 1 takes 10 minutes and the others take 1 second, the next 3 slots in the concurrency pool stay empty for 10 minutes. It's "batch-based" concurrency, not "sliding window" concurrency.
+        *   Deadlock detection: `if (pending.length > 0 && running.length === 0)`. This is a bit naive but works for simple DAGs.
+        *   `cancel()` method: It sets status to `cancelled`, but `executeTask` is currently running a `Promise.race`. Setting the status doesn't actually stop the `task.execute()` promise. It's a "soft cancel" that doesn't actually interrupt the async work.
+
+    *   *Error Handling*:
+        *   In `executeTask`, the timeout uses a `setTimeout` that isn't cleared. This could cause a memory leak or a delayed error if the task finishes early.
+        *   The `lastError!` in `emit('task:fail', task, lastError!)` is a non-null assertion. If something goes wrong, it might crash.
+
+    *   *Usage Example*:
+        *   `pipeline['results'].get(...)`: This uses bracket notation to access a private property. This is a huge red flag for architecture and type safety. The `Pipeline` should provide a way to get results safely.
+
+    *   **Category 1: Logic/Bugs**
+        1.  `TypedEventEmitter.once`: The `clear()` wipes *all* once listeners for that event, not just the specific function called.
+        2.  `Pipeline.run` concurrency: Uses `Promise.all(batch)`, meaning it's not a true sliding window concurrency. It waits for the slowest task in the current batch.
+        3.  `Pipeline.cancel`: Does not actually stop the execution of the `task.execute()` promise.
+        4.  `Pipeline.run` efficiency: Uses a `while(true)` polling loop with `setTimeout(100)`.
+
+    *   **Category 2: Type Safety**
+        1.  `any` usage everywhere: `Task<any>`, `PipelineEvents`, `results`.
+        2.  `TypedEventEmitter` uses `Set<Function>`: Loses type specificity for the arguments.
+        3.  Accessing private members: `pipeline['results']` in the example.
+
+    *   **Category 3: Architecture/Best Practices**
+        1.  `setTimeout` in `executeTask`: Doesn't clean up the timeout.
+        2.  Polling vs. Event-driven: The orchestrator should react to task completion.
+        3.  Dependency Injection/Access: The tasks need a way to get data from previous tasks without accessing private internals.
+
+    *   *Fixing EventEmitter:* Use the standard pattern: wrap the listener in a function that calls `off` before executing.
+    *   *Fixing Concurrency:* Use a worker pool pattern or a semaphore, or simply trigger a "check for next tasks" function whenever a task completes.
+    *   *Fixing Task Results:* Add a `getResult<K>(taskId: K): T` method or pass results into the `execute` function.
+    *   *Fixing Cancel:* Use `AbortController`.
+
+    *   *Issue 1: EventEmitter `.once()` bug.* (Explain why `clear()` is bad).
+    *   *Issue 2: Concurrency logic.* (Explain the batching vs. sliding window issue).
+    *   *Issue 3: Type Safety (The `any` problem).* (Explain the loss of generics).
+    *   *Issue 4: The "Soft" Cancel.* (Explain why `task.status = 'cancelled'` doesn't stop the async loop).
+    *   *Issue 5: Polling vs. Event-driven.* (Explain the `while(true)` inefficiency).
+    *   *Issue 6: Private Access.* (The `pipeline['results']` hack).
+
+    *   *TypedEventEmitter:* Use `(...args: Parameters<T[K]>) => void`.
+    *   *Pipeline:* Use `AbortController`.
+    *   *Task:* Allow `execute` to receive an `AbortSignal` and a way to access context.<channel|>This review identifies several critical bugs, type-safety violations, and architectural flaws. The current implementation is "fragile"—it works for simple happy paths but will fail under race conditions, scale poorly, and bypass the very type system TypeScript is meant to provide.
+
+---
+
+### 1. Critical Bugs & Logic Errors
+
+#### A. The `once()` Listener Wipeout (Logical Bug)
+In `TypedEventEmitter`, the `once` implementation is broken. 
+```typescript
+// Current implementation
+onceSet.forEach(fn => fn(...args));
+onceSet.clear();
+```
+**The Issue:** If you register three different `once` listeners for the same event, calling `emit` once will execute all of them and then `clear()` the entire set. This means if `once` is used for different logic paths, one trigger will accidentally satisfy (and delete) all other pending "once" listeners.
+**Improvement:** The standard pattern is to wrap the listener in a function that calls `off()` immediately before executing the original function.
+
+#### B. Batch-based vs. Sliding-window Concurrency (Performance Bug)
+In `Pipeline.run()`, you use `await Promise.all(batch.map(...))`.
+**The Issue:** This is not true concurrency control; it is **batching**. If your concurrency is 4, and you start 4 tasks, and 3 finish in 1 second but 1 takes 60 seconds, the entire pipeline stalls for 59 seconds. The other 3 "slots" in your concurrency limit sit idle.
+**Improvement:** Use a worker pool pattern or a "sliding window" where as soon as *any* task finishes, the next ready task is pulled from the queue.
+
+#### C. "Soft" Cancellation (Functional Bug)
+The `cancel()` method only changes a string property: `task.status = 'cancelled'`.
+**The Issue:** This does **not** stop the actual `task.execute()` promise. If a task is performing a heavy network request or a long loop, it will continue to consume CPU/Memory/Network in the background despite being "cancelled."
+**Improvement:** Pass an `AbortSignal` (from `AbortController`) into the `execute` function so the task can internally stop its work.
+
+#### D. Inefficient Polling (Architectural Issue)
+The `run()` method uses a `while(true)` loop with `await new Promise(r => setTimeout(r, 100))`.
+**The
