@@ -1,0 +1,90 @@
+<|channel>thought
+Here's a thinking process to construct the explanation:
+
+1.  **Understand the Goal:** The request asks for an explanation of what the provided Java program does and a description of the data structure it uses.
+
+2.  **Analyze the Code Structure (High Level):**
+    *   It's a class named `LRUCache<K, V>`.
+    *   The name "LRU" immediately signals "Least Recently Used."
+    *   It maintains a `capacity`.
+    *   It uses a `Map` (`HashMap`) for fast lookups.
+    *   It uses two special `Node` objects (`head` and `tail`) and links nodes together (`prev`, `next`).
+    *   The methods (`get`, `put`) manage access and enforce capacity rules.
+
+3.  **Determine the Purpose (What does it do?):**
+    *   The program implements a **Least Recently Used (LRU) Cache**.
+    *   An LRU Cache is a caching mechanism where, when the capacity is exceeded, the item that has not been accessed for the longest time (the "least recently used" item) is automatically evicted (removed).
+    *   The `main` method demonstrates this behavior (e.g., when 'd' is added, 'b' is evicted; when 'b' is updated, 'c' is evicted).
+
+4.  **Analyze the Data Structure (How does it work?):**
+    *   The implementation is a classic combination structure: **HashMap + Doubly Linked List**.
+    *   **HashMap (`map`):** Stores the key-to-Node mapping. This allows $O(1)$ (constant time) lookup for any key (essential for the `get` operation).
+    *   **Doubly Linked List (managed by `head`, `tail`, and `Node`):** Stores the actual order of usage.
+        *   The *most recently used* (MRU) item is kept near the `head`.
+        *   The *least recently used* (LRU) item is kept near the `tail`.
+        *   When an item is accessed (`get` or `put`), it is removed from its current position and moved to the front (`addToFront`).
+        *   When eviction is needed (`put` and full capacity), the node immediately before the `tail` (`tail.prev`) is removed (this is the LRU item).
+
+5.  **Draft the Explanation (Structuring the answer):**
+
+    *   **Part 1: Program Description:** State clearly what the program implements (LRU Cache) and explain its function (caching with eviction policy).
+    *   **Part 2: Mechanism Explanation:** Detail the logic behind `get` and `put`.
+        *   `get`: Lookup $\rightarrow$ Update position (Move to front).
+        *   `put`: Lookup/Update $\rightarrow$ If new and full $\rightarrow$ Evict LRU (Tail) $\rightarrow$ Insert new item (Head).
+    *   **Part 3: Data Structure Description:** Define the hybrid structure (Map + DLL) and explain *why* each component is necessary (Map for speed, DLL for ordering).
+
+6.  **Review and Refine (Self-Correction/Tone Check):** Ensure technical terms (Time Complexity, Doubly Linked List, Eviction Policy) are used correctly and clearly. (The time complexity for both `get` and `put` should be $O(1)$, which this structure achieves.)
+
+7.  **Final Output Generation.** (This leads to the detailed structured answer provided below.)<channel|>This Java program implements a **Least Recently Used (LRU) Cache**.
+
+## 🧠 Program Explanation
+
+The purpose of an LRU Cache is to store a limited number of data items (key-value pairs) in a way that, when the cache reaches its maximum capacity, the item that has gone the longest time without being accessed (the "Least Recently Used" item) is automatically removed to make room for a new item.
+
+The program manages this cache to provide two primary functionalities:
+
+1.  **`get(K key)`:** Retrieves a value associated with a key. If the key exists, it is retrieved, and critically, its usage is marked as recent by moving it to the "most recently used" position within the cache.
+2.  **`put(K key, V value)`:** Inserts or updates a key-value pair.
+    *   If the key already exists, its value is updated, and it is moved to the MRU position.
+    *   If the key is new and the cache is full, the item at the LRU end is evicted before the new item is inserted.
+    *   If the key is new and the cache has space, it is simply added to the MRU position.
+
+### How the Eviction Policy Works:
+
+The cache relies entirely on ordering. The structure is set up so that the nodes nearest the `head` are the Most Recently Used (MRU), and the nodes nearest the `tail` are the Least Recently Used (LRU).
+
+*   **Access/Update (`get` or `put` on existing key):** The item is removed from its current spot and re-inserted right after the `head` (`addToFront`).
+*   **Eviction (`put` on new key when full):** The item immediately preceding the `tail` (`tail.prev`) is identified, removed from the linked list, and subsequently deleted from the `HashMap`.
+
+---
+
+## 🏗️ Data Structure Description
+
+This implementation uses a sophisticated hybrid data structure composed of two parts working together: a **HashMap** and a **Doubly Linked List (DLL)**.
+
+### 1. The Doubly Linked List (DLL)
+
+The DLL is responsible for tracking the **order of usage**.
+
+*   **Nodes:** Each `Node` object holds a `key`, a `value`, and pointers (`prev` and `next`) to its neighbors.
+*   **Ordering:** The list is circular and managed by dummy `head` and `tail` nodes.
+    *   **Head $\rightarrow$ MRU** (Most Recently Used)
+    *   **Tail $\leftarrow$ LRU** (Least Recently Used)
+*   **Function:** When an item is accessed, the list allows us to efficiently remove it from the middle (via the pointers) and place it at the front (MRU). This ensures $O(1)$ time complexity for moving items.
+
+### 2. The HashMap (`java.util.HashMap`)
+
+The HashMap is responsible for **fast lookups**.
+
+*   **Mapping:** It stores the mapping from the `key` to the actual `Node` object.
+*   **Function:** When a `get(key)` request comes in, the HashMap allows the program to instantly locate the specific `Node` object associated with that key in $O(1)$ time, without having to traverse the entire linked list.
+
+### Synergy (Why both are needed)
+
+The combination of these two structures achieves the necessary performance profile for an LRU cache:
+
+| Operation | Time Complexity | How it's achieved |
+| :--- | :--- | :--- |
+| **Lookup (`get`)** | $O(1)$ | The `HashMap` instantly finds the node. |
+| **Update/Move Node** | $O(1)$ | The DLL allows instant removal and re-insertion using pointer manipulation. |
+| **Eviction (`put` on full cache)** | $O(1)$ | The DLL ensures the LRU node (at `tail.prev`) is found immediately, and the `HashMap` is updated instantly. |

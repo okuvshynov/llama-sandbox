@@ -1,0 +1,106 @@
+<|channel>thought
+Here's a thinking process that leads to the detailed review:
+
+1.  **Understand the Goal:** The request asks for a comprehensive review of a TypeScript/Express/PostgreSQL codebase. The focus must be on Bugs, Performance, Security, and Design problems, with suggested fixes for everything found.
+
+2.  **Initial Code Scan & Context Setting (Architecture):**
+    *   The application uses a layered architecture (Config -> Types -> DB/Pool -> Event Bus -> Repository -> Service -> Middleware -> Routes). This is generally good practice.
+    *   It manages document storage, versioning, user auth, and file uploads (S3-like local storage).
+    *   It uses JWT for authentication and `express-middleware` for authorization/rate limiting.
+
+3.  **Systematic Review (Layer by Layer):**
+
+    *   **Configuration (`config`):**
+        *   *Security/Design:* Hardcoded defaults (`"default-secret-change-me"`, `"admin123"`). This is a critical vulnerability.
+        *   *Bug/Design:* Type casting of DB port (`parseInt`). Looks okay, but defensive coding is needed.
+        *   *Performance:* File size limits are fine, but the upload directory setup needs robustness.
+
+    *   **Database/Repository Layer (The riskiest area for bugs/security):**
+        *   **`UserRepository.findByEmail`:** *CRITICAL SQL Injection.* Uses string concatenation: `WHERE email = '" + email + "'`.
+        *   **`DocumentRepository.create`:** Uses `JSON.stringify` for `tags` and `metadata`. This assumes the DB handles JSON types (PostgreSQL JSONB/JSON). If not, this can be inefficient, and it couples the application heavily to serialization logic.
+        *   **`DocumentRepository.search`:** *CRITICAL SQL Injection/Vulnerability.* Uses string concatenation in `ILIKE '%${query}%'`. Also, `paramIdx` management is complex and error-prone, especially when mixing positional parameters (`$1`, `$2`) with injected clauses.
+        *   **`DocumentRepository.update`:** This is a dynamic query builder. While it uses parameterization (`$1`, `$2`, etc.) correctly for values, the *field names* are taken from `Object.entries(updates)`. If an attacker can control `updates`, they might inject malicious SQL fragments into the field names (though less common in modern ORMs, it's still a risk in raw SQL).
+        *   **`AuditLogRepository.findByUser`:** *Bug/Security:* Uses string interpolation for dates: `BETWEEN '${startDate}' AND '${endDate}'`. This opens up SQL injection if date inputs aren't strictly validated/sanitized.
+        *   **`FolderRepository.getFolderTree`:** *Performance/Design:* This is a recursive function (`await this.getFolderTree(child.id)`). For deep folder structures, this causes N+1 query issues and stack overflow risk. Requires proper recursive CTE or specialized database query.
+        *   **Transactionality:** Lack of transactions. Operations like "create document + create version + log audit" should be atomic.
+
+    *   **Service Layer (Business Logic):**
+        *   **`AuthService.register`:** *Security:* Password hashing implementation is weak. It uses SHA256 directly concatenated with a random salt. It should use a dedicated, slow, adaptive hashing algorithm like **bcrypt** or **Argon2**.
+        *   **`DocumentService.checkFolderAccess`:** The permission level logic (`levels.indexOf`) is simplistic and brittle. It works for this simple model, but complex RBAC/ABAC systems require more robust permission checking.
+        *   **`DocumentService.bulkUpdateTags`:** *Performance:* It iterates and calls `findById` and `update` for *each* document in the array. This is a classic N+1 problem. Should use a bulk/batch update query in the repository.
+
+    *   **FileService (I/O):**
+        *   **`uploadFile`:** *Security/Performance:* The file stream piping is fine, but the file is written to a temporary location (`/tmp/uploads` in Multer config, though the service uses `config.uploadDir`) and *then* the attachment record is created. The file is not guaranteed to be persisted if the service crashes between piping and DB commit. Also, the `readStream.pipe(writeStream)` is asynchronous, but the function doesn't wait for the pipe completion before returning the attachment object, which is dangerous (although the stream logic might handle this implicitly if the database insert is fast, it's bad practice).
+        *   **`deleteFile`:** *Bug/Robustness:* Uses `fs.unlink` with a callback but doesn't `await` it or handle the success/failure flow gracefully. The service method signature promises a `void` return, but the file deletion is non-blocking and fire-and-forget if an error occurs.
+
+    *   **Middleware/Routes:**
+        *   **`authMiddleware`:** *Design:* Relies on `(req as any).user`. While common in Express, it's not type-safe and should be handled via typed request objects or middleware wrappers.
+        *   **`rateLimiter`:** *Design/Performance:* Uses an in-memory `Map` (`requests`). This means rate limiting is *non-persistent* (data lost on restart) and fails in cluster/multi-instance deployments. Should use Redis.
+        *   **Route Logic:** Excessive use of `new DocumentService()`, `new UserRepository()`, etc., inside route handlers. This violates the Dependency Injection principle and makes testing difficult. Services/Repositories should be instantiated once or passed in.
+        *   **Parameter Parsing:** Frequent manual parsing (`parseInt(req.params.id)`, `parseInt(req.query.page as string)`). This is messy and error-prone (e.g., what if the input is non-numeric?).
+
+4.  **Structuring the Review:** Organize findings into the four requested categories (Bugs, Performance, Security, Design) and provide clear, actionable recommendations. (Self-Correction: Ensure the tone is constructive, not accusatory.)
+
+5.  **Final Polish:** Review the generated report for clarity, completeness, and professionalism. (The structure looks good.)<channel|>This codebase is a robust, well-structured attempt at a complex backend system. It utilizes a layered architecture (Repository, Service, Middleware) which is a strong design foundation.
+
+However, in a production environment, several critical issues exist, primarily concerning **security**, **SQL injection**, **performance bottlenecks (N+1)**, and **fault tolerance**.
+
+Here is a detailed review categorized by issue type, along with suggested fixes.
+
+---
+
+## 🔴 Security Vulnerabilities (CRITICAL)
+
+Security is the most immediate and severe concern in this codebase.
+
+### 1. SQL Injection Risks (Critical)
+The repository layer frequently constructs SQL queries using string concatenation, making the system highly vulnerable to SQL Injection.
+
+**Affected Areas:**
+*   `UserRepository.findByEmail`:
+    ```typescript
+    // VULNERABLE:
+    "SELECT * FROM users WHERE email = '" + email + "'"
+    ```
+*   `DocumentRepository.search`:
+    ```typescript
+    // VULNERABLE:
+    whereClause += ` AND (title ILIKE '%${query}%' OR content ILIKE '%${query}%')`;
+    ```
+    *The reliance on positional parameters (`$1`, `$2`) is undermined by mixing them with raw string concatenation in the `WHERE` clause.*
+*   `AuditLogRepository.findByUser`:
+    ```typescript
+    // VULNERABLE:
+    `SELECT * FROM audit_log WHERE user_id = $1 AND timestamp BETWEEN '${startDate}' AND '${endDate}' ORDER BY timestamp DESC`,
+    ```
+
+**Suggested Fixes:**
+1.  **Strictly use parameterized queries** for *all* user-provided inputs, even when constructing clauses.
+2.  For `ILIKE` queries, pass the wildcards (`%`) as part of the parameter value:
+    ```typescript
+    // SAFE FIX for search:
+    whereClause += ` AND (title ILIKE $${paramIdx} OR content ILIKE $${paramIdx})`;
+    params.push(`%${query}%`);
+    paramIdx++;
+    ```
+3.  For date range queries, always pass dates as parameters, not interpolated strings:
+    ```typescript
+    // SAFE FIX for audit log:
+    await pool.query(
+        `SELECT * FROM audit_log WHERE user_id = $1 AND timestamp BETWEEN $2 AND $3 ORDER BY timestamp DESC`,
+        [userId, startDate, endDate]
+    );
+    ```
+
+### 2. Weak Password Hashing (Critical)
+The `AuthService` uses a simple SHA256 hash combined with a random salt, which is **not sufficient** for password storage. This is susceptible to brute-force and rainbow table attacks.
+
+**Affected Area:**
+*   `AuthService.register` and `AuthService.login`
+
+**Suggested Fix:**
+Use a modern, slow, and adaptive hashing library like **`bcrypt`** or **`argon2`**. These algorithms are designed to be computationally expensive, slowing down attackers.
+
+**Example (Conceptual bcrypt fix):**
+1.  Install `bcrypt`.
+2.  In `register`, hash the password using `bcrypt.hash(password, salt

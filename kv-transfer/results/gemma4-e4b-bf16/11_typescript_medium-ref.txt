@@ -1,0 +1,168 @@
+<|channel>thought
+Here's a plan for reviewing the codebase:
+1.  **Understand the Goal:** The code implements a robust, typed, event-driven data pipeline/workflow engine.
+2.  **Review Structure/Architecture:** Look at how the `TypedEventEmitter`, `Task`, and `Pipeline` classes interact. Are the responsibilities clear?
+3.  **Review Typing/Safety:** Check interfaces, generics, and usage to ensure maximum type safety (TypeScript specific).
+4.  **Review Logic/Bugs:** Check algorithms (dependency resolution, execution loop, error handling, concurrency) for logical flaws or runtime bugs.
+5.  **Suggest Improvements:** Propose concrete changes for cleaner code, better performance, or increased robustness.
+
+Constraint Checklist & Confidence Score:
+1. Review TypeScript code: Yes.
+2. Check for bugs: Yes.
+3. Check for type safety issues: Yes.
+4. Check for architectural problems: Yes.
+5. Explain each issue: Yes.
+6. Suggest improvements: Yes.
+
+Confidence Score: 5/5
+
+Start the detailed review process.<channel|>This codebase is impressively well-structured, especially given the complexity of managing asynchronous pipelines. The use of generics and the `TypedEventEmitter` pattern demonstrates a strong understanding of advanced TypeScript features.
+
+However, despite its high quality, there are several areas where type safety can be tightened, architectural concerns can be addressed, and subtle logical bugs can be fixed.
+
+Here is a detailed review categorized by issue type.
+
+---
+
+## 🟢 Architectural Review
+
+The overall architecture (Event Emitter $\rightarrow$ Task Definition $\rightarrow$ Pipeline Orchestrator) is sound. However, the separation of concerns in the `Pipeline` class can be improved, and some fundamental design choices compromise type safety.
+
+### 1. Architectural Issue: Tight Coupling via Internal State Access
+
+In the usage example:
+```typescript
+// Accessing internal state of the pipeline directly, breaking encapsulation.
+const users = pipeline['results'].get('fetch-users'); 
+// ...
+const merged = pipeline['results'].get('merge-data');
+```
+You are circumventing the public API and treating `pipeline` as if it had a public `results` property, which it doesn't. The `results` map is private state within the `Pipeline` class.
+
+**Suggestion:**
+Instead of providing direct access to `results` (which might expose half-finished data), the `Pipeline` should provide methods for data retrieval *after* the pipeline has run, or better yet, the task execution should be designed to pass results through a structured data flow, not just relying on a shared state map.
+
+### 2. Architectural Issue: Task Execution Model (In-Memory State)
+
+The current design relies on `Pipeline` holding all intermediate results in `this.results: Map<string, any>`. For a small pipeline, this is fine. For a complex, large-scale system, this is a major limitation.
+
+**Suggestion:**
+If this system were to scale, the `Pipeline` should not store results directly. Tasks should either:
+a) Publish results as structured events (`task:complete` event should carry a defined result payload).
+b) Write results to an external store (e.g., Redis, database) and subsequent tasks read from that store.
+
+---
+
+## ⚠️ Type Safety & Generics Review
+
+The use of generics is excellent, but the implementation introduces some dangerous type assertions and loose typing where strict types could be used.
+
+### 3. Type Safety Issue: Overly Broad `Task` Definition and Event Payloads
+
+The generic definitions are a bit loose.
+*   `interface Task<T = any>`: Using `any` as the default type for `T` weakens the utility of the generic.
+*   `PipelineEvents['task:complete']`: The payload is `(task: Task, result: any) => void`. This completely defeats the purpose of using generics on the task configuration.
+
+**Suggestion:**
+If you want to strictly enforce that the result of `fetch-users` (which is `({id: number, name: string})[]`) is correctly typed when `merge-data` consumes it, you need a way to map the task ID to its expected output type.
+
+**Improved Approach (Type Mapping):**
+Define a specialized interface or use a factory pattern where the pipeline configuration explicitly defines the output type for each task ID.
+
+### 4. Type Safety Issue: Unsafe Access in `Pipeline.addTask`
+
+In `addTask`, the internal `Task` is created:
+```typescript
+const task: Task<T> = {
+  ...config,
+  // ... default values
+};
+```
+While `T` is correctly inferred here, the `Task` interface itself doesn't strictly tie `T` to the `result` property, which is only added later.
+
+**Suggestion:**
+Change the `Task` interface to explicitly link the result type:
+```typescript
+interface Task<T> {
+  // ... other properties
+  result?: T; // T is the type of the result
+  error?: Error;
+  // ...
+}
+// This ensures that if you define Task<User[]> for fetch-users, result will be User[].
+```
+
+### 5. Type Safety Issue: Type Casting in `emit`
+
+In `emit`, the parameters are correctly derived using `Parameters<T[K]>`. This is great. However, the runtime implementation of `emit` itself is limited by `EventMap`'s dynamic nature. While this is often unavoidable in EventEmitter patterns, it requires careful type usage in consumers.
+
+### 6. Bug/Type Safety Issue: Implicit Type Coercion in `getReadyTasks`
+
+```typescript
+// Inside getReadyTasks
+const depsComplete = task.dependencies.every(
+  dep => this.tasks.get(dep)?.status === 'completed'
+);
+```
+This assumes that every dependency ID string `dep` exists in the `this.tasks` map. If a task references a dependency ID that was misspelled or never added, `this.tasks.get(dep)` will return `undefined`, and the check will fail safely (which is okay), but it doesn't alert the user to a dependency configuration error.
+
+**Suggestion:**
+Consider an initialization/validation phase in the `Pipeline` constructor or a dedicated `validate()` method to check for dangling dependencies before `run()` is called.
+
+---
+
+## 🐞 Logic & Runtime Review (Bugs)
+
+### 7. Logic Bug: Race Condition/Incorrect Execution Flow in `run()`
+
+The most critical logical issue lies in the `run()` method's loop structure:
+
+```typescript
+// Inside run()
+while (true) {
+    const ready = this.getReadyTasks();
+    // ... (deadlock check)
+
+    const batch = ready.slice(0, this.concurrency);
+    // *** CRITICAL ISSUE HERE ***
+    await Promise.all(batch.map(task => this.executeTask(task)));
+}
+```
+When you use `await Promise.all(...)`, the `run()` loop *stops* and waits for all tasks in the current batch to finish before re-evaluating `getReadyTasks()`.
+
+If Task A depends on Task B, and both A and B are ready, they run concurrently. Once they finish, they all resolve, and the loop continues. This is mostly correct.
+
+**BUT:** The immediate subsequent tasks that become ready *because* A or B finished will only be checked and launched in the *next* iteration of the `while` loop.
+
+**Improvement:** To ensure maximum responsiveness, you should use a continuous monitoring loop (like a queue system) or transition the structure to a worker pool pattern where tasks are pushed into a pool and the main loop simply waits for state changes, rather than running large batch `Promise.all` calls. The current approach introduces unnecessary blocking waits (`await Promise.all`) inside a loop that is supposed to be orchestrating.
+
+### 8. Logic Bug: Incorrect Handling of Running Tasks in `getReadyTasks`
+
+Your dependency check is:
+```typescript
+// inside getReadyTasks
+const depsComplete = task.dependencies.every(
+  dep => this.tasks.get(dep)?.status === 'completed'
+);
+```
+This correctly looks for tasks that are `completed`. However, if Task A depends on Task B, and Task B is currently `running`, Task A will incorrectly remain `pending` indefinitely, even though B is making progress.
+
+**Suggestion:**
+The dependency check should be relaxed to: *A task is ready if all dependencies are either `completed` or `failed` (if you want to fail fast), or if all dependencies are currently finished/running/completed and we are just checking readiness.*
+
+The safest approach for standard DAGs is: **A task is ready only when all dependencies are `completed` or `failed`.** The current logic only checks for `completed`. If a dependency fails, the dependent task should generally not run unless explicit error handling is defined.
+
+**Fix for Dependency Failure Handling:**
+Modify the check to:
+```typescript
+const depsComplete = task.dependencies.every(
+  dep => {
+    const depTask = this.tasks.get(dep);
+    if (!depTask) return false; // Dangling dependency
+    return depTask.status === 'completed' || depTask.status === 'failed'; // Should we stop on fail?
+  }
+);
+// If you want to stop the pipeline on any dependency failure, you should check for 'failed' outside of getReadyTasks.
+```
+
+### 9. Minor

@@ -1,0 +1,114 @@
+<|channel>thought
+Here's a thinking process to construct the explanation:
+
+1.  **Understand the Goal:** The request asks for an explanation of what the provided Python program does and a description of the algorithms used.
+
+2.  **Analyze the Code Structure:**
+    *   The program defines three main functions: `build_graph`, `solve`, and `find_all`.
+    *   It uses a sample set of dependency `edges`.
+    *   It calls `solve(edges)` and `find_all(edges)`.
+
+3.  **Analyze `build_graph(edges)`:**
+    *   **Input:** A list of tuples (`edges`), where each tuple `(u, v)` represents a dependency (u must happen before v).
+    *   **Output:** `graph` (adjacency list), `in_degree` (count of incoming edges for each node), and `nodes` (set of all nodes).
+    *   **Mechanism:** It iterates through the edges, builds the directed graph, and increments the in-degree count for the destination node (`v`). It ensures all nodes, even those with zero incoming edges, are included in the `in_degree` dictionary.
+    *   **Concept:** Standard graph representation setup for dependency resolution.
+
+4.  **Analyze `solve(edges)`:**
+    *   **Goal:** Find *one* valid linear ordering of tasks (nodes) such that all dependencies are met.
+    *   **Algorithm:**
+        *   It first calls `build_graph`.
+        *   It initializes a queue (`deque`) with all nodes having an `in_degree` of 0 (these are the starting tasks).
+        *   It enters a loop (similar to Kahn's Algorithm for Topological Sort).
+        *   When a node is processed (popped from the queue), it is added to the `result`.
+        *   For all neighbors of the processed node, its `in_degree` is decremented.
+        *   If a neighbor's `in_degree` drops to 0, it means all its prerequisites are met, and it is added to the queue.
+        *   **Cycle Check:** If `len(result)` is less than `len(nodes)`, it means not all nodes could be processed, indicating a cycle (a deadlock/circular dependency). In this case, it returns `None`.
+    *   **Concept:** Topological Sort (Kahn's Algorithm).
+
+5.  **Analyze `find_all(edges)`:**
+    *   **Goal:** Find *all* possible valid linear orderings of tasks.
+    *   **Algorithm:**
+        *   It builds the graph and initial degrees.
+        *   It uses a recursive function, `backtrack`, which is a depth-first search (DFS) approach optimized for state exploration.
+        *   **State:** The state includes the current `path` (the partial ordering built so far) and the `remaining_in_degree` (the dependencies not yet satisfied).
+        *   **Base Case:** If `len(path)` equals `len(nodes)`, a complete valid ordering is found and saved.
+        *   **Recursive Step:** It iterates through *all* nodes (sorted for predictable output, though not strictly necessary for correctness).
+        *   **Constraint Check:** A node can be added to the path only if:
+            1. It has not been used (`node not in path`).
+            2. Its current dependency count is 0 (`remaining_in_degree[node] == 0`).
+        *   **Transition:** If a node is selected:
+            1. Add it to the path.
+            2. Create a *copy* of the current dependency state (`new_degrees`).
+            3. Decrement the degrees of all its neighbors in the copy.
+            4. Recurse (`backtrack`).
+            5. Backtrack (undo the choice: `path.pop()`).
+    *   **Concept:** Backtracking Search (Generalized Topological Sort/Permutation Generation under constraints).
+
+6.  **Synthesize the Explanation:** Structure the output clearly:
+    *   Overall Purpose (What is the program solving?).
+    *   Detailed Algorithm Descriptions (Focus on Topological Sort and Backtracking).
+    *   Example/Output Interpretation. (The provided code demonstrates task scheduling/dependency resolution).
+
+7.  **Review and Refine:** Ensure terminology is precise (Directed Acyclic Graph, In-degree, Kahn's Algorithm, Backtracking, Topological Sort). (Self-Correction: Make sure to explicitly state that the input edges form a Dependency Graph). (The plan looks solid.)<channel|>This Python program is designed to solve **Task Scheduling** or **Dependency Resolution** problems. Given a set of tasks and their prerequisites (dependencies), the program determines the valid sequence(s) in which these tasks must be executed.
+
+The core underlying mathematical concept is the **Topological Sort** of a Directed Graph.
+
+---
+
+## 📝 Program Explanation
+
+The program is structured into three main parts:
+
+1.  **`build_graph`:** Converts the list of dependencies (edges) into a standard graph representation (adjacency list) and calculates the "in-degree" for every node. The **in-degree** is the number of prerequisites a node has (how many other tasks must be completed before this task can start).
+2.  **`solve`:** Finds **one** valid topological ordering. It implements Kahn's Algorithm, which is a standard, efficient method for topological sorting.
+3.  **`find_all`:** Finds **all** possible valid topological orderings. It uses a sophisticated **backtracking** algorithm to explore every possible valid sequence of task execution.
+
+### Execution Summary
+
+When run with the provided example dependencies, the program first prints a single, arbitrarily chosen valid order (from `solve`), and then prints all possible valid orders (from `find_all`).
+
+---
+
+## ⚙️ Algorithm Descriptions
+
+### 1. `solve(edges)`: Topological Sort (Kahn's Algorithm)
+
+**Goal:** To find a single valid sequence in $O(V+E)$ time, where $V$ is the number of vertices (tasks) and $E$ is the number of edges (dependencies).
+
+**How it works:**
+
+1.  **Initialization:** The graph and in-degrees are constructed. A queue is initialized with all nodes that have an in-degree of 0 (tasks with no prerequisites, meaning they can start immediately).
+2.  **Processing:** While the queue is not empty:
+    a. A node ($u$) is dequeued and added to the result list.
+    b. For every neighbor ($v$) of $u$ (i.e., every task that depended on $u$):
+        i. The dependency count of $v$ is reduced by 1 (`in_degree[v] -= 1`).
+        ii. If $v$'s in-degree drops to 0, it means all of its prerequisites are now met, and $v$ is added to the queue.
+3.  **Cycle Detection:** If the final `result` list does not contain all the original nodes, it means the graph contains a cycle (a circular dependency, e.g., Task A depends on B, and B depends on A). In this case, no valid order exists, and the function returns `None`.
+
+### 2. `find_all(edges)`: Backtracking Search
+
+**Goal:** To find every single valid permutation of the nodes that satisfies the dependency constraints. This process is computationally expensive (it can be exponential) because it must explore all branching possibilities.
+
+**How it works:**
+
+This function uses a recursive technique called **Backtracking**. The function maintains the current state of the partial ordering (`path`) and the remaining dependencies (`remaining_in_degree`).
+
+1.  **Base Case:** If the length of the current `path` equals the total number of nodes, a complete, valid ordering has been found, and it is saved.
+2.  **Recursive Step:** The algorithm iterates through every node in the entire set of tasks. For each node, it checks two conditions:
+    a. **Is it unused?** The node must not already be in the current `path`.
+    b. **Are its dependencies met?** Its current `remaining_in_degree` must be 0.
+3.  **Selection & Transition:** If a node meets both criteria, it is a valid next step:
+    a. The node is added to the current `path`.
+    b. **Crucial Step (State Management):** A *copy* of the dependency state (`remaining_in_degree`) is created. For every neighbor of the selected node, its dependency count is decremented in this *copy*. This simulates the completion of the current task.
+    c. The function calls itself recursively (`backtrack`) with the updated path and the modified dependency state.
+    d. **Backtrack:** After the recursive call returns, the node is removed from the current `path` (`path.pop()`). This undoes the choice, allowing the algorithm to explore other potential tasks that could have been chosen at this step.
+
+***
+
+## 💡 Summary of Concepts
+
+| Function | Algorithm | Purpose | Time Complexity |
+| :--- | :--- | :--- | :--- |
+| `build_graph` | Graph Traversal/Setup | Prepares the necessary data structures (Adjacency List, In-Degrees). | $O(V+E)$ |
+| `solve` | Kahn's Algorithm (Topological Sort) | Finds one valid
