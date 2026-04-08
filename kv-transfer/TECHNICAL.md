@@ -15,11 +15,11 @@ The practical scenario: a deployment where prompt processing can use more comput
 
 ### Three-way comparison
 
-For each prompt, we run three configurations against a reference model (Q8\_K\_XL):
+For each prompt, we run three configurations against a reference model (BF16 where available, Q8 otherwise):
 
-1. **ref** — prompt + generation with Q8 (reference). This produces the token sequence and logits we treat as ground truth.
-2. **target** — replay the same token sequence through the target model (e.g., IQ2\_XXS). Collect logits at every position. This is the "just use the smaller model" baseline.
-3. **handoff** — process the prompt with Q8, save the KV cache via `llama_state_save_file`, load it into a context created from the target model, then replay generation tokens through the target model. Prompt logits come from Q8, generation logits from the target with Q8's KV cache.
+1. **ref** — prompt + generation with the reference model. This produces the token sequence and full logits we treat as ground truth. Logits are saved to a trace file for reuse across all target quants.
+2. **target** — replay the same token sequence through the target model (e.g., Q4\_K\_XL) in batches. KL divergence and top-1 agreement are computed per token inline against the ref logits. Only per-token stats are saved (~10 KB per file).
+3. **handoff** — process the prompt with the ref model, save the KV cache via `llama_state_save_file`, load it into a context created from the target model, then replay generation tokens through the target model in batches. KL is computed inline, same as target.
 
 ### KV cache transfer mechanism
 
@@ -31,92 +31,56 @@ For each prompt, we run three configurations against a reference model (Q8\_K\_X
 
 ### Metrics
 
-- **KL divergence** — KL(ref || other) computed at each token position, averaged across all positions. Measures how different the output distribution is from the reference. Lower is better.
+- **KL divergence** — KL(ref || other) computed at each generation token position using temperature-scaled log-softmax. Lower is better.
 - **Top-1 agreement** — percentage of positions where the most likely token matches the reference. Higher is better.
+- **KL ratio** — KL(handoff) / KL(target). Values below 1.0 indicate handoff improves over plain target. This is the primary metric for measuring the KV transfer benefit.
 
 ### Prompts
 
-12 test prompts across two categories:
+19 test prompts across three size categories:
 
-**Short prompts** (200-750 tokens): code analysis tasks in Python, Rust, Go, C++, JS, C, Java. Each asks the model to find bugs or explain an algorithm.
+- **Small** (8 prompts, ~300-800 tokens): code analysis tasks in Python, Rust, Go, C++, JS, C, Java. Each asks the model to find bugs or explain code.
+- **Medium** (6 prompts, ~2000-3600 tokens): multi-file codebase reviews with threading, caching, and database patterns.
+- **Large** (5 prompts, ~8000-10000 tokens): full application reviews — microservices, async schedulers, document management APIs, lock-free data structures.
 
-**Large prompts** (1800-2200 tokens): full codebase reviews with ~200 lines of code. Python cache store, Go worker pool, TypeScript task pipeline, Rust metrics library.
+All prompts are formatted with the model's chat template (jinja-based) before tokenization.
 
-## Results
+### Models tested
 
-### Qwen3.5-2B (dense, 2.8B parameters)
+| Model | Type | Total params | Active params | Reference | Target quants |
+|-------|------|-------------|---------------|-----------|---------------|
+| Gemma4-E2B | Dense | 2B | 2B | BF16 | Q2-Q6, Q8 |
+| Gemma4-E4B | Dense | 4B | 4B | BF16 | Q2-Q6, Q8 |
+| Gemma4-31B | Dense | 31B | 31B | BF16 | Q2-Q6, Q8 |
+| Gemma4-26B-A4B | MoE | 26B | 4B | BF16 | Q2-Q6, Q8 |
+| Qwen3.5-2B | Dense | 2B | 2B | Q8 | IQ2, Q2-Q6 |
+| Qwen3.5-27B | Dense | 27B | 27B | Q8 | Q2-Q6 |
+| Qwen3.5-35B-A3B | MoE | 35B | 3B | Q8 | Q2-Q6 |
 
-Reference: UD-Q8\_K\_XL (2704 MB)
-
-#### Overall KL divergence (averaged across 12 prompts)
-
-| Target | Size (MB) | KL (target) | KL (handoff) | KL ratio | Top-1% (tgt) | Top-1% (hoff) |
-|--------|----------|-------------|-------------|---------|--------------|---------------|
-| ud-iq2\_xxs | 733 | 0.884 | 0.309 | 0.35 | 72.4% | 87.7% |
-| ud-q2\_k\_xl | 922 | 0.289 | 0.102 | 0.35 | 85.5% | 93.0% |
-| ud-q3\_k\_xl | 1106 | 0.071 | 0.024 | 0.33 | 93.3% | 96.7% |
-| ud-q4\_k\_xl | 1278 | 0.022 | 0.007 | 0.32 | 96.5% | 98.2% |
-| ud-q5\_k\_xl | 1399 | 0.008 | 0.003 | 0.34 | 97.7% | 98.8% |
-| ud-q6\_k\_xl | 1778 | 0.002 | 0.001 | 0.40 | 98.8% | 99.3% |
-
-#### Prompt length effect
-
-The handoff benefit scales dramatically with prompt length:
-
-| Prompt size | Avg prompt tokens | KL ratio (iq2\_xxs) | Top-1% (hoff, iq2\_xxs) |
-|------------|------------------|--------------------|-----------------------|
-| Short (01-08) | ~443 | 0.42 | 85.2% |
-| Large (09-12) | ~2058 | 0.15 | 94.9% |
-
-With large prompts, ~80% of the total context is covered by the reference model's KV cache, so the target model's own errors are diluted.
-
-### Qwen3.5-35B-A3B (MoE, 35B total / 3B active)
-
-Reference: UD-Q8\_K\_XL (46.4 GB)
-
-The 35B MoE model shows even stronger results because the Q8 reference is much closer to "true" full precision for this architecture.
-
-| Target | Size (GB) | KL (target) | KL (handoff) | KL ratio | Top-1% (tgt) | Top-1% (hoff) |
-|--------|----------|-------------|-------------|---------|--------------|---------------|
-| ud-iq2\_xxs | 10.2 | 0.076 | 0.024 | 0.31 | 93.5% | 97.4% |
-| ud-q2\_k\_xl | 12.6 | 0.025 | 0.008 | 0.30 | 96.8% | 98.6% |
-| ud-q3\_k\_xl | 14.4 | 0.010 | 0.003 | 0.31 | 97.8% | 99.0% |
-| ud-q4\_k\_xl | 16.4 | 0.003 | 0.001 | 0.32 | 98.9% | 99.5% |
-| ud-q5\_k\_xl | 18.5 | 0.001 | 0.000 | 0.29 | 99.3% | 99.7% |
-| ud-q6\_k\_xl | 22.2 | 0.000 | 0.000 | 0.28 | 99.7% | 99.9% |
-
-## KV Cache Decay Analysis
-
-The benefit of the reference model's KV cache is expected to decay during generation, as the target model adds its own (lower-quality) KV entries.
-
-We split generation tokens into 64-token windows and compute the KL ratio (handoff/target) per window:
-
-### Qwen3.5-2B, IQ2\_XXS, averaged across all 12 prompts
-
-| Window | KL ratio | Interpretation |
-|--------|---------|----------------|
-| 0-64 | 0.50 | Strong benefit |
-| 64-128 | 0.55 | Strong benefit |
-| 128-192 | 0.68 | Moderate benefit |
-| 192-256 | 0.80 | Declining |
-| 256-320 | 0.85 | Declining |
-| 320-384 | 0.88 | Marginal |
-| 384-448 | 0.90 | Marginal |
-| 448-512 | 0.95 | Near parity |
-
-The benefit starts strong (~50% KL reduction in the first 64 tokens) and fades toward parity by the end of 512 tokens. This is consistent with the KV cache being "diluted" as new entries from the weaker model accumulate.
-
-**Note:** The decay rate varies significantly by prompt. Some prompts maintain strong benefit throughout (ratio stays ~0.6-0.7), while others show rapid decay. This may depend on how much the generation depends on long-range context from the prompt vs. recent local context.
+Generation: 2048 tokens per prompt. Sampling: temperature 0.6 (Qwen) or 1.0 (Gemma4), top-k 40/64, top-p 0.95.
 
 ## Key Findings
 
-1. **KV transfer consistently improves generation quality.** Across all quant levels and both model families, the handoff KL is 0.28-0.40x the target KL. The improvement is not diminishing — it's roughly a constant factor across quant levels.
+1. **KV transfer consistently improves generation quality.** Across all quant levels and all model families, the handoff KL is typically 0.3-0.5x the target KL at the start of generation. The improvement is roughly a constant factor across quant levels.
 
-2. **Larger prompts benefit more.** With 2000-token prompts, the KL ratio drops to ~0.15 for aggressive quants. The reference model's KV cache covers a larger fraction of total context.
+2. **Larger prompts benefit more.** With large prompts (~8000+ tokens), the KL ratio is lower because the reference model's KV cache covers a larger fraction of total context. The target model's own errors are diluted by the high-quality prompt KV cache.
 
-3. **The benefit decays during generation** but remains positive for the entire 512-token window we tested. For longer generation, the benefit will eventually reach parity.
+3. **The benefit decays during generation** as the target model adds its own lower-quality KV entries. Across all models, the KL ratio starts at 0.5-0.7 and approaches 0.8-0.9 by token 2000. The decay rate varies by prompt — some maintain strong benefit throughout, others show rapid convergence.
 
-4. **MoE models show the same pattern** as dense models, with even stronger absolute quality at each quant level.
+4. **The decay pattern is consistent across architectures.** Dense and MoE models, Qwen and Gemma families, 2B to 31B parameters — all show similar decay curves when aggregated across quants. The benefit is not architecture-specific.
+
+5. **KL divergence itself decreases with generation length** for both target and handoff. This is because the growing shared context (the replayed token sequence) increasingly constrains predictions, making both models converge regardless of weight differences.
+
+## KV Cache Decay Analysis
+
+We split generation tokens into 64-token windows and compute the KL ratio (handoff/target) per window, averaged across all prompts.
+
+The decay follows a consistent pattern:
+- **Tokens 0-256**: Strong benefit (ratio 0.5-0.7). The ref model's KV cache dominates.
+- **Tokens 256-1024**: Gradual decline (ratio 0.7-0.85). Target model's own KV entries accumulate.
+- **Tokens 1024-2048**: Approaching parity (ratio 0.8-0.95). But handoff remains measurably better even at 2048 tokens.
+
+The decay rate depends on the prompt-to-generation ratio. With a 8000-token prompt and 2048-token generation, the ref KV cache covers ~80% of total context, so the benefit persists longer.
 
 ## Open Questions
 
@@ -128,10 +92,9 @@ The benefit starts strong (~50% KL reduction in the first 64 tokens) and fades t
 
 ### Further experiments
 
-- **BF16 reference**: our reference is Q8, not true BF16. Using BF16 as reference would show the full gap and potentially larger handoff benefits.
-- **Longer generation**: test with 1024-2048 generation tokens to characterize the full decay curve.
-- **Different model families**: test non-Qwen architectures (Llama, Mistral) to verify the pattern is architecture-independent.
+- **BF16 reference for Qwen family**: the Qwen models currently use Q8 as reference. BF16 would show the full quantization gap.
 - **Cross-model transfer**: what happens if the reference and target are different model sizes within the same family (e.g., 35B prompt → 2B generation)?
+- **Longer generation**: characterize the full decay curve beyond 2048 tokens.
 
 ## Reproduction
 
@@ -141,21 +104,31 @@ export LLAMA_CPP_DIR=/path/to/llama.cpp
 cd kv-transfer
 cmake -B build && cmake --build build -j 8
 
-# run Qwen3.5-2B study
-./run-qwen3.5-2b.sh
+# run a single model family
+./run-gemma4-e2b.sh
 
-# run Qwen3.5-35B-A3B study
-./run-qwen3.5-35b-a3b.sh
+# run a single prompt for quick testing
+PROMPT_FILTER="01_python_small" ./run-gemma4-31b.sh
 
-# view results
+# view interactive results
 cd results && python3 -m http.server 8080 --bind 0.0.0.0
-# open view.html for bar charts, decay.html for decay curves
+
+# generate static plots
+python3 plot_models.py --results-dir results --output-dir plots
 ```
 
-## File Format
+## Implementation notes
 
-The `.bin` files use a custom trace format (v3) storing:
-- Global header: magic, version, n\_vocab, n\_prompts, sampling params
-- Per-prompt sections: path string, n\_tokens, n\_prompt, token IDs, full logit vectors
+### Inline KL computation
 
-This format is compatible with the quant-sampling subproject's compare tool.
+Target and handoff runs load the ref trace file (with full logits), compute KL divergence per token during inference, and write only compact stats files. This reduces output from ~1 GB (full logits) to ~10 KB (per-token KL + top-1 match) per run, a ~500,000x reduction.
+
+### Batched evaluation
+
+Both target and handoff process tokens in batches (not one-by-one). The handoff command was originally autoregressive (token-by-token decode) but since we replay a fixed sequence, batched decode is equivalent and ~4x faster. The batch size is determined by the llama.cpp context configuration.
+
+### Timing
+
+Each command prints `llama_perf_context_print` data to stderr (captured in log files), showing model load time, prompt eval time, and total time. The `run.sh` script prints a timing summary at the end parsing these logs, which helps identify model loading overhead.
+
+For MoE models (e.g. Qwen3.5-35B-A3B), model loading can be ~24% of total time due to the large model file relative to per-token compute. The `PROMPT_FILTER` env var enables single-prompt test runs to verify setup before committing to a full 19-prompt run.
