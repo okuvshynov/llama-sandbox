@@ -1,0 +1,123 @@
+<|channel>thought
+TypeScript codebase featuring a `TypedEventEmitter` and a `Pipeline` task runner.
+Review for bugs, type safety issues, and architectural problems.
+Explain issues and suggest improvements.
+
+    *   *Purpose:* A generic event emitter where events and their arguments are typed.
+    *   *`listeners` and `onceListeners`:* Uses `Map<keyof T, Set<Function>>`.
+    *   *`on` method:* Logic seems correct. Returns an unsubscribe function.
+    *   *`once` method:* Logic seems correct.
+    *   *`off` method:* Logic seems correct.
+    *   *`emit` method:*
+        *   `listeners.get(event)?.forEach(fn => fn(...args))`: `fn` is typed as `Function`. This is a type safety hole. `Function` doesn't track arguments.
+        *   `onceSet.forEach(fn => fn(...args)); onceSet.clear();`: Wait, if `emit` is called, it clears *all* `once` listeners for that event, not just the ones that were just executed. That's okay if it's intended, but usually, `once` means "the first time this happens". If multiple listeners are attached via `once`, they should all run once. The current implementation does this, but the logic `onceSet.clear()` is inside the `if (onceSet)` block.
+    *   *Critique:* The use of `Function` is the biggest type safety issue. It should use a more specific type or a cast.
+
+    *   *Interfaces:*
+        *   `Task<T = any>`: Generic result type.
+        *   `PipelineEvents`: Extends `EventMap`.
+    *   *Class Structure:* Extends `TypedEventEmitter`.
+    *   *`addTask`:* Fluent API. Initializes defaults.
+    *   *`getReadyTasks`:* Checks dependencies. If a dependency is missing from the map, it might cause a crash or unexpected behavior (though `this.tasks.get(dep)?.status === 'completed'` handles missing keys gracefully by resulting in `undefined === 'completed'`, which is `false`).
+    *   *`executeTask`:*
+        *   Retries loop.
+        *   Exponential backoff.
+        *   `Promise.race` for timeout. **Crucial Bug:** `setTimeout` in `Promise.race` is never cleared. If the task finishes quickly, the timeout timer keeps running in the background until it expires, potentially preventing the process from exiting or leaking memory/resources.
+        *   Type safety: `T` is lost in `executeTask(task: Task)`. It uses the default `any`.
+    *   *`run`:*
+        *   The main loop: `while (true)`.
+        *   Concurrency control: `const batch = ready.slice(0, this.concurrency); await Promise.all(batch.map(task => this.executeTask(task)));`. **Major Architectural Bug:** This isn't true concurrency. It processes tasks in *batches*. If 4 tasks are ready and 1 takes 10 seconds while 3 take 1 second, the 3 fast ones finish, but the loop waits for the 1 slow one before picking up the next batch of ready tasks. It should use a worker-pool pattern or a queue.
+        *   Deadlock detection: Checks if pending > 0 and running == 0. Correct logic.
+        *   Wait loop: `await new Promise(r => setTimeout(r, 100));`. This is "polling," which is inefficient. It should be event-driven (e.g., trigger the check when a task completes).
+    *   *`cancel`:* Sets status to 'cancelled'. **Bug:** It doesn't actually *stop* the `execute` promises that are already running. There's no `AbortController` or cancellation mechanism passed to the task.
+    *   *`getStatus`:* Simple mapping.
+
+    *   The `main` function accesses `pipeline['results']`. `results` is private. This is a TypeScript bypass using string indexing. The architecture should provide a way to access results (perhaps by passing results into the `execute` function).
+
+    *   *Category 1: Bugs*
+        *   Timeout leak (setTimeout not cleared).
+        *   Batching vs. Concurrency (Inefficient scheduling).
+        *   Cancellation is a "no-op" for running tasks.
+    *   *Category 2: Type Safety*
+        *   `Function` type in EventEmitter.
+        *   Loss of generic `T` in `Task` during execution.
+        *   Private member access in `main`.
+    *   *Category 3: Architecture*
+        *   Polling in `run()` (performance).
+        *   Missing Abort signal for tasks.
+        *   Dependency on external state (`results` map) inside `execute`.<channel|>This is a well-structured implementation, but it contains several critical bugs regarding memory leaks, asynchronous execution patterns, and type safety.
+
+Below is the detailed review and a suggested refactored version.
+
+### 1. Bug Report
+
+#### A. Memory Leak in `executeTask` (Timeout)
+In `executeTask`, you use `Promise.race` with a `setTimeout`. 
+**The Issue:** If the task completes successfully before the timeout, the `setTimeout` timer is still active in the Node.js/Browser event loop. In a large pipeline, this leads to significant memory leaks and prevents the process from exiting cleanly.
+**Fix:** Use a `clearTimeout` call once the task resolves.
+
+#### B. Batching vs. True Concurrency
+The `run()` method uses `await Promise.all(batch.map(...))`.
+**The Issue:** This is "batch processing," not "concurrency." If you have a concurrency of 4 and one task takes 10 seconds while the other three take 1 second, the pipeline will sit idle for 9 seconds waiting for the slow task before starting the next batch.
+**Fix:** Use a worker queue pattern where a new task starts immediately as soon as any single slot becomes available.
+
+#### C. Ineffective Cancellation
+The `cancel()` method updates the status to `'cancelled'`.
+**The Issue:** It does not actually stop the execution of the `Promise` already running in `executeTask`. Since JavaScript promises are not cancelable by default, the task will continue to run to completion in the background.
+**Fix:** Pass an `AbortSignal` to the `execute` function so the task can internally stop its work.
+
+#### D. Polling in `run()`
+The `while(true)` loop uses `await new Promise(r => setTimeout(r, 100))`.
+**The Issue:** This is inefficient polling. The CPU wakes up every 100ms to check for ready tasks.
+**Fix:** Use an event-driven approach (e.g., a "task-completed" event triggers the scheduler).
+
+---
+
+### 2. Type Safety Issues
+
+#### A. The `Function` Type
+In `TypedEventEmitter`, you use `Set<Function>`. 
+**The Issue:** `Function` is an unsafe type in TypeScript. It allows calling the function with any arguments, bypassing the type safety provided by `EventMap`.
+**Fix:** Use a generic constraint or cast to `any` only at the point of execution.
+
+#### B. Private Property Access
+In `main()`, you use `pipeline['results'].get(...)`.
+**The Issue:** This uses string-indexing to bypass the `private` modifier. This is a major "code smell" and defeats the purpose of encapsulation.
+**Fix:** Pass the results of dependency tasks directly into the `execute` function as an argument.
+
+---
+
+### 3. Architectural Improvements
+
+1.  **Task Input/Output:** Instead of tasks reaching into the pipeline's private state, the pipeline should inject the results of the dependencies into the task's `execute` method.
+2.  **Error Handling:** The `emit` calls inside `executeTask` are good, but the pipeline doesn't handle the case where an event listener itself throws an error, which could crash the entire pipeline.
+
+---
+
+### 4. Suggested Implementation
+
+Here is the refactored code addressing all the points above.
+
+```typescript
+// 1. Improved Type-Safe EventEmitter
+interface EventMap {
+  [event: string]: any[]; 
+}
+
+class TypedEventEmitter<T extends EventMap> {
+  private listeners: Map<keyof T, Set<(args: any[]) => void>> = new Map();
+
+  on<K extends keyof T>(event: K, listener: (...args: T[K]) => void): () => void {
+    if (!this.listeners.has(event)) this.listeners.set(event, new Set());
+    const wrapper = (args: any[]) => listener(...args);
+    this.listeners.get(event)!.add(wrapper);
+    return () => this.off(event, wrapper);
+  }
+
+  off<K extends keyof T>(event: K, listener: (args: any[]) => void): void {
+    this.listeners.get(event)?.delete(listener);
+  }
+
+  emit<K extends keyof T>(event: K, ...args: T[K]): void {
+    this.listeners.get(event)?.forEach(fn => {
+      

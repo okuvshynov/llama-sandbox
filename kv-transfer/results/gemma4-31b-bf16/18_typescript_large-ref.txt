@@ -1,0 +1,105 @@
+<|channel>thought
+Document Management System (API Backend).
+TypeScript, Express, PostgreSQL (`pg`), JWT, Multer.
+Bugs, Performance, Security, Design.
+Explain and suggest fixes.
+
+    *   *Configuration*: Basic, uses env vars with defaults.
+    *   *Types*: Defined interfaces for User, Document, Folder, etc.
+    *   *Database*: Single Pool instance.
+    *   *Repositories*: Basic CRUD for Users, Docs, Folders, Attachments, Versions, Audit Logs.
+    *   *Services*: Business logic (Auth, Document, File, Search, Notification).
+    *   *Middleware*: Auth, Role, Rate Limiter.
+    *   *Routes*: Standard Express routes.
+    *   *Event Bus*: Simple EventEmitter.
+    *   *Health Check/Error handling*: Present.
+
+    *   **Security (The big one):**
+        *   *SQL Injection*: I see string concatenation in `UserRepository.findByEmail`, `DocumentRepository.search`, `SearchService.getSuggestions`, and `AuditLogRepository.findByUser`. This is a critical vulnerability.
+        *   *Password Hashing*: `AuthService` uses `sha256` with a salt for registration, but `login` just does `sha256(password)`. The salt is ignored during login. Also, SHA-256 is too fast; bcrypt or argon2 should be used.
+        *   *JWT Secret*: Default secret "default-secret-change-me" is dangerous if used in production.
+        *   *File Uploads*: `multer` is used, but files are moved using `fs.createReadStream/WriteStream` without validating the file content or ensuring the destination path isn't manipulated (though `uniqueName` helps).
+        *   *Path Traversal*: `FileService.downloadFile` uses `attachment.storagePath`. If an attacker can modify the DB, they can read any file on the system.
+        *   *Error Leaks*: The `/api/auth/register` route sends the error stack in the response.
+        *   *CORS/Headers*: No Helmet or CORS configuration.
+
+    *   **Bugs:**
+        *   *Auth Login Logic*: The `login` method calculates `sha256(password)` without the salt, but the `register` method saved `sha256(password + salt)`. Login will *always* fail.
+        *   *Audit Log async*: `AuditLogRepository.create` and `UserRepository.updateLastLogin` are not `await`ed. While intended as "fire and forget," it can cause unhandled promise rejections if the DB fails.
+        *   *Document Update logic*: The `update` method in `DocumentRepository` uses `Object.entries(updates)`. If the user sends `id` in the body, it might try to update the ID.
+        *   *SSE Memory Leak*: `NotificationService.registerListener` adds the `res` object to a Map, but there is no `res.on('close')` handler to remove it. The Map will grow forever.
+
+    *   **Performance:**
+        *   *N+1 Query Problem*: `DocumentRepository.getDocumentsWithAuthors` loops through docs and calls `UserRepository.findById` for each. This is terrible for performance. Use a JOIN.
+        *   *Recursive Folder Tree*: `FolderRepository.getFolderTree` is recursive and performs a DB query at every level. For deep trees, this is slow. Use a Common Table Expression (CTE).
+        *   *Search Cache*: `SearchService` uses a simple `Map`. This is an in-memory cache that will grow indefinitely (memory leak) and is not shared across server instances.
+        *   *Bulk Update Tags*: Loops through IDs and does individual `findById` and `update` calls. Should be a single SQL `UPDATE ... WHERE id IN (...)`.
+
+    *   **Design/Architecture:**
+        *   *Dependency Injection*: Services are instantiated inside route handlers (`const docService = new DocumentService()`). This makes testing nearly impossible.
+        *   *Repository Instantiation*: `DocumentRepository.getDocumentsWithAuthors` instantiates `UserRepository` inside a loop.
+        *   *Type Safety*: Using `(req as any).user` everywhere. Should use a custom Request interface.
+        *   *Error Handling*: Generic 500 errors. Should use custom error classes (e.g., `ForbiddenError`, `NotFoundError`).
+        *   *Consistency*: Some methods are `async` and returned, some are just called without `await`.
+
+    *   Organize by category: Security, Bugs, Performance, Design.
+    *   For each, provide: Problem $\rightarrow$ Impact $\rightarrow$ Fix.<channel|>This is a comprehensive review of the provided TypeScript codebase. The system has several **critical security vulnerabilities** (SQL Injection, Broken Authentication) and **significant performance bottlenecks** (N+1 queries, memory leaks).
+
+---
+
+### 1. Security Vulnerabilities (Critical)
+
+#### 1.1 SQL Injection
+**Issue:** There are multiple instances where user input is concatenated directly into SQL strings instead of using parameterized queries.
+*   **Locations:** `UserRepository.findByEmail`, `DocumentRepository.search`, `SearchService.getSuggestions`, `AuditLogRepository.findByUser`.
+*   **Impact:** An attacker can bypass authentication, delete the entire database, or leak all user data.
+*   **Fix:** Always use parameterized queries (`$1`, `$2`).
+    *   *Wrong:* `"SELECT * FROM users WHERE email = '" + email + "'"`
+    *   *Right:* `pool.query("SELECT * FROM users WHERE email = $1", [email])`
+
+#### 1.2 Broken Authentication & Weak Hashing
+**Issue A:** In `AuthService.login`, the code hashes the password using `sha256(password)`, but in `register`, it used `sha256(password + salt)`. The login will **always fail** because the salt is ignored.
+**Issue B:** SHA-256 is a fast cryptographic hash, making it vulnerable to GPU-accelerated brute-force attacks.
+*   **Impact:** Users cannot log in; if they could, passwords would be easily cracked.
+*   **Fix:** Use `bcrypt` or `argon2`. These libraries handle salting automatically and are computationally expensive (slow), which thwarts brute-force attacks.
+
+#### 1.3 Information Exposure (Stack Traces)
+**Issue:** The `/api/auth/register` route returns `err.stack` to the client.
+*   **Impact:** Reveals internal file structures, library versions, and logic flow to attackers.
+*   **Fix:** Only return the stack trace if `process.env.NODE_ENV === 'development'`.
+
+#### 1.4 Path Traversal / Unsafe File Access
+**Issue:** `FileService.downloadFile` uses `attachment.storagePath` directly from the database to create a read stream.
+*   **Impact:** If an attacker manages to modify a database record (via the SQL injection mentioned above), they can set the path to `/etc/passwd` and download sensitive system files.
+*   **Fix:** Validate that the resolved path remains within the `config.uploadDir`.
+
+---
+
+### 2. Performance Issues
+
+#### 2.1 The N+1 Query Problem
+**Issue:** `DocumentRepository.getDocumentsWithAuthors` fetches a list of documents, then loops through them to perform a separate database query for every single author.
+*   **Impact:** If a folder has 100 documents, the server makes 101 database calls. This will crash the DB under moderate load.
+*   **Fix:** Use a `JOIN` in the SQL query.
+    *   `SELECT d.*, u.username as author_name FROM documents d JOIN users u ON d.author_id = u.id WHERE d.folder_id = $1`
+
+#### 2.2 Recursive Database Calls
+**Issue:** `FolderRepository.getFolderTree` is a recursive function that calls the database at every level of the folder hierarchy.
+*   **Impact:** Extremely slow for deep folder structures.
+*   **Fix:** Use a **Recursive Common Table Expression (CTE)** in PostgreSQL to fetch the entire tree in one single query.
+
+#### 2.3 Memory Leaks (SSE & Cache)
+**Issue A (SSE):** `NotificationService` stores `Response` objects in a `Map`. It never removes them when a user disconnects.
+**Issue B (Cache):** `SearchService.searchCache` is a simple `Map` that grows indefinitely.
+*   **Impact:** The server will eventually run out of RAM (Out of Memory crash).
+*   **Fix A:** Listen for the connection close event: `res.on('close', () => this.listeners.delete(userId))`.
+*   **Fix B:** Use a cache with a Time-To-Live (TTL) like `node-cache` or an external store like Redis.
+
+#### 2.4 Inefficient Bulk Updates
+**Issue:** `DocumentService.bulkUpdateTags` loops through IDs and performs individual `findById` and `update` calls.
+*   **Impact:** High latency and DB overhead.
+*   **Fix:** Use a single SQL statement: `UPDATE documents SET tags = $1 WHERE id = ANY($2) AND author_id = $3`.
+
+---
+
+### 3. Bugs &

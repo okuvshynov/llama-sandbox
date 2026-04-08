@@ -1,0 +1,97 @@
+<|channel>thought
+
+*   Input: A string (`text`).
+    *   Goal: Implement Huffman Encoding.
+    *   Core Components:
+        *   `Node` struct: Tree structure to store characters and frequencies.
+        *   `Compare` struct: Custom comparator for the priority queue (min-heap).
+        *   `buildTree` function: Counts frequencies $\rightarrow$ creates leaf nodes $\rightarrow$ repeatedly merges the two smallest nodes until one root remains.
+        *   `buildCodes` function: Traverses the tree recursively to assign binary strings ('0' for left, '1' for right) to each character.
+        *   `encode` function: Converts the original text into the compressed binary string.
+        *   `main` function: Orchestrates the flow and calculates the compression ratio.
+
+    *   **Step 1: Frequency Counting.**
+        *   Iterates through the string.
+        *   Stores counts in a map.
+        *   Time: $O(N)$, where $N$ is the length of the string.
+    *   **Step 2: Priority Queue Initialization.**
+        *   Iterates through the map (max size $K$, where $K$ is the number of unique characters).
+        *   Pushing into a min-heap takes $O(\log K)$.
+        *   Time: $O(K \log K)$.
+    *   **Step 3: Building the Huffman Tree.**
+        *   While there's more than one node in the priority queue:
+            *   Pop two nodes ($2 \times \log K$).
+            *   Push one node ($\log K$).
+        *   This happens $K-1$ times.
+        *   Time: $O(K \log K)$.
+    *   **Step 4: Generating Codes (Tree Traversal).**
+        *   Visits every node in the tree.
+        *   A Huffman tree with $K$ leaves has $2K-1$ nodes.
+        *   Time: $O(K)$.
+    *   **Step 5: Encoding the Text.**
+        *   Iterates through the original string $N$.
+        *   Appends strings to a result.
+        *   Time: $O(N)$.
+    *   **Step 6: Sorting and Printing (Main).**
+        *   Sorting $K$ codes: $O(K \log K)$.
+
+    *   What is the dominant factor?
+    *   If $N$ is the text length and $K$ is the alphabet size (number of unique characters).
+    *   $O(N + K \log K)$.
+    *   Since $K$ is typically small (limited by the character set, e.g., ASCII = 256), $O(N)$ is the primary factor for long strings. However, the algorithmic complexity is generally stated as $O(N + K \log K)$.
+
+    *   *Description:* State clearly that it's a Huffman Encoding implementation.
+    *   *Step-by-step logic:*
+        1.  Frequency mapping.
+        2.  Min-heap for tree construction.
+        3.  Tree traversal for bit-string assignment.
+        4.  Encoding the message.
+        5.  Calculating efficiency.
+    *   *Complexity Analysis:* Separate Time and Space.<channel|>### Explanation: What this program does
+
+This C++ program implements **Huffman Coding**, a famous greedy algorithm used for **lossless data compression**.
+
+The goal of Huffman Coding is to assign binary codes to characters such that the most frequent characters get the shortest codes and the least frequent characters get the longest codes. This reduces the overall number of bits required to represent the text.
+
+#### Step-by-Step Logic:
+1.  **Frequency Analysis**: The `buildTree` function first counts how many times each character appears in the input string using a `std::unordered_map`.
+2.  **Priority Queue (Min-Heap)**: It creates a "leaf node" for each unique character and pushes it into a priority queue. The queue is configured as a **min-heap**, meaning the character with the lowest frequency is always at the top.
+3.  **Tree Construction**:
+    *   The program repeatedly removes the two nodes with the lowest frequencies from the queue.
+    *   It creates a new internal node with a frequency equal to the sum of the two nodes.
+    *   The two removed nodes become the left and right children of this new node.
+    *   This new parent node is pushed back into the queue.
+    *   This continues until only one node (the **Root**) remains.
+4.  **Code Generation**: The `buildCodes` function traverses the resulting binary tree. Whenever it moves **left**, it appends a `'0'`, and whenever it moves **right**, it appends a `'1'`. When it reaches a leaf node, it assigns that accumulated binary string to that character.
+5.  **Encoding**: The `encode` function replaces every character in the original text with its newly generated binary code.
+6.  **Output**: The `main` function prints the generated codes (sorted by length), the original size in bits (assuming 8 bits per char), the compressed size, and the compression ratio.
+
+---
+
+### Time Complexity Analysis
+
+Let $N$ be the total number of characters in the input string and $K$ be the number of **unique** characters (the alphabet size).
+
+| Step | Operation | Time Complexity | Reason |
+| :--- | :--- | :--- | :--- |
+| 1 | Frequency Counting | $O(N)$ | We iterate through the entire string once. |
+| 2 | Initializing Priority Queue | $O(K \log K)$ | We push $K$ unique characters into the min-heap. |
+| 3 | Building the Huffman Tree | $O(K \log K)$ | We perform $K-1$ merges. Each merge involves `pop` and `push` operations on the heap, which take $O(\log K)$. |
+| 4 | Generating Codes | $O(K)$ | We visit each node in the Huffman tree exactly once. A tree with $K$ leaves has $2K-1$ nodes. |
+| 5 | Encoding the Text | $O(N)$ | We iterate through the original string and append the corresponding code. |
+| 6 | Sorting the codes (Main) | $O(K \log K)$ | Sorting the map of unique characters for display. |
+
+**Total Time Complexity: $O(N + K \log K)$**
+
+In most practical scenarios, $K$ is a small constant (e.g., for standard ASCII, $K \le 256$). Therefore, the complexity effectively simplifies to **$O(N)$**, meaning the program scales linearly with the size of the input text.
+
+---
+
+### Space Complexity Analysis
+
+1.  **Frequency Map**: $O(K)$ to store the counts of unique characters.
+2.  **Huffman Tree**: $O(K)$ to store the nodes of the tree.
+3.  **Code Map**: $O(K \times \text{max\_code\_length})$ to store the binary strings. In the worst case (a skewed tree), the max code length is $O(K)$.
+4.  **Encoded String**: $O(N)$ to store the resulting binary string.
+
+**Total Space Complexity: $O(N + K)$** (or $O(N + K^2)$ in the absolute worst-case scenario for the code map, though usually closer to $O(N)$).

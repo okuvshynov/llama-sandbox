@@ -1,0 +1,84 @@
+<|channel>thought
+
+*   Input: A list of tuples (`edges`) representing dependencies (e.g., `("compile", "link")` means "compile" must happen before "link").
+*   Functions:
+    *   `build_graph(edges)`: Converts the list of tuples into an adjacency list (`graph`), tracks the number of incoming edges for each node (`in_degree`), and keeps a set of all unique `nodes`.
+    *   `solve(edges)`: Implements an iterative process using a queue to find *one* possible sequence.
+    *   `find_all(edges)`: Implements a recursive backtracking process to find *every* possible sequence.
+*   Example Data: A software build process (deps $\rightarrow$ lint $\rightarrow$ compile $\rightarrow$ link/test $\rightarrow$ package).
+
+    *   The core problem is arranging nodes in a sequence such that for every directed edge $(u, v)$, $u$ comes before $v$. This is the classic definition of **Topological Sorting**.
+
+    *   **`build_graph`**:
+        *   `graph`: Adjacency list.
+        *   `in_degree`: A map where keys are nodes and values are the count of predecessors.
+    *   **`solve`**:
+        *   It starts with nodes that have an `in_degree` of 0 (no predecessors).
+        *   It uses a `deque` (queue) to process nodes.
+        *   When a node is processed (removed from the queue and added to the result), it "removes" its outgoing edges, effectively decreasing the `in_degree` of its neighbors.
+        *   If a neighbor's `in_degree` becomes 0, it's added to the queue.
+        *   *Check for cycles*: If the final result length isn't equal to the total number of nodes, it means there was a cycle (a deadlock), and it returns `None`.
+        *   *Algorithm Name*: This is **Kahn's Algorithm**.
+    *   **`find_all`**:
+        *   It uses recursion (backtracking).
+        *   At each step, it looks for *all* available nodes (those with current `in_degree == 0` and not yet in the path).
+        *   It tries each available node, updates the degrees, and recurses.
+        *   Then it "backtracks" (pops the node) to try the next available option.
+        *   This explores all possible permutations that satisfy the topological constraint.
+
+    *   *Summary:* The program performs a Topological Sort on a Directed Acyclic Graph (DAG). It finds a sequence of tasks that respects dependencies.
+    *   *Algorithm 1 (solve):* Kahn's Algorithm. (Time/Space complexity: $O(V+E)$).
+    *   *Algorithm 2 (find_all):* Backtracking / Depth-First Search. (Time complexity: potentially exponential, as there can be many valid orderings).
+    *   *Context:* Use the example `edges` to illustrate (e.g., `deps` must be first).<channel|>### Overview
+This Python program implements **Topological Sorting** for a Directed Acyclic Graph (DAG). 
+
+In simple terms, it takes a list of dependencies (where one task must be completed before another) and determines the valid order in which those tasks should be performed. In the provided example, the tasks represent a software build pipeline (e.g., you must "compile" before you can "link").
+
+---
+
+### The Algorithms
+
+The program uses two different algorithmic approaches to solve this problem:
+
+#### 1. Kahn's Algorithm (used in `solve`)
+The `solve` function implements **Kahn's Algorithm**, which is an efficient, iterative way to find a single valid topological sort.
+
+*   **The Logic:**
+    1.  **In-Degree Calculation:** It first calculates the "in-degree" of every node (the number of incoming edges/dependencies).
+    2.  **The Queue:** It identifies all nodes with an in-degree of $0$ (nodes that have no dependencies) and adds them to a queue.
+    3.  **Processing:** It removes a node from the queue, adds it to the final result list, and "removes" its outgoing edges. 
+    4.  **Updating Neighbors:** For every neighbor of the removed node, it decrements their in-degree. If a neighbor's in-degree drops to $0$, it means all its prerequisites are met, and it is added to the queue.
+    5.  **Cycle Detection:** If the final result list contains fewer nodes than the total number of nodes in the graph, it means the graph contains a **cycle** (a circular dependency, like A $\to$ B $\to$ A), making a topological sort impossible.
+
+**Complexity:** Time complexity is $O(V + E)$, where $V$ is the number of vertices and $E$ is the number of edges.
+
+#### 2. Backtracking / DFS (used in `find_all`)
+The `find_all` function uses a recursive **backtracking** approach to find *every* possible valid sequence.
+
+*   **The Logic:**
+    1.  **State Exploration:** Instead of using a simple queue, the function looks at the current state of the graph and finds **all** nodes that currently have an in-degree of $0$ and haven't been visited yet.
+    2.  **Recursive Branching:** For every available node, it "picks" that node, updates the in-degrees of its neighbors, and recursively calls itself to find the next node in the sequence.
+    3.  **Backtracking:** Once a path is completed or a dead end is reached, the function "undoes" the last step (pops the node and restores the in-degrees) to explore other possible branches.
+    4.  **Collection:** Every time the path length equals the total number of nodes, a valid permutation has been found and is added to the results list.
+
+**Complexity:** The time complexity is significantly higher (potentially exponential) because it explores all possible valid permutations of the tasks.
+
+---
+
+### Summary of the Code Components
+
+| Function | Purpose | Method | Result |
+| :--- | :--- | :--- | :--- |
+| `build_graph` | Pre-processes the input | Adjacency List | `graph`, `in_degree` map, `nodes` set |
+| `solve` | Find one valid order | Kahn's Algorithm | A single list or `None` (if cycle) |
+| `find_all` | Find every valid order | Backtracking | A list of all possible valid lists |
+
+### Example Execution Trace
+Given the edges provided in the code:
+1. `deps` has 0 dependencies $\to$ **Must be first**.
+2. Once `deps` is done, `lint` becomes available.
+3. Once `lint` is done, `compile` becomes available.
+4. Once `compile` is done, both `link` and `test` become available.
+5. `package` can only happen after both `link` and `test` are finished.
+
+**Possible result:** `deps` $\to$ `lint` $\to$ `compile` $\to$ `link` $\to$ `test` $\to$ `package` (or `test` before `link`).

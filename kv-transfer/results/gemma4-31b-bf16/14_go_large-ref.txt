@@ -1,0 +1,79 @@
+<|channel>thought
+A distributed task scheduler written in Go.
+Review for bugs, race conditions, performance issues, and design problems.
+Explain each issue and suggest fixes.
+
+    *   `scheduler.go`: Priority queue for tasks, worker health monitoring, dependency management, task lifecycle.
+    *   `ratelimiter.go`: Token bucket and sliding window implementations.
+    *   `circuitbreaker.go`: State machine (Closed, Open, Half-Open) for failure handling.
+    *   `workerpool.go`: Autoscaling pool of workers that pull tasks from the scheduler.
+
+    *   **`scheduler.go`**
+        *   *Race Condition (High):* In `CompleteTask`, a goroutine is spawned for retries. This goroutine accesses `s.mu` and calls `heap.Push`. While it locks, the `task` object itself is modified outside the lock (in the retry loop setup).
+        *   *Race Condition (High):* `CompleteTask` updates `worker.Load--` and `worker.CurrentTask = ""` while holding `s.mu`. However, `AssignTask` also modifies these. This looks okay *if* all access is under `s.mu`. But wait, `worker` is a pointer. Is it ever accessed without the lock? In `Stats()`, `s.workers` is iterated under `RLock`, but `worker.IsAlive` is read. This is okay.
+        *   *Bug (Critical):* `AssignTask` recursive call: `return s.AssignTask(workerID)`. If the queue is full of cancelled tasks, this will cause a stack overflow.
+        *   *Bug (Logic):* `SubmitTask` dependency check: It adds the task to `s.tasks` but doesn't put it in the queue if dependencies aren't met. This is correct. However, when a dependency completes, it pushes the dependent task to the heap. But it doesn't check if the dependent task was *cancelled* in the meantime (it only checks if it's `TaskPending`).
+        *   *Design/Perf:* The priority queue `Less` function uses `CreatedAt`. Since many tasks might be created at once, the order might be unstable, but that's generally acceptable.
+        *   *Bug (Consistency):* `cleanupCompletedTasks` deletes from `s.completed` and `s.tasks`. If a task is deleted from `s.tasks` but is still a dependency for another task not yet created or not yet finished, the logic in `CompleteTask` (the dependency resolution part) might fail or panic if not handled carefully.
+        *   *Race Condition (Medium):* In `CompleteTask`, `atomic.AddInt64(&worker.TasksFailed, 1)` is used, but `worker.Load--` is not atomic. Since both are under `s.mu`, it's safe, but mixing `atomic` and `mutex` on the same fields is confusing.
+
+    *   **`ratelimiter.go`**
+        *   *Race Condition (Medium):* `TokenBucketLimiter.getBucket` is called inside `AllowN` (which holds the lock), but `getBucket` itself doesn't check for existence before returning if it were called elsewhere. (Actually, it's only called inside `AllowN` and `Reset`, so it's okay).
+        *   *Performance (High):* `SlidingWindowLimiter.AllowN` creates a new slice `valid := make([]time.Time, 0, len(entry.timestamps))` on *every single request*. For a high-throughput system, this will create massive GC pressure.
+        *   *Bug (Logic):* `TokenBucketLimiter.cleanup` checks `bucket.tokens >= bucket.maxTokens`. This means it only cleans up buckets that are completely full. If a bucket is partially used and abandoned, it stays in memory forever.
+
+    *   **`circuitbreaker.go`**
+        *   *Bug (Logic):* `canExecute` increments `halfOpenCurrent`. If `Execute` fails or succeeds, `recordResult` is called. In `recordResult`, if it's `HalfOpen` and fails, it sets state to `Open` and resets `halfOpenCurrent = 0`. If it succeeds, it increments `successCount`. But when does `halfOpenCurrent` decrement? It *never* decrements on success unless the circuit closes. This means once `halfOpenMaxConcurrent` is reached, no more probes are allowed until the circuit fully closes.
+        *   *Concurrency:* Use of `sync.Mutex` is correct here.
+
+    *   **`workerpool.go`**
+        *   *Race Condition (High):* `Worker.Run` accesses `w.pool.scheduler.handlers[task.Name]` without a lock. The `Scheduler.handlers` map is read concurrently by all workers, but it's modified by `RegisterHandler` (which uses a lock). This is a classic Go map concurrent read/write panic.
+        *   *Performance/Bug (Medium):* `Worker.Run` has a `default` case with `time.Sleep(100 * time.Millisecond)`. This is a "busy-wait" loop. If the queue is empty, every worker sleeps 100ms. This is inefficient. A channel-based notification system (or `sync.Cond`) would be better.
+        *   *Bug (Critical):* `p.removeWorker()` removes a worker from the slice `p.workers`. However, the `Worker.Run()` goroutine is still running. It only stops when `w.ctx.Done()` is triggered. `idlest.Stop()` is called, which is good. But `p.workers` is a slice. Removing an element via `append(p.workers[:i], p.workers[i+1:]...)` shifts elements. If another thread is iterating over `p.workers` (like in `logMetrics`), it could lead to a race or index out of bounds (though `RLock` is used, so it's just a race on the slice header).
+        *   *Design:* `WorkerPool` is a local pool, but the `Scheduler` is designed to be "distributed" (it has `workerID` and `Heartbeat`). This is a contradiction. If the `WorkerPool` is in the same process as the `Scheduler`, the `Heartbeat` and `AssignTask` (polling) are unnecessary overhead; a channel would suffice. If it's truly distributed, the `WorkerPool` shouldn't be managing the `Scheduler`'s internal maps.
+
+    *   Group by file/component.
+    *   Categorize (Race, Bug, Performance, Design).
+    *   Provide code snippets for the fix.<channel|>This is a comprehensive review of the provided Go distributed task scheduler. The code is well-structured and implements several advanced patterns (Priority Queues, Token Buckets, Circuit Breakers), but it contains several critical concurrency bugs, memory leaks, and design contradictions.
+
+---
+
+### 1. `scheduler.go`
+
+#### Issue A: Potential Stack Overflow in `AssignTask`
+**Type:** Bug / Critical
+**Description:** In `AssignTask`, if a task is popped and its state is `TaskCancelled`, the function calls itself recursively: `return s.AssignTask(workerID)`. If the queue contains a large number of cancelled tasks, this will cause a stack overflow.
+**Fix:** Replace the recursion with a `for` loop.
+```go
+func (s *Scheduler) AssignTask(workerID string) (*Task, error) {
+    s.mu.Lock()
+    defer s.mu.Unlock()
+    // ... validation logic ...
+    for s.queue.Len() > 0 {
+        task := heap.Pop(&s.queue).(*Task)
+        if task.State != TaskCancelled {
+            // ... assign task logic ...
+            return task, nil
+        }
+    }
+    return nil, nil
+}
+```
+
+#### Issue B: Race Condition in Retry Logic
+**Type:** Race Condition / High
+**Description:** In `CompleteTask`, a goroutine is spawned to handle retries. This goroutine captures the `task` pointer and modifies `task.State` and calls `heap.Push` after a sleep. Although `s.mu` is locked during the push, the `task` object is accessed and modified without consistent locking across different threads.
+**Fix:** Ensure the task is fully updated within the lock and consider using a dedicated "retry queue" or a timer-wheel to avoid spawning thousands of goroutines.
+
+#### Issue C: Memory Leak in `cleanupCompletedTasks`
+**Type:** Performance / Medium
+**Description:** The cleanup deletes tasks from `s.completed` and `s.tasks`. However, if a task is deleted from `s.tasks` but is still listed as a dependency for a pending task in the `depGraph`, the dependency resolution in `CompleteTask` will fail to find the task, potentially leaving dependent tasks stranded forever.
+**Fix:** Implement a reference counting mechanism for dependencies or only clean up tasks that have no remaining dependents.
+
+---
+
+### 2. `ratelimiter.go`
+
+#### Issue A: Massive GC Pressure in `SlidingWindowLimiter`
+**Type:** Performance / High
+**Description:** In `AllowN`, a new slice is created on every single call: `valid := make([]time.

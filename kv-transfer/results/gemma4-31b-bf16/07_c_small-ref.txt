@@ -1,0 +1,148 @@
+<|channel>thought
+*   The program implements a simple key-value store (a `Table` of `Entry` structs).
+    *   It uses `malloc`, `realloc`, `strdup`, and `free`.
+    *   Key operations: `table_create`, `table_put`, `table_get`, `table_delete`, `table_free`.
+
+    *   *`table_create(int capacity)`*:
+        *   `t = malloc(sizeof(Table))` - OK.
+        *   `t->entries = malloc(sizeof(Entry) * capacity)` - OK.
+        *   Returns `t`.
+        *   *Potential issue:* No check for `NULL` from `malloc`.
+
+    *   *`table_put(Table* t, const char* key, const char* value)`*:
+        *   Loop through existing entries to check for key equality.
+        *   If key found: `t->entries[i].value = strdup(value);`.
+            *   *Bug 1: Memory Leak.* The previous value stored at `t->entries[i].value` is not freed before being overwritten.
+        *   If key not found:
+            *   Check capacity: `if (t->size >= t->capacity)`.
+            *   Resize: `t->entries = realloc(t->entries, sizeof(Entry) * t->capacity);`.
+                *   *Bug 2: Unsafe realloc.* If `realloc` fails, it returns `NULL`, and the original pointer `t->entries` is lost, leading to a memory leak of the existing table entries.
+            *   Insert new entry: `t->entries[t->size].key = strdup(key);` and `t->entries[t->size].value = strdup(value);`.
+            *   *Potential issue:* No check for `NULL` from `strdup`.
+
+    *   *`table_get(Table* t, const char* key)`*:
+        *   Iterates and returns pointer. Logic seems OK.
+
+    *   *`table_delete(Table* t, const char* key)`*:
+        *   Iterates to find key.
+        *   If found: `t->entries[i] = t->entries[t->size - 1];`.
+            *   *Bug 3: Memory Leak.* The key and value of the entry being deleted (`t->entries[i]`) are simply overwritten by the last entry. The memory allocated for the deleted entry's `key` and `value` is never freed.
+        *   `t->size--;`.
+
+    *   *`table_free(Table* t)`*:
+        *   Loops from `0` to `t->size`.
+        *   Frees `key` and `value`.
+        *   Frees `entries` and `t`.
+        *   Logic seems correct for the current state of the table.
+
+    *   *`main()`*:
+        *   `table_put(t, "name", "Alice")` -> size 1.
+        *   `table_put(t, "city", "Portland")` -> size 2.
+        *   `table_put(t, "lang", "C")` -> size 3.
+        *   `table_put(t, "name", "Bob")` -> **Triggers Bug 1 (Leak: "Alice")**.
+        *   `table_delete(t, "city")` -> **Triggers Bug 3 (Leak: "city", "Portland")**.
+        *   `table_free(t)` -> Cleans up remaining items.
+
+    *   *Leak 1 (Update):* When updating a value for an existing key, the old value is lost.
+    *   *Leak 2 (Delete):* When deleting an item by swapping it with the tail, the original item's strings are lost.
+    *   *Unsafe realloc:* The common `ptr = realloc(ptr, ...)` mistake.
+    *   *Unchecked allocations:* `malloc`, `realloc`, `strdup` could return `NULL`. (While less critical in simple exercises, it's a real bug in production C).
+
+    *   Start with the most obvious/critical bugs (Memory Leaks).
+    *   Explain *why* it's a bug and *how* to fix it.
+    *   Provide the corrected code for clarity.<channel|>This program contains several critical memory-related bugs, primarily focusing on memory leaks and unsafe memory reallocation.
+
+### 1. Memory Leak on Value Update
+In `table_put`, when a key already exists in the table, the code updates the value:
+```c
+if (strcmp(t->entries[i].key, key) == 0) {
+    t->entries[i].value = strdup(value); // BUG: Memory Leak
+    return;
+}
+```
+**The Bug:** `t->entries[i].value` already points to a string allocated by a previous `strdup`. By assigning a new pointer to it without calling `free()` on the old one, the original string is leaked.
+**The Fix:** Call `free(t->entries[i].value);` before assigning the new `strdup`.
+
+### 2. Memory Leak on Entry Deletion
+In `table_delete`, the program uses the "swap with last" method to remove an item in $O(1)$ time:
+```c
+if (strcmp(t->entries[i].key, key) == 0) {
+    t->entries[i] = t->entries[t->size - 1]; // BUG: Memory Leak
+    t->size--;
+    return;
+}
+```
+**The Bug:** The `Entry` struct contains pointers to heap-allocated memory (`key` and `value`). When you overwrite `t->entries[i]` with the last entry in the array, the pointers to the strings of the deleted entry are lost forever without being freed.
+**The Fix:** Call `free()` on both `t->entries[i].key` and `t->entries[i].value` before performing the swap.
+
+### 3. Unsafe `realloc` Usage
+In `table_put`, the table is resized when it reaches capacity:
+```c
+t->entries = realloc(t->entries, sizeof(Entry) * t->capacity);
+```
+**The Bug:** If `realloc` fails, it returns `NULL`. By assigning the result directly back to `t->entries`, you overwrite the only pointer to the existing memory block. This results in a total memory leak of the entire entries array and makes it impossible to recover or shut down the program gracefully.
+**The Fix:** Assign the result of `realloc` to a temporary pointer. If the temporary pointer is not `NULL`, assign it to `t->entries`.
+
+### 4. Unchecked Allocations (Robustness)
+Throughout the program, `malloc`, `realloc`, and `strdup` are called without checking if the return value is `NULL`. In a real-world system, if the system runs out of memory, the program will crash with a segmentation fault the moment it tries to dereference those pointers.
+
+---
+
+### Corrected Code
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+typedef struct {
+    char* key;
+    char* value;
+} Entry;
+
+typedef struct {
+    Entry* entries;
+    int size;
+    int capacity;
+} Table;
+
+Table* table_create(int capacity) {
+    Table* t = malloc(sizeof(Table));
+    if (!t) return NULL;
+    t->entries = malloc(sizeof(Entry) * capacity);
+    if (!t->entries) {
+        free(t);
+        return NULL;
+    }
+    t->size = 0;
+    t->capacity = capacity;
+    return t;
+}
+
+void table_put(Table* t, const char* key, const char* value) {
+    for (int i = 0; i < t->size; i++) {
+        if (strcmp(t->entries[i].key, key) == 0) {
+            char* new_val = strdup(value);
+            if (!new_val) return; 
+            free(t->entries[i].value); // FIX 1: Free old value
+            t->entries[i].value = new_val;
+            return;
+        }
+    }
+
+    if (t->size >= t->capacity) {
+        int new_capacity = t->capacity * 2;
+        // FIX 3: Safe realloc using temporary pointer
+        Entry* new_entries = realloc(t->entries, sizeof(Entry) * new_capacity);
+        if (!new_entries) return; 
+        t->entries = new_entries;
+        t->capacity = new_capacity;
+    }
+
+    t->entries[t->size].key = strdup(key);
+    t->entries[t->size].value = strdup(value);
+    t->size++;
+}
+
+char* table_get(Table* t, const char* key) {
+    for (int i = 0; i

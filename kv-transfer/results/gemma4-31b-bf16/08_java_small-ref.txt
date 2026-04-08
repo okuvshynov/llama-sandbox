@@ -1,0 +1,87 @@
+<|channel>thought
+
+*   Language: Java.
+    *   Class Name: `LRUCache<K, V>`.
+    *   Key components: `capacity` (int), `map` (HashMap), `head` and `tail` (Node references), and an inner `Node` class.
+    *   Inner `Node` class: Contains `key`, `value`, `prev`, and `next`. This strongly suggests a Doubly Linked List.
+    *   Constructor: Initializes a `HashMap`, creates dummy `head` and `tail` nodes, and connects them.
+    *   `get(K key)` method:
+        *   Checks if the key exists in the map.
+        *   If it does, it moves the node to the front (most recently used) and returns the value.
+    *   `put(K key, V value)` method:
+        *   If the key already exists: update value, move node to front.
+        *   If the key is new:
+            *   Check capacity. If full, remove the node just before the `tail` (least recently used) from both the list and the map.
+            *   Create a new node, add it to the map, and add it to the front.
+    *   `remove(Node node)` and `addToFront(Node node)`: Helper methods for managing the doubly linked list.
+    *   `printState()`: Traverses the list from head to tail to show current cache order.
+    *   `main()`: Test cases demonstrating the logic.
+
+    *   What is an LRU Cache? Least Recently Used. It's a caching mechanism that discards the least recently accessed item first when the cache reaches its limit.
+    *   How does it achieve $O(1)$ time complexity for both `get` and `put`?
+        *   `HashMap` provides $O(1)$ lookup.
+        *   `Doubly Linked List` provides $O(1)$ removal and insertion (given the node reference).
+
+    *   *Introduction:* Start with a high-level summary. It's an implementation of an LRU Cache.
+    *   *Detailed Functionality:*
+        *   Explain `get()`: Retrieves value and marks as most recent.
+        *   Explain `put()`: Inserts/updates value. Handles eviction when capacity is reached.
+    *   *The Data Structure (The "How"):*
+        *   Highlight the hybrid approach: **HashMap + Doubly Linked List**.
+        *   Explain why the HashMap is used (fast lookup).
+        *   Explain why the Doubly Linked List is used (tracking order/access patterns).
+        *   Explain the "Dummy" head/tail nodes (they simplify the logic by removing null checks during insertion/deletion).
+    *   *Time and Space Complexity:*
+        *   Time: $O(1)$ for `get` and `put`.
+        *   Space: $O(C)$ where $C$ is the capacity.<channel|>### Overview
+This Java program implements an **LRU (Least Recently Used) Cache**. 
+
+An LRU Cache is a specialized cache that stores a limited number of items. Once the cache reaches its maximum capacity, it removes the item that hasn't been accessed for the longest period of time to make room for new entries.
+
+---
+
+### How the Program Works
+
+The program manages data using two primary operations:
+
+1.  **`get(K key)`**: 
+    *   It checks if the key exists in the cache.
+    *   If it **doesn't exist**, it returns `null`.
+    *   If it **does exist**, it marks the item as "recently used" by moving it to the front of the list and returns the value.
+
+2.  **`put(K key, V value)`**:
+    *   If the key **already exists**, it updates the value and moves the node to the front.
+    *   If the key is **new**:
+        *   It checks if the cache is at full capacity. If so, it deletes the "Least Recently Used" item (the one at the back of the list) from both the map and the list.
+        *   It then inserts the new item at the front of the list and adds it to the map.
+
+---
+
+### The Data Structure: A Hybrid Approach
+
+To achieve high performance, this program uses a combination of two data structures: a **HashMap** and a **Doubly Linked List**. This is a classic design pattern used to ensure that both adding and retrieving data happen in **constant time—$O(1)$**.
+
+#### 1. The HashMap (`Map<K, Node<K, V>>`)
+The HashMap acts as an index. It maps keys directly to their corresponding nodes in the linked list. 
+*   **Purpose:** Without the map, finding a specific item in a linked list would take $O(n)$ time (you would have to loop through the list). The map allows the program to jump directly to the node in $O(1)$ time.
+
+#### 2. The Doubly Linked List (`Node<K, V>`)
+The doubly linked list maintains the "age" or "recency" of the items. 
+*   **The Front (Head):** Represents the **Most Recently Used (MRU)** item.
+*   **The Back (Tail):** Represents the **Least Recently Used (LRU)** item.
+*   **Purpose:** A doubly linked list allows the program to remove a node from the middle and move it to the front in $O(1)$ time, provided you already have a reference to that node (which the HashMap provides).
+
+#### 3. Sentinel Nodes (Dummy Head and Tail)
+You will notice the constructor creates two empty nodes: `head` and `tail`.
+*   These are called **sentinel nodes**. They do not hold actual data; they simply act as boundary markers.
+*   **Purpose:** They simplify the code by eliminating the need to check for `null` whenever the program adds or removes nodes from the ends of the list.
+
+---
+
+### Summary Table: Complexity Analysis
+
+| Operation | Time Complexity | Why? |
+| :--- | :--- | :--- |
+| **`get()`** | $O(1)$ | HashMap lookup is $O(1)$; moving a node in a linked list is $O(1)$. |
+| **`put()`** | $O(1)$ | HashMap insertion is $O(1)$; adding/removing from the list ends is $O(1)$. |
+| **Space** | $O(Capacity)$ | The cache stores at most `capacity` number of elements in both the map and the list. |
