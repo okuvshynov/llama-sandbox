@@ -1,21 +1,30 @@
 #!/bin/bash
-# Show 2D table: rows = quant levels, columns = prompt sizes, cells = tps.
+# Show 2D table: rows = quant levels, columns = test sizes, cells = tps.
 # With optional baseline comparison showing relative difference.
 #
-# Usage: ./viz-table.sh <csv_file> [baseline_quant]
-# Example: ./viz-table.sh prefill-m2ultra-metal.csv
-#          ./viz-table.sh prefill-m2ultra-metal.csv Q8_0
-#          ./viz-table.sh prefill-m2ultra-metal.csv BF16
+# Usage: ./viz-table.sh <csv_file> [baseline_quant] [size_column]
+# Example: ./viz-table.sh prefill-m2ultra-metal.csv              # prefill, pp sizes
+#          ./viz-table.sh prefill-m2ultra-metal.csv Q8_0          # with baseline
+#          ./viz-table.sh tg-m2ultra-metal.csv "" n_gen           # token gen, tg sizes
+#          ./viz-table.sh tg-m2ultra-metal.csv Q8_0 n_gen         # tg with baseline
 
 set -euo pipefail
-FILE="${1:?Usage: $0 <csv_file> [baseline_quant]}"
+FILE="${1:?Usage: $0 <csv_file> [baseline_quant] [size_column]}"
 BASELINE="${2:-}"
+SIZE_COL="${3:-n_prompt}"
+
+# auto-detect prefix for column labels
+if [ "$SIZE_COL" = "n_gen" ]; then
+    PREFIX="tg"
+else
+    PREFIX="pp"
+fi
 
 pivot_csv() {
-    xan select model_type,n_prompt,avg_ts "$FILE" | \
-        xan map 'round(avg_ts) as tps, concat("pp", n_prompt) as pp, replace(model_type, "gemma4 E2B ", "") as quant' | \
-        xan select quant,pp,tps | \
-        xan pivot pp 'first(tps)' -g quant
+    xan select "model_type,$SIZE_COL,avg_ts" "$FILE" | \
+        xan map "round(avg_ts) as tps, concat(\"$PREFIX\", $SIZE_COL) as size, replace(model_type, \"gemma4 E2B \", \"\") as quant" | \
+        xan select quant,size,tps | \
+        xan pivot size 'first(tps)' -g quant
 }
 
 if [ -z "$BASELINE" ]; then
@@ -25,7 +34,6 @@ else
     pivot_csv | awk -F, -v base="$BASELINE" '
     NR == 1 { print; ncols = NF; next }
     {
-        # strip quotes from quant field
         q = $1; gsub(/"/, "", q)
         if (q ~ base) {
             base_row = NR
