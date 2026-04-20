@@ -1,0 +1,7 @@
+tags
+*.swp
+__pycache__/
+.cache/
+tasks/*/tests
+tasks/*/tests.jsonl
+.DS_Store
