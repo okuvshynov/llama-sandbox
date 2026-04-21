@@ -1,19 +1,17 @@
 #!/usr/bin/env python3
-"""Moonshot/Kimi K2.6 validation benchmark — dedicated script using the native API.
+"""Moonshot/Kimi (K2.5 / K2.6 / K2-Thinking) validation benchmark — native API.
 
 Separate from validation_bench.py (which routes through litellm/anthropic) to keep
-K2.6's thinking semantics explicit: Preserved Thinking via thinking.keep="all",
-reasoning_content via hasattr/getattr, temperature=1.0 for thinking per Moonshot's
-benchmark-best-practice guide.
+Moonshot's thinking semantics explicit: reasoning_content via hasattr/getattr,
+temperature=1.0 for thinking per the benchmark-best-practice guide, and Preserved
+Thinking via thinking.keep="all" (documented for K2.6 only — omitted on K2.5).
 """
 
 import argparse
 import datetime
 import json
 import os
-import shutil
 import sys
-import tempfile
 import time
 from pathlib import Path
 
@@ -31,7 +29,7 @@ DEFAULT_API_BASE = "https://api.moonshot.ai/v1"
 
 
 def moonshot_slug(model: str, mode: str) -> str:
-    """moonshot-kimi-k2.6-thinking / -instant, or moonshot-kimi-k2-thinking (forced)."""
+    """moonshot-<model>-<mode>, or moonshot-kimi-k2-thinking (forced thinking)."""
     if model == "kimi-k2-thinking":
         return f"moonshot-{model}"
     return f"moonshot-{model}-{mode}"
@@ -41,13 +39,15 @@ def mode_to_extra_body(mode: str, preserve: bool, model: str) -> dict | None:
     """Map (mode, preserve, model) to the Moonshot-specific thinking extra_body.
 
     kimi-k2-thinking has thinking forcibly enabled server-side: pass nothing.
+    thinking.keep="all" (Preserved Thinking) is documented for kimi-k2.6 only; it
+    is omitted on kimi-k2.5 since the parameter is not documented there.
     """
     if model == "kimi-k2-thinking":
         return None
     if mode == "instant":
         return {"thinking": {"type": "disabled"}}
     body: dict = {"thinking": {"type": "enabled"}}
-    if preserve:
+    if preserve and model == "kimi-k2.6":
         body["thinking"]["keep"] = "all"
     return body
 
@@ -59,6 +59,7 @@ def stream_completion(
     tools: list[dict],
     extra_body: dict | None,
     sampling_params: dict,
+    tool_choice: str | None,
     turn: int,
 ) -> tuple[dict, str]:
     """Stream one turn. Returns (assistant_message_dict, finish_reason).
@@ -69,12 +70,16 @@ def stream_completion(
     kwargs = dict(sampling_params)
     if extra_body is not None:
         kwargs["extra_body"] = extra_body
+    # Moonshot rejects tool_choice="required" when thinking is enabled
+    # (k2.6 with mode=thinking, or kimi-k2-thinking). Caller passes None in
+    # that case; otherwise "required" forces a tool call in instant mode.
+    if tool_choice is not None:
+        kwargs["tool_choice"] = tool_choice
 
     stream = client.chat.completions.create(
         model=model,
         messages=messages,
         tools=tools,
-        tool_choice="required",
         stream=True,
         **kwargs,
     )
@@ -152,6 +157,7 @@ def run_attempt_moonshot(
     max_turns: int,
     sampling_params: dict,
     extra_body: dict | None,
+    tool_choice: str | None,
     attempt_dir: Path,
     task_dir: Path,
     attempt_id: str,
@@ -159,10 +165,11 @@ def run_attempt_moonshot(
     sandbox = Sandbox()
     sandbox.start()
 
-    staging = tempfile.TemporaryDirectory()
-    staging_dir = Path(staging.name)
-    submissions_dir = staging_dir / "submissions"
-    submissions_dir.mkdir()
+    # Write logs directly into the attempt dir from turn 0 so a killed or
+    # mid-flight run leaves an inspectable transcript on disk.
+    attempt_dir.mkdir(parents=True, exist_ok=True)
+    submissions_dir = attempt_dir / "submissions"
+    submissions_dir.mkdir(exist_ok=True)
 
     messages: list[dict] = [{"role": "user", "content": user_prompt}]
     submission_count = 0
@@ -171,6 +178,11 @@ def run_attempt_moonshot(
     error_turn = -1
     start = time.time()
     turn = 0
+
+    def flush_log():
+        save_attempt_log(attempt_dir, messages)
+
+    flush_log()
 
     for turn in range(max_turns):
         try:
@@ -181,6 +193,7 @@ def run_attempt_moonshot(
                 tools=[SUBMIT_TOOL],
                 extra_body=extra_body,
                 sampling_params=sampling_params,
+                tool_choice=tool_choice,
                 turn=turn,
             )
         except Exception as e:
@@ -190,6 +203,7 @@ def run_attempt_moonshot(
             break
 
         messages.append(assistant_msg)
+        flush_log()
 
         if finish_reason == "length":
             _log(f"  turn {turn}: response truncated (max_tokens too low)")
@@ -210,6 +224,7 @@ def run_attempt_moonshot(
                     "name": name,
                     "content": f"Unknown tool: {name}. Use the `submit` tool.",
                 })
+                flush_log()
                 continue
 
             try:
@@ -222,6 +237,7 @@ def run_attempt_moonshot(
                     "name": name,
                     "content": f"Invalid tool arguments: {e}. Pass source_code as a string.",
                 })
+                flush_log()
                 continue
 
             submission_count += 1
@@ -253,6 +269,7 @@ def run_attempt_moonshot(
                 "name": name,
                 "content": tool_result_str,
             })
+            flush_log()
 
         if submission_results and submission_results[-1].matrix:
             m = submission_results[-1].matrix
@@ -261,9 +278,9 @@ def run_attempt_moonshot(
 
     elapsed = time.time() - start
     sandbox.stop()
+    flush_log()
 
     if api_error is not None:
-        staging.cleanup()
         error_type = "timeout" if "timeout" in str(api_error).lower() else "api_error"
         return InfraFailure(
             timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -273,18 +290,12 @@ def run_attempt_moonshot(
         )
 
     if submission_count == 0:
-        staging.cleanup()
         return InfraFailure(
             timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat(),
             turn=turn,
             error_type="no_submissions",
             error_message="Model completed without making any submissions",
         )
-
-    attempt_dir.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(submissions_dir), str(attempt_dir / "submissions"))
-    save_attempt_log(attempt_dir, messages)
-    staging.cleanup()
 
     return AttemptResult(
         attempt_id=attempt_id,
@@ -295,16 +306,16 @@ def run_attempt_moonshot(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Moonshot/Kimi K2.6 validation benchmark (native API).")
+    parser = argparse.ArgumentParser(description="Moonshot/Kimi validation benchmark (native API).")
     parser.add_argument("--task", required=True, help="Task name (directory under tasks/)")
     parser.add_argument("--n-attempts", type=int, default=1)
     parser.add_argument("--model", default="kimi-k2.6",
-                        help="Kimi model (kimi-k2.6 or kimi-k2-thinking; default kimi-k2.6)")
+                        help="Kimi model (kimi-k2.5, kimi-k2.6, or kimi-k2-thinking; default kimi-k2.6)")
     parser.add_argument("--mode", choices=["thinking", "instant"], default="thinking",
-                        help="K2.6 only; ignored for kimi-k2-thinking (default: thinking)")
+                        help="K2.5/K2.6 only; ignored for kimi-k2-thinking (default: thinking)")
     parser.add_argument("--no-preserve-thinking", dest="preserve_thinking",
                         action="store_false", default=True,
-                        help="Disable Preserved Thinking (thinking.keep=all). Default: enabled.")
+                        help="Disable Preserved Thinking (thinking.keep=all). K2.6-only; has no effect on K2.5. Default: enabled.")
     parser.add_argument("--temperature", type=float, default=None,
                         help="Override temperature (default: 1.0 thinking / 0.6 instant)")
     parser.add_argument("--top-p", type=float, default=0.95)
@@ -346,6 +357,11 @@ def main():
         temperature = 0.6
 
     extra_body = mode_to_extra_body(args.mode, args.preserve_thinking, args.model)
+    # Moonshot rejects tool_choice="required" when thinking is on; send it
+    # only in instant mode where thinking is explicitly disabled.
+    is_forced_thinking_model = args.model == "kimi-k2-thinking"
+    thinking_enabled = is_forced_thinking_model or args.mode == "thinking"
+    tool_choice = None if thinking_enabled else "required"
 
     sampling_params = {
         "max_tokens": args.max_tokens,
@@ -354,10 +370,10 @@ def main():
     }
 
     # Provenance fields written alongside sampling_params in each result row.
-    is_forced_thinking = args.model == "kimi-k2-thinking"
-    effective_mode = "thinking" if is_forced_thinking else args.mode
+    effective_mode = "thinking" if is_forced_thinking_model else args.mode
     effective_preserve = (
-        args.preserve_thinking and effective_mode == "thinking" and not is_forced_thinking
+        args.preserve_thinking and effective_mode == "thinking"
+        and not is_forced_thinking_model and args.model == "kimi-k2.6"
     )
     results_params = {
         **sampling_params,
@@ -430,6 +446,7 @@ def main():
                 max_turns=args.max_turns,
                 sampling_params=sampling_params,
                 extra_body=extra_body,
+                tool_choice=tool_choice,
                 attempt_dir=attempt_dir,
                 task_dir=tasks_dir,
                 attempt_id=attempt_id,
