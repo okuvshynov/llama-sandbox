@@ -178,6 +178,7 @@ def run_attempt_moonshot(
     error_turn = -1
     start = time.time()
     turn = 0
+    nudged = False
 
     def flush_log():
         save_attempt_log(attempt_dir, messages)
@@ -210,6 +211,20 @@ def run_attempt_moonshot(
 
         tool_calls = assistant_msg.get("tool_calls", [])
         if not tool_calls:
+            # K2.5/K2.6 in thinking mode occasionally emit the full solution
+            # as inline content instead of calling submit. tool_choice cannot
+            # be "required" with thinking enabled, so we nudge once and let
+            # the retry consume a turn from the budget.
+            if not nudged:
+                _log(f"  turn {turn}: no tool_call — nudging model to use submit")
+                messages.append({
+                    "role": "user",
+                    "content": "You responded without calling the `submit` tool. Please call `submit` now with your complete C++ source code.",
+                })
+                flush_log()
+                nudged = True
+                continue
+            _log(f"  turn {turn}: no tool_call after nudge — ending attempt")
             break
 
         for tool_call in tool_calls:
