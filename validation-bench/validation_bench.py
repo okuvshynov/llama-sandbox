@@ -126,22 +126,30 @@ COMPILE_CMD = "clang++ -std=c++17 -O2"
 class Sandbox:
     """Docker container sandbox for compiling and running untrusted code."""
 
-    def __init__(self):
+    def __init__(self, startup_timeout: float = 600):
         self.container_id: str | None = None
+        self.startup_timeout = startup_timeout
 
     def start(self):
-        result = subprocess.run(
-            ["docker", "run", "-d", "--rm",
-             "--network=none",
-             "--memory=512m",
-             "--cpus=1",
-             "--pids-limit=256",
-             "--read-only",
-             "--tmpfs=/work:rw,exec,size=64m",
-             "--tmpfs=/tmp:rw,size=64m",
-             DOCKER_IMAGE, "sleep", "infinity"],
-            capture_output=True, text=True,
-        )
+        try:
+            result = subprocess.run(
+                ["docker", "run", "-d", "--rm",
+                 "--network=none",
+                 "--memory=512m",
+                 "--cpus=1",
+                 "--pids-limit=256",
+                 "--read-only",
+                 "--tmpfs=/work:rw,exec,size=64m",
+                 "--tmpfs=/tmp:rw,size=64m",
+                 DOCKER_IMAGE, "sleep", "infinity"],
+                capture_output=True, text=True,
+                timeout=self.startup_timeout,
+            )
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(
+                f"`docker run` did not return within {self.startup_timeout}s "
+                "(daemon hang or image pull stuck?)"
+            )
         if result.returncode != 0:
             raise RuntimeError(f"Failed to start sandbox: {result.stderr}")
         self.container_id = result.stdout.strip()
@@ -567,8 +575,9 @@ def run_attempt(
     attempt_dir: Path,
     task_dir: Path,
     attempt_id: str,
+    docker_timeout: float = 600,
 ) -> AttemptResult | InfraFailure:
-    sandbox = Sandbox()
+    sandbox = Sandbox(startup_timeout=docker_timeout)
     sandbox.start()
 
     staging = tempfile.TemporaryDirectory()
@@ -729,6 +738,7 @@ def main():
     parser.add_argument("--max-tokens", type=int, default=32768, help="Max tokens per response (default: 32768)")
     parser.add_argument("--max-turns", type=int, default=10, help="Max conversation turns per attempt")
     parser.add_argument("--timeout", type=float, default=600, help="API request timeout in seconds (default: 600)")
+    parser.add_argument("--docker-timeout", type=float, default=600, help="Timeout (seconds) for `docker run` when starting the sandbox container (default: 600)")
     parser.add_argument("--slug", default=None, help="Model slug for results directory (default: auto-derived from model name)")
     parser.add_argument("--results-dir", default="results", help="Base results directory (default: results/)")
     parser.add_argument("--data-dir", default=None, help="Base data directory for attempts (default: ~/.vb-data, env: VB_DATA_DIR)")
@@ -829,6 +839,7 @@ def main():
                 attempt_dir=attempt_dir,
                 task_dir=tasks_dir,
                 attempt_id=attempt_id,
+                docker_timeout=args.docker_timeout,
             )
             if isinstance(r, InfraFailure):
                 save_failure(r)
