@@ -161,8 +161,13 @@ def run_attempt_moonshot(
     attempt_dir: Path,
     task_dir: Path,
     attempt_id: str,
-) -> AttemptResult | InfraFailure:
-    sandbox = Sandbox()
+    docker_timeout: float = 600,
+) -> tuple[AttemptResult | None, InfraFailure | None]:
+    """Return (result, failure). Both can be non-None when an api_error hit
+    mid-attempt after some submissions were already graded — we keep the
+    per-turn rows from those submissions instead of discarding everything.
+    """
+    sandbox = Sandbox(startup_timeout=docker_timeout)
     sandbox.start()
 
     # Write logs directly into the attempt dir from turn 0 so a killed or
@@ -295,9 +300,10 @@ def run_attempt_moonshot(
     sandbox.stop()
     flush_log()
 
+    failure: InfraFailure | None = None
     if api_error is not None:
         error_type = "timeout" if "timeout" in str(api_error).lower() else "api_error"
-        return InfraFailure(
+        failure = InfraFailure(
             timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat(),
             turn=error_turn,
             error_type=error_type,
@@ -305,19 +311,22 @@ def run_attempt_moonshot(
         )
 
     if submission_count == 0:
-        return InfraFailure(
-            timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat(),
-            turn=turn,
-            error_type="no_submissions",
-            error_message="Model completed without making any submissions",
-        )
+        if failure is None:
+            failure = InfraFailure(
+                timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                turn=turn,
+                error_type="no_submissions",
+                error_message="Model completed without making any submissions",
+            )
+        return None, failure
 
-    return AttemptResult(
+    result = AttemptResult(
         attempt_id=attempt_id,
         timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat(),
         elapsed_seconds=round(elapsed, 1),
         submissions=submission_results,
     )
+    return result, failure
 
 
 def main():
@@ -337,7 +346,10 @@ def main():
     parser.add_argument("--max-tokens", type=int, default=32768,
                         help="Max tokens (Moonshot benchmark guide: >= 16000)")
     parser.add_argument("--max-turns", type=int, default=10)
-    parser.add_argument("--timeout", type=float, default=600)
+    parser.add_argument("--timeout", type=float, default=600,
+                        help="OpenAI client timeout (seconds) for Moonshot API calls. Default: 600.")
+    parser.add_argument("--docker-timeout", type=float, default=600,
+                        help="Timeout (seconds) for `docker run` when starting the sandbox container. Default: 600.")
     parser.add_argument("--api-base", default=os.environ.get("MOONSHOT_BASE_URL", DEFAULT_API_BASE))
     parser.add_argument("--api-key", default=None, help="Or set MOONSHOT_API_KEY env var")
     parser.add_argument("--slug", default=None, help="Override derived slug")
@@ -453,7 +465,7 @@ def main():
             attempt_id = make_attempt_id(args.task, slug)
             attempt_dir = data_dir_base / attempt_id
             _log(f"  Debug logs: {attempt_dir}")
-            r = run_attempt_moonshot(
+            result, failure = run_attempt_moonshot(
                 client=client,
                 model=args.model,
                 user_prompt=user_prompt,
@@ -465,13 +477,14 @@ def main():
                 attempt_dir=attempt_dir,
                 task_dir=tasks_dir,
                 attempt_id=attempt_id,
+                docker_timeout=args.docker_timeout,
             )
-            if isinstance(r, InfraFailure):
-                save_failure(r)
-                _log(f"  Infrastructure failure: {r.error_type}: {r.error_message}")
-            else:
-                save_result(r)
-                _log(f"  [{r.attempt_id}] saved to {results_file}")
+            if failure is not None:
+                save_failure(failure)
+                _log(f"  Infrastructure failure: {failure.error_type}: {failure.error_message}")
+            if result is not None:
+                save_result(result)
+                _log(f"  [{result.attempt_id}] saved to {results_file}")
     except KeyboardInterrupt:
         print("\n\nInterrupted!")
 
