@@ -3,10 +3,29 @@
 
 import argparse
 import json
+import re
 from collections import defaultdict
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+
+
+def _compile_highlights(patterns: list[str] | None) -> list[re.Pattern]:
+    """Compile regex patterns for bold-yticklabel highlighting. Pass `None`
+    (flag absent) or `[]` to disable. No built-in default — callers who want
+    to highlight the current "new models" set must pass patterns explicitly."""
+    return [re.compile(p) for p in (patterns or ())]
+
+
+def _is_highlighted(slug: str, patterns: list[re.Pattern]) -> bool:
+    return any(p.search(slug) for p in patterns)
+
+
+def _bold_matching_yticklabels(ax, slugs: list[str], highlights: list[re.Pattern]):
+    """Post-layout: walk the ytick labels and bold any whose slug matches."""
+    for lbl, slug in zip(ax.get_yticklabels(), slugs):
+        if _is_highlighted(slug, highlights):
+            lbl.set_fontweight("bold")
 
 
 def load_attempt_scores(results_file: Path, task: str, exclude: list[str] | None = None
@@ -49,7 +68,8 @@ def _is_first_party(slug: str) -> bool:
     return any(slug.startswith(p) for p in FIRST_PARTY_PREFIXES)
 
 
-def plot_boxplots(scores: dict[str, list[float]], task: str, output: Path):
+def plot_boxplots(scores: dict[str, list[float]], task: str, output: Path,
+                  highlights: list[re.Pattern] | None = None):
     slugs = sorted(scores.keys(), key=lambda s: sorted(scores[s])[len(scores[s]) // 2])
     data = [scores[s] for s in slugs]
     labels = [f"{s} (n={len(scores[s])})" for s in slugs]
@@ -81,6 +101,9 @@ def plot_boxplots(scores: dict[str, list[float]], task: str, output: Path):
         y = [i + 1] * len(d)
         ax.scatter(d, y, color=c, alpha=0.4, s=15, zorder=3)
 
+    if highlights:
+        _bold_matching_yticklabels(ax, slugs, highlights)
+
     fig.tight_layout()
     fig.savefig(output, dpi=150)
     plt.close(fig)
@@ -88,7 +111,8 @@ def plot_boxplots(scores: dict[str, list[float]], task: str, output: Path):
 
 
 def plot_dumbbell(scores_a: dict[str, list[float]], scores_b: dict[str, list[float]],
-                  task_a: str, task_b: str, output: Path):
+                  task_a: str, task_b: str, output: Path,
+                  highlights: list[re.Pattern] | None = None):
     """Dumbbell chart comparing mean MCC between two tasks for shared slugs."""
     shared = sorted(set(scores_a) & set(scores_b))
     if not shared:
@@ -134,6 +158,9 @@ def plot_dumbbell(scores_a: dict[str, list[float]], scores_b: dict[str, list[flo
     ]
     ax.legend(handles=legend_elements, loc="lower left", fontsize=8)
 
+    if highlights:
+        _bold_matching_yticklabels(ax, shared, highlights)
+
     fig.tight_layout()
     fig.savefig(output, dpi=150)
     plt.close(fig)
@@ -167,7 +194,8 @@ def load_attempt_times(results_file: Path, slug_prefix: str,
 
 
 def plot_timing(times_by_task: dict[str, dict[str, list[float]]],
-                slug_prefix: str, output_dir: Path):
+                slug_prefix: str, output_dir: Path,
+                highlights: list[re.Pattern] | None = None):
     """One image per task, showing attempt elapsed time per slug as horizontal boxplots."""
     for task, slugs_data in sorted(times_by_task.items()):
         slugs = sorted(slugs_data.keys(),
@@ -198,6 +226,9 @@ def plot_timing(times_by_task: dict[str, dict[str, list[float]]],
         ax.set_xlim(left=0)
         ax.grid(axis="x", alpha=0.3)
 
+        if highlights:
+            _bold_matching_yticklabels(ax, slugs, highlights)
+
         fig.tight_layout()
         out = output_dir / f"timing-{slug_prefix}-{task}.png"
         fig.savefig(out, dpi=150)
@@ -209,11 +240,19 @@ def main():
     parser = argparse.ArgumentParser(description="Plot MCC boxplots per model slug")
     subparsers = parser.add_subparsers(dest="command")
 
+    highlight_help = (
+        "Regex patterns matched with re.search against each slug; matches render "
+        "with bold yticklabels. Multiple patterns OR'd. No highlighting by default. "
+        "Current 'new models' set worth highlighting: "
+        "^anthropic ^moonshot ^deepseek '^qwen3\\.6-27b' (shell-quote the last one)."
+    )
+
     box = subparsers.add_parser("boxplot", help="Horizontal boxplots for a single task")
     box.add_argument("--task", default="toml-1.0-cpp", help="Task to plot (default: toml-1.0-cpp)")
     box.add_argument("--results", default=None, help="Path to results.jsonl")
     box.add_argument("--output", default=None, help="Output image path (default: plots/<task>.png)")
     box.add_argument("--exclude", nargs="*", default=[], help="Slugs to exclude")
+    box.add_argument("--highlight", nargs="*", default=None, help=highlight_help)
 
     cmp = subparsers.add_parser("compare", help="Dumbbell chart comparing two tasks")
     cmp.add_argument("--task-a", default="toml-1.0-cpp", help="First task (default: toml-1.0-cpp)")
@@ -221,12 +260,14 @@ def main():
     cmp.add_argument("--results", default=None, help="Path to results.jsonl")
     cmp.add_argument("--output", default=None, help="Output image path")
     cmp.add_argument("--exclude", nargs="*", default=[], help="Slugs to exclude")
+    cmp.add_argument("--highlight", nargs="*", default=None, help=highlight_help)
 
     tim = subparsers.add_parser("timing", help="Attempt timing boxplots by slug prefix")
     tim.add_argument("--prefix", default="fireworks", help="Slug prefix to filter (default: fireworks)")
     tim.add_argument("--results", default=None, help="Path to results.jsonl")
     tim.add_argument("--output", default=None, help="Output image path")
     tim.add_argument("--exclude", nargs="*", default=[], help="Slugs to exclude")
+    tim.add_argument("--highlight", nargs="*", default=None, help=highlight_help)
 
     args = parser.parse_args()
     if not args.command:
@@ -235,6 +276,8 @@ def main():
 
     results_file = Path(args.results) if args.results else Path(__file__).parent / "results" / "results.jsonl"
 
+    highlights = _compile_highlights(args.highlight)
+
     if args.command == "boxplot":
         output = Path(args.output) if args.output else Path(__file__).parent / "plots" / f"{args.task}.png"
         output.parent.mkdir(parents=True, exist_ok=True)
@@ -242,7 +285,7 @@ def main():
         if not scores:
             print(f"No data for task '{args.task}'")
             return
-        plot_boxplots(scores, args.task, output)
+        plot_boxplots(scores, args.task, output, highlights)
 
     elif args.command == "compare":
         output = Path(args.output) if args.output else Path(__file__).parent / "plots" / f"{args.task_a}_vs_{args.task_b}.png"
@@ -252,7 +295,7 @@ def main():
         if not scores_a or not scores_b:
             print(f"No data for one of the tasks")
             return
-        plot_dumbbell(scores_a, scores_b, args.task_a, args.task_b, output)
+        plot_dumbbell(scores_a, scores_b, args.task_a, args.task_b, output, highlights)
 
     elif args.command == "timing":
         output_dir = Path(args.output) if args.output else Path(__file__).parent / "plots"
@@ -261,7 +304,7 @@ def main():
         if not times:
             print(f"No timing data for prefix '{args.prefix}'")
             return
-        plot_timing(times, args.prefix, output_dir)
+        plot_timing(times, args.prefix, output_dir, highlights)
 
 
 if __name__ == "__main__":
