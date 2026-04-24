@@ -115,6 +115,38 @@ python validation_bench_fireworks.py --task toml-1.0-cpp \
 
 `--model fireworks_ai/accounts/fireworks/models/<name>` under `validation_bench.py` becomes `--model <name>` here. The derived slug is the same in both paths (`fireworks-<name>`) so old and new results rows remain comparable.
 
+## validation_bench_openai.py (OpenAI, native SDK with Chat Completions + Responses routing)
+
+Replaces the litellm-based routing in `validation_bench.py` with an explicit branch on the model ID: models with `"codex"` in the name go to the Responses API (mandatory for `gpt-5-codex`), everything else goes to Chat Completions. `reasoning_effort` placement differs between the two (`reasoning_effort="low"` flat vs `reasoning={"effort":"low"}` nested) and tool/tool-result shapes differ (nested vs flat). The script hides that behind a unified CLI while exposing the routing in the results row via a `"api"` provenance field (`"chat.completions"` or `"responses"`).
+
+### Non-codex reasoning model (Chat Completions)
+
+```bash
+python validation_bench_openai.py --task toml-1.0-cpp \
+  --model gpt-5.4 \
+  --n-attempts 1 --max-turns 5
+```
+
+Drops the litellm-era `openai/` prefix from the old `validation_bench.py` invocations. `--max-tokens` is translated to `max_completion_tokens` on the wire — reasoning-era models (gpt-5.x, o-series) reject the legacy `max_tokens` with HTTP 400.
+
+### Codex via Responses API
+
+```bash
+python validation_bench_openai.py --task toml-1.0-cpp \
+  --model gpt-5.3-codex --reasoning-effort low \
+  --n-attempts 1 --max-turns 5
+```
+
+`gpt-5.3-codex` contains `"codex"` so `is_codex_model()` routes to `client.responses.stream(...)`. `--reasoning-effort low` becomes `reasoning={"effort":"low"}` nested on the request. `--max-tokens` is translated to `max_output_tokens`. Assistant messages are kept in OpenAI-chat shape internally and translated into Responses `input_items` (`function_call` / `function_call_output` items) at request time, so the attempt loop stays provider-agnostic.
+
+### Reasoning effort levels
+
+```bash
+--reasoning-effort {none,minimal,low,medium,high,xhigh}
+```
+
+Omit for the model default. `xhigh` is only accepted by some codex variants (e.g. `gpt-5.3-codex`). Reasoning traces: Chat Completions does **not** expose reasoning on stream deltas — only final message has it. Responses streams them via `response.reasoning_summary_text.delta` / `response.reasoning_text.delta` events (visible in the heartbeat character count, but not replayed on subsequent turns since signed reasoning items aren't surfaced on the stream).
+
 ## Shared flags
 
 - `--docker-timeout 600` — cap on `docker run -d` when starting the sandbox. Distinct from `--timeout` (API client). Both default to 600s.
