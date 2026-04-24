@@ -77,6 +77,44 @@ python validation_bench_moonshot.py --task toml-1.0-cpp \
 
 Same shape as K2.6 but `thinking.keep` is omitted (K2.6-only field; undocumented for K2.5). The no-tool-call failure mode is more frequent on K2.5 — the nudge loop is load-bearing here.
 
+## validation_bench_fireworks.py (Fireworks AI, OpenAI-compat endpoint)
+
+The `fireworks-ai` Python SDK is still alpha and auto-generated; its inference path is just the OpenAI-compat endpoint anyway. This script uses the OpenAI SDK pointed at `https://api.fireworks.ai/inference/v1` and plumbs Fireworks-specific knobs (reasoning_effort, thinking budget, reasoning_history, top_k/min_p/repetition_penalty, prompt_cache_key) through `extra_body`. Bare model names are auto-prefixed with `accounts/fireworks/models/`.
+
+### Default reasoning (server decides)
+
+```bash
+python validation_bench_fireworks.py --task toml-1.0-cpp \
+  --model minimax-m2p7 \
+  --n-attempts 5 --max-turns 5 --max-tokens 100000
+```
+
+With both `--reasoning-effort` and `--thinking-budget` omitted, the request carries no reasoning fields and Fireworks applies the model's server-side default — reasoning-capable models typically reason at `medium`, non-reasoning models behave normally. The results row only records what was sent, so nothing about reasoning lands in `sampling_params`; pass `--reasoning-effort` explicitly when provenance matters.
+
+### Explicit reasoning_effort
+
+```bash
+python validation_bench_fireworks.py --task toml-1.0-cpp \
+  --model glm-4p6 --reasoning-effort high \
+  --n-attempts 5 --max-turns 5 --max-tokens 100000
+```
+
+Records `reasoning_effort=high` in `sampling_params`. The slug picks up the suffix (`fireworks-glm-4p6-high`) so runs at different effort levels stay segmented without `--slug` overrides.
+
+### Thinking budget (Anthropic-style manual cap)
+
+```bash
+python validation_bench_fireworks.py --task toml-1.0-cpp \
+  --model kimi-k2-thinking --thinking-budget 16384 --reasoning-history preserved \
+  --n-attempts 5 --max-turns 5 --max-tokens 100000
+```
+
+`thinking.budget_tokens=16384` hard-caps reasoning; mutually exclusive with `--reasoning-effort` (CLI enforces). `--reasoning-history preserved` echoes prior reasoning back into later turns — symmetric with Moonshot's Preserved Thinking and useful for multi-turn tool use on Kimi-K2-Thinking. Note: Kimi-K2-Thinking has reasoning force-enabled server-side, so disabling it isn't possible regardless of what you pass.
+
+### Translating old litellm invocations
+
+`--model fireworks_ai/accounts/fireworks/models/<name>` under `validation_bench.py` becomes `--model <name>` here. The derived slug is the same in both paths (`fireworks-<name>`) so old and new results rows remain comparable.
+
 ## Shared flags
 
 - `--docker-timeout 600` — cap on `docker run -d` when starting the sandbox. Distinct from `--timeout` (API client). Both default to 600s.
