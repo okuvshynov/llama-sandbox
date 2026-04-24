@@ -36,12 +36,16 @@ def load_attempt_scores(results_file: Path, task: str, exclude: list[str] | None
     return dict(by_slug)
 
 
-FIRST_PARTY_PREFIXES = ("gpt-", "claude-", "o1-", "o3-", "o4-")
+FIRST_PARTY_PREFIXES = ("gpt-", "claude-", "anthropic-", "o1-", "o3-", "o4-")
 COLOR_FIRST_PARTY = "#4C72B0"
 COLOR_OSS = "#55A868"
 
 
 def _is_first_party(slug: str) -> bool:
+    # `anthropic-` matches slugs produced by validation_bench_anthropic.py
+    # (e.g. "anthropic-claude-sonnet-4-6-enabled"); `claude-` matches slugs
+    # from the pre-rename litellm path (e.g. "claude-sonnet-4.6"). Both
+    # paths can appear in the same results.jsonl — keep both prefixes.
     return any(slug.startswith(p) for p in FIRST_PARTY_PREFIXES)
 
 
