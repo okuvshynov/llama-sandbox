@@ -288,8 +288,6 @@ def derive_slug(model: str, reasoning_effort: str | None = None) -> str:
         openai/gpt-5.3-codex             -> gpt-5.3-codex
         openai/gpt-5.3-codex + high      -> gpt-5.3-codex-high
         fireworks_ai/accounts/fireworks/models/glm-5p1 -> fireworks-glm-5p1
-        openrouter/z-ai/glm-5.1          -> openrouter-glm-5.1
-        mistral/devstral-latest          -> devstral
         openai/Qwen3.5-122B-A10B-UD-Q6_K_XL-00001-of-00004.gguf -> qwen3.5-122b-a10b-q6_k_xl
     """
     # Hosted-OSS prefixes keep a short provider tag; first-party prefixes drop it
@@ -298,10 +296,6 @@ def derive_slug(model: str, reasoning_effort: str | None = None) -> str:
         rest = model.split("/", 1)[1]
         rest = re.sub(r"^accounts/[^/]+/models/", "", rest)
         name = f"fireworks-{rest}"
-    elif model.startswith("openrouter/"):
-        rest = model.split("/", 1)[1]
-        rest = rest.split("/", 1)[1] if "/" in rest else rest  # drop org, keep model
-        name = f"openrouter-{rest}"
     elif "/" in model:
         name = model.split("/", 1)[1]
     else:
@@ -316,9 +310,6 @@ def derive_slug(model: str, reasoning_effort: str | None = None) -> str:
     name = re.sub(r'(-\d+-of-\d+)?\.gguf$', '', name, flags=re.IGNORECASE)
 
     name = name.lower()
-
-    # Strip "-latest" suffix
-    name = re.sub(r'-latest$', '', name)
 
     # Map Claude model IDs to friendly versions
     name = re.sub(r'^claude-(.*)-4-20250514$', r'claude-\1-4.0', name)

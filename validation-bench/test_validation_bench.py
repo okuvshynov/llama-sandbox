@@ -18,10 +18,6 @@ from validation_bench_lib import derive_slug, make_attempt_id, InfraFailure
     # Hosted OSS — keep short provider tag so we know who served it
     ("fireworks_ai/accounts/fireworks/models/glm-5p1", None, "fireworks-glm-5p1"),
     ("fireworks/accounts/fireworks/models/llama-v3-70b", None, "fireworks-llama-v3-70b"),
-    ("openrouter/z-ai/glm-5.1", None, "openrouter-glm-5.1"),
-    ("openrouter/anthropic/claude-opus-4", None, "openrouter-claude-opus-4"),
-    # Strip "-latest" suffix
-    ("mistral/devstral-latest", None, "devstral"),
     # GGUF filenames — strip quantization/shard suffixes
     ("openai/Qwen3.5-122B-A10B-UD-Q8_K_XL-00001-of-00004.gguf", None, "qwen3.5-122b-a10b-q8_k_xl"),
     ("openai/some-model.gguf", None, "some-model"),
