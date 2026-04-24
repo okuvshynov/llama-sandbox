@@ -19,6 +19,16 @@ Two paths:
   tool results are `{type:function_call_output, call_id, output}`. Reasoning
   IS streamed (reasoning_summary_text.delta / reasoning_text.delta events).
 
+Reasoning-item replay (Responses path only): the script requests
+`include=["reasoning.encrypted_content"]` on each call and captures the
+full reasoning items emitted on `response.output_item.done`. They're stored
+on the assistant message under a custom `reasoning_items` key and echoed
+back in the same order on subsequent turns so the model sees its own prior
+chain of thought — critical for multi-turn tool use where the reasoning
+*led to* the tool call. Encrypted content is passed back unchanged per
+OpenAI's cookbook guidance; tampering with it triggers server-side
+signature rejection.
+
 The assistant message is normalized to OpenAI-chat shape internally so the
 attempt loop, log persistence, and results format stay identical across paths.
 """
@@ -171,7 +181,11 @@ def messages_to_responses_input(messages: list[dict]) -> list[dict]:
 
     Prior assistant turns containing tool_calls expand into one
     `function_call` item per call; role="tool" messages become
-    `function_call_output` items keyed by call_id.
+    `function_call_output` items keyed by call_id. Reasoning items captured
+    from prior turns (stored on the assistant dict under `reasoning_items`)
+    are emitted first in their original stream order — this matches the
+    order Responses itself emits them in `response.output` and lets the
+    model see its own prior chain of thought on the next turn.
     """
     items: list[dict] = []
     for m in messages:
@@ -179,6 +193,12 @@ def messages_to_responses_input(messages: list[dict]) -> list[dict]:
         if role == "user":
             items.append({"role": "user", "content": m["content"]})
         elif role == "assistant":
+            # Reasoning items replay first — OpenAI's cookbook says to pass
+            # them back unchanged ("append response.output directly"); the
+            # `encrypted_content` field is a signed blob, so we forward the
+            # dict verbatim rather than re-minting fields.
+            for item in m.get("reasoning_items", []) or []:
+                items.append(item)
             if m.get("content"):
                 items.append({"role": "assistant", "content": m["content"]})
             for tc in m.get("tool_calls", []) or []:
@@ -216,6 +236,11 @@ def stream_completion_responses(
         kwargs["reasoning"] = {"effort": reasoning_effort}
     if tool_choice is not None:
         kwargs["tool_choice"] = tool_choice
+    # Request the signed reasoning blob so we can replay reasoning items on
+    # subsequent turns. Works with both store=True and store=False; without
+    # it the encrypted_content field is absent and replay fails signature
+    # verification server-side.
+    kwargs["include"] = ["reasoning.encrypted_content"]
 
     input_items = messages_to_responses_input(messages)
 
@@ -224,6 +249,10 @@ def stream_completion_responses(
     # different output_index values.
     tool_items: dict[str, dict] = {}
     tool_order: list[str] = []
+    # Reasoning items captured on `output_item.done` — stored in original
+    # stream order so replay preserves the reasoning -> tool_call relationship
+    # Responses expects.
+    reasoning_items: list[dict] = []
     chars = 0
     events_seen = 0
     last_log = time.time()
@@ -246,6 +275,14 @@ def stream_completion_responses(
                         "function": {"name": item.name or "", "arguments": ""},
                     }
                     tool_order.append(item.id)
+            elif etype == "response.output_item.done":
+                # Reasoning items are fully populated here (including the
+                # signed `encrypted_content` when requested via `include`).
+                # Serialize with exclude_none so we forward exactly what the
+                # API sent — tampering via field mutation breaks the signature.
+                item = event.item
+                if getattr(item, "type", None) == "reasoning":
+                    reasoning_items.append(item.model_dump(mode="json", exclude_none=True))
             elif etype == "response.function_call_arguments.delta":
                 slot = tool_items.get(event.item_id)
                 if slot is not None:
@@ -256,10 +293,9 @@ def stream_completion_responses(
                 chars += len(event.delta)
             elif etype in ("response.reasoning_summary_text.delta",
                            "response.reasoning_text.delta"):
-                # Count reasoning tokens toward the heartbeat but don't keep
-                # them on the assistant message — replaying reasoning on
-                # subsequent turns requires signed reasoning items which the
-                # SDK doesn't surface on the stream.
+                # Count reasoning tokens toward the heartbeat. The text itself
+                # rides on the reasoning item captured at output_item.done,
+                # so we don't need to buffer deltas here.
                 delta_text = getattr(event, "delta", "")
                 chars += len(delta_text)
 
@@ -274,6 +310,8 @@ def stream_completion_responses(
     text = "".join(text_parts)
     if text:
         msg["content"] = text
+    if reasoning_items:
+        msg["reasoning_items"] = reasoning_items
     if tool_items:
         msg["tool_calls"] = [tool_items[i] for i in tool_order]
 
