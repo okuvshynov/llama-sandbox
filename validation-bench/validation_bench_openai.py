@@ -45,7 +45,7 @@ from openai import OpenAI
 
 from validation_bench_lib import (
     Sandbox, Submission, AttemptResult, InfraFailure,
-    SUBMIT_TOOL, COMPILE_CMD,
+    SUBMIT_TOOL, COMPILE_CMD, VB_VERSION,
     handle_submit, format_tool_result, load_tests,
     make_attempt_id, save_attempt_log, _log,
 )
@@ -614,6 +614,7 @@ def main():
 
     def save_result(r: AttemptResult):
         base = {
+            "vb_version": VB_VERSION,
             "task": args.task,
             "model": args.model,
             "slug": slug,
@@ -636,6 +637,7 @@ def main():
     def save_failure(fail: InfraFailure):
         with open(failures_file, "a") as f:
             f.write(json.dumps({
+                "vb_version": VB_VERSION,
                 "timestamp": fail.timestamp,
                 "turn": fail.turn,
                 "error_type": fail.error_type,

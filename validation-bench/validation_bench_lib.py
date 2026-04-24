@@ -21,6 +21,15 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+# Stamped into every results row + failures row so past runs can be filtered
+# by harness version if a scoring/prompt/behavior change later breaks
+# comparability. Bump on: prompt template changes, scoring logic changes,
+# tool schema changes, sandbox compile flags, or any other change that
+# could affect the numbers for a given (task, model, slug) triple.
+# Rows without this field predate the scheme — treat as "pre-0.0.2".
+VB_VERSION = "0.0.2"
+
+
 @dataclass
 class ConfusionMatrix:
     tp: int = 0  # valid correctly accepted
