@@ -31,7 +31,7 @@ from pathlib import Path
 
 from openai import OpenAI
 
-from validation_bench import (
+from validation_bench_lib import (
     Sandbox, Submission, AttemptResult, InfraFailure,
     SUBMIT_TOOL, COMPILE_CMD,
     handle_submit, format_tool_result, load_tests,

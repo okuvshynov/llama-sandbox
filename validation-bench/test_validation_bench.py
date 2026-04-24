@@ -3,7 +3,7 @@
 import pytest
 import re
 
-from validation_bench import derive_slug, make_attempt_id, InfraFailure
+from validation_bench_lib import derive_slug, make_attempt_id, InfraFailure
 
 
 @pytest.mark.parametrize("model, effort, expected", [

@@ -1,3 +1,2 @@
-litellm
 anthropic>=0.96.0
 openai

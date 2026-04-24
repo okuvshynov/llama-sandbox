@@ -33,7 +33,7 @@ from pathlib import Path
 
 from openai import OpenAI
 
-from validation_bench import (
+from validation_bench_lib import (
     Sandbox, Submission, AttemptResult, InfraFailure,
     SUBMIT_TOOL, COMPILE_CMD,
     handle_submit, format_tool_result, load_tests,
@@ -41,7 +41,7 @@ from validation_bench import (
 )
 
 
-# SUBMIT_TOOL (from validation_bench) is the nested Chat Completions shape.
+# SUBMIT_TOOL (from validation_bench_lib) is the nested Chat Completions shape.
 # Responses API wants it flat — no inner "function" key.
 SUBMIT_TOOL_RESPONSES = {
     "type": "function",

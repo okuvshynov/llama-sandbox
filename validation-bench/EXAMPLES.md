@@ -1,6 +1,6 @@
 # validation-bench: Example configurations
 
-Concrete invocations for the extracted per-provider scripts, with notes on why the flag values matter. All examples use `--task toml-1.0-cpp`; swap the task directory name as needed. More entries will be added here as additional providers are extracted from `validation_bench.py` into their own dedicated scripts.
+Concrete invocations for the per-provider scripts, with notes on why the flag values matter. All examples use `--task toml-1.0-cpp`; swap the task directory name as needed. Every runner shares `validation_bench_lib.py` for the Sandbox / scoring / attempt-id / log-persistence pieces, and exposes its own CLI + provenance fields on each results row.
 
 ## validation_bench_anthropic.py (Claude, native SDK)
 

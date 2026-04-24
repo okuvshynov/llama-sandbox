@@ -16,7 +16,7 @@ plumbs the Fireworks-specific knobs through `extra_body`:
 Preserves `reasoning_content` from streamed deltas on the assistant message so
 multi-turn tool use on thinking models (Kimi-K2-Thinking, GLM-4.6/4.7,
 GPT-OSS, Qwen3-thinking) carries prior reasoning when reasoning_history is on.
-Reuses Sandbox / scoring / attempt-id / log-persistence from validation_bench.py.
+Reuses Sandbox / scoring / attempt-id / log-persistence from validation_bench_lib.py.
 """
 
 import argparse
@@ -29,7 +29,7 @@ from pathlib import Path
 
 from openai import OpenAI
 
-from validation_bench import (
+from validation_bench_lib import (
     Sandbox, Submission, AttemptResult, InfraFailure,
     SUBMIT_TOOL, COMPILE_CMD,
     handle_submit, format_tool_result, load_tests,

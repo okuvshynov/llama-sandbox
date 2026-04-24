@@ -6,7 +6,7 @@ uses tool_choice={"type":"any"}, drops thinking blocks from the assistant messag
 and never passes the `thinking` request parameter) so that extended thinking,
 signed multi-turn thinking continuity, and the real native request shape are
 exercised correctly. Reuses the provider-agnostic pieces (Sandbox, scoring,
-result writing, attempt-id generation, log persistence) from validation_bench.py.
+result writing, attempt-id generation, log persistence) from validation_bench_lib.py.
 """
 
 import argparse
@@ -19,7 +19,7 @@ from pathlib import Path
 
 from anthropic import Anthropic
 
-from validation_bench import (
+from validation_bench_lib import (
     Sandbox, Submission, AttemptResult, InfraFailure,
     COMPILE_CMD,
     handle_submit, format_tool_result, load_tests,
