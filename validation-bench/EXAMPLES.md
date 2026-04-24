@@ -147,6 +147,47 @@ python validation_bench_openai.py --task toml-1.0-cpp \
 
 Omit for the model default. `xhigh` is only accepted by some codex variants (e.g. `gpt-5.3-codex`). Reasoning traces: Chat Completions does **not** expose reasoning on stream deltas — only final message has it. Responses streams them via `response.reasoning_summary_text.delta` / `response.reasoning_text.delta` events (visible in the heartbeat character count, but not replayed on subsequent turns since signed reasoning items aren't surfaced on the stream).
 
+## validation_bench_deepseek.py (DeepSeek, OpenAI-compat endpoint)
+
+Closest in shape to the Moonshot script — DeepSeek's API is OpenAI-compatible (nested tool shape, `{role:tool,...}` results, `reasoning_content` field on stream deltas). Two DeepSeek-specific handlers:
+
+- **Thinking toggle** via `extra_body={"thinking":{"type":"enabled"|"disabled"}}` for V4+ models. Legacy `deepseek-chat` (no thinking) and `deepseek-reasoner` (thinking permanently on, no toggle) skip the param entirely so passing `--mode` doesn't surface a confusing server error.
+- **`reasoning_content` replay rule** — V4 thinking REQUIRES echoing `reasoning_content` back on tool-result turns (matches DeepSeek docs); `deepseek-reasoner` REJECTS echoed `reasoning_content` with HTTP 400. Preservation is on by default, force-disabled for `deepseek-reasoner`.
+
+### V4 thinking (default)
+
+```bash
+python validation_bench_deepseek.py --task toml-1.0-cpp \
+  --model deepseek-v4-pro --mode thinking \
+  --n-attempts 1 --max-turns 5 --max-tokens 65536
+```
+
+Sends `extra_body.thinking.type=enabled`. `tool_choice` auto-falls-back to `"auto"` when thinking is on — DeepSeek V4 rejects `tool_choice="required"` alongside thinking (same constraint Moonshot K2.6 has); override with `--tool-choice required` only if you know the model accepts it. `reasoning_content` is threaded through subsequent turns so tool-result turns don't 400. Slug: `deepseek-v4-pro-thinking`.
+
+### V4 instant (no thinking)
+
+```bash
+python validation_bench_deepseek.py --task toml-1.0-cpp \
+  --model deepseek-v4-flash --mode instant \
+  --n-attempts 5 --max-turns 5 --max-tokens 32768
+```
+
+Sends `extra_body.thinking.type=disabled`. `tool_choice="required"` is auto-applied in this mode.
+
+### Legacy deepseek-chat (no thinking support)
+
+```bash
+python validation_bench_deepseek.py --task toml-1.0-cpp \
+  --model deepseek-chat \
+  --n-attempts 5 --max-turns 5
+```
+
+`--mode` is accepted but ignored; the `thinking` param is never sent. Slug: `deepseek-chat` (no mode suffix). `tool_choice="required"` works since thinking is off.
+
+### Not supported: deepseek-reasoner
+
+`deepseek-reasoner` has no function calling — every attempt infra-fails at turn 0. The script prints a warning at startup but still runs if you ask it to.
+
 ## Shared flags
 
 - `--docker-timeout 600` — cap on `docker run -d` when starting the sandbox. Distinct from `--timeout` (API client). Both default to 600s.
