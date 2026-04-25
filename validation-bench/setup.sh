@@ -76,5 +76,6 @@ print(f'  {len(tests)} test cases written to $out')
 
 generate_task "toml-1.0-cpp" "files-toml-1.0.0"
 generate_task "toml-1.1-cpp" "files-toml-1.1.0"
+generate_task "toml-1.0-lua" "files-toml-1.0.0"
 
 echo "Done."

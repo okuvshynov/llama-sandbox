@@ -21,8 +21,8 @@ from anthropic import Anthropic
 
 from validation_bench_lib import (
     Sandbox, Submission, AttemptResult, InfraFailure,
-    COMPILE_CMD, VB_VERSION,
-    handle_submit, format_tool_result, load_tests,
+    TaskConfig, VB_VERSION,
+    handle_submit, format_tool_result, load_tests, load_task_config, render_prompt,
     make_attempt_id, save_attempt_log, _log,
 )
 
@@ -146,6 +146,7 @@ def run_attempt_anthropic(
     system: str | None,
     user_prompt: str,
     tests: list[dict],
+    config: TaskConfig,
     max_turns: int,
     max_tokens: int,
     sampling_params: dict,
@@ -160,7 +161,7 @@ def run_attempt_anthropic(
     mid-attempt after some submissions were already graded — we keep the
     per-turn rows from those submissions instead of discarding everything.
     """
-    sandbox = Sandbox(startup_timeout=docker_timeout)
+    sandbox = Sandbox(config=config, startup_timeout=docker_timeout)
     sandbox.start()
 
     attempt_dir.mkdir(parents=True, exist_ok=True)
@@ -227,7 +228,7 @@ def run_attempt_anthropic(
                 _log(f"  turn {turn}: no tool_use — nudging model to use submit")
                 messages.append({
                     "role": "user",
-                    "content": "You responded without using the `submit` tool. Please use `submit` now with your complete C++ source code.",
+                    "content": f"You responded without using the `submit` tool. Please use `submit` now with your complete {config.language} source code.",
                 })
                 flush_log()
                 nudged = True
@@ -265,7 +266,7 @@ def run_attempt_anthropic(
             submission_count += 1
             sub_dir = submissions_dir / str(submission_count)
             sub_dir.mkdir()
-            (sub_dir / "solution.cpp").write_text(source_code)
+            (sub_dir / config.source_filename).write_text(source_code)
 
             result = handle_submit(source_code, tests, sandbox, task_dir)
             (sub_dir / "compiler.txt").write_text(result.compiler_output)
@@ -374,7 +375,8 @@ def main():
         if not f.exists():
             print(f"Error: missing file: {f}", file=sys.stderr)
             sys.exit(1)
-    user_prompt = prompt_file.read_text().replace("{compile_cmd}", COMPILE_CMD)
+    config = load_task_config(tasks_dir)
+    user_prompt = render_prompt(prompt_file.read_text(), config)
     tests = load_tests(tests_file)
 
     api_key = args.api_key or os.environ.get("ANTHROPIC_API_KEY")
@@ -471,6 +473,7 @@ def main():
                 system=None,
                 user_prompt=user_prompt,
                 tests=tests,
+                config=config,
                 max_turns=args.max_turns,
                 max_tokens=args.max_tokens,
                 sampling_params=sampling_params,

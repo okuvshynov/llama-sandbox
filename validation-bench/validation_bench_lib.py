@@ -17,7 +17,7 @@ import subprocess
 import sys
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -120,14 +120,77 @@ def load_tests(tests_file: Path) -> list[dict]:
     return tests
 
 
-DOCKER_IMAGE = "vb-sandbox"
-COMPILE_CMD = "clang++ -std=c++17 -O2"
+@dataclass
+class TaskConfig:
+    """Per-task sandbox config, loaded from `<task>/task.json`.
+
+    `prepare_cmd` is the optional first phase (compile / syntax-check / bytecode-precompile).
+    Setting it to None means "no prep" — the source file is just dropped into /work and
+    `run_cmd` is invoked per test (suitable for interpreters where you'd rather see syntax
+    errors surface on the first run than spend time on a separate parse-only pass).
+
+    `extra` carries arbitrary task-specific keys that authors expose as `{key}` placeholders
+    in `prompt.txt` (e.g. a display-friendly `compile_cmd` distinct from the full prepare_cmd).
+    """
+    language: str
+    docker_image: str
+    source_filename: str
+    prepare_cmd: str | None
+    run_cmd: str
+    test_timeout_seconds: float = 5.0
+    prepare_timeout_seconds: float = 30.0
+    extra: dict = field(default_factory=dict)
+
+
+_TASK_CONFIG_KNOWN = {
+    "language", "docker_image", "source_filename", "prepare_cmd", "run_cmd",
+    "test_timeout_seconds", "prepare_timeout_seconds",
+}
+
+
+def load_task_config(task_dir: Path) -> TaskConfig:
+    """Read task.json from a task directory."""
+    config_file = task_dir / "task.json"
+    if not config_file.exists():
+        raise FileNotFoundError(f"task.json not found in {task_dir}")
+    data = json.loads(config_file.read_text())
+    extras = {k: v for k, v in data.items() if k not in _TASK_CONFIG_KNOWN}
+    return TaskConfig(
+        language=data["language"],
+        docker_image=data["docker_image"],
+        source_filename=data["source_filename"],
+        prepare_cmd=data.get("prepare_cmd"),
+        run_cmd=data["run_cmd"],
+        test_timeout_seconds=data.get("test_timeout_seconds", 5.0),
+        prepare_timeout_seconds=data.get("prepare_timeout_seconds", 30.0),
+        extra=extras,
+    )
+
+
+def render_prompt(prompt_text: str, config: TaskConfig) -> str:
+    """Substitute {field} placeholders from TaskConfig + extras into prompt text."""
+    fields = {
+        "language": config.language,
+        "source_filename": config.source_filename,
+        "prepare_cmd": config.prepare_cmd or "",
+        "run_cmd": config.run_cmd,
+    }
+    fields.update(config.extra)
+    for k, v in fields.items():
+        prompt_text = prompt_text.replace(f"{{{k}}}", str(v))
+    return prompt_text
 
 
 class Sandbox:
-    """Docker container sandbox for compiling and running untrusted code."""
+    """Docker container sandbox for preparing and running untrusted code.
 
-    def __init__(self, startup_timeout: float = 600):
+    Generic over language: per-task config supplies the docker image, source filename,
+    prepare command (compile / syntax-check, may be None for interpreters), and
+    per-test run command.
+    """
+
+    def __init__(self, config: TaskConfig, startup_timeout: float = 600):
+        self.config = config
         self.container_id: str | None = None
         self.startup_timeout = startup_timeout
 
@@ -142,7 +205,7 @@ class Sandbox:
                  "--read-only",
                  "--tmpfs=/work:rw,exec,size=64m",
                  "--tmpfs=/tmp:rw,size=64m",
-                 DOCKER_IMAGE, "sleep", "infinity"],
+                 self.config.docker_image, "sleep", "infinity"],
                 capture_output=True, text=True,
                 timeout=self.startup_timeout,
             )
@@ -170,35 +233,47 @@ class Sandbox:
         return subprocess.run(full_cmd, input=input_data,
                               capture_output=True, timeout=timeout)
 
-    def compile(self, source_code: str) -> tuple[bool, str]:
-        """Copy source into container and compile. Returns (success, compiler_output)."""
-        # Write source via stdin to avoid mount
-        write = self._exec(["sh", "-c", "cat > /work/solution.cpp"],
+    def prepare(self, source_code: str) -> tuple[bool, str]:
+        """Write source into container and run prepare_cmd. Returns (success, output).
+
+        Equivalent to "compile" for compiled languages (clang++, go build) and to a
+        syntax check for interpreters that have one (luac -p, py_compile). When
+        prepare_cmd is None, only the file write happens and we report success.
+        """
+        src_path = f"/work/{self.config.source_filename}"
+        write = self._exec(["sh", "-c", f"cat > {src_path}"],
                            input_data=source_code.encode())
         if write.returncode != 0:
             return False, f"Failed to write source: {write.stderr.decode()}"
 
+        if not self.config.prepare_cmd:
+            return True, ""
+
         try:
             comp = self._exec(
-                ["sh", "-c", f"cd /work && {COMPILE_CMD} -o solution solution.cpp"],
-                timeout=30,
+                ["sh", "-c", f"cd /work && {self.config.prepare_cmd}"],
+                timeout=self.config.prepare_timeout_seconds,
             )
         except subprocess.TimeoutExpired:
-            return False, "Compilation timed out (30s limit)."
+            return False, f"Preparation timed out ({self.config.prepare_timeout_seconds:g}s limit)."
 
         return comp.returncode == 0, comp.stderr.decode()
 
-    def run_binary(self, input_data: bytes) -> int:
-        """Run /work/solution with input via stdin. Returns exit code (-1 on timeout)."""
+    def run_input(self, input_data: bytes) -> int:
+        """Run config.run_cmd in /work with input via stdin. Returns exit code (-1 on timeout)."""
         try:
-            proc = self._exec(["/work/solution"], input_data=input_data, timeout=5)
+            proc = self._exec(
+                ["sh", "-c", f"cd /work && {self.config.run_cmd}"],
+                input_data=input_data,
+                timeout=self.config.test_timeout_seconds,
+            )
             return proc.returncode
         except subprocess.TimeoutExpired:
             return -1
 
 
 def run_tests(sandbox: Sandbox, tests: list[dict], task_dir: Path) -> tuple[str, ConfusionMatrix]:
-    """Run all test cases against the binary in sandbox, return (output_text, matrix)."""
+    """Run all test cases against the prepared solution in sandbox, return (output_text, matrix)."""
     matrix = ConfusionMatrix()
     lines = []
 
@@ -209,7 +284,7 @@ def run_tests(sandbox: Sandbox, tests: list[dict], task_dir: Path) -> tuple[str,
         label = t["label"]
         expected = t["expected"]
 
-        rc = sandbox.run_binary(input_data)
+        rc = sandbox.run_input(input_data)
 
         passed = (expected == "valid" and rc == 0) or (expected == "invalid" and rc != 0)
         if passed:
@@ -229,7 +304,7 @@ def run_tests(sandbox: Sandbox, tests: list[dict], task_dir: Path) -> tuple[str,
 
 
 def handle_submit(source_code: str, tests: list[dict], sandbox: Sandbox, task_dir: Path) -> TestResult:
-    compiled, compiler_output = sandbox.compile(source_code)
+    compiled, compiler_output = sandbox.prepare(source_code)
 
     if not compiled:
         return TestResult(

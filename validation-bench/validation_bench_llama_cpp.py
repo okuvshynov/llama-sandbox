@@ -21,8 +21,8 @@ from openai import OpenAI
 
 from validation_bench_lib import (
     Sandbox, Submission, AttemptResult, InfraFailure,
-    SUBMIT_TOOL, COMPILE_CMD, VB_VERSION,
-    handle_submit, format_tool_result, load_tests,
+    SUBMIT_TOOL, TaskConfig, VB_VERSION,
+    handle_submit, format_tool_result, load_tests, load_task_config, render_prompt,
     make_attempt_id, save_attempt_log, _log,
     derive_slug, auto_detect_model,
 )
@@ -128,6 +128,7 @@ def run_attempt_llama_cpp(
     model: str,
     user_prompt: str,
     tests: list[dict],
+    config: TaskConfig,
     max_turns: int,
     sampling_params: dict,
     tool_choice: str | None,
@@ -140,7 +141,7 @@ def run_attempt_llama_cpp(
     mid-attempt after some submissions were already graded — we keep the
     per-turn rows from those submissions instead of discarding everything.
     """
-    sandbox = Sandbox(startup_timeout=docker_timeout)
+    sandbox = Sandbox(config=config, startup_timeout=docker_timeout)
     sandbox.start()
 
     # Persist attempt logs from turn 0 so a killed/mid-flight local run
@@ -196,7 +197,7 @@ def run_attempt_llama_cpp(
                 _log(f"  turn {turn}: no tool_call — nudging model to use submit")
                 messages.append({
                     "role": "user",
-                    "content": "You responded without calling the `submit` tool. Please call `submit` now with your complete C++ source code.",
+                    "content": f"You responded without calling the `submit` tool. Please call `submit` now with your complete {config.language} source code.",
                 })
                 flush_log()
                 nudged = True
@@ -235,7 +236,7 @@ def run_attempt_llama_cpp(
             submission_count += 1
             sub_dir = submissions_dir / str(submission_count)
             sub_dir.mkdir()
-            (sub_dir / "solution.cpp").write_text(source_code)
+            (sub_dir / config.source_filename).write_text(source_code)
 
             result = handle_submit(source_code, tests, sandbox, task_dir)
             (sub_dir / "compiler.txt").write_text(result.compiler_output)
@@ -350,7 +351,8 @@ def main():
         if not f.exists():
             print(f"Error: missing file: {f}", file=sys.stderr)
             sys.exit(1)
-    user_prompt = prompt_file.read_text().replace("{compile_cmd}", COMPILE_CMD)
+    config = load_task_config(tasks_dir)
+    user_prompt = render_prompt(prompt_file.read_text(), config)
     tests = load_tests(tests_file)
 
     # Deliberately no OPENAI_API_KEY env fallback: this script targets arbitrary
@@ -440,6 +442,7 @@ def main():
                 model=model,
                 user_prompt=user_prompt,
                 tests=tests,
+                config=config,
                 max_turns=args.max_turns,
                 sampling_params=sampling_params,
                 tool_choice=tool_choice,
