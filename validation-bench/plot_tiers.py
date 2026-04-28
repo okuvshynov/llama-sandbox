@@ -8,7 +8,8 @@ best MCC:
     perfect : MCC == 1.0          (runner breaks on perfect, qualitatively different)
     strong  : 0.95 <= MCC < 1.0   (≥ 95% test pass equivalent)
     medium  : 0.75 <= MCC < 0.95  (decent classifier, clear room to improve)
-    weak    : MCC < 0.75          (poor signal — also catches infra failures and no submission)
+    low     : 0.5 <= MCC < 0.75   (below medium but visibly above random)
+    weak    : MCC < 0.5           (poor signal — also catches failures / no submission)
 
 Failures (compile error, no submission yet, attempt ran out of budget mid-way)
 collapse into the weak tier rather than being a separate visual category.
@@ -39,19 +40,22 @@ from matplotlib.patches import Patch
 TIER_PERFECT = "perfect"
 TIER_STRONG = "strong"
 TIER_MEDIUM = "medium"
+TIER_LOW = "low"
 TIER_WEAK = "weak"
-TIER_ORDER = [TIER_PERFECT, TIER_STRONG, TIER_MEDIUM, TIER_WEAK]
+TIER_ORDER = [TIER_PERFECT, TIER_STRONG, TIER_MEDIUM, TIER_LOW, TIER_WEAK]
 TIER_COLORS = {
     TIER_PERFECT: "#2c7a2c",  # dark green
     TIER_STRONG:  "#94d495",  # light green
     TIER_MEDIUM:  "#f0d264",  # yellow
+    TIER_LOW:     "#e8965a",  # orange
     TIER_WEAK:    "#d65454",  # red
 }
 TIER_LABELS = {
     TIER_PERFECT: "perfect (MCC = 1.0)",
     TIER_STRONG:  "strong (0.95 ≤ MCC < 1.0)",
     TIER_MEDIUM:  "medium (0.75 ≤ MCC < 0.95)",
-    TIER_WEAK:    "weak (MCC < 0.75 / failure)",
+    TIER_LOW:     "low (0.5 ≤ MCC < 0.75)",
+    TIER_WEAK:    "weak (MCC < 0.5 / failure)",
 }
 
 
@@ -66,6 +70,8 @@ def tier_of(mcc: float) -> str:
         return TIER_STRONG
     if mcc >= 0.75:
         return TIER_MEDIUM
+    if mcc >= 0.5:
+        return TIER_LOW
     return TIER_WEAK
 
 
@@ -174,7 +180,7 @@ def plot_tiers(progression: dict[str, np.ndarray], task: str, slugs: list[str],
     ax_top.set_title(f"Per-turn MCC tier distribution — {task}")
     ax_top.axhline(0, color="#888", linewidth=0.5, zorder=1)
     # Faint horizontal bands at the tier boundaries to anchor the eye.
-    for boundary in (0.75, 0.95, 1.0):
+    for boundary in (0.5, 0.75, 0.95, 1.0):
         ax_top.axhline(boundary, color="#bbb", linewidth=0.5,
                        linestyle="--", zorder=1)
     ax_top.grid(alpha=0.3, zorder=0)
