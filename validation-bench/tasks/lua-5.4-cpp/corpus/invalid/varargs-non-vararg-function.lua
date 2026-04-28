@@ -1,0 +1,3 @@
+local function f()
+  return ...
+end

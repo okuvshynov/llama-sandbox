@@ -78,4 +78,77 @@ generate_task "toml-1.0-cpp" "files-toml-1.0.0"
 generate_task "toml-1.1-cpp" "files-toml-1.1.0"
 generate_task "toml-1.0-lua" "files-toml-1.0.0"
 
+# Hand-curated corpus tasks: tests/ is materialized from corpus/, and
+# labels are re-derived locally by running an oracle on each file. Setup
+# fails loudly if a corpus file's directory class disagrees with the
+# oracle's verdict — protects against label drift in checked-in test data.
+generate_corpus_task() {
+    local task="$1"          # e.g. lua-5.4-cpp
+    local oracle_cmd="$2"    # e.g. "luac5.4 -p"
+    local extension="$3"     # e.g. "lua"
+    local task_dir="tasks/$task"
+    local corpus_dir="$task_dir/corpus"
+    local tests_dir="$task_dir/tests"
+    local out="$task_dir/tests.jsonl"
+
+    echo "Setting up $task ..."
+
+    if [ ! -d "$corpus_dir" ]; then
+        echo "  ERROR: missing corpus dir: $corpus_dir" >&2
+        return 1
+    fi
+
+    local oracle_bin
+    oracle_bin="$(echo "$oracle_cmd" | awk '{print $1}')"
+    if ! command -v "$oracle_bin" >/dev/null 2>&1; then
+        echo "  ERROR: oracle '$oracle_bin' not found on PATH; install it first" >&2
+        return 1
+    fi
+
+    rm -rf "$tests_dir"
+    mkdir -p "$tests_dir/valid" "$tests_dir/invalid"
+
+    : > "$out"
+    local n_total=0 n_mismatch=0
+    while IFS= read -r src; do
+        local rel="${src#"$corpus_dir/"}"
+        local class="${rel%%/*}"
+        if [ "$class" != "valid" ] && [ "$class" != "invalid" ]; then
+            continue
+        fi
+        local name="${rel#*/}"
+        name="${name%.$extension}"
+        local dest="$tests_dir/$class/$name.$extension"
+        mkdir -p "$(dirname "$dest")"
+        cp "$src" "$dest"
+
+        local actual
+        if $oracle_cmd "$src" >/dev/null 2>&1; then
+            actual="valid"
+        else
+            actual="invalid"
+        fi
+
+        if [ "$actual" != "$class" ]; then
+            echo "  MISMATCH: $rel is in corpus/$class/ but oracle says '$actual'" >&2
+            n_mismatch=$((n_mismatch + 1))
+            continue
+        fi
+
+        local test_id="$class/$name"
+        local label="$class: $name"
+        printf '{"id": "%s", "input_file": "tests/%s.%s", "expected": "%s", "label": "%s"}\n' \
+            "$test_id" "$test_id" "$extension" "$class" "$label" >> "$out"
+        n_total=$((n_total + 1))
+    done < <(find "$corpus_dir" -type f -name "*.$extension" | sort)
+
+    if [ "$n_mismatch" -gt 0 ]; then
+        echo "  $n_mismatch mismatch(es); aborting" >&2
+        return 1
+    fi
+    echo "  $n_total test cases written to $out (oracle: $oracle_cmd)"
+}
+
+generate_corpus_task "lua-5.4-cpp" "luac5.4 -p" "lua"
+
 echo "Done."
