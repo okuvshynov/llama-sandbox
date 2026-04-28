@@ -52,11 +52,11 @@ TIER_COLORS = {
     TIER_WEAK:    "#d65454",  # red
 }
 TIER_LABELS = {
-    TIER_PERFECT: "perfect (MCC = 1.0)",
-    TIER_STRONG:  "strong (0.95 ≤ MCC < 1.0)",
-    TIER_MEDIUM:  "medium (0.75 ≤ MCC < 0.95)",
-    TIER_LOW:     "low (0.5 ≤ MCC < 0.75)",
-    TIER_WEAK:    "weak (MCC < 0.5 / failure)",
+    TIER_PERFECT: "perfect (= 1.0)",
+    TIER_STRONG:  "strong (≥ 0.95)",
+    TIER_MEDIUM:  "medium (≥ 0.75)",
+    TIER_LOW:     "low (≥ 0.5)",
+    TIER_WEAK:    "weak (< 0.5)",
 }
 
 # Same convention as plot_scores.py: prefixes that identify closed-weight
@@ -143,7 +143,7 @@ def plot_tiers(progression: dict[str, np.ndarray], task: str, slugs: list[str],
         return float(np.mean(col)) if len(col) else -np.inf
     sorted_slugs = sorted(available, key=lambda s: -_avg_at_last(s))
 
-    fig, ax = plt.subplots(figsize=(11, max(4, len(sorted_slugs) * 0.5 + 1.5)))
+    fig, ax = plt.subplots(figsize=(14, max(4, len(sorted_slugs) * 0.55 + 2.0)))
 
     BAR_HEIGHT = 0.85
     BAR_WIDTH = 0.55
@@ -166,8 +166,7 @@ def plot_tiers(progression: dict[str, np.ndarray], task: str, slugs: list[str],
                 cur += h
 
     ax.set_yticks(range(len(sorted_slugs)))
-    ax.set_yticklabels(
-        [f"{s} (n={len(progression[s])})" for s in sorted_slugs], fontsize=9)
+    ax.set_yticklabels(sorted_slugs, fontsize=12)
     # Color y-tick labels by weight family — matches plot_scores.py.
     for label, slug in zip(ax.get_yticklabels(), sorted_slugs):
         label.set_color(COLOR_CLOSED if is_closed_weight(slug) else COLOR_OPEN)
@@ -188,14 +187,14 @@ def plot_tiers(progression: dict[str, np.ndarray], task: str, slugs: list[str],
         Patch(facecolor=COLOR_OPEN,   label="open-weight (slug label)"),
     ]
     leg1 = ax.legend(handles=tier_handles, loc="upper center",
-                     bbox_to_anchor=(0.5, -0.08), fontsize=8, framealpha=0.95,
-                     ncol=5, title="MCC tier at turn N")
+                     bbox_to_anchor=(0.5, -0.08), fontsize=11, framealpha=0.95,
+                     ncol=5, title="MCC tier at turn N", title_fontsize=11)
     ax.add_artist(leg1)
     ax.legend(handles=family_handles, loc="upper center",
-              bbox_to_anchor=(0.5, -0.20), fontsize=8, framealpha=0.95,
+              bbox_to_anchor=(0.5, -0.22), fontsize=11, framealpha=0.95,
               ncol=2)
 
-    fig.subplots_adjust(left=0.27, right=0.97, top=0.93, bottom=0.18)
+    fig.subplots_adjust(left=0.27, right=0.98, top=0.93, bottom=0.22)
     fig.savefig(output, dpi=150)
     plt.close(fig)
     print(f"Saved {output}")
