@@ -403,6 +403,8 @@ def main():
         base = {
             "vb_version": VB_VERSION,
             "task": args.task,
+            "spec": config.spec,
+            "env": config.env,
             "model": model,
             "slug": slug,
             "sampling_params": sampling_params,

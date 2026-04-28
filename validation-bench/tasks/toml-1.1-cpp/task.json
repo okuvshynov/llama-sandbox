@@ -4,5 +4,7 @@
   "source_filename": "solution.cpp",
   "prepare_cmd": "clang++ -std=c++17 -O2 -o solution solution.cpp",
   "run_cmd": "./solution",
-  "compile_cmd": "clang++ -std=c++17 -O2"
+  "compile_cmd": "clang++ -std=c++17 -O2",
+  "spec": "toml-1.1",
+  "env": "cpp"
 }

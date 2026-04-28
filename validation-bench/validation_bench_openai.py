@@ -618,6 +618,8 @@ def main():
         base = {
             "vb_version": VB_VERSION,
             "task": args.task,
+            "spec": config.spec,
+            "env": config.env,
             "model": args.model,
             "slug": slug,
             "sampling_params": results_params,

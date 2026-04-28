@@ -36,7 +36,11 @@ from pathlib import Path
 #   0.0.2 — per-task config (task.json), Lua sandbox / Lua-as-implementation
 #   0.0.3 — lua-5.4-cpp task (Lua syntax validation as a target spec),
 #           hand-curated corpus path in setup.sh
-VB_VERSION = "0.0.3"
+#   0.0.4 — spec/env fields added to task.json + result rows; numbers for
+#           existing (task, model, slug) triples unchanged, schema gained
+#           two derivable fields for cross-axis aggregation. Past rows
+#           backfilled by scripts/migrate_results_spec_env.py.
+VB_VERSION = "0.0.4"
 
 
 @dataclass
@@ -140,12 +144,20 @@ class TaskConfig:
 
     `extra` carries arbitrary task-specific keys that authors expose as `{key}` placeholders
     in `prompt.txt` (e.g. a display-friendly `compile_cmd` distinct from the full prepare_cmd).
+
+    `spec` and `env` are the two-axis decomposition of what the task tests:
+    `spec` is what's being implemented (e.g. "toml-1.0", "lua-5.4"), `env` is
+    the implementation language family (e.g. "cpp", "lua"). Both are stamped
+    into every result row so analysis can aggregate across one axis while
+    holding the other constant. They're required as of vb_version 0.0.4.
     """
     language: str
     docker_image: str
     source_filename: str
     prepare_cmd: str | None
     run_cmd: str
+    spec: str
+    env: str
     test_timeout_seconds: float = 5.0
     prepare_timeout_seconds: float = 30.0
     extra: dict = field(default_factory=dict)
@@ -153,6 +165,7 @@ class TaskConfig:
 
 _TASK_CONFIG_KNOWN = {
     "language", "docker_image", "source_filename", "prepare_cmd", "run_cmd",
+    "spec", "env",
     "test_timeout_seconds", "prepare_timeout_seconds",
 }
 
@@ -170,6 +183,8 @@ def load_task_config(task_dir: Path) -> TaskConfig:
         source_filename=data["source_filename"],
         prepare_cmd=data.get("prepare_cmd"),
         run_cmd=data["run_cmd"],
+        spec=data["spec"],
+        env=data["env"],
         test_timeout_seconds=data.get("test_timeout_seconds", 5.0),
         prepare_timeout_seconds=data.get("prepare_timeout_seconds", 30.0),
         extra=extras,
