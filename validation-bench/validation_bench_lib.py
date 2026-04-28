@@ -25,9 +25,18 @@ from pathlib import Path
 # by harness version if a scoring/prompt/behavior change later breaks
 # comparability. Bump on: prompt template changes, scoring logic changes,
 # tool schema changes, sandbox compile flags, or any other change that
-# could affect the numbers for a given (task, model, slug) triple.
+# could affect the numbers for a given (task, model, slug) triple. Also
+# bump on milestone changes that expand the harness's surface area
+# (new task type, new sandbox image, new provider script) — the numbers
+# are still comparable, but the version then marks "what was available
+# at the time of this run".
 # Rows without this field predate the scheme — treat as "pre-0.0.2".
-VB_VERSION = "0.0.2"
+#
+# Version log:
+#   0.0.2 — per-task config (task.json), Lua sandbox / Lua-as-implementation
+#   0.0.3 — lua-5.4-cpp task (Lua syntax validation as a target spec),
+#           hand-curated corpus path in setup.sh
+VB_VERSION = "0.0.3"
 
 
 @dataclass
