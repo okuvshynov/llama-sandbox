@@ -187,8 +187,13 @@ def plot_tiers(progression: dict[str, np.ndarray], task: str, slugs: list[str],
 
     bot_slugs = sorted(available, key=lambda s: -_avg_at_last(s))
 
-    BAR_HEIGHT = 0.78
-    BAR_WIDTH = 0.85
+    # Vertical stacked bar per (slug, turn): tier segments stack bottom-up
+    # (weak at the floor, perfect at the top) so the green band "rises" as
+    # a model improves across turns — easier to track per-row progression
+    # than the horizontal-stack version.
+    BAR_HEIGHT = 0.85
+    BAR_WIDTH = 0.55
+    STACK_ORDER = list(reversed(TIER_ORDER))  # weak first → bottom of bar
     for row_idx, slug in enumerate(bot_slugs):
         attempts = progression[slug]
         n = attempts.shape[0]
@@ -196,15 +201,15 @@ def plot_tiers(progression: dict[str, np.ndarray], task: str, slugs: list[str],
             counts = {t: 0 for t in TIER_ORDER}
             for a in range(n):
                 counts[tier_of(attempts[a, turn])] += 1
-            x_left = (turn + 1) - BAR_WIDTH / 2
-            cur = x_left
-            for t in TIER_ORDER:
-                w = (counts[t] / n) * BAR_WIDTH
-                if w > 0:
-                    ax_bot.barh(row_idx, w, left=cur, height=BAR_HEIGHT,
-                                color=TIER_COLORS[t], edgecolor="white",
-                                linewidth=0.4)
-                cur += w
+            y_bottom = row_idx - BAR_HEIGHT / 2
+            cur = y_bottom
+            for t in STACK_ORDER:
+                h = (counts[t] / n) * BAR_HEIGHT
+                if h > 0:
+                    ax_bot.bar(turn + 1, h, bottom=cur, width=BAR_WIDTH,
+                               color=TIER_COLORS[t], edgecolor="white",
+                               linewidth=0.4)
+                cur += h
 
     ax_bot.set_yticks(range(len(bot_slugs)))
     ax_bot.set_yticklabels(
