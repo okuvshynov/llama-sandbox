@@ -22,10 +22,11 @@ from openai import OpenAI
 from validation_bench_lib import (
     Sandbox, Submission, AttemptResult, InfraFailure,
     SUBMIT_TOOL, TaskConfig, VB_VERSION,
-    handle_submit, format_tool_result, load_tests, load_task_config, render_prompt,
+    handle_submit, format_tool_result, load_tests,
     make_attempt_id, save_attempt_log, _log,
     derive_slug, auto_detect_model,
 )
+from composer import load_task
 
 
 DEFAULT_API_BASE = "http://localhost:8080/v1"
@@ -345,14 +346,11 @@ def main():
     if not tasks_dir.is_dir():
         print(f"Error: task directory not found: {tasks_dir}", file=sys.stderr)
         sys.exit(1)
-    prompt_file = tasks_dir / "prompt.txt"
     tests_file = tasks_dir / "tests.jsonl"
-    for f in [prompt_file, tests_file]:
-        if not f.exists():
-            print(f"Error: missing file: {f}", file=sys.stderr)
-            sys.exit(1)
-    config = load_task_config(tasks_dir)
-    user_prompt = render_prompt(prompt_file.read_text(), config)
+    if not tests_file.exists():
+        print(f"Error: missing file: {tests_file}", file=sys.stderr)
+        sys.exit(1)
+    config, user_prompt = load_task(tasks_dir)
     tests = load_tests(tests_file)
 
     # Deliberately no OPENAI_API_KEY env fallback: this script targets arbitrary

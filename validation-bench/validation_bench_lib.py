@@ -171,11 +171,43 @@ _TASK_CONFIG_KNOWN = {
 
 
 def load_task_config(task_dir: Path) -> TaskConfig:
-    """Read task.json from a task directory."""
+    """Read task.json from a task directory.
+
+    Two shapes are accepted:
+
+    1. **Composed** (canonical from vb_version 0.0.4 onward): task.json
+       contains only `{"spec": ..., "env": ...}`. Env-specific fields
+       (language, docker_image, source_filename, prepare_cmd, run_cmd,
+       …) are pulled from `envs/<env>/meta.json`. Per-cell `task.json`
+       fields take precedence over env meta if both are present, so an
+       individual cell can still override e.g. `prepare_cmd` if it
+       genuinely diverges from the env default.
+
+    2. **Inline legacy**: task.json declares language, docker_image,
+       prepare_cmd, run_cmd, source_filename inline alongside spec/env.
+       Treated as authoritative; envs/ is not consulted. Kept so
+       hand-written task.json files still work in tests and ad-hoc
+       experiments.
+    """
     config_file = task_dir / "task.json"
     if not config_file.exists():
         raise FileNotFoundError(f"task.json not found in {task_dir}")
     data = json.loads(config_file.read_text())
+    if "spec" not in data or "env" not in data:
+        raise ValueError(f"{config_file}: task.json must declare 'spec' and 'env'")
+
+    if "language" not in data:
+        # Composed shape: pull env meta from envs/<env>/meta.json
+        env_meta_file = (Path(__file__).resolve().parent
+                         / "envs" / data["env"] / "meta.json")
+        if not env_meta_file.exists():
+            raise FileNotFoundError(
+                f"composed task.json requires {env_meta_file}; ensure the env "
+                f"'{data['env']}' has a meta.json under envs/")
+        env_meta = json.loads(env_meta_file.read_text())
+        # task.json fields take precedence over env meta for true overrides.
+        data = {**env_meta, **data}
+
     extras = {k: v for k, v in data.items() if k not in _TASK_CONFIG_KNOWN}
     return TaskConfig(
         language=data["language"],

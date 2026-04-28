@@ -42,7 +42,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from validation_bench_lib import TaskConfig
+from validation_bench_lib import TaskConfig, load_task_config, render_prompt
 
 
 # Joins per-cell preamble and spec body. The "---\n" sits between two
@@ -117,6 +117,35 @@ def compose_prompt(spec: SpecContent, env: EnvContent, preamble: str) -> str:
     if spec.meta.get("has_spec_body", True) and spec.body:
         return preamble.rstrip("\n") + SEPARATOR + spec.body
     return preamble
+
+
+def load_task(task_dir: Path) -> tuple[TaskConfig, str]:
+    """Top-level loader for provider scripts. Returns (TaskConfig, fully-
+    rendered prompt) for the task at `task_dir`. Handles both shapes:
+
+    - Composed (canonical): tasks/<name>/preamble.md + tasks/<name>/task.json
+      with {spec, env}. Prompt = preamble + SEPARATOR + specs/<spec>/spec_body.md
+      (when has_spec_body), all run through render_prompt for {placeholder}
+      substitution.
+    - Legacy: tasks/<name>/prompt.txt holds the full prompt body inline,
+      task.json holds the full env meta. Just read prompt.txt and render.
+    """
+    if not (task_dir / "task.json").exists():
+        raise FileNotFoundError(f"task.json not found in {task_dir}")
+    config = load_task_config(task_dir)
+    preamble_path = task_dir / "preamble.md"
+    prompt_path = task_dir / "prompt.txt"
+    if preamble_path.exists():
+        spec = load_spec(config.spec)
+        env = load_env(config.env)
+        prompt_text = compose_prompt(spec, env, preamble_path.read_text())
+    elif prompt_path.exists():
+        prompt_text = prompt_path.read_text()
+    else:
+        raise FileNotFoundError(
+            f"task '{task_dir.name}': neither preamble.md (composed shape) "
+            f"nor prompt.txt (legacy shape) found in {task_dir}")
+    return config, render_prompt(prompt_text, config)
 
 
 def split_prompt(prompt_text: str) -> tuple[str, str | None]:

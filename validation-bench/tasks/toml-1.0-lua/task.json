@@ -1,10 +1,4 @@
 {
-  "language": "Lua",
-  "docker_image": "vb-sandbox-lua",
-  "source_filename": "solution.lua",
-  "prepare_cmd": "luac5.4 -p solution.lua",
-  "run_cmd": "lua5.4 solution.lua",
-  "compile_cmd": "luac5.4 -p solution.lua",
   "spec": "toml-1.0",
   "env": "lua"
 }
