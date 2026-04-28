@@ -1,0 +1,9 @@
+{
+  "language": "Lua",
+  "language_display_name": "Lua 5.4",
+  "docker_image": "vb-sandbox-lua",
+  "source_filename": "solution.lua",
+  "prepare_cmd": "luac5.4 -p solution.lua",
+  "run_cmd": "lua5.4 solution.lua",
+  "compile_cmd": "luac5.4 -p solution.lua"
+}

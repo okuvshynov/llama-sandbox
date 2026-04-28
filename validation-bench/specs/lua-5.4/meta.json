@@ -1,0 +1,5 @@
+{
+  "display_name": "Lua 5.4",
+  "has_spec_body": true,
+  "oracle": "luac5.4 -p file.lua"
+}
