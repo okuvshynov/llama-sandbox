@@ -17,9 +17,11 @@ This trades the failure-type breakdown of plot_progression.py for a much
 cleaner read: a "mostly green" row reliably reaches perfect; "mostly red"
 reliably fails; mixed rows are interesting.
 
-Top panel: mean cumulative best-MCC trajectory (same as plot_progression.py)
-for context. Bottom panel: per-(slug, turn) stacked horizontal bar of tier
-fractions, perfect→weak left-to-right.
+Vertical stacked bar per (slug, turn): tier segments stack bottom-up
+(weak at the floor, perfect at the top) so the green band "rises" as a
+model improves across turns. Slug labels on the y-axis are colored by
+weight family — closed-weight (gpt-/claude-/anthropic-/o[1-4]-) in blue,
+open-weight (everything else) in green — matching plot_scores.py.
 
 Usage:
     plot_tiers.py --slugs SLUG [SLUG ...]
@@ -28,7 +30,6 @@ Usage:
 
 import argparse
 import json
-import warnings
 from collections import defaultdict
 from pathlib import Path
 
@@ -57,6 +58,16 @@ TIER_LABELS = {
     TIER_LOW:     "low (0.5 ≤ MCC < 0.75)",
     TIER_WEAK:    "weak (MCC < 0.5 / failure)",
 }
+
+# Same convention as plot_scores.py: prefixes that identify closed-weight
+# (vendor-served-only) models. Everything else is open-weight.
+CLOSED_WEIGHT_PREFIXES = ("gpt-", "claude-", "anthropic-", "o1-", "o3-", "o4-")
+COLOR_CLOSED = "#4C72B0"  # blue
+COLOR_OPEN   = "#55A868"  # green
+
+
+def is_closed_weight(slug: str) -> bool:
+    return any(slug.startswith(p) for p in CLOSED_WEIGHT_PREFIXES)
 
 
 def tier_of(mcc: float) -> str:
@@ -114,13 +125,6 @@ def load_cumulative_best(results_file: Path, task: str, slugs: list[str],
     return {s: np.array(by_slug[s]) for s in slugs if s in by_slug}
 
 
-def _twelve_distinct_colors(n: int) -> list:
-    cmap = plt.get_cmap("tab20")
-    even = [cmap(i) for i in range(0, 20, 2)]
-    odd = [cmap(i) for i in range(1, 20, 2)]
-    return (even + odd)[:n]
-
-
 def plot_tiers(progression: dict[str, np.ndarray], task: str, slugs: list[str],
                output: Path, max_turns: int):
     available = [s for s in slugs if s in progression]
@@ -131,76 +135,20 @@ def plot_tiers(progression: dict[str, np.ndarray], task: str, slugs: list[str],
         print("No matching data for any requested slug.")
         return
 
-    color_map = dict(zip(available, _twelve_distinct_colors(len(available))))
-    fig, (ax_top, ax_bot) = plt.subplots(
-        2, 1, figsize=(13, 10), sharex=True,
-        gridspec_kw={"height_ratios": [2, 3], "hspace": 0.10},
-    )
-    xs = np.arange(1, max_turns + 1)
-
-    # ===== TOP PANEL: mean trajectory =====
-    endpoints: list[tuple[str, int, float, float, tuple]] = []
-    for slug in available:
-        attempts = progression[slug]
-        n = attempts.shape[0]
-        with np.errstate(invalid="ignore"), warnings.catch_warnings():
-            warnings.simplefilter("ignore", RuntimeWarning)
-            mean_mcc = np.nanmean(attempts, axis=0)
-        submit_rate = np.sum(~np.isnan(attempts), axis=0) / n
-        color = color_map[slug]
-
-        ax_top.plot(xs, mean_mcc, color=color, linewidth=1.8, alpha=0.85, zorder=2)
-        for x, y, rate in zip(xs, mean_mcc, submit_rate):
-            if np.isnan(y):
-                continue
-            ax_top.scatter([x], [y], color=color, s=70,
-                           alpha=0.25 + 0.75 * rate,
-                           edgecolors="white", linewidths=0.8, zorder=3)
-
-        last_idx = max(i for i, v in enumerate(mean_mcc) if not np.isnan(v))
-        endpoints.append((slug, n, float(xs[last_idx]),
-                          float(mean_mcc[last_idx]), color))
-
-    MIN_GAP = 0.035
-    LABEL_X = max_turns + 0.25
-    endpoints.sort(key=lambda e: -e[3])
-    last_y = float("inf")
-    for slug, n, ex, ey, color in endpoints:
-        ly = min(ey, last_y - MIN_GAP)
-        last_y = ly
-        ax_top.plot([ex, LABEL_X - 0.05], [ey, ly], color=color, linewidth=0.6,
-                    alpha=0.5, zorder=1)
-        ax_top.text(LABEL_X, ly, f"{slug} (n={n})",
-                    fontsize=8, color=color, va="center")
-
-    ax_top.set_xlim(0.5, max_turns + 3.5)
-    ax_top.set_ylim(-0.05, 1.05)
-    ax_top.set_xticks(xs)
-    ax_top.set_ylabel("Mean best MCC")
-    ax_top.set_title(f"Per-turn MCC tier distribution — {task}")
-    ax_top.axhline(0, color="#888", linewidth=0.5, zorder=1)
-    # Faint horizontal bands at the tier boundaries to anchor the eye.
-    for boundary in (0.5, 0.75, 0.95, 1.0):
-        ax_top.axhline(boundary, color="#bbb", linewidth=0.5,
-                       linestyle="--", zorder=1)
-    ax_top.grid(alpha=0.3, zorder=0)
-
-    # ===== BOTTOM PANEL: per-(slug, turn) tier distribution =====
+    # Sort by mean cumulative best-MCC at the last turn, descending —
+    # strongest at the top, weakest at the bottom.
     def _avg_at_last(slug: str) -> float:
         col = progression[slug][:, -1]
         col = col[~np.isnan(col)]
         return float(np.mean(col)) if len(col) else -np.inf
+    sorted_slugs = sorted(available, key=lambda s: -_avg_at_last(s))
 
-    bot_slugs = sorted(available, key=lambda s: -_avg_at_last(s))
+    fig, ax = plt.subplots(figsize=(11, max(4, len(sorted_slugs) * 0.5 + 1.5)))
 
-    # Vertical stacked bar per (slug, turn): tier segments stack bottom-up
-    # (weak at the floor, perfect at the top) so the green band "rises" as
-    # a model improves across turns — easier to track per-row progression
-    # than the horizontal-stack version.
     BAR_HEIGHT = 0.85
     BAR_WIDTH = 0.55
     STACK_ORDER = list(reversed(TIER_ORDER))  # weak first → bottom of bar
-    for row_idx, slug in enumerate(bot_slugs):
+    for row_idx, slug in enumerate(sorted_slugs):
         attempts = progression[slug]
         n = attempts.shape[0]
         for turn in range(max_turns):
@@ -212,30 +160,42 @@ def plot_tiers(progression: dict[str, np.ndarray], task: str, slugs: list[str],
             for t in STACK_ORDER:
                 h = (counts[t] / n) * BAR_HEIGHT
                 if h > 0:
-                    ax_bot.bar(turn + 1, h, bottom=cur, width=BAR_WIDTH,
-                               color=TIER_COLORS[t], edgecolor="white",
-                               linewidth=0.4)
+                    ax.bar(turn + 1, h, bottom=cur, width=BAR_WIDTH,
+                           color=TIER_COLORS[t], edgecolor="white",
+                           linewidth=0.4)
                 cur += h
 
-    ax_bot.set_yticks(range(len(bot_slugs)))
-    ax_bot.set_yticklabels(
-        [f"{s} (n={len(progression[s])})" for s in bot_slugs], fontsize=8)
-    ax_bot.set_xticks(xs)
-    ax_bot.set_xlim(0.5, max_turns + 3.5)
-    ax_bot.invert_yaxis()
-    ax_bot.set_xlabel("Turn N")
-    ax_bot.tick_params(axis="y", length=0)
-    ax_bot.spines[["right", "top"]].set_visible(False)
+    ax.set_yticks(range(len(sorted_slugs)))
+    ax.set_yticklabels(
+        [f"{s} (n={len(progression[s])})" for s in sorted_slugs], fontsize=9)
+    # Color y-tick labels by weight family — matches plot_scores.py.
+    for label, slug in zip(ax.get_yticklabels(), sorted_slugs):
+        label.set_color(COLOR_CLOSED if is_closed_weight(slug) else COLOR_OPEN)
 
-    legend_elements = [
-        Patch(facecolor=TIER_COLORS[t], label=TIER_LABELS[t])
-        for t in TIER_ORDER
+    ax.set_xticks(np.arange(1, max_turns + 1))
+    ax.set_xlim(0.4, max_turns + 0.6)
+    ax.invert_yaxis()
+    ax.set_xlabel("Turn N")
+    ax.set_title(f"Per-turn MCC tier distribution — {task}")
+    ax.tick_params(axis="y", length=0)
+    ax.spines[["right", "top"]].set_visible(False)
+
+    # Tier legend at the bottom (horizontal); weight-family legend below it.
+    tier_handles = [Patch(facecolor=TIER_COLORS[t], label=TIER_LABELS[t])
+                    for t in TIER_ORDER]
+    family_handles = [
+        Patch(facecolor=COLOR_CLOSED, label="closed-weight (slug label)"),
+        Patch(facecolor=COLOR_OPEN,   label="open-weight (slug label)"),
     ]
-    ax_bot.legend(handles=legend_elements, loc="upper right",
-                  bbox_to_anchor=(1.0, 1.0), fontsize=8, framealpha=0.95,
-                  ncol=1, title="MCC tier at turn N")
+    leg1 = ax.legend(handles=tier_handles, loc="upper center",
+                     bbox_to_anchor=(0.5, -0.08), fontsize=8, framealpha=0.95,
+                     ncol=5, title="MCC tier at turn N")
+    ax.add_artist(leg1)
+    ax.legend(handles=family_handles, loc="upper center",
+              bbox_to_anchor=(0.5, -0.20), fontsize=8, framealpha=0.95,
+              ncol=2)
 
-    fig.subplots_adjust(left=0.21, right=0.97, top=0.94, bottom=0.06)
+    fig.subplots_adjust(left=0.27, right=0.97, top=0.93, bottom=0.18)
     fig.savefig(output, dpi=150)
     plt.close(fig)
     print(f"Saved {output}")
@@ -243,7 +203,7 @@ def plot_tiers(progression: dict[str, np.ndarray], task: str, slugs: list[str],
 
 def main():
     p = argparse.ArgumentParser(
-        description="Two-panel per-turn MCC tier-distribution chart.")
+        description="Per-turn MCC tier-distribution chart (single panel).")
     p.add_argument("--task", default="toml-1.0-cpp",
                    help="Task name (default: toml-1.0-cpp)")
     p.add_argument("--slugs", nargs="+", required=True,
