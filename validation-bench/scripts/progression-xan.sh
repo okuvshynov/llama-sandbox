@@ -9,7 +9,7 @@
 set -euo pipefail
 
 TASK="${1:-toml-1.0-cpp}"
-RESULTS="$(dirname "$0")/results/results.jsonl"
+RESULTS="$(dirname "$0")/../results/results.jsonl"
 
 echo "=== $TASK: avg best-MCC-after-N-turns per slug ==="
 

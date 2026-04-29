@@ -273,9 +273,9 @@ def main():
     for s in args.slugs:
         slugs.extend(part for part in s.split(",") if part)
 
-    here = Path(__file__).parent
+    here = Path(__file__).resolve().parent.parent  # validation-bench/
     results_file = Path(args.results) if args.results else here / "results" / "results.jsonl"
-    output = Path(args.output) if args.output else here / "plots" / f"progression-{args.task}.png"
+    output = Path(args.output) if args.output else here / "results" / "plots" / f"progression-{args.task}.png"
     output.parent.mkdir(parents=True, exist_ok=True)
 
     progression = load_progression(results_file, args.task, slugs, args.max_turns)

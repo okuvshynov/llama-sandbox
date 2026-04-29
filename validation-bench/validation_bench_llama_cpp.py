@@ -342,7 +342,7 @@ def main():
                         help="Attempt-log base dir (default: ~/.vb-data, env VB_DATA_DIR)")
     args = parser.parse_args()
 
-    tasks_dir = Path(__file__).parent / "tasks" / args.task
+    tasks_dir = Path(__file__).parent / "data" / "tasks" / args.task
     if not tasks_dir.is_dir():
         print(f"Error: task directory not found: {tasks_dir}", file=sys.stderr)
         sys.exit(1)

@@ -2,7 +2,7 @@ tags
 *.swp
 __pycache__/
 .cache/
-specs/*/tests
-specs/*/tests.jsonl
+data/specs/*/tests
+data/specs/*/tests.jsonl
 results-sweep/
 .DS_Store

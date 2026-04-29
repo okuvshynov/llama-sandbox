@@ -3,7 +3,7 @@
 # Requires xan (https://github.com/medialab/xan).
 set -euo pipefail
 
-RESULTS="$(dirname "$0")/results/results.jsonl"
+RESULTS="$(dirname "$0")/../results/results.jsonl"
 
 xan from "$RESULTS" \
   | xan groupby attempt_id,slug,task 'max(mcc) as max_mcc' \

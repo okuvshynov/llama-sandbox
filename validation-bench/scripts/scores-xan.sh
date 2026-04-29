@@ -6,7 +6,7 @@
 set -euo pipefail
 
 BASELINE="${1:-fireworks-glm-5p1}"
-RESULTS="$(dirname "$0")/results/results.jsonl"
+RESULTS="$(dirname "$0")/../results/results.jsonl"
 
 tasks=$(xan from "$RESULTS" | xan groupby task 'sum(1) as n' | awk -F, 'NR>1 {print $1}')
 

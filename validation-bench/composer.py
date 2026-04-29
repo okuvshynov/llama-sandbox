@@ -67,7 +67,7 @@ class EnvContent:
     meta: dict
 
 
-def load_spec(name: str, root: Path = HERE / "specs") -> SpecContent:
+def load_spec(name: str, root: Path = HERE / "data" / "specs") -> SpecContent:
     d = root / name
     if not d.is_dir():
         raise FileNotFoundError(f"spec dir not found: {d}")
@@ -77,7 +77,7 @@ def load_spec(name: str, root: Path = HERE / "specs") -> SpecContent:
     return SpecContent(name=name, meta=meta, body=body)
 
 
-def load_env(name: str, root: Path = HERE / "envs") -> EnvContent:
+def load_env(name: str, root: Path = HERE / "data" / "envs") -> EnvContent:
     d = root / name
     if not d.is_dir():
         raise FileNotFoundError(f"env dir not found: {d}")
@@ -85,7 +85,7 @@ def load_env(name: str, root: Path = HERE / "envs") -> EnvContent:
     return EnvContent(name=name, meta=meta)
 
 
-def spec_dir(spec_name: str, root: Path = HERE / "specs") -> Path:
+def spec_dir(spec_name: str, root: Path = HERE / "data" / "specs") -> Path:
     """Filesystem path of a spec's directory. The test corpus + tests.jsonl
     live there (a property of the spec, shared across all envs that
     consume it), and runners pass this path to handle_submit so input_file

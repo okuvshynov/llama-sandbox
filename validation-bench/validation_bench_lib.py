@@ -199,7 +199,7 @@ def load_task_config(task_dir: Path) -> TaskConfig:
     if "language" not in data:
         # Composed shape: pull env meta from envs/<env>/meta.json
         env_meta_file = (Path(__file__).resolve().parent
-                         / "envs" / data["env"] / "meta.json")
+                         / "data" / "envs" / data["env"] / "meta.json")
         if not env_meta_file.exists():
             raise FileNotFoundError(
                 f"composed task.json requires {env_meta_file}; ensure the env "

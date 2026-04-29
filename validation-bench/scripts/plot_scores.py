@@ -274,12 +274,12 @@ def main():
         parser.print_help()
         return
 
-    results_file = Path(args.results) if args.results else Path(__file__).parent / "results" / "results.jsonl"
+    results_file = Path(args.results) if args.results else Path(__file__).resolve().parent.parent / "results" / "results.jsonl"
 
     highlights = _compile_highlights(args.highlight)
 
     if args.command == "boxplot":
-        output = Path(args.output) if args.output else Path(__file__).parent / "plots" / f"{args.task}.png"
+        output = Path(args.output) if args.output else Path(__file__).resolve().parent.parent / "results" / "plots" / f"{args.task}.png"
         output.parent.mkdir(parents=True, exist_ok=True)
         scores = load_attempt_scores(results_file, args.task, args.exclude or None)
         if not scores:
@@ -288,7 +288,7 @@ def main():
         plot_boxplots(scores, args.task, output, highlights)
 
     elif args.command == "compare":
-        output = Path(args.output) if args.output else Path(__file__).parent / "plots" / f"{args.task_a}_vs_{args.task_b}.png"
+        output = Path(args.output) if args.output else Path(__file__).resolve().parent.parent / "results" / "plots" / f"{args.task_a}_vs_{args.task_b}.png"
         output.parent.mkdir(parents=True, exist_ok=True)
         scores_a = load_attempt_scores(results_file, args.task_a, args.exclude or None)
         scores_b = load_attempt_scores(results_file, args.task_b, args.exclude or None)
@@ -298,7 +298,7 @@ def main():
         plot_dumbbell(scores_a, scores_b, args.task_a, args.task_b, output, highlights)
 
     elif args.command == "timing":
-        output_dir = Path(args.output) if args.output else Path(__file__).parent / "plots"
+        output_dir = Path(args.output) if args.output else Path(__file__).resolve().parent.parent / "results" / "plots"
         output_dir.mkdir(parents=True, exist_ok=True)
         times = load_attempt_times(results_file, args.prefix, args.exclude or None)
         if not times:

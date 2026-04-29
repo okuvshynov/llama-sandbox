@@ -29,13 +29,13 @@ fi
 generate_upstream_spec() {
     local spec="$1"        # e.g. toml-1.0
     local file_list="$2"   # e.g. files-toml-1.0.0 inside the upstream tests/ dir
-    local spec_dir="specs/$spec"
+    local spec_dir="data/specs/$spec"
 
     echo "Setting up $spec ..."
 
     # Symlink tests/ -> cached toml-test/tests/
     local link="$spec_dir/tests"
-    local target="../../$CACHE_DIR/tests"
+    local target="../../../$CACHE_DIR/tests"
     rm -rf "$link"
     ln -s "$target" "$link"
 
@@ -89,7 +89,7 @@ generate_corpus_spec() {
     local spec="$1"          # e.g. lua-5.4
     local oracle_cmd="$2"    # e.g. "luac5.4 -p"
     local extension="$3"     # e.g. "lua"
-    local spec_dir="specs/$spec"
+    local spec_dir="data/specs/$spec"
     local corpus_dir="$spec_dir/corpus"
     local tests_dir="$spec_dir/tests"
     local out="$spec_dir/tests.jsonl"

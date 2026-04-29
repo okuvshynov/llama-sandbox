@@ -38,7 +38,7 @@ if [ ! -f "$RUNNER" ]; then
     exit 1
 fi
 
-for task_dir in tasks/*/; do
+for task_dir in data/tasks/*/; do
     task=$(basename "$task_dir")
     echo
     echo "=== $task ==="
