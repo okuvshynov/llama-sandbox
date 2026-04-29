@@ -26,16 +26,24 @@ from pathlib import Path
 # Composite task → (spec, env). Add new entries here as new tasks land
 # pre-cutover (i.e. while tasks/<name>/ directories still exist).
 TASK_MAPPING = {
-    "toml-1.0-cpp":         ("toml-1.0",         "cpp"),
-    "toml-1.0-nospec-cpp":  ("toml-1.0-nospec",  "cpp"),
-    "toml-1.0-lua":         ("toml-1.0",         "lua"),
-    "toml-1.1-cpp":         ("toml-1.1",         "cpp"),
-    "toml-1.1-nospec-cpp":  ("toml-1.1-nospec",  "cpp"),
+    # Current names (post cpp → cpp17 rename).
+    "toml-1.0-cpp17":         ("toml-1.0",         "cpp17"),
+    "toml-1.0-nospec-cpp17":  ("toml-1.0-nospec",  "cpp17"),
+    "toml-1.0-lua":           ("toml-1.0",         "lua"),
+    "toml-1.1-cpp17":         ("toml-1.1",         "cpp17"),
+    "toml-1.1-nospec-cpp17":  ("toml-1.1-nospec",  "cpp17"),
+    "lua-5.4-cpp17":          ("lua-5.4",          "cpp17"),
     # Pre-rename composite task names; kept so historical jsonl files
-    # generated before the rename still migrate cleanly.
-    "toml-1.0-cpp-nospec":  ("toml-1.0-nospec",  "cpp"),
-    "toml-1.1-cpp-nospec":  ("toml-1.1-nospec",  "cpp"),
-    "lua-5.4-cpp":          ("lua-5.4",          "cpp"),
+    # generated before earlier renames still migrate cleanly. The env
+    # in those rows was "cpp" (without the standard suffix); historical
+    # rows keep that env value unless rewritten by a separate pass.
+    "toml-1.0-cpp":           ("toml-1.0",         "cpp"),
+    "toml-1.0-nospec-cpp":    ("toml-1.0-nospec",  "cpp"),
+    "toml-1.1-cpp":           ("toml-1.1",         "cpp"),
+    "toml-1.1-nospec-cpp":    ("toml-1.1-nospec",  "cpp"),
+    "lua-5.4-cpp":            ("lua-5.4",          "cpp"),
+    "toml-1.0-cpp-nospec":    ("toml-1.0-nospec",  "cpp"),
+    "toml-1.1-cpp-nospec":    ("toml-1.1-nospec",  "cpp"),
 }
 
 

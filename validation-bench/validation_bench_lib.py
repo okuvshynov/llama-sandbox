@@ -147,7 +147,7 @@ class TaskConfig:
 
     `spec` and `env` are the two-axis decomposition of what the task tests:
     `spec` is what's being implemented (e.g. "toml-1.0", "lua-5.4"), `env` is
-    the implementation language family (e.g. "cpp", "lua"). Both are stamped
+    the implementation language family (e.g. "cpp17", "lua"). Both are stamped
     into every result row so analysis can aggregate across one axis while
     holding the other constant. They're required as of vb_version 0.0.4.
     """

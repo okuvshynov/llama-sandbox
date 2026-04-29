@@ -5,7 +5,7 @@ The validation-bench matrix has two orthogonal axes:
 - spec: what's being implemented (e.g. "toml-1.0", "lua-5.4"). Owns the
   reference text that goes into the prompt body and (eventually) the
   test corpus.
-- env:  the implementation language family (e.g. "cpp", "lua"). Owns
+- env:  the implementation language family (e.g. "cpp17", "lua"). Owns
   the docker image, source filename, prepare/run commands, and the
   per-language framing in the prompt preamble.
 

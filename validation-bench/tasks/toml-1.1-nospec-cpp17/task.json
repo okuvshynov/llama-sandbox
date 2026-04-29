@@ -1,4 +1,4 @@
 {
   "spec": "toml-1.1-nospec",
-  "env": "cpp"
+  "env": "cpp17"
 }
