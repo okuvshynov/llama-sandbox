@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Run every task in tasks/<name>/ against one runner+model. Output goes to
-# a separate results dir (default: results-sweep) so the sweep doesn't
-# co-mingle with the main results/ dataset until you've decided what's
-# worth keeping.
+# a separate results dir under results/scratch/ (gitignored) so the sweep
+# doesn't co-mingle with the main results/results.jsonl dataset until
+# you've decided what's worth keeping.
 #
 # Usage:
 #     ./run_all_tasks.sh <runner.py> <model> [extra runner args...]
@@ -14,7 +14,7 @@
 #     ./run_all_tasks.sh validation_bench_openai.py gpt-5.5 --reasoning-effort high
 #
 # Override the results dir via the RESULTS_DIR env var:
-#     RESULTS_DIR=results-test ./run_all_tasks.sh validation_bench_openai.py gpt-5.5
+#     RESULTS_DIR=results/scratch/test ./run_all_tasks.sh validation_bench_openai.py gpt-5.5
 #
 # Default is one attempt per task, 5 turns. Override either by appending
 # `--n-attempts N` / `--max-turns N` to the extra args (later flags win).
@@ -29,7 +29,7 @@ fi
 RUNNER="$1"
 MODEL="$2"
 shift 2
-RESULTS_DIR="${RESULTS_DIR:-results-sweep}"
+RESULTS_DIR="${RESULTS_DIR:-results/scratch/sweep}"
 
 cd "$(dirname "$0")"
 

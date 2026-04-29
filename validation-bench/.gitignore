@@ -4,5 +4,5 @@ __pycache__/
 .cache/
 data/specs/*/tests
 data/specs/*/tests.jsonl
-results-sweep/
+results/scratch/
 .DS_Store

@@ -20,8 +20,9 @@ a single table of results across all of them.
   `DEEPSEEK_API_KEY`, `MOONSHOT_API_KEY`). For llama.cpp, a local
   OpenAI-compatible server is running on `http://127.0.0.1:8080`.
 
-Each command writes to its own `results-palindrome-<provider>/` directory
-so the smoke results don't co-mingle with the main `results/` dataset.
+Each command writes under `results/scratch/palindrome-<provider>/`
+(gitignored) so the smoke results don't co-mingle with the main
+`results/results.jsonl` dataset.
 
 ## Commands
 
@@ -32,7 +33,7 @@ python validation_bench_openai.py \
   --task palindrome-cpp17 \
   --model gpt-5.4-mini \
   --n-attempts 1 --max-turns 5 \
-  --results-dir results-palindrome-openai
+  --results-dir results/scratch/palindrome-openai
 ```
 
 ### Fireworks (glm-5p1)
@@ -42,7 +43,7 @@ python validation_bench_fireworks.py \
   --task palindrome-cpp17 \
   --model glm-5p1 \
   --n-attempts 1 --max-turns 5 --max-tokens 10000 \
-  --results-dir results-palindrome-fireworks
+  --results-dir results/scratch/palindrome-fireworks
 ```
 
 ### Anthropic (claude-sonnet-4-6, thinking)
@@ -53,7 +54,7 @@ python validation_bench_anthropic.py \
   --model claude-sonnet-4-6 \
   --n-attempts 1 --max-turns 5 \
   --thinking enabled --thinking-budget 5000 --max-tokens 16000 \
-  --results-dir results-palindrome-anthropic
+  --results-dir results/scratch/palindrome-anthropic
 ```
 
 ### DeepSeek (v4-pro thinking)
@@ -63,7 +64,7 @@ python validation_bench_deepseek.py \
   --task palindrome-cpp17 \
   --model deepseek-v4-pro --mode thinking --tool-choice auto \
   --n-attempts 1 --max-turns 5 --max-tokens 16000 \
-  --results-dir results-palindrome-deepseek
+  --results-dir results/scratch/palindrome-deepseek
 ```
 
 ### Moonshot (kimi-k2.6 thinking)
@@ -73,7 +74,7 @@ python validation_bench_moonshot.py \
   --task palindrome-cpp17 \
   --model kimi-k2.6 --mode thinking \
   --n-attempts 1 --max-turns 5 --max-tokens 16000 \
-  --results-dir results-palindrome-moonshot
+  --results-dir results/scratch/palindrome-moonshot
 ```
 
 ### llama.cpp (local OpenAI-compatible server)
@@ -84,7 +85,7 @@ python validation_bench_llama_cpp.py \
   --api-base http://127.0.0.1:8080/v1 \
   --api-key 1234 --timeout 86400 \
   --n-attempts 1 --max-turns 5 \
-  --results-dir results-palindrome-llama-cpp
+  --results-dir results/scratch/palindrome-llama-cpp
 ```
 
 The local server's `--api-key` is a placeholder; llama.cpp accepts any
@@ -94,7 +95,7 @@ to wait on a slow local model without giving up.
 ## Inspecting the consolidated output
 
 After running any subset of the above, this Python snippet collects
-every `results-palindrome-*/results.jsonl` file present and prints a
+every `results/scratch/palindrome-*/results.jsonl` file present and prints a
 provider-by-provider table plus the per-turn detail with token counts.
 Run it from `validation-bench/`:
 
@@ -105,12 +106,12 @@ import json
 from pathlib import Path
 
 PATHS = {
-    "openai":     "results-palindrome-openai/results.jsonl",
-    "fireworks":  "results-palindrome-fireworks/results.jsonl",
-    "anthropic":  "results-palindrome-anthropic/results.jsonl",
-    "deepseek":   "results-palindrome-deepseek/results.jsonl",
-    "moonshot":   "results-palindrome-moonshot/results.jsonl",
-    "llama.cpp":  "results-palindrome-llama-cpp/results.jsonl",
+    "openai":     "results/scratch/palindrome-openai/results.jsonl",
+    "fireworks":  "results/scratch/palindrome-fireworks/results.jsonl",
+    "anthropic":  "results/scratch/palindrome-anthropic/results.jsonl",
+    "deepseek":   "results/scratch/palindrome-deepseek/results.jsonl",
+    "moonshot":   "results/scratch/palindrome-moonshot/results.jsonl",
+    "llama.cpp":  "results/scratch/palindrome-llama-cpp/results.jsonl",
 }
 
 print(f"{'provider':12s}  {'turns':>5s}  {'final mcc':>9s}  "
