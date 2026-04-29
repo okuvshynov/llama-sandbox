@@ -45,7 +45,15 @@ from pathlib import Path
 #           existing (task, model, slug) triples unchanged. Older rows
 #           lack the new fields; analysis tools should treat them as
 #           null/unavailable.
-VB_VERSION = "0.0.5"
+#   0.0.6 — Sandbox.prepare() now captures stdout + stderr from the
+#           prepare_cmd, not stderr alone. Affects models' compile-error
+#           feedback for toolchains that write diagnostics to stdout
+#           (erlc, possibly others). For toolchains that use stderr only
+#           (clang++, luac5.4), behavior is identical and numbers for
+#           (task, model, slug) triples on those envs are unchanged.
+#           Erlang/OTP env added at the same milestone — no historical
+#           rows existed for it, so nothing to compare against.
+VB_VERSION = "0.0.6"
 
 
 @dataclass
@@ -417,7 +425,12 @@ class Sandbox:
         except subprocess.TimeoutExpired:
             return False, f"Preparation timed out ({self.config.prepare_timeout_seconds:g}s limit)."
 
-        return comp.returncode == 0, comp.stderr.decode()
+        # Capture both channels — toolchains differ on which one diagnostics
+        # land on. clang++ and luac5.4 write errors to stderr, but erlc writes
+        # them to stdout. Concatenating gives the model the actual compiler
+        # output regardless of channel; for tools that use only one channel
+        # the other is empty.
+        return comp.returncode == 0, (comp.stdout + comp.stderr).decode()
 
     def run_input(self, input_data: bytes) -> int:
         """Run config.run_cmd in /work with input via stdin. Returns exit code (-1 on timeout)."""
