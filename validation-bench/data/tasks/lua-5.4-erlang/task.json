@@ -1,0 +1,4 @@
+{
+  "spec": "lua-5.4",
+  "env": "erlang"
+}

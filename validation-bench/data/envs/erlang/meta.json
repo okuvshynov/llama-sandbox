@@ -1,0 +1,9 @@
+{
+  "language": "Erlang",
+  "language_display_name": "Erlang/OTP",
+  "docker_image": "vb-sandbox-erlang",
+  "source_filename": "solution.erl",
+  "prepare_cmd": "erlc solution.erl",
+  "run_cmd": "erl -noshell -noinput -pa . -s solution main",
+  "compile_cmd": "erlc solution.erl"
+}
