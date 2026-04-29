@@ -12,13 +12,18 @@ docker build -t vb-sandbox-lua    data/envs/lua/     # Lua tasks
 docker build -t vb-sandbox-erlang data/envs/erlang/  # Erlang/OTP tasks
 ```
 
-`setup.sh` clones [toml-test](https://github.com/toml-lang/toml-test) at a pinned commit into `.cache/toml-test`, generates `tests.jsonl` for each spec from the upstream file lists, and symlinks `data/specs/<spec>/tests/` to the cached corpus. Run it once after cloning the repo, or again after bumping the pinned commit.
+`setup.sh` populates the test corpora for the upstream-sourced specs:
+
+- [toml-test](https://github.com/toml-lang/toml-test) → `data/specs/toml-{1.0,1.1}{,-nospec}/tests/` (pinned at `0ee318a`)
+- [yaml-test-suite](https://github.com/yaml/yaml-test-suite) (`data` branch) → `data/specs/yaml-1.2/tests/` (pinned at `6ad3d2c`); 1.3-only tests are filtered out
+
+For each, it clones into `.cache/`, generates `tests.jsonl`, and symlinks `data/specs/<spec>/tests/` to the cached corpus. The hand-curated specs (`lua-5.4`, `palindrome`) re-derive labels via a configured oracle. Run it once after cloning the repo, or again after bumping a pinned commit.
 
 ## Layout
 
 The benchmark is decomposed along two orthogonal axes:
 
-- `data/specs/<spec>/` — what's being implemented (e.g. `toml-1.0`, `lua-5.4`). Owns the spec text embedded in the prompt body, the test corpus, and the `tests.jsonl` index.
+- `data/specs/<spec>/` — what's being implemented (e.g. `toml-1.0`, `lua-5.4`, `yaml-1.2`). Owns the spec text embedded in the prompt body, the test corpus, and the `tests.jsonl` index.
 - `data/envs/<env>/` — the implementation language family (e.g. `cpp17`, `lua`, `erlang`). Owns the docker image (Dockerfile + meta.json declaring `prepare_cmd`, `run_cmd`, source filename).
 - `data/tasks/<spec>-<env>/` — a (spec, env) cell. Holds only `task.json` (a 2-key pointer to spec/env) and `preamble.md` (the small per-cell prose that combines them).
 

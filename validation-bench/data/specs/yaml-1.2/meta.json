@@ -1,0 +1,5 @@
+{
+  "display_name": "YAML 1.2.2",
+  "has_spec_body": true,
+  "oracle": "yaml/yaml-test-suite (data branch); test dir contains an `error` file iff input is invalid"
+}

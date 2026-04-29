@@ -1,0 +1,57 @@
+This spec embeds two pieces of upstream content; both are vendored or
+fetched at pinned commits.
+
+================================================================================
+1. Specification text — data/specs/yaml-1.2/spec_body.md
+================================================================================
+
+Source:  https://github.com/yaml/yaml-spec
+Pin:     1b1a1be43bd6e0cfec45caf0e40af3b5d2bb7f8a (main, 2023-05-23)
+File:    spec/1.2.2/spec.md (vendored verbatim, no modifications)
+
+The spec.md document itself states:
+
+    Copyright presently by YAML Language Development Team
+    Copyright 2001-2009 by Oren Ben-Kiki, Clark Evans, Ingy döt Net
+
+    This document may be freely copied, provided it is not modified.
+
+================================================================================
+2. Test corpus — data/specs/yaml-1.2/tests/ (symlink, populated by setup.sh)
+================================================================================
+
+Source:  https://github.com/yaml/yaml-test-suite
+Pin:     6ad3d2c62885d82fc349026c136ef560838fdf3d (data branch, 2022-01-17)
+
+The MIT License (MIT)
+
+Copyright (c) 2016-2020 Ingy döt Net
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+================================================================================
+Notes on label derivation
+================================================================================
+
+For each test directory in the data branch, presence of an `error` file
+indicates that the input is invalid YAML. The test corpus tags some inputs
+under `tags/1.3-err/` and `tags/1.3-mod/` — these are errors only under
+hypothetical YAML 1.3 semantics and are valid under YAML 1.2. setup.sh
+filters those test IDs out of tests.jsonl so the corpus reflects YAML 1.2
+ground truth.
