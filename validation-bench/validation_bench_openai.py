@@ -386,6 +386,7 @@ def run_attempt_openai(
     flush_log()
 
     for turn in range(max_turns):
+        t_model = time.perf_counter()
         try:
             if codex:
                 assistant_msg, finish_reason, turn_usage = stream_completion_responses(
@@ -410,6 +411,11 @@ def run_attempt_openai(
         # Stamp turn_usage on the *first* Submission produced this turn so
         # aggregations (sum input_tokens etc.) count each API call once.
         usage_to_attach: dict | None = turn_usage
+        # Model wall time gets the same first-Submission-of-turn treatment so
+        # sums across rows count each API call once. The few microseconds of
+        # post-stream bookkeeping between try-block exit and this read are
+        # well within ms rounding for any non-toy model latency.
+        model_seconds_to_attach: float | None = time.perf_counter() - t_model
 
         messages.append(assistant_msg)
         flush_log()
@@ -476,16 +482,27 @@ def run_attempt_openai(
             tool_result_str = format_tool_result(result)
 
             if result.compiled:
-                submission_results.append(Submission(turn=turn, matrix=result.matrix,
-                                                     usage=usage_to_attach))
+                submission_results.append(Submission(
+                    turn=turn, matrix=result.matrix,
+                    usage=usage_to_attach,
+                    model_seconds=model_seconds_to_attach,
+                    prepare_seconds=result.prepare_seconds,
+                    tests_seconds=result.tests_seconds,
+                ))
                 m = result.matrix
                 status = f"{m.passed}/{m.total} (TP={m.tp} FN={m.fn} FP={m.fp} TN={m.tn}) MCC={m.mcc:.3f}"
             else:
                 error = "compile_timeout" if "timed out" in result.compiler_output else "compile_error"
-                submission_results.append(Submission(turn=turn, error=error,
-                                                     usage=usage_to_attach))
+                submission_results.append(Submission(
+                    turn=turn, error=error,
+                    usage=usage_to_attach,
+                    model_seconds=model_seconds_to_attach,
+                    prepare_seconds=result.prepare_seconds,
+                    tests_seconds=result.tests_seconds,
+                ))
                 status = error.upper()
             usage_to_attach = None  # consumed; later submissions in this turn share the API call
+            model_seconds_to_attach = None
 
             _log(f"  turn {turn}, submission {submission_count}: {status}")
 
@@ -654,6 +671,12 @@ def main():
                     row["error"] = s.error
                 if s.usage is not None:
                     row.update(s.usage)
+                if s.model_seconds is not None:
+                    row["model_seconds"] = round(s.model_seconds, 3)
+                if s.prepare_seconds is not None:
+                    row["prepare_seconds"] = round(s.prepare_seconds, 3)
+                if s.tests_seconds is not None:
+                    row["tests_seconds"] = round(s.tests_seconds, 3)
                 f.write(json.dumps(row) + "\n")
 
     def save_failure(fail: InfraFailure):

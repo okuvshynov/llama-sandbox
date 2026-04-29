@@ -15,6 +15,7 @@ import re
 import secrets
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -53,7 +54,16 @@ from pathlib import Path
 #           (task, model, slug) triples on those envs are unchanged.
 #           Erlang/OTP env added at the same milestone — no historical
 #           rows existed for it, so nothing to compare against.
-VB_VERSION = "0.0.6"
+#   0.0.7 — per-turn timing stamped on result rows: model_seconds (API
+#           streaming wall time, attached to the first Submission of
+#           each turn so sums don't double-count, mirroring usage),
+#           prepare_seconds (Sandbox.prepare() wall time), tests_seconds
+#           (run_tests wall time). All three are float|None, rounded to
+#           ms (3 decimals). Numbers for existing (task, model, slug)
+#           triples unchanged — purely additive schema fields. Older
+#           rows lack the new fields; analysis tools should treat them
+#           as null/unavailable.
+VB_VERSION = "0.0.7"
 
 
 @dataclass
@@ -87,6 +97,13 @@ class TestResult:
     compiler_output: str
     test_output: str
     matrix: ConfusionMatrix
+    # Per-submission timing measured by handle_submit, in seconds.
+    # prepare_seconds covers Sandbox.prepare() (compile / syntax-check);
+    # tests_seconds covers run_tests() over the full corpus. Both are 0.0
+    # when the corresponding step was skipped (e.g. tests_seconds is 0.0
+    # on a compile failure).
+    prepare_seconds: float = 0.0
+    tests_seconds: float = 0.0
 
 
 @dataclass
@@ -100,6 +117,15 @@ class Submission:
     # the *first* Submission of a turn (subsequent submissions in the
     # same turn share the API call, so their usage is left as None).
     usage: dict | None = None
+    # Wall time spent calling the model's streaming API for this turn.
+    # Recorded on the *first* Submission of a turn for the same reason as
+    # `usage` — sum-aggregation across rows counts each API call once.
+    model_seconds: float | None = None
+    # Wall time spent in Sandbox.prepare() and run_tests() for THIS
+    # submission. Per-submission, not per-turn — each submit triggers its
+    # own compile + test cycle, so each row carries its own breakdown.
+    prepare_seconds: float | None = None
+    tests_seconds: float | None = None
 
 
 @dataclass
@@ -481,7 +507,9 @@ def run_tests(sandbox: Sandbox, tests: list[dict], tests_root: Path) -> tuple[st
 
 def handle_submit(source_code: str, tests: list[dict], sandbox: Sandbox,
                   tests_root: Path) -> TestResult:
+    t0 = time.perf_counter()
     compiled, compiler_output = sandbox.prepare(source_code)
+    prepare_seconds = time.perf_counter() - t0
 
     if not compiled:
         return TestResult(
@@ -489,15 +517,21 @@ def handle_submit(source_code: str, tests: list[dict], sandbox: Sandbox,
             compiler_output=compiler_output,
             test_output="",
             matrix=ConfusionMatrix(),
+            prepare_seconds=prepare_seconds,
+            tests_seconds=0.0,
         )
 
+    t1 = time.perf_counter()
     test_output, matrix = run_tests(sandbox, tests, tests_root)
+    tests_seconds = time.perf_counter() - t1
 
     return TestResult(
         compiled=True,
         compiler_output=compiler_output,
         test_output=test_output,
         matrix=matrix,
+        prepare_seconds=prepare_seconds,
+        tests_seconds=tests_seconds,
     )
 
 

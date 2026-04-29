@@ -184,6 +184,7 @@ def run_attempt_llama_cpp(
     flush_log()
 
     for turn in range(max_turns):
+        t_model = time.perf_counter()
         try:
             assistant_msg, finish_reason, turn_usage = stream_completion(
                 client=client,
@@ -204,6 +205,7 @@ def run_attempt_llama_cpp(
         flush_log()
 
         usage_to_attach: dict | None = turn_usage
+        model_seconds_to_attach: float | None = time.perf_counter() - t_model
 
         if finish_reason == "length":
             _log(f"  turn {turn}: response truncated (max_tokens too low)")
@@ -267,18 +269,29 @@ def run_attempt_llama_cpp(
             tool_result_str = format_tool_result(result)
 
             if result.compiled:
-                submission_results.append(Submission(turn=turn, matrix=result.matrix,
-                                                     usage=usage_to_attach))
+                submission_results.append(Submission(
+                    turn=turn, matrix=result.matrix,
+                    usage=usage_to_attach,
+                    model_seconds=model_seconds_to_attach,
+                    prepare_seconds=result.prepare_seconds,
+                    tests_seconds=result.tests_seconds,
+                ))
                 m = result.matrix
                 status = f"{m.passed}/{m.total} (TP={m.tp} FN={m.fn} FP={m.fp} TN={m.tn}) MCC={m.mcc:.3f}"
             else:
                 error = "compile_timeout" if "timed out" in result.compiler_output else "compile_error"
-                submission_results.append(Submission(turn=turn, error=error,
-                                                     usage=usage_to_attach))
+                submission_results.append(Submission(
+                    turn=turn, error=error,
+                    usage=usage_to_attach,
+                    model_seconds=model_seconds_to_attach,
+                    prepare_seconds=result.prepare_seconds,
+                    tests_seconds=result.tests_seconds,
+                ))
                 status = error.upper()
 
             _log(f"  turn {turn}, submission {submission_count}: {status}")
             usage_to_attach = None  # consumed; same API call backs all submissions in this turn
+            model_seconds_to_attach = None
 
             messages.append({
                 "role": "tool",
@@ -445,6 +458,12 @@ def main():
                     row["error"] = s.error
                 if s.usage is not None:
                     row.update(s.usage)
+                if s.model_seconds is not None:
+                    row["model_seconds"] = round(s.model_seconds, 3)
+                if s.prepare_seconds is not None:
+                    row["prepare_seconds"] = round(s.prepare_seconds, 3)
+                if s.tests_seconds is not None:
+                    row["tests_seconds"] = round(s.tests_seconds, 3)
                 f.write(json.dumps(row) + "\n")
 
     def save_failure(fail: InfraFailure):
