@@ -85,6 +85,17 @@ def load_env(name: str, root: Path = HERE / "envs") -> EnvContent:
     return EnvContent(name=name, meta=meta)
 
 
+def spec_dir(spec_name: str, root: Path = HERE / "specs") -> Path:
+    """Filesystem path of a spec's directory. The test corpus + tests.jsonl
+    live there (a property of the spec, shared across all envs that
+    consume it), and runners pass this path to handle_submit so input_file
+    references resolve against the canonical per-spec location."""
+    d = root / spec_name
+    if not d.is_dir():
+        raise FileNotFoundError(f"spec dir not found: {d}")
+    return d
+
+
 def compose_task_config(spec: SpecContent, env: EnvContent) -> TaskConfig:
     """Build a TaskConfig from spec/env metadata. The `extra` dict carries
     env-meta fields (compile_cmd, language_display_name, ...) so they remain

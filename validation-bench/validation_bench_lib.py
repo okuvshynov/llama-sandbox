@@ -328,13 +328,16 @@ class Sandbox:
             return -1
 
 
-def run_tests(sandbox: Sandbox, tests: list[dict], task_dir: Path) -> tuple[str, ConfusionMatrix]:
-    """Run all test cases against the prepared solution in sandbox, return (output_text, matrix)."""
+def run_tests(sandbox: Sandbox, tests: list[dict], tests_root: Path) -> tuple[str, ConfusionMatrix]:
+    """Run all test cases against the prepared solution in sandbox, return
+    (output_text, matrix). `tests_root` is the directory under which each
+    test's `input_file` is resolved — typically `specs/<spec>/`, since
+    the corpus is a property of the spec rather than the (spec, env) cell."""
     matrix = ConfusionMatrix()
     lines = []
 
     for t in tests:
-        input_data = (task_dir / t["input_file"]).read_bytes()
+        input_data = (tests_root / t["input_file"]).read_bytes()
 
         tid = t.get("id", "?")
         label = t["label"]
@@ -359,7 +362,8 @@ def run_tests(sandbox: Sandbox, tests: list[dict], task_dir: Path) -> tuple[str,
     return "\n".join(lines), matrix
 
 
-def handle_submit(source_code: str, tests: list[dict], sandbox: Sandbox, task_dir: Path) -> TestResult:
+def handle_submit(source_code: str, tests: list[dict], sandbox: Sandbox,
+                  tests_root: Path) -> TestResult:
     compiled, compiler_output = sandbox.prepare(source_code)
 
     if not compiled:
@@ -370,7 +374,7 @@ def handle_submit(source_code: str, tests: list[dict], sandbox: Sandbox, task_di
             matrix=ConfusionMatrix(),
         )
 
-    test_output, matrix = run_tests(sandbox, tests, task_dir)
+    test_output, matrix = run_tests(sandbox, tests, tests_root)
 
     return TestResult(
         compiled=True,

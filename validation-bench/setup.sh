@@ -23,23 +23,25 @@ else
     git -C "$CACHE_DIR" checkout "$PINNED_COMMIT"
 fi
 
-# Generate tests.jsonl and symlink test data for each TOML task
-generate_task() {
-    local task="$1"        # e.g. toml-1.0-cpp
-    local file_list="$2"   # e.g. files-toml-1.0.0
-    local task_dir="tasks/$task"
+# Generate tests.jsonl + tests/ symlink under specs/<spec>/. Tests are a
+# property of the spec, not the (spec, env) cell — every env that consumes
+# a spec reads from the same location, so generation runs once per spec.
+generate_upstream_spec() {
+    local spec="$1"        # e.g. toml-1.0
+    local file_list="$2"   # e.g. files-toml-1.0.0 inside the upstream tests/ dir
+    local spec_dir="specs/$spec"
 
-    echo "Setting up $task ..."
+    echo "Setting up $spec ..."
 
     # Symlink tests/ -> cached toml-test/tests/
-    local link="$task_dir/tests"
+    local link="$spec_dir/tests"
     local target="../../$CACHE_DIR/tests"
-    rm -f "$link"
+    rm -rf "$link"
     ln -s "$target" "$link"
 
     # Generate tests.jsonl from the file list
     local list_file="$CACHE_DIR/tests/$file_list"
-    local out="$task_dir/tests.jsonl"
+    local out="$spec_dir/tests.jsonl"
     python3 -c "
 import json, sys
 
@@ -74,24 +76,25 @@ print(f'  {len(tests)} test cases written to $out')
 "
 }
 
-generate_task "toml-1.0-cpp" "files-toml-1.0.0"
-generate_task "toml-1.1-cpp" "files-toml-1.1.0"
-generate_task "toml-1.0-lua" "files-toml-1.0.0"
+generate_upstream_spec "toml-1.0"        "files-toml-1.0.0"
+generate_upstream_spec "toml-1.0-nospec" "files-toml-1.0.0"
+generate_upstream_spec "toml-1.1"        "files-toml-1.1.0"
+generate_upstream_spec "toml-1.1-nospec" "files-toml-1.1.0"
 
-# Hand-curated corpus tasks: tests/ is materialized from corpus/, and
-# labels are re-derived locally by running an oracle on each file. Setup
-# fails loudly if a corpus file's directory class disagrees with the
-# oracle's verdict — protects against label drift in checked-in test data.
-generate_corpus_task() {
-    local task="$1"          # e.g. lua-5.4-cpp
+# Hand-curated corpus specs: tests/ is materialized from specs/<spec>/corpus/,
+# and labels are re-derived locally by running an oracle on each file. Setup
+# fails loudly if a corpus file's directory class disagrees with the oracle's
+# verdict — protects against label drift in checked-in test data.
+generate_corpus_spec() {
+    local spec="$1"          # e.g. lua-5.4
     local oracle_cmd="$2"    # e.g. "luac5.4 -p"
     local extension="$3"     # e.g. "lua"
-    local task_dir="tasks/$task"
-    local corpus_dir="$task_dir/corpus"
-    local tests_dir="$task_dir/tests"
-    local out="$task_dir/tests.jsonl"
+    local spec_dir="specs/$spec"
+    local corpus_dir="$spec_dir/corpus"
+    local tests_dir="$spec_dir/tests"
+    local out="$spec_dir/tests.jsonl"
 
-    echo "Setting up $task ..."
+    echo "Setting up $spec ..."
 
     if [ ! -d "$corpus_dir" ]; then
         echo "  ERROR: missing corpus dir: $corpus_dir" >&2
@@ -149,6 +152,6 @@ generate_corpus_task() {
     echo "  $n_total test cases written to $out (oracle: $oracle_cmd)"
 }
 
-generate_corpus_task "lua-5.4-cpp" "luac5.4 -p" "lua"
+generate_corpus_spec "lua-5.4" "luac5.4 -p" "lua"
 
 echo "Done."

@@ -26,7 +26,7 @@ from validation_bench_lib import (
     make_attempt_id, save_attempt_log, _log,
     derive_slug, auto_detect_model,
 )
-from composer import load_task
+from composer import load_task, spec_dir
 
 
 DEFAULT_API_BASE = "http://localhost:8080/v1"
@@ -134,7 +134,7 @@ def run_attempt_llama_cpp(
     sampling_params: dict,
     tool_choice: str | None,
     attempt_dir: Path,
-    task_dir: Path,
+    tests_root: Path,
     attempt_id: str,
     docker_timeout: float = 600,
 ) -> tuple[AttemptResult | None, InfraFailure | None]:
@@ -239,7 +239,7 @@ def run_attempt_llama_cpp(
             sub_dir.mkdir()
             (sub_dir / config.source_filename).write_text(source_code)
 
-            result = handle_submit(source_code, tests, sandbox, task_dir)
+            result = handle_submit(source_code, tests, sandbox, tests_root)
             (sub_dir / "compiler.txt").write_text(result.compiler_output)
             if result.compiled:
                 (sub_dir / "tests.txt").write_text(result.test_output)
@@ -346,11 +346,12 @@ def main():
     if not tasks_dir.is_dir():
         print(f"Error: task directory not found: {tasks_dir}", file=sys.stderr)
         sys.exit(1)
-    tests_file = tasks_dir / "tests.jsonl"
+    config, user_prompt = load_task(tasks_dir)
+    tests_root = spec_dir(config.spec)
+    tests_file = tests_root / "tests.jsonl"
     if not tests_file.exists():
         print(f"Error: missing file: {tests_file}", file=sys.stderr)
         sys.exit(1)
-    config, user_prompt = load_task(tasks_dir)
     tests = load_tests(tests_file)
 
     # Deliberately no OPENAI_API_KEY env fallback: this script targets arbitrary
@@ -447,7 +448,7 @@ def main():
                 sampling_params=sampling_params,
                 tool_choice=tool_choice,
                 attempt_dir=attempt_dir,
-                task_dir=tasks_dir,
+                tests_root=tests_root,
                 attempt_id=attempt_id,
                 docker_timeout=args.docker_timeout,
             )
