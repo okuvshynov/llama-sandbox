@@ -34,6 +34,8 @@ from validation_bench_lib import (
     SUBMIT_TOOL, TaskConfig, VB_VERSION,
     handle_submit, format_tool_result, load_tests,
     make_attempt_id, save_attempt_log, _log,
+
+    normalize_openai_chat_usage,
 )
 from composer import load_task, spec_dir
 
@@ -108,7 +110,7 @@ def stream_completion(
     extra_body: dict | None,
     tool_choice: str | None,
     turn: int,
-) -> tuple[dict, str]:
+) -> tuple[dict, str, dict | None]:
     """Stream one turn. Returns (assistant_message_dict, finish_reason).
 
     Preserves reasoning_content when the server emits it (Kimi-K2-Thinking,
@@ -127,6 +129,7 @@ def stream_completion(
         messages=messages,
         tools=tools,
         stream=True,
+        stream_options={"include_usage": True},
         **kwargs,
     )
 
@@ -134,12 +137,15 @@ def stream_completion(
     reasoning_parts: list[str] = []
     tool_calls: dict[int, dict] = {}
     finish_reason: str | None = None
+    last_usage = None
     chars = 0
     chunks_seen = 0
     last_log = time.time()
 
     for chunk in stream:
         chunks_seen += 1
+        if getattr(chunk, "usage", None) is not None:
+            last_usage = chunk.usage
         if not chunk.choices:
             continue
         choice = chunk.choices[0]
@@ -192,7 +198,7 @@ def stream_completion(
         msg["reasoning_content"] = "".join(reasoning_parts)
     if tool_calls:
         msg["tool_calls"] = [tool_calls[i] for i in sorted(tool_calls)]
-    return msg, finish_reason or "stop"
+    return msg, finish_reason or "stop", normalize_openai_chat_usage(last_usage)
 
 
 def run_attempt_fireworks(
@@ -237,7 +243,7 @@ def run_attempt_fireworks(
 
     for turn in range(max_turns):
         try:
-            assistant_msg, finish_reason = stream_completion(
+            assistant_msg, finish_reason, turn_usage = stream_completion(
                 client=client,
                 model=model,
                 messages=messages,
@@ -255,6 +261,8 @@ def run_attempt_fireworks(
 
         messages.append(assistant_msg)
         flush_log()
+
+        usage_to_attach: dict | None = turn_usage
 
         if finish_reason == "length":
             _log(f"  turn {turn}: response truncated (max_tokens too low)")
@@ -319,15 +327,18 @@ def run_attempt_fireworks(
             tool_result_str = format_tool_result(result)
 
             if result.compiled:
-                submission_results.append(Submission(turn=turn, matrix=result.matrix))
+                submission_results.append(Submission(turn=turn, matrix=result.matrix,
+                                                     usage=usage_to_attach))
                 m = result.matrix
                 status = f"{m.passed}/{m.total} (TP={m.tp} FN={m.fn} FP={m.fp} TN={m.tn}) MCC={m.mcc:.3f}"
             else:
                 error = "compile_timeout" if "timed out" in result.compiler_output else "compile_error"
-                submission_results.append(Submission(turn=turn, error=error))
+                submission_results.append(Submission(turn=turn, error=error,
+                                                     usage=usage_to_attach))
                 status = error.upper()
 
             _log(f"  turn {turn}, submission {submission_count}: {status}")
+            usage_to_attach = None  # consumed; same API call backs all submissions in this turn
 
             messages.append({
                 "role": "tool",
@@ -532,6 +543,8 @@ def main():
                                 "mcc": round(m.mcc, 6)})
                 else:
                     row["error"] = s.error
+                if s.usage is not None:
+                    row.update(s.usage)
                 f.write(json.dumps(row) + "\n")
 
     def save_failure(fail: InfraFailure):

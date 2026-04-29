@@ -24,6 +24,8 @@ from validation_bench_lib import (
     SUBMIT_TOOL, TaskConfig, VB_VERSION,
     handle_submit, format_tool_result, load_tests,
     make_attempt_id, save_attempt_log, _log,
+
+    normalize_openai_chat_usage, normalize_llama_cpp_timings,
     derive_slug, auto_detect_model,
 )
 from composer import load_task, spec_dir
@@ -40,7 +42,7 @@ def stream_completion(
     sampling_params: dict,
     tool_choice: str | None,
     turn: int,
-) -> tuple[dict, str]:
+) -> tuple[dict, str, dict | None]:
     """Stream one turn. Returns (assistant_message_dict, finish_reason).
 
     Preserves reasoning_content on the returned assistant dict when the server
@@ -56,6 +58,7 @@ def stream_completion(
         messages=messages,
         tools=tools,
         stream=True,
+        stream_options={"include_usage": True},
         **kwargs,
     )
 
@@ -63,12 +66,23 @@ def stream_completion(
     reasoning_parts: list[str] = []
     tool_calls: dict[int, dict] = {}
     finish_reason: str | None = None
+    last_usage = None
+    last_timings: dict | None = None
     chars = 0
     chunks_seen = 0
     last_log = time.time()
 
     for chunk in stream:
         chunks_seen += 1
+        if getattr(chunk, "usage", None) is not None:
+            last_usage = chunk.usage
+        # llama.cpp's server emits a non-OpenAI `timings` block on the response
+        # (one per chunk on streaming). Pydantic v2 captures unknown fields in
+        # model_extra when the model is configured with extra="allow"; the
+        # OpenAI SDK uses that, so chunk.timings shows up there.
+        extra = getattr(chunk, "model_extra", None) or {}
+        if extra.get("timings"):
+            last_timings = extra["timings"]
         if not chunk.choices:
             continue
         choice = chunk.choices[0]
@@ -121,7 +135,11 @@ def stream_completion(
         msg["reasoning_content"] = "".join(reasoning_parts)
     if tool_calls:
         msg["tool_calls"] = [tool_calls[i] for i in sorted(tool_calls)]
-    return msg, finish_reason or "stop"
+    # Prefer llama.cpp's timings block (its canonical shape) over OpenAI-style
+    # usage; fall back to the latter for servers that don't emit timings.
+    usage = (normalize_llama_cpp_timings(last_timings)
+             or normalize_openai_chat_usage(last_usage))
+    return msg, finish_reason or "stop", usage
 
 
 def run_attempt_llama_cpp(
@@ -167,7 +185,7 @@ def run_attempt_llama_cpp(
 
     for turn in range(max_turns):
         try:
-            assistant_msg, finish_reason = stream_completion(
+            assistant_msg, finish_reason, turn_usage = stream_completion(
                 client=client,
                 model=model,
                 messages=messages,
@@ -184,6 +202,8 @@ def run_attempt_llama_cpp(
 
         messages.append(assistant_msg)
         flush_log()
+
+        usage_to_attach: dict | None = turn_usage
 
         if finish_reason == "length":
             _log(f"  turn {turn}: response truncated (max_tokens too low)")
@@ -247,15 +267,18 @@ def run_attempt_llama_cpp(
             tool_result_str = format_tool_result(result)
 
             if result.compiled:
-                submission_results.append(Submission(turn=turn, matrix=result.matrix))
+                submission_results.append(Submission(turn=turn, matrix=result.matrix,
+                                                     usage=usage_to_attach))
                 m = result.matrix
                 status = f"{m.passed}/{m.total} (TP={m.tp} FN={m.fn} FP={m.fp} TN={m.tn}) MCC={m.mcc:.3f}"
             else:
                 error = "compile_timeout" if "timed out" in result.compiler_output else "compile_error"
-                submission_results.append(Submission(turn=turn, error=error))
+                submission_results.append(Submission(turn=turn, error=error,
+                                                     usage=usage_to_attach))
                 status = error.upper()
 
             _log(f"  turn {turn}, submission {submission_count}: {status}")
+            usage_to_attach = None  # consumed; same API call backs all submissions in this turn
 
             messages.append({
                 "role": "tool",
@@ -420,6 +443,8 @@ def main():
                                 "mcc": round(m.mcc, 6)})
                 else:
                     row["error"] = s.error
+                if s.usage is not None:
+                    row.update(s.usage)
                 f.write(json.dumps(row) + "\n")
 
     def save_failure(fail: InfraFailure):

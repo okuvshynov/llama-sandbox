@@ -40,7 +40,12 @@ from pathlib import Path
 #           existing (task, model, slug) triples unchanged, schema gained
 #           two derivable fields for cross-axis aggregation. Past rows
 #           backfilled by scripts/migrate_results_spec_env.py.
-VB_VERSION = "0.0.4"
+#   0.0.5 — per-turn token usage stamped on result rows: input_tokens,
+#           output_tokens, reasoning_tokens, cached_tokens. Numbers for
+#           existing (task, model, slug) triples unchanged. Older rows
+#           lack the new fields; analysis tools should treat them as
+#           null/unavailable.
+VB_VERSION = "0.0.5"
 
 
 @dataclass
@@ -81,6 +86,12 @@ class Submission:
     turn: int
     matrix: ConfusionMatrix | None = None  # None for failed submissions
     error: str | None = None  # e.g. "compile_error", "compile_timeout"
+    # Per-turn API token usage in normalized form. The dict carries
+    # {input_tokens, output_tokens, reasoning_tokens, cached_tokens}; any
+    # field can be None on providers that don't expose it. Recorded on
+    # the *first* Submission of a turn (subsequent submissions in the
+    # same turn share the API call, so their usage is left as None).
+    usage: dict | None = None
 
 
 @dataclass
@@ -101,6 +112,99 @@ class InfraFailure:
 
 def _log(msg: str):
     print(msg, flush=True)
+
+
+# ---------- token-usage normalization ----------------------------------------
+#
+# Each provider exposes streaming token counts in its own shape. Runners
+# capture the raw object during stream iteration and run it through one of
+# the helpers below to land in a single normalized dict:
+#
+#     {input_tokens, output_tokens, reasoning_tokens, cached_tokens}
+#
+# Any field that the provider doesn't expose is left as None — e.g. Anthropic
+# bundles thinking tokens into output_tokens (no separate reasoning count),
+# llama.cpp doesn't track reasoning tokens at all, etc.
+
+def _safe_attr(obj, *names):
+    """Walk a chain of attributes, returning None if any link is missing/None."""
+    for name in names:
+        if obj is None:
+            return None
+        obj = getattr(obj, name, None)
+    return obj
+
+
+def normalize_openai_chat_usage(usage) -> dict | None:
+    """Convert an OpenAI Chat Completions `CompletionUsage` (or any provider
+    returning the same shape: Fireworks, Moonshot, DeepSeek) to the
+    normalized usage dict."""
+    if usage is None:
+        return None
+    cached = (_safe_attr(usage, "prompt_tokens_details", "cached_tokens")
+              # Moonshot uses a flat top-level cached_tokens
+              or getattr(usage, "cached_tokens", None)
+              # DeepSeek uses prompt_cache_hit_tokens
+              or getattr(usage, "prompt_cache_hit_tokens", None))
+    return {
+        "input_tokens":     getattr(usage, "prompt_tokens", None),
+        "output_tokens":    getattr(usage, "completion_tokens", None),
+        "reasoning_tokens": _safe_attr(usage, "completion_tokens_details", "reasoning_tokens"),
+        "cached_tokens":    cached,
+    }
+
+
+def normalize_openai_responses_usage(usage) -> dict | None:
+    """Convert an OpenAI Responses-shaped `ResponseUsage` to the normalized dict."""
+    if usage is None:
+        return None
+    return {
+        "input_tokens":     getattr(usage, "input_tokens", None),
+        "output_tokens":    getattr(usage, "output_tokens", None),
+        "reasoning_tokens": _safe_attr(usage, "output_tokens_details", "reasoning_tokens"),
+        "cached_tokens":    _safe_attr(usage, "input_tokens_details", "cached_tokens"),
+    }
+
+
+def normalize_anthropic_usage(start_usage: dict | None,
+                              last_delta_usage: dict | None) -> dict | None:
+    """Combine the `usage` from an Anthropic `message_start` event (initial
+    input + first output token) with the `usage` from the *last*
+    `message_delta` event (cumulative output, possibly updated input).
+    Anthropic includes thinking tokens in output_tokens — no separate
+    reasoning count is exposed on the wire."""
+    if start_usage is None and last_delta_usage is None:
+        return None
+    def pick(field):
+        # Prefer the delta's value (cumulative / final) over message_start's.
+        if last_delta_usage is not None and last_delta_usage.get(field) is not None:
+            return last_delta_usage.get(field)
+        if start_usage is not None:
+            return start_usage.get(field)
+        return None
+    return {
+        "input_tokens":     pick("input_tokens"),
+        "output_tokens":    pick("output_tokens"),
+        "reasoning_tokens": None,
+        "cached_tokens":    pick("cache_read_input_tokens"),
+    }
+
+
+def normalize_llama_cpp_timings(timings: dict | None) -> dict | None:
+    """Convert llama.cpp's non-OpenAI `timings` block to the normalized dict.
+    Per llama.cpp: `prompt_n` is new prompt tokens processed (not from
+    cache); `cache_n` is the count reused from cache; `predicted_n` is
+    output tokens. Total input = prompt_n + cache_n."""
+    if timings is None:
+        return None
+    prompt_n = timings.get("prompt_n", 0) or 0
+    cache_n  = timings.get("cache_n",  0) or 0
+    return {
+        "input_tokens":     prompt_n + cache_n,
+        "output_tokens":    timings.get("predicted_n"),
+        "reasoning_tokens": None,
+        "cached_tokens":    cache_n if cache_n > 0 else None,
+    }
 
 
 SUBMIT_TOOL = {

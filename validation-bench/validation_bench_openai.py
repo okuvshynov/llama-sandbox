@@ -48,6 +48,7 @@ from validation_bench_lib import (
     SUBMIT_TOOL, TaskConfig, VB_VERSION,
     handle_submit, format_tool_result, load_tests,
     make_attempt_id, save_attempt_log, _log,
+    normalize_openai_chat_usage, normalize_openai_responses_usage,
 )
 from composer import load_task, spec_dir
 
@@ -98,8 +99,11 @@ def stream_completion_chat(
     reasoning_effort: str | None,
     tool_choice: str | None,
     turn: int,
-) -> tuple[dict, str]:
-    """Stream one turn via Chat Completions. Returns (assistant_dict, finish_reason)."""
+) -> tuple[dict, str, dict | None]:
+    """Stream one turn via Chat Completions. Returns
+    (assistant_dict, finish_reason, normalized_usage).
+    `stream_options.include_usage=True` causes OpenAI to emit a final
+    empty-choices chunk carrying the request's `usage`."""
     kwargs = dict(sampling_params)
     # Reasoning-era models (gpt-5.x, o-series) reject the legacy `max_tokens`
     # with HTTP 400 and require `max_completion_tokens`. Always translate —
@@ -117,18 +121,22 @@ def stream_completion_chat(
         messages=messages,
         tools=[SUBMIT_TOOL],
         stream=True,
+        stream_options={"include_usage": True},
         **kwargs,
     )
 
     content_parts: list[str] = []
     tool_calls: dict[int, dict] = {}
     finish_reason: str | None = None
+    last_usage = None
     chars = 0
     chunks_seen = 0
     last_log = time.time()
 
     for chunk in stream:
         chunks_seen += 1
+        if getattr(chunk, "usage", None) is not None:
+            last_usage = chunk.usage
         if not chunk.choices:
             continue
         choice = chunk.choices[0]
@@ -171,7 +179,7 @@ def stream_completion_chat(
         msg["content"] = "".join(content_parts)
     if tool_calls:
         msg["tool_calls"] = [tool_calls[i] for i in sorted(tool_calls)]
-    return msg, finish_reason or "stop"
+    return msg, finish_reason or "stop", normalize_openai_chat_usage(last_usage)
 
 
 # ---------- Responses API path (codex) ----------
@@ -226,9 +234,10 @@ def stream_completion_responses(
     reasoning_effort: str | None,
     tool_choice: str | None,
     turn: int,
-) -> tuple[dict, str]:
+) -> tuple[dict, str, dict | None]:
     """Stream one turn via the Responses API. Returns (assistant_dict in OpenAI
-    chat shape, finish_reason) so the attempt loop stays provider-agnostic."""
+    chat shape, finish_reason, normalized_usage) so the attempt loop stays
+    provider-agnostic. Usage is read from `stream.get_final_response().usage`."""
     kwargs = dict(sampling_params)
     # Responses uses max_output_tokens; translate if the caller passed max_tokens.
     if "max_tokens" in kwargs:
@@ -327,7 +336,8 @@ def stream_completion_responses(
         finish = "tool_calls"
     else:
         finish = "stop"
-    return msg, finish
+    usage = normalize_openai_responses_usage(getattr(final, "usage", None))
+    return msg, finish, usage
 
 
 # ---------- Shared attempt loop ----------
@@ -378,14 +388,14 @@ def run_attempt_openai(
     for turn in range(max_turns):
         try:
             if codex:
-                assistant_msg, finish_reason = stream_completion_responses(
+                assistant_msg, finish_reason, turn_usage = stream_completion_responses(
                     client=client, model=model, messages=messages,
                     sampling_params=sampling_params,
                     reasoning_effort=reasoning_effort,
                     tool_choice=tool_choice, turn=turn,
                 )
             else:
-                assistant_msg, finish_reason = stream_completion_chat(
+                assistant_msg, finish_reason, turn_usage = stream_completion_chat(
                     client=client, model=model, messages=messages,
                     sampling_params=sampling_params,
                     reasoning_effort=reasoning_effort,
@@ -396,6 +406,10 @@ def run_attempt_openai(
             api_error = e
             error_turn = turn
             break
+
+        # Stamp turn_usage on the *first* Submission produced this turn so
+        # aggregations (sum input_tokens etc.) count each API call once.
+        usage_to_attach: dict | None = turn_usage
 
         messages.append(assistant_msg)
         flush_log()
@@ -462,13 +476,16 @@ def run_attempt_openai(
             tool_result_str = format_tool_result(result)
 
             if result.compiled:
-                submission_results.append(Submission(turn=turn, matrix=result.matrix))
+                submission_results.append(Submission(turn=turn, matrix=result.matrix,
+                                                     usage=usage_to_attach))
                 m = result.matrix
                 status = f"{m.passed}/{m.total} (TP={m.tp} FN={m.fn} FP={m.fp} TN={m.tn}) MCC={m.mcc:.3f}"
             else:
                 error = "compile_timeout" if "timed out" in result.compiler_output else "compile_error"
-                submission_results.append(Submission(turn=turn, error=error))
+                submission_results.append(Submission(turn=turn, error=error,
+                                                     usage=usage_to_attach))
                 status = error.upper()
+            usage_to_attach = None  # consumed; later submissions in this turn share the API call
 
             _log(f"  turn {turn}, submission {submission_count}: {status}")
 
@@ -635,6 +652,8 @@ def main():
                                 "mcc": round(m.mcc, 6)})
                 else:
                     row["error"] = s.error
+                if s.usage is not None:
+                    row.update(s.usage)
                 f.write(json.dumps(row) + "\n")
 
     def save_failure(fail: InfraFailure):

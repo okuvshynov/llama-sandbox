@@ -92,13 +92,16 @@ def stream_completion(
     max_tokens: int,
     sampling_params: dict,
     turn: int,
-) -> tuple[dict, str]:
-    """Stream one turn. Returns (assistant_message_dict, stop_reason).
+) -> tuple[dict, str, dict | None]:
+    """Stream one turn. Returns (assistant_message_dict, stop_reason, usage).
 
     The returned assistant dict has Anthropic's native shape:
         {"role": "assistant", "content": [ ...blocks... ]}
     with thinking / redacted_thinking / text / tool_use blocks all preserved —
     required for multi-turn continuity with tool use under extended thinking.
+
+    Usage is read from the SDK's final aggregated Message object (which
+    already merges message_start + cumulative message_delta token counts).
     """
     kwargs = dict(sampling_params)
     if thinking is not None:
@@ -138,7 +141,18 @@ def stream_completion(
 
     msg_dict = {"role": "assistant", "content": _blocks_to_dicts(final.content)}
     stop_reason = final.stop_reason or "end_turn"
-    return msg_dict, stop_reason
+
+    final_usage = getattr(final, "usage", None)
+    if final_usage is not None:
+        usage = {
+            "input_tokens":     getattr(final_usage, "input_tokens", None),
+            "output_tokens":    getattr(final_usage, "output_tokens", None),
+            "reasoning_tokens": None,  # Anthropic includes thinking in output_tokens
+            "cached_tokens":    getattr(final_usage, "cache_read_input_tokens", None),
+        }
+    else:
+        usage = None
+    return msg_dict, stop_reason, usage
 
 
 def run_attempt_anthropic(
@@ -195,7 +209,7 @@ def run_attempt_anthropic(
 
     for turn in range(max_turns):
         try:
-            assistant_msg, stop_reason = stream_completion(
+            assistant_msg, stop_reason, turn_usage = stream_completion(
                 client=client,
                 model=model,
                 system=system,
@@ -215,6 +229,8 @@ def run_attempt_anthropic(
 
         messages.append(assistant_msg)
         flush_log()
+
+        usage_to_attach: dict | None = turn_usage
 
         if stop_reason == "max_tokens":
             _log(f"  turn {turn}: response truncated (max_tokens too low)")
@@ -277,13 +293,16 @@ def run_attempt_anthropic(
             tool_result_str = format_tool_result(result)
 
             if result.compiled:
-                submission_results.append(Submission(turn=turn, matrix=result.matrix))
+                submission_results.append(Submission(turn=turn, matrix=result.matrix,
+                                                     usage=usage_to_attach))
                 m = result.matrix
                 status = f"{m.passed}/{m.total} (TP={m.tp} FN={m.fn} FP={m.fp} TN={m.tn}) MCC={m.mcc:.3f}"
             else:
                 error = "compile_timeout" if "timed out" in result.compiler_output else "compile_error"
-                submission_results.append(Submission(turn=turn, error=error))
+                submission_results.append(Submission(turn=turn, error=error,
+                                                     usage=usage_to_attach))
                 status = error.upper()
+            usage_to_attach = None  # consumed; same API call backs all submissions in this turn
 
             _log(f"  turn {turn}, submission {submission_count}: {status}")
 
@@ -450,6 +469,8 @@ def main():
                                 "mcc": round(m.mcc, 6)})
                 else:
                     row["error"] = s.error
+                if s.usage is not None:
+                    row.update(s.usage)
                 f.write(json.dumps(row) + "\n")
 
     def save_failure(fail: InfraFailure):
