@@ -27,9 +27,13 @@ from pathlib import Path
 # pre-cutover (i.e. while tasks/<name>/ directories still exist).
 TASK_MAPPING = {
     "toml-1.0-cpp":         ("toml-1.0",         "cpp"),
-    "toml-1.0-cpp-nospec":  ("toml-1.0-nospec",  "cpp"),
+    "toml-1.0-nospec-cpp":  ("toml-1.0-nospec",  "cpp"),
     "toml-1.0-lua":         ("toml-1.0",         "lua"),
     "toml-1.1-cpp":         ("toml-1.1",         "cpp"),
+    "toml-1.1-nospec-cpp":  ("toml-1.1-nospec",  "cpp"),
+    # Pre-rename composite task names; kept so historical jsonl files
+    # generated before the rename still migrate cleanly.
+    "toml-1.0-cpp-nospec":  ("toml-1.0-nospec",  "cpp"),
     "toml-1.1-cpp-nospec":  ("toml-1.1-nospec",  "cpp"),
     "lua-5.4-cpp":          ("lua-5.4",          "cpp"),
 }

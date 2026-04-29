@@ -145,7 +145,7 @@ def plot_dumbbell(scores_a: dict[str, list[float]], scores_b: dict[str, list[flo
     ax.set_yticklabels(labels)
     ax.set_xlabel("Mean best MCC per attempt")
     short_a = task_a.replace("toml-1.0-cpp", "spec").replace("toml-1.1-cpp", "1.1-spec")
-    short_b = task_b.replace("toml-1.0-cpp-nospec", "nospec").replace("toml-1.1-cpp-nospec", "1.1-nospec")
+    short_b = task_b.replace("toml-1.0-nospec-cpp", "nospec").replace("toml-1.1-nospec-cpp", "1.1-nospec")
     ax.set_title(f"Spec vs no-spec — {short_a} vs {short_b}")
     ax.set_xlim(-0.05, 1.15)
     ax.grid(axis="x", alpha=0.3)
@@ -256,7 +256,7 @@ def main():
 
     cmp = subparsers.add_parser("compare", help="Dumbbell chart comparing two tasks")
     cmp.add_argument("--task-a", default="toml-1.0-cpp", help="First task (default: toml-1.0-cpp)")
-    cmp.add_argument("--task-b", default="toml-1.0-cpp-nospec", help="Second task (default: toml-1.0-cpp-nospec)")
+    cmp.add_argument("--task-b", default="toml-1.0-nospec-cpp", help="Second task (default: toml-1.0-nospec-cpp)")
     cmp.add_argument("--results", default=None, help="Path to results.jsonl")
     cmp.add_argument("--output", default=None, help="Output image path")
     cmp.add_argument("--exclude", nargs="*", default=[], help="Slugs to exclude")
