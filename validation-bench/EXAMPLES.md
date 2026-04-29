@@ -63,3 +63,16 @@ python validation_bench_openai.py --task toml-1.0-cpp \
   --model gpt-5.4 \
   --n-attempts 5 --max-turns 5
 ```
+
+```bash
+# yaml-1.2-cpp17 with reasoning_effort=high on gpt-5.3-codex needs more
+# output-token budget and a longer client timeout than the toml/lua
+# tasks — the embedded YAML 1.2 spec is ~38K tokens of prompt and the
+# model spends substantial reasoning headroom. Stream-disconnect on the
+# default 600s timeout ("Didn't receive a `response.completed` event")
+# is the smoke for "bump --timeout and --max-tokens".
+python validation_bench_openai.py --task yaml-1.2-cpp17 \
+  --model gpt-5.3-codex --reasoning-effort high \
+  --max-tokens 65536 --timeout 3600 \
+  --n-attempts 1 --max-turns 5
+```
