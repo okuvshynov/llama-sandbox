@@ -1,0 +1,5 @@
+{
+  "display_name": "byte-level palindrome",
+  "has_spec_body": true,
+  "oracle": "data == reverse(data) at the byte level"
+}

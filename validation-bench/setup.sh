@@ -152,6 +152,7 @@ generate_corpus_spec() {
     echo "  $n_total test cases written to $out (oracle: $oracle_cmd)"
 }
 
-generate_corpus_spec "lua-5.4" "luac5.4 -p" "lua"
+generate_corpus_spec "lua-5.4"    "luac5.4 -p"                              "lua"
+generate_corpus_spec "palindrome" "python3 scripts/oracles/palindrome-check.py" "txt"
 
 echo "Done."
