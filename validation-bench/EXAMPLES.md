@@ -5,14 +5,14 @@ Canonical per-script invocations, each run with `--n-attempts 5` for parity. Eve
 ## validation_bench_anthropic.py
 
 ```bash
-python validation_bench_anthropic.py --task toml-1.0-cpp \
+python validation_bench_anthropic.py --task toml-1.0-cpp17 \
   --model claude-sonnet-4-6 \
   --thinking enabled --thinking-budget 30000 \
   --n-attempts 5 --max-turns 5 --max-tokens 100000
 ```
 
 ```bash
-python validation_bench_anthropic.py --task toml-1.0-cpp \
+python validation_bench_anthropic.py --task toml-1.0-cpp17 \
   --model claude-opus-4-7 --thinking adaptive \
   --n-attempts 5 --max-turns 5 --max-tokens 100000
 ```
@@ -20,7 +20,7 @@ python validation_bench_anthropic.py --task toml-1.0-cpp \
 ## validation_bench_deepseek.py
 
 ```bash
-python validation_bench_deepseek.py --task toml-1.0-cpp \
+python validation_bench_deepseek.py --task toml-1.0-cpp17 \
   --model deepseek-v4-pro --mode thinking --tool-choice auto \
   --n-attempts 5 --max-turns 5 --max-tokens 65536
 ```
@@ -28,7 +28,7 @@ python validation_bench_deepseek.py --task toml-1.0-cpp \
 ## validation_bench_fireworks.py
 
 ```bash
-python validation_bench_fireworks.py --task toml-1.0-cpp \
+python validation_bench_fireworks.py --task toml-1.0-cpp17 \
   --model glm-5p1 \
   --n-attempts 5 --max-turns 5 --max-tokens 100000
 ```
@@ -36,7 +36,7 @@ python validation_bench_fireworks.py --task toml-1.0-cpp \
 ## validation_bench_llama_cpp.py
 
 ```bash
-python validation_bench_llama_cpp.py --task toml-1.0-cpp \
+python validation_bench_llama_cpp.py --task toml-1.0-cpp17 \
   --api-base http://localhost:8080/v1 \
   --api-key 1234 --timeout 86400 \
   --n-attempts 5 --max-turns 5
@@ -45,7 +45,7 @@ python validation_bench_llama_cpp.py --task toml-1.0-cpp \
 ## validation_bench_moonshot.py
 
 ```bash
-python validation_bench_moonshot.py --task toml-1.0-cpp \
+python validation_bench_moonshot.py --task toml-1.0-cpp17 \
   --model kimi-k2.6 --mode thinking \
   --n-attempts 5 --max-turns 5 --max-tokens 65536
 ```
@@ -53,13 +53,13 @@ python validation_bench_moonshot.py --task toml-1.0-cpp \
 ## validation_bench_openai.py
 
 ```bash
-python validation_bench_openai.py --task toml-1.0-cpp \
+python validation_bench_openai.py --task toml-1.0-cpp17 \
   --model gpt-5.3-codex --reasoning-effort high \
   --n-attempts 5 --max-turns 5
 ```
 
 ```bash
-python validation_bench_openai.py --task toml-1.0-cpp \
+python validation_bench_openai.py --task toml-1.0-cpp17 \
   --model gpt-5.4 \
   --n-attempts 5 --max-turns 5
 ```
