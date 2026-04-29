@@ -1,7 +1,7 @@
 {
   "language": "C++",
   "language_display_name": "C++17",
-  "docker_image": "vb-sandbox",
+  "docker_image": "vb-sandbox-cpp17",
   "source_filename": "solution.cpp",
   "prepare_cmd": "clang++ -std=c++17 -O2 -o solution solution.cpp",
   "run_cmd": "./solution",

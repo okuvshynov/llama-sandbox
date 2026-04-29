@@ -7,8 +7,8 @@ AI coding benchmark harness that evaluates models on code generation tasks via O
 ```bash
 pip install -r requirements.txt
 ./setup.sh
-docker build -t vb-sandbox     envs/cpp17/   # C++17 tasks
-docker build -t vb-sandbox-lua envs/lua/     # Lua tasks
+docker build -t vb-sandbox-cpp17 envs/cpp17/   # C++17 tasks
+docker build -t vb-sandbox-lua   envs/lua/     # Lua tasks
 ```
 
 `setup.sh` clones [toml-test](https://github.com/toml-lang/toml-test) at a pinned commit into `.cache/toml-test`, generates `tests.jsonl` for each spec from the upstream file lists, and symlinks `specs/<spec>/tests/` to the cached corpus. Run it once after cloning the repo, or again after bumping the pinned commit.
