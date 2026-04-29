@@ -203,8 +203,8 @@ def plot_tiers(progression: dict[str, np.ndarray], task: str, slugs: list[str],
 def main():
     p = argparse.ArgumentParser(
         description="Per-turn MCC tier-distribution chart (single panel).")
-    p.add_argument("--task", default="toml-1.0-cpp",
-                   help="Task name (default: toml-1.0-cpp)")
+    p.add_argument("--task", default="toml-1.0-cpp17",
+                   help="Task name (default: toml-1.0-cpp17)")
     p.add_argument("--slugs", nargs="+", required=True,
                    help="Slugs to plot. Space-separated or comma-separated.")
     p.add_argument("--max-turns", type=int, default=5,

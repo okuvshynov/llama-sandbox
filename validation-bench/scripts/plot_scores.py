@@ -144,7 +144,7 @@ def plot_dumbbell(scores_a: dict[str, list[float]], scores_b: dict[str, list[flo
     ax.set_yticks(range(len(shared)))
     ax.set_yticklabels(labels)
     ax.set_xlabel("Mean best MCC per attempt")
-    short_a = task_a.replace("toml-1.0-cpp", "spec").replace("toml-1.1-cpp", "1.1-spec")
+    short_a = task_a.replace("toml-1.0-cpp17", "spec").replace("toml-1.1-cpp17", "1.1-spec")
     short_b = task_b.replace("toml-1.0-nospec-cpp17", "nospec").replace("toml-1.1-nospec-cpp17", "1.1-nospec")
     ax.set_title(f"Spec vs no-spec — {short_a} vs {short_b}")
     ax.set_xlim(-0.05, 1.15)
@@ -248,7 +248,7 @@ def main():
     )
 
     box = subparsers.add_parser("boxplot", help="Horizontal boxplots for a single task")
-    box.add_argument("--task", default="toml-1.0-cpp", help="Task to plot (default: toml-1.0-cpp)")
+    box.add_argument("--task", default="toml-1.0-cpp17", help="Task to plot (default: toml-1.0-cpp17)")
     box.add_argument("--results", default=None, help="Path to results.jsonl")
     box.add_argument("--output", default=None, help="Output image path (default: plots/<task>.png)")
     box.add_argument("--exclude", nargs="*", default=[], help="Slugs to exclude")

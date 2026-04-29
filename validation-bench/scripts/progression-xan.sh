@@ -4,11 +4,11 @@
 # a model one-shots (high mcc_of_1) or relies on the multi-turn submit loop to
 # climb (mcc_of_5 >> mcc_of_1). Error rows (no mcc) count as -1 so a botched
 # turn pulls the average down.
-# Usage: progression-xan.sh [task]   # default: toml-1.0-cpp
+# Usage: progression-xan.sh [task]   # default: toml-1.0-cpp17
 # Requires xan and xan-dev (https://github.com/medialab/xan).
 set -euo pipefail
 
-TASK="${1:-toml-1.0-cpp}"
+TASK="${1:-toml-1.0-cpp17}"
 RESULTS="$(dirname "$0")/../results/results.jsonl"
 
 echo "=== $TASK: avg best-MCC-after-N-turns per slug ==="
