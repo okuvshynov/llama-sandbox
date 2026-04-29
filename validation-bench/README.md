@@ -10,6 +10,7 @@ pip install -r requirements.txt
 docker build -t vb-sandbox-cpp17  data/envs/cpp17/   # C++17 tasks
 docker build -t vb-sandbox-lua    data/envs/lua/     # Lua tasks
 docker build -t vb-sandbox-erlang data/envs/erlang/  # Erlang/OTP tasks
+docker build -t vb-sandbox-go     data/envs/go/      # Go 1.23 tasks
 ```
 
 `setup.sh` populates the test corpora for the upstream-sourced specs:
@@ -24,7 +25,7 @@ For each, it clones into `.cache/`, generates `tests.jsonl`, and symlinks `data/
 The benchmark is decomposed along two orthogonal axes:
 
 - `data/specs/<spec>/` — what's being implemented (e.g. `toml-1.0`, `lua-5.4`, `yaml-1.2`). Owns the spec text embedded in the prompt body, the test corpus, and the `tests.jsonl` index.
-- `data/envs/<env>/` — the implementation language family (e.g. `cpp17`, `lua`, `erlang`). Owns the docker image (Dockerfile + meta.json declaring `prepare_cmd`, `run_cmd`, source filename).
+- `data/envs/<env>/` — the implementation language family (e.g. `cpp17`, `lua`, `erlang`, `go`). Owns the docker image (Dockerfile + meta.json declaring `prepare_cmd`, `run_cmd`, source filename).
 - `data/tasks/<spec>-<env>/` — a (spec, env) cell. Holds only `task.json` (a 2-key pointer to spec/env) and `preamble.md` (the small per-cell prose that combines them).
 
 Add a new env (e.g. `cpp20`, `rust`, `go`):

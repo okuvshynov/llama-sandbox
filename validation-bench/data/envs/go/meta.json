@@ -1,0 +1,9 @@
+{
+  "language": "Go",
+  "language_display_name": "Go 1.23",
+  "docker_image": "vb-sandbox-go",
+  "source_filename": "solution.go",
+  "prepare_cmd": "go mod init solution 2>/dev/null; go build -o solution solution.go",
+  "run_cmd": "./solution",
+  "compile_cmd": "go build -o solution solution.go"
+}
