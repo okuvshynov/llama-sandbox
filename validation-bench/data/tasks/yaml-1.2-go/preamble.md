@@ -18,8 +18,9 @@ Your validator must read a YAML 1.2 stream from stdin and print to
 stdout exactly `valid` (e.g. via `fmt.Print("valid")`) if the stream
 is syntactically valid, or exactly `invalid` otherwise. Surrounding
 whitespace is allowed; anything else (debug output, mixed casing,
-multiple lines) counts as a test failure. Exit code is not checked;
-only the printed verdict. Validate static (parse-time) correctness only
+multiple lines) counts as a test failure. The process must also exit cleanly with status 0 — a correct
+verdict followed by a crash, timeout, or non-zero exit is still a
+failure. Validate static (parse-time) correctness only
 — the validator does not need to construct or emit the parsed
 representation.
 

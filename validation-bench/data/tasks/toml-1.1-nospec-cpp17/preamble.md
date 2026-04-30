@@ -11,8 +11,9 @@ Your validator must read a TOML file from stdin and print to stdout
 exactly `valid` (e.g. `std::cout << "valid"`) if it is a valid TOML
 document, or exactly `invalid` otherwise. Surrounding whitespace is
 allowed; anything else (debug output, mixed casing, multiple lines)
-counts as a test failure. Exit code is not checked; only the printed
-verdict.
+counts as a test failure. The process must also exit cleanly with status 0 — a correct
+verdict followed by a crash, timeout, or non-zero exit is still a
+failure.
 
 You must implement the validator based on your knowledge of the TOML v1.1.0 specification.
 No specification text is provided — use what you know about the format.

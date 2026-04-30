@@ -102,7 +102,18 @@ from pathlib import Path
 #           right code; the only difference is they must now print 'valid'
 #           or 'invalid' to stdout. All 15 task preambles updated to
 #           specify the print contract.
-VB_VERSION = "0.0.8"
+#   0.0.9 — Tightens 0.0.8: a test now passes iff verdict matches AND
+#           the process exits cleanly (rc == 0). Closes a hole in 0.0.8
+#           where a parser that printed the right verdict and then
+#           crashed/timed-out/exited-nonzero was counted as success.
+#           Especially important for Erlang: the BEAM does not auto-halt
+#           after `main/0` returns, so without an explicit `halt(0)` the
+#           runtime idles until the in-container per-test timeout fires
+#           (rc=124) — under 0.0.8 the verdict-only check would have
+#           credited that as a clean classification. All 15 preambles
+#           updated to require clean exit; erlang preambles now mention
+#           `halt(0)` explicitly.
+VB_VERSION = "0.0.9"
 
 
 @dataclass
@@ -540,9 +551,15 @@ def _fail_detail(rc: int, stdout: bytes, verdict: str | None) -> str:
     """Compose a one-line explanation of why a test didn't pass, suitable for
     the FAIL feedback line that goes back to the model."""
     if verdict in VERDICTS:
-        # Matched a verdict, but it was the wrong one — the exit code is
-        # irrelevant; the parser classified incorrectly.
-        return f"got {verdict!r}"
+        # Got a clean verdict from stdout. Either it was the wrong content,
+        # or the process didn't exit cleanly. Both are failures.
+        if rc == 0:
+            return f"got {verdict!r}"  # wrong verdict, clean exit
+        if rc == 124 or rc == -1:
+            return f"got {verdict!r} but timed out"
+        if rc >= 128:
+            return f"got {verdict!r} but killed by signal {rc - 128}"
+        return f"got {verdict!r} but exited with rc={rc}"
     # Otherwise the output didn't match either verdict. Diagnose why.
     if rc == 124 or rc == -1:
         return "timeout (no verdict printed)"
@@ -569,14 +586,15 @@ def run_tests(sandbox: Sandbox, tests: list[dict], tests_root: Path) -> tuple[st
     test's `input_file` is resolved — typically `specs/<spec>/`, since
     the corpus is a property of the spec rather than the (spec, env) cell.
 
-    Scoring contract (vb_version 0.0.8+): the parser is required to print
-    EXACTLY `valid` or `invalid` to stdout (with optional surrounding
-    whitespace). Any other output — empty, partial, mixed-case, debug
-    chatter, multi-line — counts as a test failure regardless of the
-    expected label. Exit code is no longer part of scoring; only stdout
-    matters. This makes timeouts, crashes, and "rejected by hanging"
-    naturally fail (no terminal verdict is printed in any of those cases),
-    which the prior exit-code-based scoring counted as correct rejections."""
+    Scoring contract (vb_version 0.0.9+): a test passes iff
+        (1) stdout, after .strip(), equals exactly `valid` or `invalid`
+            (case-sensitive), AND it equals the expected label, AND
+        (2) the process exits cleanly (rc == 0).
+    Both conditions must hold. A parser that prints the right verdict
+    but then crashes / times out / exits non-zero fails the test — the
+    process must classify *and* terminate cleanly. Important for Erlang
+    in particular, where the BEAM does not auto-halt after `main/0`
+    returns and an explicit `halt(0)` is required."""
     matrix = ConfusionMatrix()
     lines = []
 
@@ -597,7 +615,7 @@ def run_tests(sandbox: Sandbox, tests: list[dict], tests_root: Path) -> tuple[st
             verdict_text = ""
         verdict = verdict_text if verdict_text in VERDICTS else None
 
-        passed = verdict == expected
+        passed = (rc == 0) and (verdict == expected)
         if passed:
             if expected == "valid":
                 matrix.tp += 1

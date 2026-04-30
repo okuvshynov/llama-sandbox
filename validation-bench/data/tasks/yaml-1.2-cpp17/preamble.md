@@ -11,8 +11,9 @@ Your validator must read a YAML 1.2 stream from stdin and print to
 stdout exactly `valid` (e.g. `std::cout << "valid"`) if the stream is
 syntactically valid, or exactly `invalid` otherwise. Surrounding
 whitespace is allowed; anything else (debug output, mixed casing,
-multiple lines) counts as a test failure. Exit code is not checked;
-only the printed verdict.
+multiple lines) counts as a test failure. The process must also exit cleanly with status 0 — a correct
+verdict followed by a crash, timeout, or non-zero exit is still a
+failure.
 
 The reference oracle is the YAML 1.2 specification proper (revision 1.2.2,
 embedded below). A program is "valid" iff it parses successfully under the
