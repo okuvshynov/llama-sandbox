@@ -117,6 +117,10 @@ def main() -> None:
     tasks = sorted({t for t, _ in counts})
     slugs = sorted({s for _, s in counts})
 
+    if not counts:
+        print(f"(no rows in {args.results})")
+        return
+
     if args.transpose:
         # Tasks as rows, slugs as columns. Counts are keyed (task, slug)
         # already, so render_*(row_axis=tasks, col_axis=slugs, counts).
