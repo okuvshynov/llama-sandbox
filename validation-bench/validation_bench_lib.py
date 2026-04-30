@@ -63,7 +63,46 @@ from pathlib import Path
 #           triples unchanged — purely additive schema fields. Older
 #           rows lack the new fields; analysis tools should treat them
 #           as null/unavailable.
-VB_VERSION = "0.0.7"
+#   0.0.8 — Three coupled changes that all address "the harness was
+#           silently misclassifying broken-parser cases as successes":
+#           (a) Scoring contract is now print-based instead of
+#               exit-code-based. The parser must print EXACTLY 'valid' or
+#               'invalid' (case-sensitive, optional surrounding whitespace)
+#               to stdout. Any other output — empty, mixed case, debug
+#               chatter, multi-line — fails the test regardless of expected
+#               label. Removes the prior loophole where a hanging or
+#               crashing parser was credited with "correct rejection" on
+#               invalid inputs (rc != 0 → counted as TN under the old rule,
+#               regardless of cause).
+#           (b) Sandbox.run_input wraps run_cmd with `timeout -s KILL <secs>s`
+#               so the per-test timeout fires *inside* the container.
+#               Without the wrapper, subprocess.run's outer timeout only
+#               killed the host-side docker-exec process; the in-container
+#               child got orphaned to PID 1. On tasks where models emit
+#               parsers with infinite loops on adversarial inputs (e.g.
+#               yaml-1.2-cpp17/-go), orphan processes accumulated and
+#               saturated the container's PIDs cgroup, causing later
+#               submissions in the same attempt to fail with EAGAIN on fork.
+#           (c) FAIL feedback lines now report semantic detail
+#               ("timeout", "killed by signal N", "got '<output>'") rather
+#               than raw exit codes. Sharper signal for the model on what
+#               kind of bug to fix.
+#
+#           Schema: Sandbox.run_input now returns (rc, stdout_bytes) instead
+#           of int. Internal API change only; harness consumers (provider
+#           scripts) don't call run_input directly — they go through
+#           handle_submit / run_tests.
+#
+#           Compat break: numbers for ANY (task, model, slug) triple where
+#           the parser previously hung, crashed, or got partial credit
+#           through exit-code conflation will change. yaml-1.2-cpp17/-go
+#           are most affected (parsers there commonly hang on edge cases).
+#           Clean-parser tasks (palindrome, well-behaved toml/lua impls)
+#           are essentially unchanged — they already exit cleanly with the
+#           right code; the only difference is they must now print 'valid'
+#           or 'invalid' to stdout. All 15 task preambles updated to
+#           specify the print contract.
+VB_VERSION = "0.0.8"
 
 
 @dataclass
@@ -458,24 +497,86 @@ class Sandbox:
         # the other is empty.
         return comp.returncode == 0, (comp.stdout + comp.stderr).decode()
 
-    def run_input(self, input_data: bytes) -> int:
-        """Run config.run_cmd in /work with input via stdin. Returns exit code (-1 on timeout)."""
+    def run_input(self, input_data: bytes) -> tuple[int, bytes]:
+        """Run config.run_cmd in /work with input via stdin.
+
+        Returns (exit_code, stdout_bytes). exit_code is -1 on outer timeout
+        (the inner cgroup timeout should fire first; outer is safety net).
+
+        Wraps run_cmd with `timeout -s KILL <secs>s` so the kill propagates
+        *inside* the container. Without it, only the docker-exec process on
+        the host gets killed when subprocess.run hits its outer timeout — the
+        in-container child gets orphaned to PID 1 (sleep infinity) and keeps
+        running. Under buggy parsers (e.g. infinite loops on adversarial
+        YAML inputs), orphaned `./solution` processes accumulate quickly:
+        each Go binary spawns ~5 OS threads, and the container's PIDs cgroup
+        counts threads, so ~50 orphans saturates the default --pids-limit=256.
+        Subsequent `go build` calls in the same attempt then fail with EAGAIN
+        on fork.
+
+        `timeout` is available on both alpine (busybox) and debian-bookworm-slim
+        (coreutils) base images with identical `-s SIGNAL <secs>s CMD`
+        invocation.
+        """
+        secs = self.config.test_timeout_seconds
+        wrapped = f"cd /work && timeout -s KILL {secs:g}s {self.config.run_cmd}"
         try:
             proc = self._exec(
-                ["sh", "-c", f"cd /work && {self.config.run_cmd}"],
+                ["sh", "-c", wrapped],
                 input_data=input_data,
-                timeout=self.config.test_timeout_seconds,
+                timeout=secs + 2,
             )
-            return proc.returncode
+            return proc.returncode, proc.stdout
         except subprocess.TimeoutExpired:
-            return -1
+            return -1, b""
+
+
+VERDICT_VALID = "valid"
+VERDICT_INVALID = "invalid"
+VERDICTS = (VERDICT_VALID, VERDICT_INVALID)
+
+
+def _fail_detail(rc: int, stdout: bytes, verdict: str | None) -> str:
+    """Compose a one-line explanation of why a test didn't pass, suitable for
+    the FAIL feedback line that goes back to the model."""
+    if verdict in VERDICTS:
+        # Matched a verdict, but it was the wrong one — the exit code is
+        # irrelevant; the parser classified incorrectly.
+        return f"got {verdict!r}"
+    # Otherwise the output didn't match either verdict. Diagnose why.
+    if rc == 124 or rc == -1:
+        return "timeout (no verdict printed)"
+    if rc >= 128:
+        sig = rc - 128
+        return f"killed by signal {sig} (no verdict printed)"
+    if not stdout.strip():
+        return f"no output (exit={rc})"
+    # Some output was produced but it doesn't match either verdict literal.
+    try:
+        text = stdout.decode("utf-8", errors="replace").strip()
+    except Exception:
+        text = "<non-utf8 output>"
+    if len(text) > 80:
+        preview = text[:60] + "..." + text[-15:]
+    else:
+        preview = text
+    return f"got {preview!r} (expected exactly 'valid' or 'invalid')"
 
 
 def run_tests(sandbox: Sandbox, tests: list[dict], tests_root: Path) -> tuple[str, ConfusionMatrix]:
     """Run all test cases against the prepared solution in sandbox, return
     (output_text, matrix). `tests_root` is the directory under which each
     test's `input_file` is resolved — typically `specs/<spec>/`, since
-    the corpus is a property of the spec rather than the (spec, env) cell."""
+    the corpus is a property of the spec rather than the (spec, env) cell.
+
+    Scoring contract (vb_version 0.0.8+): the parser is required to print
+    EXACTLY `valid` or `invalid` to stdout (with optional surrounding
+    whitespace). Any other output — empty, partial, mixed-case, debug
+    chatter, multi-line — counts as a test failure regardless of the
+    expected label. Exit code is no longer part of scoring; only stdout
+    matters. This makes timeouts, crashes, and "rejected by hanging"
+    naturally fail (no terminal verdict is printed in any of those cases),
+    which the prior exit-code-based scoring counted as correct rejections."""
     matrix = ConfusionMatrix()
     lines = []
 
@@ -486,9 +587,17 @@ def run_tests(sandbox: Sandbox, tests: list[dict], tests_root: Path) -> tuple[st
         label = t["label"]
         expected = t["expected"]
 
-        rc = sandbox.run_input(input_data)
+        rc, stdout = sandbox.run_input(input_data)
 
-        passed = (expected == "valid" and rc == 0) or (expected == "invalid" and rc != 0)
+        # Decode the verdict. Strict matching: stdout.strip() must equal one
+        # of the two literals exactly (case-sensitive).
+        try:
+            verdict_text = stdout.decode("utf-8", errors="replace").strip()
+        except Exception:
+            verdict_text = ""
+        verdict = verdict_text if verdict_text in VERDICTS else None
+
+        passed = verdict == expected
         if passed:
             if expected == "valid":
                 matrix.tp += 1
@@ -499,7 +608,8 @@ def run_tests(sandbox: Sandbox, tests: list[dict], tests_root: Path) -> tuple[st
                 matrix.fn += 1
             else:
                 matrix.fp += 1
-            lines.append(f"FAIL {tid}: {label} (exit={rc}, expected {expected})")
+            detail = _fail_detail(rc, stdout, verdict)
+            lines.append(f"FAIL {tid}: {label} ({detail}, expected {expected!r})")
 
     lines.append(f"{matrix.passed}/{matrix.total} passed")
     return "\n".join(lines), matrix

@@ -12,9 +12,12 @@ will not resolve.
 The source file is named `solution.go`. It must declare `package main`
 and contain a `func main()` entry point. Compile command: `{compile_cmd}`.
 
-Your validator must read a Lua 5.4 source from stdin. If the source is
-syntactically valid, exit with zero exit code; if invalid, exit with
-non-zero exit code (e.g. `os.Exit(1)`).
+Your validator must read a Lua 5.4 source from stdin and print to
+stdout exactly `valid` (e.g. via `fmt.Print("valid")`) if the source
+is syntactically valid, or exactly `invalid` otherwise. Surrounding
+whitespace is allowed; anything else (debug output, mixed casing,
+multiple lines) counts as a test failure. Exit code is not checked;
+only the printed verdict.
 
 The reference oracle is `luac5.4 -p file.lua`. A program is "valid" if
 and only if `luac5.4 -p` accepts it (exits 0). You are validating static

@@ -14,10 +14,13 @@ sandbox has no network access.
 The source file is named `solution.go`. It must declare `package main`
 and contain a `func main()` entry point. Compile command: `{compile_cmd}`.
 
-Your validator must read a YAML 1.2 stream from stdin and exit with
-zero exit code if the stream is syntactically valid, non-zero otherwise
-(e.g. `os.Exit(1)`). Validate static (parse-time) correctness only —
-the validator does not need to construct or emit the parsed
+Your validator must read a YAML 1.2 stream from stdin and print to
+stdout exactly `valid` (e.g. via `fmt.Print("valid")`) if the stream
+is syntactically valid, or exactly `invalid` otherwise. Surrounding
+whitespace is allowed; anything else (debug output, mixed casing,
+multiple lines) counts as a test failure. Exit code is not checked;
+only the printed verdict. Validate static (parse-time) correctness only
+— the validator does not need to construct or emit the parsed
 representation.
 
 The reference oracle is the YAML 1.2 specification proper (revision

@@ -7,9 +7,12 @@ You will receive compilation and test results. Fix and resubmit if needed.
 Implement a validator for TOML v1.0.0 files in C++17 using only the standard library.
 Compiler command: `{compile_cmd}`
 
-Your validator must read a TOML file from stdin.
-If it is valid, exit with zero exit code.
-If it is invalid, exit with non-zero exit code.
+Your validator must read a TOML file from stdin and print to stdout
+exactly `valid` (e.g. `std::cout << "valid"`) if it is a valid TOML
+document, or exactly `invalid` otherwise. Surrounding whitespace is
+allowed; anything else (debug output, mixed casing, multiple lines)
+counts as a test failure. Exit code is not checked; only the printed
+verdict.
 
 You must implement the validator based on your knowledge of the TOML v1.0.0 specification.
 No specification text is provided — use what you know about the format.

@@ -7,9 +7,12 @@ You will receive compilation and test results. Fix and resubmit if needed.
 Implement a Lua 5.4 syntactic validator in C++17 using only the standard library.
 Compiler command: `{compile_cmd}`
 
-Your validator must read a Lua 5.4 source from stdin.
-If the source is syntactically valid, exit with zero exit code.
-If invalid, exit with non-zero exit code.
+Your validator must read a Lua 5.4 source from stdin and print to
+stdout exactly `valid` (e.g. `std::cout << "valid"`) if the source is
+syntactically valid, or exactly `invalid` otherwise. Surrounding
+whitespace is allowed; anything else (debug output, mixed casing,
+multiple lines) counts as a test failure. Exit code is not checked;
+only the printed verdict.
 
 The reference oracle is `luac5.4 -p file.lua`. A program is "valid" if and only
 if `luac5.4 -p` accepts it (exits 0). You are validating static (parse-time)

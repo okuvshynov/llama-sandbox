@@ -8,9 +8,11 @@ Implement a byte-level palindrome detector in C++17 using only the standard
 library.
 Compiler command: `{compile_cmd}`
 
-Your program must read all of stdin as raw bytes.
-If the byte sequence is a palindrome (equals its reverse), exit with zero
-exit code.
-Otherwise, exit with non-zero exit code.
+Your program must read all of stdin as raw bytes and print to stdout
+exactly `valid` (e.g. `std::cout << "valid"`) if the byte sequence is a
+palindrome (equals its reverse), or exactly `invalid` otherwise.
+Surrounding whitespace is allowed; anything else (debug output, mixed
+casing, multiple lines) counts as a test failure. Exit code is not
+checked; only the printed verdict.
 
 The full definition follows.
