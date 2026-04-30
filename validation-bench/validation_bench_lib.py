@@ -11,6 +11,7 @@ every runner reuses verbatim.
 import datetime
 import json
 import math
+import os
 import re
 import secrets
 import subprocess
@@ -20,6 +21,24 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
+
+
+# Flip on with `VB_VERBOSE=1` (any truthy string). When set, handle_submit
+# writes extra diagnostic files into each per-submission directory:
+#   sandbox_state_before_prepare.txt  — container state (PIDs cgroup, /work
+#                                        listing+disk, ps, memory) right
+#                                        before the prepare_cmd runs
+#   prepare_raw.txt                   — separated rc / stdout / stderr from
+#                                        prepare_cmd. Distinguishes "compile
+#                                        failed silently" from "compile
+#                                        produced no diagnostics" — the
+#                                        ambiguity that compiler.txt alone
+#                                        can't resolve when it's empty.
+#   sandbox_state_after_failed_prepare.txt   — only when prepare fails
+#   sandbox_state_after_tests.txt            — only when run_tests ran
+# Costs: a handful of cheap `docker exec` probes per submission. Off by
+# default so production runs aren't slowed by debug instrumentation.
+VB_VERBOSE = bool(os.environ.get("VB_VERBOSE"))
 
 
 # Stamped into every results row + failures row so past runs can be filtered
@@ -113,7 +132,29 @@ from pathlib import Path
 #           credited that as a clean classification. All 15 preambles
 #           updated to require clean exit; erlang preambles now mention
 #           `halt(0)` explicitly.
-VB_VERSION = "0.0.9"
+#   0.0.10 — Container is now restarted between submissions of the same
+#           attempt (Sandbox.begin_submission, called from handle_submit).
+#           Closes a leak that 0.0.8's `timeout -s KILL` wrapper didn't:
+#           PID 1 in the sandbox is `sleep infinity` and doesn't reap
+#           zombies, while Go's runtime maps each goroutine to an OS
+#           thread that counts against --pids-limit=256. After a few
+#           hundred run_tests invocations the cgroup saturates and every
+#           subsequent `docker exec` — the next prepare_cmd in particular
+#           — fails with `sh: can't fork: Resource temporarily unavailable`,
+#           which surfaced as silent compile errors (rc != 0, zero stdout
+#           and stderr) starting with the second submission of an attempt.
+#           Restart is ~1s of docker stop+run, amortized across multi-
+#           minute submissions; the first submission of an attempt skips
+#           the restart since the provider just started a fresh container.
+#
+#           Compat break: any prior (task, model, slug) attempt where
+#           submissions ≥2 hit the silent-compile-error mode would now
+#           run cleanly. Affected configurations: yaml-1.2-go and other
+#           Go tasks where parsers produced many timeouts in turn 0;
+#           cpp17 / lua / erlang variants are typically less affected
+#           because their runtimes spawn fewer OS threads per process.
+#           Scoring rules from 0.0.9 are unchanged.
+VB_VERSION = "0.0.10"
 
 
 @dataclass
@@ -437,6 +478,11 @@ class Sandbox:
         self.config = config
         self.container_id: str | None = None
         self.startup_timeout = startup_timeout
+        # Counts submissions begun on the current Sandbox (across restarts).
+        # Drives begin_submission's "restart between submissions" policy:
+        # the very first submission of an attempt runs on the container the
+        # provider just started; every subsequent one gets a fresh container.
+        self._submissions_begun = 0
 
     def start(self):
         try:
@@ -468,6 +514,27 @@ class Sandbox:
                            capture_output=True)
             self.container_id = None
 
+    def begin_submission(self):
+        """Prepare the container for a new submission. On all but the first
+        submission of the attempt, this restarts the container — `docker
+        kill` + `docker run` — to clear any process / disk / cgroup state
+        leaked by the prior submission's run_tests cycle.
+
+        Why this is necessary: PID 1 in the sandbox is `sleep infinity`,
+        which doesn't reap zombies, and the Go runtime in particular
+        maps each goroutine to an OS thread that counts against the
+        --pids-limit=256 cgroup. After a few hundred test invocations
+        with timeouts, the cgroup saturates and *every* subsequent
+        `docker exec` (the next prepare_cmd, our verbose probes, etc.)
+        fails with `sh: can't fork: Resource temporarily unavailable`.
+        Restarting the container is the cheapest correct fix: ~1s of
+        docker stop+run amortized over a multi-minute submission.
+        """
+        if self._submissions_begun > 0:
+            self.stop()
+            self.start()
+        self._submissions_begun += 1
+
     def _exec(self, cmd: list[str], input_data: bytes | None = None,
               timeout: float = 30) -> subprocess.CompletedProcess:
         full_cmd = ["docker", "exec"]
@@ -477,12 +544,20 @@ class Sandbox:
         return subprocess.run(full_cmd, input=input_data,
                               capture_output=True, timeout=timeout)
 
-    def prepare(self, source_code: str) -> tuple[bool, str]:
+    def prepare(self, source_code: str,
+                verbose_dir: Path | None = None) -> tuple[bool, str]:
         """Write source into container and run prepare_cmd. Returns (success, output).
 
         Equivalent to "compile" for compiled languages (clang++, go build) and to a
         syntax check for interpreters that have one (luac -p, py_compile). When
         prepare_cmd is None, only the file write happens and we report success.
+
+        When `verbose_dir` is given (only when VB_VERBOSE is set), writes a
+        `prepare_raw.txt` with separated rc / stdout / stderr from prepare_cmd.
+        Solves the "compiler.txt is empty" ambiguity: an empty compiler.txt
+        could mean either "compile succeeded silently" (e.g. `go build` on a
+        clean source) or "compile died silently" (OOM, EAGAIN on fork from
+        PIDs cgroup exhaustion). The raw rc disambiguates.
         """
         src_path = f"/work/{self.config.source_filename}"
         write = self._exec(["sh", "-c", f"cat > {src_path}"],
@@ -499,7 +574,23 @@ class Sandbox:
                 timeout=self.config.prepare_timeout_seconds,
             )
         except subprocess.TimeoutExpired:
+            if verbose_dir is not None:
+                (verbose_dir / "prepare_raw.txt").write_text(
+                    f"rc=<host-timeout>\n"
+                    f"prepare_timeout_seconds={self.config.prepare_timeout_seconds:g}\n"
+                )
             return False, f"Preparation timed out ({self.config.prepare_timeout_seconds:g}s limit)."
+
+        if verbose_dir is not None:
+            stdout_text = comp.stdout.decode("utf-8", errors="replace")
+            stderr_text = comp.stderr.decode("utf-8", errors="replace")
+            (verbose_dir / "prepare_raw.txt").write_text(
+                f"rc={comp.returncode}\n"
+                f"stdout_bytes={len(comp.stdout)}\n"
+                f"stderr_bytes={len(comp.stderr)}\n"
+                f"--- stdout ---\n{stdout_text}\n"
+                f"--- stderr ---\n{stderr_text}\n"
+            )
 
         # Capture both channels — toolchains differ on which one diagnostics
         # land on. clang++ and luac5.4 write errors to stderr, but erlc writes
@@ -507,6 +598,41 @@ class Sandbox:
         # output regardless of channel; for tools that use only one channel
         # the other is empty.
         return comp.returncode == 0, (comp.stdout + comp.stderr).decode()
+
+    def snapshot_state(self) -> str:
+        """Probe container resource state for verbose-mode debugging. Returns
+        multi-line text suitable for direct write to a .txt log file.
+
+        Cheap (~5 short docker execs, each timeout-bounded). Defensive against
+        a degraded container — every probe is wrapped so a single failure
+        doesn't sink the whole snapshot. Useful when prepare/run failures
+        suggest resource exhaustion (PIDs cgroup, /work disk, memory) rather
+        than a real compile/test bug.
+        """
+        parts = []
+
+        def probe(label: str, shell_cmd: str):
+            try:
+                r = self._exec(["sh", "-c", shell_cmd], timeout=5)
+                out = (r.stdout + r.stderr).decode("utf-8", errors="replace").rstrip()
+                parts.append(f"--- {label} (rc={r.returncode}) ---\n{out}")
+            except subprocess.TimeoutExpired:
+                parts.append(f"--- {label} (probe timed out) ---")
+            except Exception as e:
+                parts.append(f"--- {label} (probe error: {e!r}) ---")
+
+        # cgroup v2 puts pids.{current,max} at the root; v1 nests under pids/.
+        # Try both; the missing path just shows "No such file" which is fine.
+        probe("pids cgroup",
+              "for f in /sys/fs/cgroup/pids.current /sys/fs/cgroup/pids.max "
+              "/sys/fs/cgroup/pids/pids.current /sys/fs/cgroup/pids/pids.max; "
+              'do echo \"$f:\"; cat \"$f\" 2>&1; done')
+        probe("processes", "ps -ef 2>&1 || ps 2>&1")
+        probe("/work listing", "ls -la /work 2>&1; echo; du -sh /work 2>&1")
+        probe("/work disk", "df -h /work 2>&1")
+        probe("memory", "head -10 /proc/meminfo 2>&1")
+
+        return "\n\n".join(parts) + "\n"
 
     def run_input(self, input_data: bytes) -> tuple[int, bytes]:
         """Run config.run_cmd in /work with input via stdin.
@@ -634,12 +760,27 @@ def run_tests(sandbox: Sandbox, tests: list[dict], tests_root: Path) -> tuple[st
 
 
 def handle_submit(source_code: str, tests: list[dict], sandbox: Sandbox,
-                  tests_root: Path) -> TestResult:
+                  tests_root: Path,
+                  sub_dir: Path | None = None) -> TestResult:
+    """Run prepare + tests for one submission. When VB_VERBOSE and `sub_dir`
+    are both set, also dumps sandbox state snapshots into `sub_dir` for
+    debugging — see VB_VERBOSE comment at top of file."""
+    sandbox.begin_submission()
+
+    verbose = VB_VERBOSE and sub_dir is not None
+
+    if verbose:
+        (sub_dir / "sandbox_state_before_prepare.txt").write_text(sandbox.snapshot_state())
+
     t0 = time.perf_counter()
-    compiled, compiler_output = sandbox.prepare(source_code)
+    compiled, compiler_output = sandbox.prepare(
+        source_code, verbose_dir=sub_dir if verbose else None,
+    )
     prepare_seconds = time.perf_counter() - t0
 
     if not compiled:
+        if verbose:
+            (sub_dir / "sandbox_state_after_failed_prepare.txt").write_text(sandbox.snapshot_state())
         return TestResult(
             compiled=False,
             compiler_output=compiler_output,
@@ -652,6 +793,9 @@ def handle_submit(source_code: str, tests: list[dict], sandbox: Sandbox,
     t1 = time.perf_counter()
     test_output, matrix = run_tests(sandbox, tests, tests_root)
     tests_seconds = time.perf_counter() - t1
+
+    if verbose:
+        (sub_dir / "sandbox_state_after_tests.txt").write_text(sandbox.snapshot_state())
 
     return TestResult(
         compiled=True,

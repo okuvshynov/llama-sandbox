@@ -191,6 +191,11 @@ def stream_completion(
             _log(f"  turn {turn}: streaming... {chars} chars, {chunks_seen} chunks")
             last_log = now
 
+    # Final tally — without this, fast-bursting tool_call arguments near
+    # stream end would be undercounted, since the periodic logger only fires
+    # every 5s. The visible last value would be a stale snapshot.
+    _log(f"  turn {turn}: streamed {chars} chars total, {chunks_seen} chunks")
+
     msg: dict = {"role": "assistant"}
     if content_parts:
         msg["content"] = "".join(content_parts)
@@ -321,7 +326,7 @@ def run_attempt_fireworks(
             sub_dir.mkdir()
             (sub_dir / config.source_filename).write_text(source_code)
 
-            result = handle_submit(source_code, tests, sandbox, tests_root)
+            result = handle_submit(source_code, tests, sandbox, tests_root, sub_dir=sub_dir)
             (sub_dir / "compiler.txt").write_text(result.compiler_output)
             if result.compiled:
                 (sub_dir / "tests.txt").write_text(result.test_output)
