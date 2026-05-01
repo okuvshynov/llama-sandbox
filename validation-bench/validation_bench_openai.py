@@ -1,25 +1,20 @@
 #!/usr/bin/env python3
 """OpenAI validation benchmark — dedicated script using the official SDK.
 
-Replaces the litellm-based codex/chat-completions routing in validation_bench.py
-with an explicit branch on the model ID, so each API surface is visible in this
-file instead of hidden behind litellm's translation layer.
+All requests go through the Responses API. Per OpenAI's own guidance,
+reasoning models (gpt-5.x, codex variants, o-series) get better intelligence
+and performance on Responses than on Chat Completions, and this script only
+ever benchmarks reasoning models, so there's no reason to keep two code
+paths around. Earlier vb versions (≤0.0.10) routed non-codex models to
+Chat Completions; that path was removed in 0.0.11.
 
-Two paths:
-- **Chat Completions** (non-codex: gpt-5, gpt-5.5, gpt-5-mini, o3, o4-mini, …)
-  Uses `client.chat.completions.create(..., stream=True)`. `reasoning_effort`
-  is flat, `max_tokens`, tool shape is nested `{type:function, function:{…}}`,
-  tool results are `{role:"tool", tool_call_id, content}`. Reasoning traces
-  are NOT surfaced on stream deltas — only the final assistant message has them.
-- **Responses** (codex: gpt-5-codex, gpt-5.3-codex, …) — `gpt-5-codex` is
-  Responses-only, others are accepted on both; this script routes any
-  `"codex" in model.lower()` to Responses.
-  Uses `client.responses.stream(...)`. `reasoning={"effort":…}` is nested,
-  `max_output_tokens`, tool shape is flat `{type:function, name, parameters}`,
-  tool results are `{type:function_call_output, call_id, output}`. Reasoning
-  IS streamed (reasoning_summary_text.delta / reasoning_text.delta events).
+Per call: `client.responses.stream(...)` with `reasoning={"effort":…}`
+nested, `max_output_tokens` (translated from `max_tokens`), tool shape is
+flat `{type:function, name, parameters}`, tool results are
+`{type:function_call_output, call_id, output}`. Reasoning IS streamed
+(reasoning_summary_text.delta / reasoning_text.delta events).
 
-Reasoning-item replay (Responses path only): the script requests
+Reasoning-item replay: the script requests
 `include=["reasoning.encrypted_content"]` on each call and captures the
 full reasoning items emitted on `response.output_item.done`. They're stored
 on the assistant message under a custom `reasoning_items` key and echoed
@@ -30,7 +25,9 @@ OpenAI's cookbook guidance; tampering with it triggers server-side
 signature rejection.
 
 The assistant message is normalized to OpenAI-chat shape internally so the
-attempt loop, log persistence, and results format stay identical across paths.
+attempt loop, log persistence, and results format stay identical with the
+other provider scripts that go through Chat Completions (fireworks,
+deepseek, moonshot, llama_cpp).
 """
 
 import argparse
@@ -45,16 +42,17 @@ from openai import OpenAI
 
 from validation_bench_lib import (
     Sandbox, Submission, AttemptResult, InfraFailure,
-    SUBMIT_TOOL, TaskConfig, VB_VERSION,
+    TaskConfig, VB_VERSION,
     handle_submit, format_tool_result, load_tests,
     make_attempt_id, save_attempt_log, _log,
-    normalize_openai_chat_usage, normalize_openai_responses_usage,
+    normalize_openai_responses_usage,
 )
 from composer import load_task, spec_dir
 
 
-# SUBMIT_TOOL (from validation_bench_lib) is the nested Chat Completions shape.
-# Responses API wants it flat — no inner "function" key.
+# Responses API wants the tool shape flat — no inner "function" key. The
+# nested Chat Completions shape lives in validation_bench_lib as SUBMIT_TOOL
+# for the other provider scripts that still go through Chat Completions.
 SUBMIT_TOOL_RESPONSES = {
     "type": "function",
     "name": "submit",
@@ -75,119 +73,13 @@ SUBMIT_TOOL_RESPONSES = {
 REASONING_EFFORT_CHOICES = ["none", "minimal", "low", "medium", "high", "xhigh"]
 
 
-def is_codex_model(model: str) -> bool:
-    """Codex models route to the Responses API. `gpt-5-codex` is Responses-only;
-    later codex variants accept both, but we always route to Responses for them
-    so reasoning traces are visible on stream."""
-    return "codex" in model.lower()
-
-
 def openai_slug(model: str, reasoning_effort: str | None) -> str:
     """`<model>[-<effort>]`. Model IDs are already friendly (gpt-5, gpt-5.3-codex,
     o4-mini) so no translation needed beyond the optional effort suffix."""
     return f"{model}-{reasoning_effort}" if reasoning_effort else model
 
 
-# ---------- Chat Completions path (non-codex) ----------
-
-
-def stream_completion_chat(
-    client: OpenAI,
-    model: str,
-    messages: list[dict],
-    sampling_params: dict,
-    reasoning_effort: str | None,
-    tool_choice: str | None,
-    turn: int,
-) -> tuple[dict, str, dict | None]:
-    """Stream one turn via Chat Completions. Returns
-    (assistant_dict, finish_reason, normalized_usage).
-    `stream_options.include_usage=True` causes OpenAI to emit a final
-    empty-choices chunk carrying the request's `usage`."""
-    kwargs = dict(sampling_params)
-    # Reasoning-era models (gpt-5.x, o-series) reject the legacy `max_tokens`
-    # with HTTP 400 and require `max_completion_tokens`. Always translate —
-    # the new field has been accepted on all chat-completions-supporting
-    # models since it was introduced, so there's no downside.
-    if "max_tokens" in kwargs:
-        kwargs["max_completion_tokens"] = kwargs.pop("max_tokens")
-    if reasoning_effort is not None:
-        kwargs["reasoning_effort"] = reasoning_effort
-    if tool_choice is not None:
-        kwargs["tool_choice"] = tool_choice
-
-    stream = client.chat.completions.create(
-        model=model,
-        messages=messages,
-        tools=[SUBMIT_TOOL],
-        stream=True,
-        stream_options={"include_usage": True},
-        **kwargs,
-    )
-
-    content_parts: list[str] = []
-    tool_calls: dict[int, dict] = {}
-    finish_reason: str | None = None
-    last_usage = None
-    chars = 0
-    chunks_seen = 0
-    last_log = time.time()
-
-    for chunk in stream:
-        chunks_seen += 1
-        if getattr(chunk, "usage", None) is not None:
-            last_usage = chunk.usage
-        if not chunk.choices:
-            continue
-        choice = chunk.choices[0]
-        if choice.finish_reason:
-            finish_reason = choice.finish_reason
-        delta = choice.delta
-        if delta is None:
-            continue
-
-        if getattr(delta, "content", None):
-            content_parts.append(delta.content)
-            chars += len(delta.content)
-
-        for tc in getattr(delta, "tool_calls", None) or []:
-            idx = tc.index
-            slot = tool_calls.get(idx)
-            if slot is None:
-                slot = {
-                    "id": tc.id or "",
-                    "type": "function",
-                    "function": {"name": "", "arguments": ""},
-                }
-                tool_calls[idx] = slot
-            if tc.id and not slot["id"]:
-                slot["id"] = tc.id
-            if tc.function:
-                if tc.function.name:
-                    slot["function"]["name"] = tc.function.name
-                if tc.function.arguments:
-                    slot["function"]["arguments"] += tc.function.arguments
-                    chars += len(tc.function.arguments)
-
-        now = time.time()
-        if now - last_log >= 5:
-            _log(f"  turn {turn}: streaming... {chars} chars, {chunks_seen} chunks")
-            last_log = now
-
-    # Final tally — without this, fast-bursting tool_call arguments near
-    # stream end would be undercounted, since the periodic logger only fires
-    # every 5s. The visible last value would be a stale snapshot.
-    _log(f"  turn {turn}: streamed {chars} chars total, {chunks_seen} chunks")
-
-    msg: dict = {"role": "assistant"}
-    if content_parts:
-        msg["content"] = "".join(content_parts)
-    if tool_calls:
-        msg["tool_calls"] = [tool_calls[i] for i in sorted(tool_calls)]
-    return msg, finish_reason or "stop", normalize_openai_chat_usage(last_usage)
-
-
-# ---------- Responses API path (codex) ----------
+# ---------- Responses API ----------
 
 
 def messages_to_responses_input(messages: list[dict]) -> list[dict]:
@@ -388,8 +280,6 @@ def run_attempt_openai(
     turn = 0
     nudged = False
 
-    codex = is_codex_model(model)
-
     def flush_log():
         save_attempt_log(attempt_dir, messages)
 
@@ -398,20 +288,12 @@ def run_attempt_openai(
     for turn in range(max_turns):
         t_model = time.perf_counter()
         try:
-            if codex:
-                assistant_msg, finish_reason, turn_usage = stream_completion_responses(
-                    client=client, model=model, messages=messages,
-                    sampling_params=sampling_params,
-                    reasoning_effort=reasoning_effort,
-                    tool_choice=tool_choice, turn=turn,
-                )
-            else:
-                assistant_msg, finish_reason, turn_usage = stream_completion_chat(
-                    client=client, model=model, messages=messages,
-                    sampling_params=sampling_params,
-                    reasoning_effort=reasoning_effort,
-                    tool_choice=tool_choice, turn=turn,
-                )
+            assistant_msg, finish_reason, turn_usage = stream_completion_responses(
+                client=client, model=model, messages=messages,
+                sampling_params=sampling_params,
+                reasoning_effort=reasoning_effort,
+                tool_choice=tool_choice, turn=turn,
+            )
         except Exception as e:
             _log(f"  API error on turn {turn}: {e}")
             api_error = e
@@ -564,28 +446,27 @@ def run_attempt_openai(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="OpenAI validation benchmark — routes codex models to the "
-                    "Responses API and everything else to Chat Completions."
+        description="OpenAI validation benchmark — all requests go through the "
+                    "Responses API."
     )
     parser.add_argument("--task", required=True, help="Task name (directory under tasks/)")
     parser.add_argument("--n-attempts", type=int, default=1)
     parser.add_argument("--model", required=True,
-                        help="OpenAI model ID (e.g. gpt-5, gpt-5.5, gpt-5-mini, o3, o4-mini, "
-                             "gpt-5-codex, gpt-5.3-codex). Models containing 'codex' route "
-                             "to the Responses API automatically.")
+                        help="OpenAI model ID (e.g. gpt-5, gpt-5.5, gpt-5.5-pro, "
+                             "gpt-5-mini, gpt-5-codex, gpt-5.3-codex, o3, o4-mini).")
     parser.add_argument("--reasoning-effort", choices=REASONING_EFFORT_CHOICES, default=None,
                         help=f"Reasoning effort. Choices: {', '.join(REASONING_EFFORT_CHOICES)}. "
-                             "Sent as flat `reasoning_effort` on Chat Completions and nested "
-                             "`reasoning.effort` on Responses. Omit to use the model default.")
+                             "Sent as nested `reasoning.effort` on the Responses API. "
+                             "Omit to use the model default (`medium` on gpt-5.5).")
     parser.add_argument("--temperature", type=float, default=None,
                         help="Sampling temperature. Reasoning models may reject this.")
     parser.add_argument("--top-p", type=float, default=None)
     parser.add_argument("--max-tokens", type=int, default=32768,
-                        help="Max output tokens. Translated to `max_output_tokens` on the "
-                             "Responses path. Default: 32768. Bump for high-effort codex runs.")
+                        help="Max output tokens. Translated to `max_output_tokens`. "
+                             "Default: 32768. Bump for high-effort runs.")
     parser.add_argument("--max-turns", type=int, default=10)
     parser.add_argument("--tool-choice", choices=["required", "auto", "none"], default="required",
-                        help="Default: required. Both APIs accept it on reasoning models.")
+                        help="Default: required.")
     parser.add_argument("--timeout", type=float, default=600,
                         help="OpenAI client timeout (seconds). Default: 600.")
     parser.add_argument("--docker-timeout", type=float, default=600,
@@ -624,14 +505,13 @@ def main():
 
     tool_choice = None if args.tool_choice == "none" else args.tool_choice
 
-    codex = is_codex_model(args.model)
-    api_path = "responses" if codex else "chat.completions"
-
     # Provenance fields written alongside sampling_params in each result row.
+    # `api` is hardcoded since 0.0.11 — kept in the row for backwards
+    # compatibility with analysis tools that filter by it.
     results_params: dict = dict(sampling_params)
     if args.reasoning_effort is not None:
         results_params["reasoning_effort"] = args.reasoning_effort
-    results_params["api"] = api_path
+    results_params["api"] = "responses"
 
     slug = args.slug or openai_slug(args.model, args.reasoning_effort)
     results_base = Path(__file__).parent / args.results_dir
@@ -645,7 +525,7 @@ def main():
 
     effort_bit = f" reasoning_effort={args.reasoning_effort}" if args.reasoning_effort else ""
     print(f"Running task '{args.task}' with OpenAI model '{args.model}' "
-          f"(api={api_path}{effort_bit})")
+          f"(api=responses{effort_bit})")
     sampling_str = ", ".join(f"{k}={v}" for k, v in results_params.items())
     print(f"Attempts: {args.n_attempts} | Max turns: {args.max_turns} | Sampling: {sampling_str}")
     print(f"Debug logs base: {data_dir_base}")

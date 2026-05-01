@@ -154,7 +154,28 @@ VB_VERBOSE = bool(os.environ.get("VB_VERBOSE"))
 #           cpp17 / lua / erlang variants are typically less affected
 #           because their runtimes spawn fewer OS threads per process.
 #           Scoring rules from 0.0.9 are unchanged.
-VB_VERSION = "0.0.10"
+#   0.0.11 — validation_bench_openai.py: Chat Completions code path removed.
+#           All OpenAI requests go through the Responses API regardless of
+#           model. Per OpenAI's docs ("Reasoning models work better with
+#           the Responses API. While the Chat Completions API is still
+#           supported, you'll get improved model intelligence and
+#           performance by using Responses"), and per actual usage of this
+#           script (only reasoning models — gpt-5.x, codex variants — have
+#           ever been benchmarked through it), the Chat Completions branch
+#           was vestigial and gated reasoning behavior on gpt-5.4 / gpt-5.5.
+#
+#           Compat break: numbers for any (model, slug) cell previously run
+#           through Chat Completions may differ — gpt-5.5 in particular
+#           reported ~512 reasoning_tokens per turn over Chat Completions
+#           and is expected to use significantly more reasoning tokens at
+#           the same effort level over Responses. The `sampling_params.api`
+#           field is still stamped on every row ("responses" since 0.0.11)
+#           so old chat.completions rows remain identifiable. Scoring rules
+#           and sandbox lifecycle (0.0.10) are unchanged. Only the OpenAI
+#           provider script is affected; fireworks / deepseek / moonshot /
+#           llama_cpp continue using Chat Completions (their endpoints
+#           don't support a Responses analog).
+VB_VERSION = "0.0.11"
 
 
 @dataclass
