@@ -39,3 +39,5 @@ Add a new spec (e.g. `json`, `yaml`):
 1. `data/specs/<spec>/spec.md` — the reference text to embed in the prompt
 2. `data/specs/<spec>/meta.json` — `display_name`, `has_spec_body`, `oracle`
 3. Source the corpus into either `data/specs/<spec>/corpus/` (hand-curated, label-validated by `setup.sh`) or by extending `setup.sh`'s upstream-fetch path.
+
+Other directories worth knowing about: `examples/` — a small museum of interesting model submissions surfaced by past runs (failure modes, recovery patterns, scoring quirks). Each subdirectory has the source the model produced plus a write-up of what's interesting about it.
