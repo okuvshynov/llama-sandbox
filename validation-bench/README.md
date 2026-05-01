@@ -16,7 +16,7 @@ docker build -t vb-sandbox-go     data/envs/go/      # Go 1.23 tasks
 `setup.sh` populates the test corpora for the upstream-sourced specs:
 
 - [toml-test](https://github.com/toml-lang/toml-test) → `data/specs/toml-{1.0,1.1}{,-nospec}/tests/` (pinned at `0ee318a`)
-- [yaml-test-suite](https://github.com/yaml/yaml-test-suite) (`data` branch) → `data/specs/yaml-1.2/tests/` (pinned at `6ad3d2c`); 1.3-only tests are filtered out
+- [yaml-test-suite](https://github.com/yaml/yaml-test-suite) (`data` branch) → `data/specs/yaml-1.2{,-nospec}/tests/` (pinned at `6ad3d2c`); 1.3-only tests are filtered out
 
 For each, it clones into `.cache/`, generates `tests.jsonl`, and symlinks `data/specs/<spec>/tests/` to the cached corpus. The hand-curated specs (`lua-5.4`, `palindrome`) re-derive labels via a configured oracle. Run it once after cloning the repo, or again after bumping a pinned commit.
 

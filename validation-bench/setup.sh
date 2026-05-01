@@ -266,5 +266,6 @@ print(f'  {len(tests)} test cases written to $out '
 }
 
 generate_yaml_test_suite_spec "yaml-1.2"
+generate_yaml_test_suite_spec "yaml-1.2-nospec"
 
 echo "Done."
