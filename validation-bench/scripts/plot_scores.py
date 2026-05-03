@@ -102,7 +102,11 @@ def plot_boxplots(scores: dict[str, list[float]], task: str, output: Path,
     ax.set_yticklabels(labels)
     ax.set_xlabel("Best MCC per attempt")
     ax.set_title(f"Model scores — {task}")
-    ax.set_xlim(-0.05, 1.05)
+    # Full MCC range so perfect-anti-correlation outliers (MCC=-1, observed
+    # on yaml-1.2-cpp17 from sonnet and kimi inverted-parser submissions —
+    # see examples/) don't get clipped against the left edge.
+    ax.set_xlim(-1.05, 1.05)
+    ax.axvline(0, color="#999", linewidth=0.6, alpha=0.6, zorder=1)
     ax.grid(axis="x", alpha=0.3)
 
     # Scatter individual points
