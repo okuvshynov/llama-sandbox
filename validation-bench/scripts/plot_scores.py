@@ -28,9 +28,16 @@ def _bold_matching_yticklabels(ax, slugs: list[str], highlights: list[re.Pattern
             lbl.set_fontweight("bold")
 
 
-def load_attempt_scores(results_file: Path, task: str, exclude: list[str] | None = None
+def load_attempt_scores(results_file: Path, task: str,
+                        exclude: list[str] | None = None,
+                        include: list[str] | None = None,
                         ) -> dict[str, list[float]]:
-    """Read results.jsonl → {slug: [max_mcc_per_attempt]}."""
+    """Read results.jsonl → {slug: [max_mcc_per_attempt]}.
+
+    If `include` is given, only those slugs are considered (allow-list).
+    `exclude` (deny-list) applies after `include`. Both default to None
+    for "all slugs."""
+    include_set = set(include) if include else None
     # First pass: collect best MCC per (attempt_id, slug)
     best: dict[tuple[str, str], float] = {}
     for line in results_file.read_text().splitlines():
@@ -40,6 +47,8 @@ def load_attempt_scores(results_file: Path, task: str, exclude: list[str] | None
         if r.get("task") != task:
             continue
         slug = r.get("slug", "")
+        if include_set is not None and slug not in include_set:
+            continue
         if exclude and slug in exclude:
             continue
         mcc = r.get("mcc")
@@ -251,6 +260,9 @@ def main():
     box.add_argument("--task", default="toml-1.0-cpp17", help="Task to plot (default: toml-1.0-cpp17)")
     box.add_argument("--results", default=None, help="Path to results.jsonl")
     box.add_argument("--output", default=None, help="Output image path (default: plots/<task>.png)")
+    box.add_argument("--include", nargs="*", default=None,
+                     help="Restrict to this slug allow-list (exact match). "
+                          "Default: all slugs in the data.")
     box.add_argument("--exclude", nargs="*", default=[], help="Slugs to exclude")
     box.add_argument("--highlight", nargs="*", default=None, help=highlight_help)
 
@@ -281,7 +293,9 @@ def main():
     if args.command == "boxplot":
         output = Path(args.output) if args.output else Path(__file__).resolve().parent.parent / "results" / "plots" / f"{args.task}.png"
         output.parent.mkdir(parents=True, exist_ok=True)
-        scores = load_attempt_scores(results_file, args.task, args.exclude or None)
+        scores = load_attempt_scores(results_file, args.task,
+                                     exclude=args.exclude or None,
+                                     include=args.include or None)
         if not scores:
             print(f"No data for task '{args.task}'")
             return
