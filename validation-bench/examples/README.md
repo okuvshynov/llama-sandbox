@@ -36,6 +36,12 @@ purged.
   the print statement would have given MCC = +1.000 (perfect score), but
   the model didn't see the shortcut and instead rewrote the parser
   internals on the next turn.
+- `yaml-1.2-cpp17-kimi-perfectly-inverted-stuck/` — moonshot-kimi-k2.6-thinking
+  hit the same MCC = -1.000 failure mode (correct print, inverted `parse()`),
+  but **across 4 submissions in 2 independent attempts on different days**
+  rather than recovering on the next turn. Best escape was MCC=-0.597 in
+  one attempt; the other never escaped. Pair with the sonnet entry for a
+  recover-vs-stuck comparison on the same root-cause failure.
 
 ## Adding an example
 
