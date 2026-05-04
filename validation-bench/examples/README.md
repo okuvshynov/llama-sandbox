@@ -51,6 +51,14 @@ purged.
   all three (model / libfyaml / yaml-test-suite ground truth) on each
   case. Lets a reviewer poke at specific disagreements without trusting
   any of our scoring code.
+- `yaml-1.2-cpp17-opus-4-7-strongest/` — the strongest single
+  yaml-1.2-cpp17 submission across the entire dataset:
+  claude-opus-4-7-adaptive at **MCC=0.993, 349/350 passed** (next best
+  by any model is gpt-5.5-xhigh at 0.912). Same repro shape as the
+  gpt-5.5 entry. The single wrong test (`X38W` — flow mapping with
+  anchored-sequence and alias keys) is documented with libfyaml as
+  third-party agreement against the model and a YAML 1.2.2 spec
+  citation explaining why arbitrary nodes are valid as flow keys.
 
 ## Adding an example
 
