@@ -109,16 +109,10 @@ flow sequences (line `&a [a, &b b]`). Spec:
 ## Why the entry is worth keeping
 
 This entry pairs with `../yaml-1.2-cpp17-gpt-5.5-repro/` (MCC=0.912,
-12 wrong) and the two MCC=-1 entries (sonnet, kimi) to bracket the
-range of model behavior on this task:
-
-  - sonnet inverted (1 attempt, recovered): catastrophic failure.
-  - kimi inverted-stuck (4 subs, 2 attempts): catastrophic, didn't
-    escape.
-  - gpt-5.5 repro (12 wrong): high-quality with surfaced corner-case
-    failures.
-  - **opus strongest (1 wrong): the upper bound — what "almost
-    perfect" actually looks like.**
+12 wrong) and `../yaml-1.2-cpp17-kimi-infinite-loop/` (MCC=-1, parser
+hangs unconditionally) to bracket the range of model behavior on
+this task — from catastrophic failure through high-quality
+with-corner-cases through the upper bound of "almost perfect."
 
 The single wrong test is genuinely informative: opus's parser is
 otherwise spec-compliant, but it falls over on the

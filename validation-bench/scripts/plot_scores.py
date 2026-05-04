@@ -78,41 +78,72 @@ def _is_first_party(slug: str) -> bool:
 
 
 def plot_boxplots(scores: dict[str, list[float]], task: str, output: Path,
-                  highlights: list[re.Pattern] | None = None):
+                  highlights: list[re.Pattern] | None = None,
+                  style: str = "box"):
+    """Render per-slug attempt scores. `style` selects layout:
+
+      - "box"   (default): horizontal boxplot. Conventional, but the
+                quartile/whisker structure implies more sample structure
+                than is supported at low n (~3-15 attempts per slug).
+      - "strip": every attempt as a dot along its slug's row, with a
+                thin range bar (min-max) behind and a small mean
+                marker. Honest about sample size — you can count the
+                dots — and avoids the fake-quartile problem at low n.
+    """
     slugs = sorted(scores.keys(), key=lambda s: sorted(scores[s])[len(scores[s]) // 2])
     data = [scores[s] for s in slugs]
     labels = [f"{s} (n={len(scores[s])})" for s in slugs]
     colors = [COLOR_FIRST_PARTY if _is_first_party(s) else COLOR_OSS for s in slugs]
 
     fig, ax = plt.subplots(figsize=(10, max(3, len(slugs) * 0.45)))
-    bp = ax.boxplot(data, vert=False, patch_artist=True, widths=0.5,
-                    showmeans=True,
-                    meanprops=dict(marker="D", markerfacecolor="white",
-                                   markeredgecolor="#333", markersize=4),
-                    medianprops=dict(color="white", linewidth=1.5),
-                    flierprops=dict(marker="o", markersize=3, alpha=0.5))
-    for patch, c in zip(bp["boxes"], colors):
-        patch.set_facecolor(c)
-        patch.set_alpha(0.7)
 
-    # Background shading per row
-    for i, c in enumerate(colors):
-        ax.axhspan(i + 0.5, i + 1.5, color=c, alpha=0.06)
+    if style == "box":
+        bp = ax.boxplot(data, vert=False, patch_artist=True, widths=0.5,
+                        showmeans=True,
+                        meanprops=dict(marker="D", markerfacecolor="white",
+                                       markeredgecolor="#333", markersize=4),
+                        medianprops=dict(color="white", linewidth=1.5),
+                        flierprops=dict(marker="o", markersize=3, alpha=0.5))
+        for patch, c in zip(bp["boxes"], colors):
+            patch.set_facecolor(c)
+            patch.set_alpha(0.7)
+
+        # Background shading per row
+        for i, c in enumerate(colors):
+            ax.axhspan(i + 0.5, i + 1.5, color=c, alpha=0.06)
+
+        # Scatter individual points overlaid on the boxes
+        for i, (d, c) in enumerate(zip(data, colors)):
+            y = [i + 1] * len(d)
+            ax.scatter(d, y, color=c, alpha=0.4, s=15, zorder=3)
+
+        ax.set_yticks(range(1, len(slugs) + 1))
+    elif style == "strip":
+        # Honest low-n rendering: range bar + dots + mean marker, no box.
+        import statistics
+        for i, (d, c) in enumerate(zip(colors, colors)):
+            ax.axhspan(i - 0.4, i + 0.4, color=colors[i], alpha=0.06)
+        for i, (d, c) in enumerate(zip(data, colors)):
+            ax.hlines(i, min(d), max(d), color=c, alpha=0.5,
+                      linewidth=1.5, zorder=2)
+            ax.scatter(d, [i] * len(d), color=c, alpha=0.65, s=35,
+                       edgecolors="white", linewidths=0.5, zorder=3)
+            mean = statistics.mean(d)
+            ax.scatter([mean], [i], color="white", edgecolors="#333",
+                       marker="D", s=30, zorder=4, linewidths=0.8)
+        ax.set_yticks(range(len(slugs)))
+    else:
+        raise ValueError(f"unknown style {style!r}; expected 'box' or 'strip'")
 
     ax.set_yticklabels(labels)
     ax.set_xlabel("Best MCC per attempt")
     ax.set_title(f"Model scores — {task}")
-    # Full MCC range so perfect-anti-correlation outliers (MCC=-1, observed
-    # on yaml-1.2-cpp17 from sonnet and kimi inverted-parser submissions —
-    # see examples/) don't get clipped against the left edge.
+    # Full MCC range so MCC=-1 outliers (observed on yaml-1.2-cpp17 from
+    # parsers that fail every test, e.g. the kimi infinite-loop submission
+    # under examples/) don't get clipped against the left edge.
     ax.set_xlim(-1.05, 1.05)
     ax.axvline(0, color="#999", linewidth=0.6, alpha=0.6, zorder=1)
     ax.grid(axis="x", alpha=0.3)
-
-    # Scatter individual points
-    for i, (d, c) in enumerate(zip(data, colors)):
-        y = [i + 1] * len(d)
-        ax.scatter(d, y, color=c, alpha=0.4, s=15, zorder=3)
 
     if highlights:
         _bold_matching_yticklabels(ax, slugs, highlights)
@@ -268,6 +299,11 @@ def main():
                      help="Restrict to this slug allow-list (exact match). "
                           "Default: all slugs in the data.")
     box.add_argument("--exclude", nargs="*", default=[], help="Slugs to exclude")
+    box.add_argument("--style", choices=["box", "strip"], default="box",
+                     help="Render style. 'box' = horizontal boxplot (default, "
+                          "implies quartile structure that's noisy at low n). "
+                          "'strip' = dots + min-max range bar + mean marker, "
+                          "honest about sample size.")
     box.add_argument("--highlight", nargs="*", default=None, help=highlight_help)
 
     cmp = subparsers.add_parser("compare", help="Dumbbell chart comparing two tasks")
@@ -303,7 +339,7 @@ def main():
         if not scores:
             print(f"No data for task '{args.task}'")
             return
-        plot_boxplots(scores, args.task, output, highlights)
+        plot_boxplots(scores, args.task, output, highlights, style=args.style)
 
     elif args.command == "compare":
         output = Path(args.output) if args.output else Path(__file__).resolve().parent.parent / "results" / "plots" / f"{args.task_a}_vs_{args.task_b}.png"

@@ -29,19 +29,13 @@ purged.
 
 ## Current examples
 
-- `yaml-1.2-cpp17-sonnet-perfectly-inverted/` — claude-sonnet-4-6 wrote a
-  YAML 1.2 validator whose `parse()` returned the boolean inverse of the
-  correct answer for **every** test in the corpus. Confusion matrix
-  TP=0/FN=256/FP=94/TN=0 → MCC = exactly -1.000. A one-character edit to
-  the print statement would have given MCC = +1.000 (perfect score), but
-  the model didn't see the shortcut and instead rewrote the parser
-  internals on the next turn.
-- `yaml-1.2-cpp17-kimi-perfectly-inverted-stuck/` — moonshot-kimi-k2.6-thinking
-  hit the same MCC = -1.000 failure mode (correct print, inverted `parse()`),
-  but **across 4 submissions in 2 independent attempts on different days**
-  rather than recovering on the next turn. Best escape was MCC=-0.597 in
-  one attempt; the other never escaped. Pair with the sonnet entry for a
-  recover-vs-stuck comparison on the same root-cause failure.
+- `yaml-1.2-cpp17-kimi-infinite-loop/` — moonshot-kimi-k2.6-thinking
+  produced a YAML 1.2 validator that hangs on every input due to an
+  unconditional `while (true)` loop in `parse_l_yaml_stream`. Every
+  test fails by timeout, no verdict is ever printed, and MCC evaluates
+  to exactly -1.000 algebraically (TP=TN=0 with both off-diagonals
+  non-zero). The bug is localized to a single five-line function; the
+  README points at the exact lines.
 - `yaml-1.2-cpp17-gpt-5.5-repro/` — gpt-5.5-xhigh's strongest yaml-1.2-cpp17
   attempt (MCC=0.912, 12 disagreements out of 350) packaged as a
   reproducer. Includes the model's `solution.cpp`, byte-exact input bytes
