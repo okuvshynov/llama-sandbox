@@ -42,6 +42,15 @@ purged.
   rather than recovering on the next turn. Best escape was MCC=-0.597 in
   one attempt; the other never escaped. Pair with the sonnet entry for a
   recover-vs-stuck comparison on the same root-cause failure.
+- `yaml-1.2-cpp17-gpt-5.5-repro/` — gpt-5.5-xhigh's strongest yaml-1.2-cpp17
+  attempt (MCC=0.912, 12 disagreements out of 350) packaged as a
+  reproducer. Includes the model's `solution.cpp`, byte-exact input bytes
+  for two specific failures (one false-negative case `26DV`, one
+  false-positive `H7J7`), and copy-pasteable shell recipes that build the
+  solution, install libfyaml as a third-party reference parser, and run
+  all three (model / libfyaml / yaml-test-suite ground truth) on each
+  case. Lets a reviewer poke at specific disagreements without trusting
+  any of our scoring code.
 
 ## Adding an example
 
