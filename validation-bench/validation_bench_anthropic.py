@@ -149,11 +149,20 @@ def stream_completion(
 
     final_usage = getattr(final, "usage", None)
     if final_usage is not None:
+        # Anthropic splits input across three disjoint billing buckets:
+        #   - input_tokens               : fresh tokens, full rate
+        #   - cache_read_input_tokens    : tokens served from cache, discounted
+        #   - cache_creation_input_tokens: tokens written to cache, premium rate
+        # All three are needed to reconstruct the *total context size* the model
+        # processed (= input + cached + cache_creation). Without cache_creation,
+        # first-attempt-on-task rows look tiny (~9 tokens) because the prompt
+        # baseline lands in cache_creation, not input.
         usage = {
-            "input_tokens":     getattr(final_usage, "input_tokens", None),
-            "output_tokens":    getattr(final_usage, "output_tokens", None),
-            "reasoning_tokens": None,  # Anthropic includes thinking in output_tokens
-            "cached_tokens":    getattr(final_usage, "cache_read_input_tokens", None),
+            "input_tokens":          getattr(final_usage, "input_tokens", None),
+            "output_tokens":         getattr(final_usage, "output_tokens", None),
+            "reasoning_tokens":      None,  # Anthropic includes thinking in output_tokens
+            "cached_tokens":         getattr(final_usage, "cache_read_input_tokens", None),
+            "cache_creation_tokens": getattr(final_usage, "cache_creation_input_tokens", None),
         }
     else:
         usage = None

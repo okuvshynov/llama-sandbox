@@ -124,21 +124,90 @@ Notable signal lost: opus 0.964, gpt-5.5 0.993, kimi 0.937, kimi 0.944.
 Real scores but truncated; we don't know what the next turns would have
 done.
 
+## Token accounting: non-submit-iteration usage is dropped
+
+Discovered during a separate investigation of "why are kimi's output_tokens
+so low when it routinely hits max_tokens?" The bug is structural and
+provider-agnostic: **the harness loop discards API-call usage when the
+model doesn't produce a submission on that iteration.**
+
+Concrete evidence (kimi yaml-1.2-cpp17): most attempts have an iter-0 turn
+where the model burns 60–120K tokens of `reasoning_content` then fails to
+submit. Examples: 482K reasoning_content_chars (~120K tokens, near the
+128K max_tokens limit), 491K, 480K, 449K, 460K… These no-submit turns
+produce no row in `results.jsonl`, and **their API call's token usage is
+discarded entirely**, not rolled into the next iteration's row.
+
+Verified that Moonshot's `completion_tokens` *does* include reasoning
+(matches char-based estimate within rounding for submitting iterations).
+So the recording bug is in the harness, not the provider. Same in all
+runners (`validation_bench_{anthropic,moonshot,fireworks,deepseek,openai}.py`).
+
+Headline: kimi yaml's recorded cumulative `output_tokens` of ~88K across
+5 iterations is several × under the actual emission. Each provider's
+runner has the same bug.
+
+### Two fix paths
+
+**A) Accumulate non-submit usage into the next submission's row**
+(small; no schema change):
+
+- Maintain `pending_usage` accumulator in the runner loop.
+- On non-submit iteration: add the API call's tokens to `pending_usage`.
+- On submitting iteration: merge `pending_usage + this_call_usage`,
+  stamp on the row's `usage`, reset accumulator.
+- Effect: the row's `output_tokens` represents *all model work that led
+  to this submission*, not just the final API call's emission.
+
+Pros: tiny diff, no schema changes, fixes the under-counting immediately.
+Cons: loses per-iteration granularity; can't tell from a row "how much
+was the no-submit thinking vs the submission's response."
+
+**B) Write a row per iteration regardless of submit** (aligns with the
+atomic-results / error-taxonomy plan above):
+
+- Each iteration → row, including non-submit ones.
+- Non-submit rows: `mcc: null`, `error: "no_submit"`, full token usage.
+- Submitting rows: as today.
+- Total tokens for an attempt = simple sum across rows of the attempt.
+
+Pros: full granularity preserved; aligns with `attempt_status` /
+events-vs-results split; "iteration count == budget?" is one query.
+Cons: bigger schema/tooling impact; downstream filters that assume
+"every row has an MCC" need to add null handling.
+
+### Recommendation
+
+Land **A** as a near-term fix when revisiting harness termination. Land
+**B** as part of the broader atomic-results refactor — at that point the
+per-iteration row becomes the natural data unit anyway, and **A**'s
+accumulator can be removed.
+
+The under-counting is currently silent. Any analysis using
+`output_tokens` (current `tokens-xan.sh`, future cost views) should
+flag a caveat for kimi and any other slug with high non-submit-iteration
+rates until **A** lands.
+
 ## Harness fixes (priority order)
 
 1. **Wrap post-tool-result model call in retry loop** (3 attempts, exponential
    backoff). This is the dominant `tool→silence` failure mode — addresses
    13/14 of our incompletes.
-2. **Write explicit `attempt_status` row at attempt teardown** in the
+2. **Capture non-submit-iteration usage** (fix A above) so token totals
+   reflect actual model emission. Provider-agnostic; same change in each
+   runner's iteration loop.
+3. **Write explicit `attempt_status` row at attempt teardown** in the
    harness's `finally` block, so even crashes leave a marker.
-3. **For "Invalid tool arguments"**: change policy to "treat as failed turn,
+4. **For "Invalid tool arguments"**: change policy to "treat as failed turn,
    continue loop." Currently aborts whole attempt unnecessarily.
-4. **For empty assistant response**: treat as failed turn, continue with
+5. **For empty assistant response**: treat as failed turn, continue with
    nudge ("you returned an empty response, try again"). Currently the loop
    doesn't recover.
-5. **Buffer-then-commit semantics for `results.jsonl`**: hold attempt's rows
+6. **Buffer-then-commit semantics for `results.jsonl`**: hold attempt's rows
    in memory; flush as a batch at clean teardown only.
-6. **Rename current `results.jsonl` → `events.jsonl`** as part of the cutover.
+7. **Rename current `results.jsonl` → `events.jsonl`** as part of the cutover.
+8. **Per-iteration row writing** (fix B above) replacing fix A; lands as
+   part of the events.jsonl + attempt_status refactor.
 
 ## Open questions
 

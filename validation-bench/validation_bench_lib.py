@@ -175,7 +175,20 @@ VB_VERBOSE = bool(os.environ.get("VB_VERBOSE"))
 #           provider script is affected; fireworks / deepseek / moonshot /
 #           llama_cpp continue using Chat Completions (their endpoints
 #           don't support a Responses analog).
-VB_VERSION = "0.0.11"
+#   0.0.12 — Anthropic provider now captures `cache_creation_input_tokens`
+#           as a new `cache_creation_tokens` field on result rows. Anthropic
+#           splits input across three disjoint billing buckets — fresh
+#           (`input_tokens`), cache-read (`cached_tokens`), cache-write
+#           (`cache_creation_tokens`) — and prior to this we only kept the
+#           first two. That made first-attempt-on-task rows look ~9 tokens
+#           of input even though the prompt was ~9000 tokens (the prompt
+#           landed in cache_creation, which we dropped). Total context size
+#           the Anthropic model processed = input + cached + cache_creation.
+#           OpenAI / litellm / Moonshot continue to expose `input_tokens` as
+#           the full count with `cached_tokens` as a subset, so their
+#           `cache_creation_tokens` is None. Scoring rules unchanged. Older
+#           rows lack the field; analysis tools should treat as null.
+VB_VERSION = "0.0.12"
 
 
 @dataclass
@@ -224,10 +237,11 @@ class Submission:
     matrix: ConfusionMatrix | None = None  # None for failed submissions
     error: str | None = None  # e.g. "compile_error", "compile_timeout"
     # Per-turn API token usage in normalized form. The dict carries
-    # {input_tokens, output_tokens, reasoning_tokens, cached_tokens}; any
-    # field can be None on providers that don't expose it. Recorded on
-    # the *first* Submission of a turn (subsequent submissions in the
-    # same turn share the API call, so their usage is left as None).
+    # {input_tokens, output_tokens, reasoning_tokens, cached_tokens,
+    # cache_creation_tokens}; any field can be None on providers that
+    # don't expose it. Recorded on the *first* Submission of a turn
+    # (subsequent submissions in the same turn share the API call, so
+    # their usage is left as None).
     usage: dict | None = None
     # Wall time spent calling the model's streaming API for this turn.
     # Recorded on the *first* Submission of a turn for the same reason as
@@ -266,11 +280,18 @@ def _log(msg: str):
 # capture the raw object during stream iteration and run it through one of
 # the helpers below to land in a single normalized dict:
 #
-#     {input_tokens, output_tokens, reasoning_tokens, cached_tokens}
+#     {input_tokens, output_tokens, reasoning_tokens, cached_tokens,
+#      cache_creation_tokens}
 #
 # Any field that the provider doesn't expose is left as None — e.g. Anthropic
 # bundles thinking tokens into output_tokens (no separate reasoning count),
-# llama.cpp doesn't track reasoning tokens at all, etc.
+# llama.cpp doesn't track reasoning tokens at all, OpenAI/litellm don't
+# expose a separate cache-write bucket (their cached_tokens is a subset of
+# input_tokens, not a disjoint billing line), etc.
+#
+# Anthropic-specific: `input_tokens`, `cached_tokens`, and
+# `cache_creation_tokens` are *disjoint* billing buckets — fresh, cache-
+# read, cache-write. Total context the model processed = sum of all three.
 
 def _safe_attr(obj, *names):
     """Walk a chain of attributes, returning None if any link is missing/None."""
@@ -293,10 +314,11 @@ def normalize_openai_chat_usage(usage) -> dict | None:
               # DeepSeek uses prompt_cache_hit_tokens
               or getattr(usage, "prompt_cache_hit_tokens", None))
     return {
-        "input_tokens":     getattr(usage, "prompt_tokens", None),
-        "output_tokens":    getattr(usage, "completion_tokens", None),
-        "reasoning_tokens": _safe_attr(usage, "completion_tokens_details", "reasoning_tokens"),
-        "cached_tokens":    cached,
+        "input_tokens":          getattr(usage, "prompt_tokens", None),
+        "output_tokens":         getattr(usage, "completion_tokens", None),
+        "reasoning_tokens":      _safe_attr(usage, "completion_tokens_details", "reasoning_tokens"),
+        "cached_tokens":         cached,
+        "cache_creation_tokens": None,  # OpenAI-shape doesn't expose a separate cache-write bucket
     }
 
 
@@ -305,10 +327,11 @@ def normalize_openai_responses_usage(usage) -> dict | None:
     if usage is None:
         return None
     return {
-        "input_tokens":     getattr(usage, "input_tokens", None),
-        "output_tokens":    getattr(usage, "output_tokens", None),
-        "reasoning_tokens": _safe_attr(usage, "output_tokens_details", "reasoning_tokens"),
-        "cached_tokens":    _safe_attr(usage, "input_tokens_details", "cached_tokens"),
+        "input_tokens":          getattr(usage, "input_tokens", None),
+        "output_tokens":         getattr(usage, "output_tokens", None),
+        "reasoning_tokens":      _safe_attr(usage, "output_tokens_details", "reasoning_tokens"),
+        "cached_tokens":         _safe_attr(usage, "input_tokens_details", "cached_tokens"),
+        "cache_creation_tokens": None,  # OpenAI Responses doesn't expose a separate cache-write bucket
     }
 
 
@@ -329,10 +352,11 @@ def normalize_anthropic_usage(start_usage: dict | None,
             return start_usage.get(field)
         return None
     return {
-        "input_tokens":     pick("input_tokens"),
-        "output_tokens":    pick("output_tokens"),
-        "reasoning_tokens": None,
-        "cached_tokens":    pick("cache_read_input_tokens"),
+        "input_tokens":          pick("input_tokens"),
+        "output_tokens":         pick("output_tokens"),
+        "reasoning_tokens":      None,
+        "cached_tokens":         pick("cache_read_input_tokens"),
+        "cache_creation_tokens": pick("cache_creation_input_tokens"),
     }
 
 
@@ -346,10 +370,11 @@ def normalize_llama_cpp_timings(timings: dict | None) -> dict | None:
     prompt_n = timings.get("prompt_n", 0) or 0
     cache_n  = timings.get("cache_n",  0) or 0
     return {
-        "input_tokens":     prompt_n + cache_n,
-        "output_tokens":    timings.get("predicted_n"),
-        "reasoning_tokens": None,
-        "cached_tokens":    cache_n if cache_n > 0 else None,
+        "input_tokens":          prompt_n + cache_n,
+        "output_tokens":         timings.get("predicted_n"),
+        "reasoning_tokens":      None,
+        "cached_tokens":         cache_n if cache_n > 0 else None,
+        "cache_creation_tokens": None,  # llama.cpp's KV cache isn't billed separately
     }
 
 
