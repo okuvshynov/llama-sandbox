@@ -3,18 +3,26 @@
 # across attempts. mcc_of_N = max(mcc) over turns 0..N-1; lets you see whether
 # a model one-shots (high mcc_of_1) or relies on the multi-turn submit loop to
 # climb (mcc_of_5 >> mcc_of_1). Error rows (no mcc) count as -1 so a botched
-# turn pulls the average down.
-# Usage: progression-xan.sh [task]   # default: toml-1.0-cpp17
+# turn pulls the average down. Companion to tiers-xan.sh — same denominator,
+# but reporting the running mean instead of P(>= threshold).
+# Usage: progression-xan.sh [task] [slug_filter]
+#   task        — task name (default: toml-1.0-cpp17)
+#   slug_filter — xan filter expression (default: true)
+# Examples:
+#   progression-xan.sh toml-1.0-nospec-cpp17
+#   progression-xan.sh yaml-1.2-cpp17 'slug ne "qwen3.6-27b-q6_k_xl"'
 # Requires xan and xan-dev (https://github.com/medialab/xan).
 set -euo pipefail
 
 TASK="${1:-toml-1.0-cpp17}"
+SLUG_FILTER="${2:-true}"
 RESULTS="$(dirname "$0")/../results/results.jsonl"
 
 echo "=== $TASK: avg best-MCC-after-N-turns per slug ==="
 
 xan-dev from "$RESULTS" \
   | xan-dev filter "task eq \"$TASK\"" \
+  | xan-dev filter "$SLUG_FILTER" \
   | xan-dev groupby attempt_id,slug \
       'max(if(turn < 1, or(mcc, -1), -1)) as mcc_of_1,
        max(if(turn < 2, or(mcc, -1), -1)) as mcc_of_2,
