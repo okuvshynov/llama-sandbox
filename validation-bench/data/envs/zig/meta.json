@@ -1,0 +1,9 @@
+{
+  "language": "Zig",
+  "language_display_name": "Zig 0.13",
+  "docker_image": "vb-sandbox-zig",
+  "source_filename": "solution.zig",
+  "prepare_cmd": "zig build-exe -O ReleaseSafe solution.zig",
+  "run_cmd": "./solution",
+  "compile_cmd": "zig build-exe -O ReleaseSafe solution.zig"
+}
