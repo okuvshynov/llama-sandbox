@@ -42,13 +42,21 @@ in N, regardless of how much was actually observed. Three failures:
      uncertainty is huge. Bootstrap can mirror the sampling distribution
      only when the resample size matches the actual sample size.
 
-I/O
----
+Modes
+-----
+--mode cross   : one row per slug; each cell is the cross-task
+                 mean-of-means with its bootstrap SE (preserving n_i
+                 per task, then averaging across tasks).
+--mode pertask : one row per (slug, task); each cell is the per-task
+                 mean μ_i with its within-task bootstrap SE (just
+                 resample n_i values from this task's observations).
+--format csv|json (default csv).
+
 Mirrors the slug + task shortlist of leaderboard-xan.sh /
-leaderboard-pertask-xan.sh. Outputs CSV: slug, a1..a5 (point estimate),
-a1_se..a5_se (bootstrap SE).
+leaderboard-pertask-xan.sh.
 
 Usage: leaderboard-bootstrap.py [results.jsonl]
+       leaderboard-bootstrap.py --mode pertask --format json
        leaderboard-bootstrap.py --B 2000 --seed 12648430
 """
 import argparse
@@ -113,14 +121,17 @@ def load_per_task(path):
     return by_st
 
 
-def cell_stats(task_data, T_idx, B, rng):
-    """Returns (point_estimate, bootstrap_SE) for one cell."""
-    # task_data: list of len-k, each element is list of len-n_i of cum-best vectors len TURNS
-    task_means = [
-        sum(v[T_idx] for v in obs) / len(obs) for obs in task_data
-    ]
-    point = sum(task_means) / len(task_means)
+def _std(xs):
+    if len(xs) < 2:
+        return 0.0
+    m = sum(xs) / len(xs)
+    return math.sqrt(sum((x - m) ** 2 for x in xs) / (len(xs) - 1))
 
+
+def cell_stats_cross(task_data, T_idx, B, rng):
+    """Cross-task cell: returns (point_estimate, bootstrap_SE)."""
+    task_means = [sum(v[T_idx] for v in obs) / len(obs) for obs in task_data]
+    point = sum(task_means) / len(task_means)
     boot = []
     for _ in range(B):
         tm = []
@@ -131,26 +142,26 @@ def cell_stats(task_data, T_idx, B, rng):
                 s += obs[rng.randrange(n)][T_idx]
             tm.append(s / n)
         boot.append(sum(tm) / len(tm))
-
-    mean_b = sum(boot) / len(boot)
-    var_b = sum((x - mean_b) ** 2 for x in boot) / (len(boot) - 1)
-    return point, math.sqrt(var_b)
+    return point, _std(boot)
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("results", nargs="?",
-                    default=str(Path(__file__).resolve().parent.parent / "results" / "results.jsonl"))
-    ap.add_argument("--B", type=int, default=2000)
-    ap.add_argument("--seed", type=int, default=0xC0FFEE)
-    args = ap.parse_args()
+def cell_stats_pertask(obs, T_idx, B, rng):
+    """Per-task cell: returns (mean, bootstrap_SE) for a single task's
+    n_i observations of cumulative-best at turn T_idx+1."""
+    vals = [v[T_idx] for v in obs]
+    n = len(vals)
+    point = sum(vals) / n
+    boot = []
+    for _ in range(B):
+        s = 0.0
+        for _ in range(n):
+            s += vals[rng.randrange(n)]
+        boot.append(s / n)
+    return point, _std(boot)
 
-    by_st = load_per_task(args.results)
-    rng = random.Random(args.seed)
 
-    header = ["slug"] + [f"a{T}" for T in range(1, TURNS + 1)] + [f"a{T}_se" for T in range(1, TURNS + 1)]
-    print(",".join(header))
-
+def run_cross(by_st, B, rng):
+    rows = []
     for slug in SLUGS:
         task_data = []
         skip = False
@@ -163,16 +174,65 @@ def main():
             task_data.append(obs)
         if skip:
             continue
-
-        means = []
-        ses = []
+        means, ses = [], []
         for T_idx in range(TURNS):
-            m, s = cell_stats(task_data, T_idx, args.B, rng)
-            means.append(m)
-            ses.append(s)
+            m, s = cell_stats_cross(task_data, T_idx, B, rng)
+            means.append(m); ses.append(s)
+        rows.append({"slug": slug, "a": means, "se": ses})
+    return rows
 
-        cols = [slug] + [f"{m:.4f}" for m in means] + [f"{s:.4f}" for s in ses]
-        print(",".join(cols))
+
+def run_pertask(by_st, B, rng):
+    rows = []
+    for slug in SLUGS:
+        for task in TASKS:
+            obs = by_st.get((slug, task))
+            if not obs:
+                print(f"WARN: no data for {slug} / {task}", file=sys.stderr)
+                continue
+            means, ses = [], []
+            for T_idx in range(TURNS):
+                m, s = cell_stats_pertask(obs, T_idx, B, rng)
+                means.append(m); ses.append(s)
+            rows.append({"slug": slug, "task": task, "n": len(obs),
+                         "a": means, "se": ses})
+    return rows
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("results", nargs="?",
+                    default=str(Path(__file__).resolve().parent.parent / "results" / "results.jsonl"))
+    ap.add_argument("--mode", choices=["cross", "pertask"], default="cross")
+    ap.add_argument("--format", choices=["csv", "json"], default="csv")
+    ap.add_argument("--B", type=int, default=2000)
+    ap.add_argument("--seed", type=int, default=0xC0FFEE)
+    args = ap.parse_args()
+
+    by_st = load_per_task(args.results)
+    rng = random.Random(args.seed)
+    rows = run_cross(by_st, args.B, rng) if args.mode == "cross" else run_pertask(by_st, args.B, rng)
+
+    if args.format == "json":
+        json.dump({"mode": args.mode, "B": args.B, "turns": TURNS, "rows": rows},
+                  sys.stdout, indent=2)
+        print()
+        return
+
+    if args.mode == "cross":
+        header = ["slug"] + [f"a{T}" for T in range(1, TURNS + 1)] + [f"a{T}_se" for T in range(1, TURNS + 1)]
+        print(",".join(header))
+        for r in rows:
+            cols = [r["slug"]] + [f"{m:.4f}" for m in r["a"]] + [f"{s:.4f}" for s in r["se"]]
+            print(",".join(cols))
+    else:
+        header = ["slug", "task", "n_a"] + [f"a{T}" for T in range(1, TURNS + 1)] + [f"a{T}_se" for T in range(1, TURNS + 1)]
+        print(",".join(header))
+        for r in rows:
+            cols = [r["slug"], r["task"], str(r["n"])]
+            cols += [f"{m:.4f}" for m in r["a"]]
+            cols += [f"{s:.4f}" for s in r["se"]]
+            print(",".join(cols))
 
 
 if __name__ == "__main__":
