@@ -1,0 +1,9 @@
+{
+  "language": "D",
+  "language_display_name": "D (LDC 1.30)",
+  "docker_image": "vb-sandbox-d",
+  "source_filename": "solution.d",
+  "prepare_cmd": "ldc2 -O2 -of=solution solution.d",
+  "run_cmd": "./solution",
+  "compile_cmd": "ldc2 -O2 -of=solution solution.d"
+}
