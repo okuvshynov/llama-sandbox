@@ -268,4 +268,84 @@ print(f'  {len(tests)} test cases written to $out '
 generate_yaml_test_suite_spec "yaml-1.2"
 generate_yaml_test_suite_spec "yaml-1.2-nospec"
 
+# JSONTestSuite uses a flat test_parsing/ directory with filename-prefix
+# labels (y_/n_/i_). We accept y_ as valid, n_ as invalid, and skip i_
+# (implementation-defined behavior — different libraries legitimately
+# disagree on these, so they're not part of the scored corpus).
+JSON_REPO_URL="https://github.com/nst/JSONTestSuite.git"
+JSON_PINNED_COMMIT="1ef36fa01286573e846ac449e8683f8833c5b26a"  # master HEAD 2024-11-22
+JSON_CACHE_DIR=".cache/JSONTestSuite"
+
+generate_jsontestsuite_spec() {
+    local spec="$1"        # e.g. json-1.0
+    local spec_dir="data/specs/$spec"
+
+    echo "Setting up $spec ..."
+
+    if [ -d "$JSON_CACHE_DIR/.git" ]; then
+        local current
+        current=$(git -C "$JSON_CACHE_DIR" rev-parse HEAD)
+        if [ "$current" != "$JSON_PINNED_COMMIT" ]; then
+            echo "  Updating $JSON_CACHE_DIR to $JSON_PINNED_COMMIT ..."
+            git -C "$JSON_CACHE_DIR" fetch origin
+            git -C "$JSON_CACHE_DIR" checkout "$JSON_PINNED_COMMIT"
+        fi
+    else
+        echo "  Cloning JSONTestSuite ..."
+        mkdir -p "$(dirname "$JSON_CACHE_DIR")"
+        git clone "$JSON_REPO_URL" "$JSON_CACHE_DIR"
+        git -C "$JSON_CACHE_DIR" checkout "$JSON_PINNED_COMMIT"
+    fi
+
+    # Symlink tests/ -> the cached test_parsing/ directory so input_file
+    # paths in tests.jsonl resolve uniformly via spec_dir/tests/<name>.json.
+    local link="$spec_dir/tests"
+    local target="../../../$JSON_CACHE_DIR/test_parsing"
+    rm -rf "$link"
+    ln -s "$target" "$link"
+
+    local out="$spec_dir/tests.jsonl"
+    python3 -c "
+import json, os
+
+cache = '$JSON_CACHE_DIR/test_parsing'
+
+tests = []
+skipped_i = 0
+for fname in sorted(os.listdir(cache)):
+    if not fname.endswith('.json'):
+        continue
+    if fname.startswith('y_'):
+        expected = 'valid'
+    elif fname.startswith('n_'):
+        expected = 'invalid'
+    elif fname.startswith('i_'):
+        skipped_i += 1
+        continue
+    else:
+        continue
+    test_id = fname[:-5]
+    label = f'{expected}: {test_id}'
+    tests.append({
+        'id': test_id,
+        'input_file': 'tests/' + fname,
+        'expected': expected,
+        'label': label,
+    })
+
+with open('$out', 'w') as f:
+    for t in tests:
+        f.write(json.dumps(t, ensure_ascii=False) + '\n')
+
+n_valid = sum(1 for t in tests if t['expected'] == 'valid')
+n_invalid = sum(1 for t in tests if t['expected'] == 'invalid')
+print(f'  {len(tests)} test cases written to $out '
+      f'({n_valid} valid, {n_invalid} invalid; '
+      f'skipped {skipped_i} i_* implementation-defined)')
+"
+}
+
+generate_jsontestsuite_spec "json-1.0"
+generate_jsontestsuite_spec "json-1.0-nospec"
+
 echo "Done."

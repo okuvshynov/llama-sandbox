@@ -1,0 +1,5 @@
+{
+  "display_name": "JSON 1.0 (RFC 8259 / ECMA-404)",
+  "has_spec_body": true,
+  "oracle": "nst/JSONTestSuite test_parsing/: y_* must accept, n_* must reject; i_* implementation-defined skipped"
+}
