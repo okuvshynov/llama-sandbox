@@ -4,18 +4,26 @@ Usage:
     streamlit run scripts/viewer.py -- <path-to-results.jsonl>
     streamlit run scripts/viewer.py                 # defaults to results/results.jsonl
 
-First-page surface: a slug × task matrix with toggleable slugs / envs /
-tasks. Cell statistic matches matrix-xan.sh / vb-may-10.sh exactly —
-best-MCC-per-attempt aggregated as `[min; max], avg=A, n=K/N`, where
-K = attempts with at least one scored turn, N = every attempt the
-model started. Future pages (per-attempt drill-down, progression
-plots, sweep monitor) slot in via Streamlit's pages/ pattern.
+Pages (selectable in the sidebar):
+  - Matrix: slug × task cell matrix with toggleable slugs/envs/tasks.
+    Cell statistic matches matrix-xan.sh / vb-may-10.sh exactly —
+    `[min; max], avg=A, n=K/N`. Drill-in widget below the matrix
+    navigates to the Cell page for a chosen (slug, task).
+  - Cell: all attempts in one (slug, task), with per-turn MCC trend
+    + sortable table. Selecting a row + clicking "View attempt →"
+    navigates to the Attempt page.
+  - Attempt: per-turn source code + compile output + test failures
+    for one (slug, task, attempt_id). Reads artifacts from
+    VB_DATA_DIR (default ~/.vb-data; same convention as the harness).
 
-Data is re-read every 10 seconds via @st.cache_data(ttl=10), so the
-matrix updates as a sweep adds rows to results.jsonl. Partial lines
-at the file tail (from in-flight writes) are tolerated.
+Data is re-read every 10 seconds via @st.cache_data(ttl=10), so views
+update as a sweep adds rows to results.jsonl. Partial lines at the file
+tail (from in-flight writes) are tolerated.
 """
+import os
+import re
 import sys
+from collections import Counter
 from pathlib import Path
 
 import pandas as pd
@@ -24,6 +32,49 @@ import streamlit as st
 
 HERE = Path(__file__).resolve().parent
 DEFAULT_RESULTS = HERE.parent / "results" / "results.jsonl"
+VB_DATA_DIR = Path(os.environ.get("VB_DATA_DIR") or (Path.home() / ".vb-data"))
+
+
+# --- env → syntax-highlight language hint -------------------------------
+
+ENV_LANG = {
+    "cpp17": "cpp",
+    "go": "go",
+    "zig": "zig",
+    "d": "d",
+    "lua": "lua",
+    "erlang": "erlang",
+}
+
+PAGES = ["Matrix", "Cell", "Attempt"]
+
+
+# --- session-state init -------------------------------------------------
+
+def init_session_state() -> None:
+    # Note: we use `current_page` (not `page`) as the source of truth so the
+    # sidebar radio widget can have an auto-generated key without owning the
+    # navigation state. Streamlit forbids programmatic writes to a keyed
+    # widget's session_state slot after the widget has rendered — we hit
+    # that error trying to set `st.session_state.page` from a drill-in
+    # button below the radio. Separating them avoids the collision.
+    defaults = {
+        "current_page": "Matrix",
+        "sel_slug": None,
+        "sel_task": None,
+        "sel_attempt": None,
+    }
+    for k, v in defaults.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
+
+
+def _go_to(page: str, **kwargs) -> None:
+    """Set the current page (+ any extra session-state fields) and rerun."""
+    st.session_state.current_page = page
+    for k, v in kwargs.items():
+        st.session_state[k] = v
+    st.rerun()
 
 # --- column-order presets (match vb-may-10's hierarchy) -----------------
 
@@ -126,16 +177,451 @@ def build_matrix(df: pd.DataFrame, slugs: list, tasks: list) -> tuple[pd.DataFra
     return text_matrix, mean_matrix
 
 
-# --- UI ------------------------------------------------------------------
+# --- per-attempt tab -----------------------------------------------------
+
+# Parses "(<reason>, expected '<verdict>')" out of a FAIL line. The reason
+# itself can contain a single nested parenthesised clause (e.g.
+# "timeout (no verdict printed)"), so we accept one optional `(...)` inside.
+_FAIL_REASON_RE = re.compile(r"\(([^()]*(?:\([^()]*\)[^()]*)?), expected '")
+
+
+def _categorize_fail_line(line: str) -> str:
+    m = _FAIL_REASON_RE.search(line)
+    if not m:
+        return "unparseable"
+    reason = m.group(1)
+    # Collapse digit sequences so e.g. `exit=124` and `exit=137` bucket
+    # together. Same heuristic the matrix-xan failure analysis uses.
+    return re.sub(r"\d+", "N", reason)
+
+
+def _read_text(path: Path) -> str | None:
+    """Best-effort read; returns None if missing or unreadable."""
+    if not path.exists():
+        return None
+    try:
+        return path.read_text(errors="replace")
+    except Exception:
+        return None
+
+
+def _attempt_summary_label(aid: str, rows: pd.DataFrame) -> str:
+    """Compact dropdown label: short_id (slug × task, best=X.XXX or 'all errs')."""
+    rows = rows.sort_values("turn")
+    first = rows.iloc[0]
+    mccs = rows["mcc"].dropna() if "mcc" in rows.columns else pd.Series([], dtype=float)
+    if len(mccs):
+        tag = f"best={mccs.max():+.3f}"
+    else:
+        tag = "all errs"
+    short_aid = aid.rsplit("-", 1)[-1] if "-" in aid else aid[-12:]
+    return f"{short_aid}  ({first['slug']} × {first['task']}, {tag})"
+
+
+def render_per_attempt_tab(df: pd.DataFrame, preselected_aid: str | None = None) -> None:
+    st.markdown("### Per-attempt drill-down")
+    st.caption(
+        "Pick (slug, task, attempt) — then expand each turn to see the "
+        "submitted source, compiler output, and test failures. "
+        f"Artifacts read from `{VB_DATA_DIR}` (override with VB_DATA_DIR env var)."
+    )
+
+    # If a pre-selected attempt_id was passed in (from the Cell page's
+    # "View attempt →" drill-in), pre-fill the filters to match it so the
+    # user lands directly on the requested attempt.
+    if preselected_aid:
+        match = df[df["attempt_id"] == preselected_aid]
+        if not match.empty:
+            r0 = match.iloc[0]
+            preselected_slug = r0["slug"]
+            preselected_task = r0["task"]
+        else:
+            preselected_aid = None
+            preselected_slug = preselected_task = None
+    else:
+        preselected_slug = preselected_task = None
+
+    # Cascading filters: slug → task → attempt.
+    all_slugs = sorted(df["slug"].dropna().unique())
+    c1, c2 = st.columns(2)
+    with c1:
+        slug_opts = ["(any)"] + all_slugs
+        default_idx = slug_opts.index(preselected_slug) if preselected_slug in slug_opts else 0
+        sel_slug = st.selectbox("Slug", slug_opts, index=default_idx)
+    sub = df if sel_slug == "(any)" else df[df["slug"] == sel_slug]
+    all_tasks = sorted(sub["task"].dropna().unique())
+    with c2:
+        task_opts = ["(any)"] + all_tasks
+        default_idx = task_opts.index(preselected_task) if preselected_task in task_opts else 0
+        sel_task = st.selectbox("Task", task_opts, index=default_idx)
+    sub = sub if sel_task == "(any)" else sub[sub["task"] == sel_task]
+
+    # Attempts sorted by timestamp (newest first) so recent runs are easy to find.
+    if "attempt_timestamp" in sub.columns:
+        attempts_df = sub.drop_duplicates("attempt_id").sort_values(
+            "attempt_timestamp", ascending=False)
+    else:
+        attempts_df = sub.drop_duplicates("attempt_id")
+    attempts = attempts_df["attempt_id"].tolist()
+
+    if not attempts:
+        st.warning("No attempts match the current filters.")
+        return
+
+    default_attempt_idx = attempts.index(preselected_aid) if preselected_aid in attempts else 0
+    sel_aid = st.selectbox(
+        f"Attempt ({len(attempts)} match)",
+        attempts,
+        index=default_attempt_idx,
+        format_func=lambda aid: _attempt_summary_label(aid, sub[sub["attempt_id"] == aid]),
+    )
+    if not sel_aid:
+        return
+
+    rows = sub[sub["attempt_id"] == sel_aid].sort_values("turn")
+    first = rows.iloc[0]
+
+    # --- attempt summary block ---
+    st.markdown(f"**attempt_id:** `{sel_aid}`")
+    meta_l, meta_r = st.columns(2)
+    with meta_l:
+        st.markdown(f"**slug:** {first['slug']}")
+        st.markdown(f"**task:** {first['task']} (env={first.get('env','?')})")
+        if "model" in rows.columns:
+            st.markdown(f"**model:** `{first.get('model','?')}`")
+    with meta_r:
+        if "attempt_timestamp" in rows.columns:
+            st.markdown(f"**timestamp:** {first.get('attempt_timestamp','?')}")
+        if "attempt_elapsed_seconds" in rows.columns:
+            elapsed = first.get("attempt_elapsed_seconds")
+            if pd.notna(elapsed):
+                st.markdown(f"**elapsed:** {elapsed:.1f}s")
+        if "vb_version" in rows.columns:
+            st.markdown(f"**vb_version:** {first.get('vb_version','?')}")
+
+    # Per-turn one-liner trend.
+    trend = []
+    for _, r in rows.iterrows():
+        turn = int(r["turn"])
+        if pd.notna(r.get("mcc")):
+            trend.append(f"t{turn}: {r['mcc']:+.3f}")
+        else:
+            trend.append(f"t{turn}: {r.get('error','?')}")
+    st.markdown("**Per-turn:** " + " · ".join(trend))
+
+    # Artifact directory.
+    attempt_dir = VB_DATA_DIR / sel_aid
+    if not attempt_dir.is_dir():
+        st.warning(
+            f"Artifact dir not found: `{attempt_dir}`. Per-turn details unavailable. "
+            "(If you have artifacts under a different path, set the VB_DATA_DIR env var.)"
+        )
+        return
+    st.caption(f"Artifacts: `{attempt_dir}`")
+    st.divider()
+
+    # --- per-turn details ---
+    lang = ENV_LANG.get(first.get("env", ""), "text")
+    for _, r in rows.iterrows():
+        turn = int(r["turn"])
+        sub_dir = attempt_dir / "submissions" / str(turn + 1)
+
+        # Header
+        if pd.notna(r.get("mcc")):
+            cm_parts = [f"TP={int(r.get('tp',0))}",
+                        f"FN={int(r.get('fn',0))}",
+                        f"FP={int(r.get('fp',0))}",
+                        f"TN={int(r.get('tn',0))}"]
+            head = f"### Turn {turn} — MCC={r['mcc']:+.4f} ({' '.join(cm_parts)})"
+        else:
+            head = f"### Turn {turn} — ⚠️ {r.get('error','?')}"
+        st.markdown(head)
+
+        if not sub_dir.is_dir():
+            st.caption(f"_No submission dir at `{sub_dir.relative_to(VB_DATA_DIR)}`._")
+            continue
+
+        # Source.
+        src_paths = sorted(sub_dir.glob("solution.*"))
+        if src_paths:
+            src_path = src_paths[0]
+            src_text = _read_text(src_path) or ""
+            lines = src_text.count("\n") + 1
+            with st.expander(f"📄 `{src_path.name}` — {len(src_text):,} chars, {lines:,} lines"):
+                st.code(src_text, language=lang)
+        else:
+            st.caption("_No source file saved._")
+
+        # Compiler output (show only if non-empty; auto-expand on real errors).
+        comp_text = _read_text(sub_dir / "compiler.txt") or ""
+        if comp_text.strip():
+            with st.expander(f"⚠️ Compiler output ({len(comp_text)} bytes)", expanded=True):
+                st.code(comp_text, language="text")
+
+        # Test failures.
+        tests_text = _read_text(sub_dir / "tests.txt") or ""
+        fail_lines = [l for l in tests_text.splitlines() if l.startswith("FAIL")]
+        if fail_lines:
+            cats = Counter(_categorize_fail_line(l) for l in fail_lines)
+            top = ", ".join(f"{n}× `{k}`" for k, n in cats.most_common(4))
+            label = f"❌ {len(fail_lines)} test failures · {top}"
+            with st.expander(label):
+                # Show all failure categories first (sorted desc), then the
+                # full raw list. Categories handle the case where the user
+                # just wants the shape, not every individual line.
+                st.markdown("**Failure categories** (top 20):")
+                cat_df = pd.DataFrame(
+                    [(k, n) for k, n in cats.most_common(20)],
+                    columns=["reason", "count"],
+                )
+                st.dataframe(cat_df, hide_index=True, use_container_width=True)
+                st.markdown("**Full failure list:**")
+                st.code(tests_text, language="text")
+
+        st.divider()
+
+
+# --- Matrix page ---------------------------------------------------------
+
+def render_matrix_page(df: pd.DataFrame) -> None:
+    st.markdown("### Cross-(slug, task) matrix")
+    st.caption(
+        "Cells show `[min; max], avg=mean, n=K/N` where K = attempts "
+        "with at least one scored turn, N = every attempt started. "
+        "Background gradient colors by mean MCC (red −1 ↔ green +1)."
+    )
+
+    # Discover dimensions from the data.
+    all_slugs = sorted(df["slug"].unique())
+    all_envs = sorted(df["env"].dropna().unique()) if "env" in df.columns else []
+    all_tasks = sorted(df["task"].unique())
+
+    # Filter widgets — three independent multi-selects.
+    c1, c2, c3 = st.columns([2, 1, 2])
+    with c1:
+        sel_slugs = st.multiselect("Slugs", all_slugs, default=all_slugs)
+    with c2:
+        sel_envs = st.multiselect("Envs", all_envs, default=all_envs)
+    with c3:
+        task_candidates = [
+            t for t in all_tasks
+            if any(t.endswith(f"-{e}") or t == e for e in sel_envs)
+        ] if sel_envs else all_tasks
+        sel_tasks = st.multiselect("Tasks", all_tasks, default=task_candidates)
+
+    c4, c5 = st.columns(2)
+    with c4:
+        col_order_name = st.selectbox(
+            "Column order", list(COL_ORDERINGS.keys()),
+            index=1,  # default to hierarchical
+        )
+    with c5:
+        row_order = st.selectbox(
+            "Row order",
+            ["alphabetical", "by mean best-MCC (desc)"],
+            index=0,
+        )
+
+    if not sel_slugs or not sel_tasks:
+        st.warning("Select at least one slug and one task.")
+        return
+
+    col_key = COL_ORDERINGS[col_order_name]
+    ordered_tasks = sorted(sel_tasks, key=col_key)
+    text_matrix, mean_matrix = build_matrix(df, sel_slugs, ordered_tasks)
+
+    if row_order.startswith("by mean"):
+        score = mean_matrix.mean(axis=1, skipna=True).fillna(-2)
+        ordered_slugs = score.sort_values(ascending=False).index.tolist()
+    else:
+        ordered_slugs = sorted(sel_slugs)
+    text_matrix = text_matrix.reindex(ordered_slugs)
+    mean_matrix = mean_matrix.reindex(ordered_slugs)
+
+    styled = text_matrix.style.apply(
+        lambda _col: [
+            f"background-color: {_mcc_color(v)}" if pd.notna(v) else ""
+            for v in mean_matrix[_col.name]
+        ],
+        axis=0,
+    )
+
+    # --- Click-to-drill: row + column selection identifies a cell. ---
+    # st.dataframe doesn't support single-cell click directly, but it does
+    # accept a list of selection modes. Clicking a row selects the slug;
+    # clicking a column header selects the task. Together they identify
+    # the (slug, task) cell to drill into.
+    event = st.dataframe(
+        styled,
+        use_container_width=True,
+        height=min(35 * (len(ordered_slugs) + 1) + 10, 800),
+        selection_mode=["single-row", "single-column"],
+        on_select="rerun",
+        key="matrix_table",
+    )
+
+    sel_rows = event.selection.rows if hasattr(event, "selection") else []
+    sel_cols = event.selection.columns if hasattr(event, "selection") else []
+    selected_slug = ordered_slugs[sel_rows[0]] if sel_rows else None
+    selected_task = sel_cols[0] if sel_cols else None
+
+    st.markdown("---")
+    if selected_slug and selected_task:
+        st.markdown(f"**Selected cell:** `{selected_slug}` × `{selected_task}`")
+        st.caption("Click 'View cell →' to see all attempts in this (slug, task).")
+        if st.button("View cell →", use_container_width=False):
+            _go_to("Cell", sel_slug=selected_slug, sel_task=selected_task)
+    elif selected_slug:
+        st.caption(f"Row selected: `{selected_slug}`. Click a **column header** to pick a task.")
+    elif selected_task:
+        st.caption(f"Column selected: `{selected_task}`. Click any **row** to pick a slug.")
+    else:
+        st.caption("Click any row + any column header in the matrix to pick a cell, then 'View cell →'.")
+
+
+# --- Cell page -----------------------------------------------------------
+
+def _per_turn_trend(rows: pd.DataFrame) -> str:
+    """Compact text sparkline: '+0.123 ▸ err ▸ +0.215 ▸ +0.220'."""
+    rows = rows.sort_values("turn")
+    parts = []
+    for _, r in rows.iterrows():
+        if pd.notna(r.get("mcc")):
+            parts.append(f"{r['mcc']:+.3f}")
+        else:
+            parts.append("err")
+    return " ▸ ".join(parts)
+
+
+def _attempts_table(cell_df: pd.DataFrame) -> pd.DataFrame:
+    """One row per attempt in the cell. Columns:
+       attempt, timestamp, best_mcc, n_turns, n_errs, per_turn_trend,
+       model, attempt_id."""
+    rows = []
+    for aid, group in cell_df.groupby("attempt_id"):
+        group = group.sort_values("turn")
+        first = group.iloc[0]
+        mccs = group["mcc"].dropna() if "mcc" in group.columns else pd.Series([], dtype=float)
+        best = float(mccs.max()) if len(mccs) else None
+        n_turns = len(group)
+        n_errs = int(group.get("error", pd.Series([None] * len(group))).notna().sum())
+        ts = first.get("attempt_timestamp", "")
+        # Truncate "2026-05-10T11:31:42.123456+00:00" → "2026-05-10 11:31"
+        if isinstance(ts, str) and len(ts) >= 16:
+            ts_short = ts[:10] + " " + ts[11:16]
+        else:
+            ts_short = str(ts)
+        short_aid = aid.rsplit("-", 1)[-1] if "-" in aid else aid[-12:]
+        rows.append({
+            "attempt": short_aid,
+            "timestamp": ts_short,
+            "best_mcc": best,
+            "n_turns": n_turns,
+            "n_errs": n_errs,
+            "per_turn_trend": _per_turn_trend(group),
+            "model": first.get("model", ""),
+            "attempt_id": aid,
+        })
+    out = pd.DataFrame(rows)
+    if not out.empty:
+        # Default sort: best_mcc desc, then timestamp desc.
+        out = out.sort_values(["best_mcc", "timestamp"],
+                              ascending=[False, False],
+                              na_position="last").reset_index(drop=True)
+    return out
+
+
+def render_cell_page(df: pd.DataFrame) -> None:
+    st.markdown("### Cell view — attempts in one (slug, task)")
+    st.caption(
+        "Sortable list of all attempts in the chosen cell. "
+        "Select a row + click 'View attempt →' to drill into per-turn detail."
+    )
+
+    all_slugs = sorted(df["slug"].dropna().unique())
+    all_tasks = sorted(df["task"].dropna().unique())
+
+    c1, c2 = st.columns(2)
+    with c1:
+        default_slug = (st.session_state.sel_slug
+                        if st.session_state.sel_slug in all_slugs
+                        else all_slugs[0] if all_slugs else None)
+        sel_slug = st.selectbox(
+            "Slug", all_slugs,
+            index=all_slugs.index(default_slug) if default_slug else 0,
+        )
+    with c2:
+        # Filter task options to those that have data for this slug.
+        valid_tasks = sorted(df[df["slug"] == sel_slug]["task"].unique()) if sel_slug else []
+        if not valid_tasks:
+            st.warning(f"No data for slug `{sel_slug}`.")
+            return
+        default_task = (st.session_state.sel_task
+                        if st.session_state.sel_task in valid_tasks
+                        else valid_tasks[0])
+        sel_task = st.selectbox(
+            "Task", valid_tasks,
+            index=valid_tasks.index(default_task) if default_task else 0,
+        )
+
+    cell_df = df[(df["slug"] == sel_slug) & (df["task"] == sel_task)]
+    if cell_df.empty:
+        st.warning(f"No data for ({sel_slug}, {sel_task}).")
+        return
+
+    # Cell summary line (mirror Matrix's cell text).
+    cell_stat = aggregate_cell(cell_df)
+    st.markdown(f"**Cell:** `{sel_slug}` × `{sel_task}` — {cell_stat['text']}")
+
+    # Attempts table with row selection.
+    table = _attempts_table(cell_df)
+
+    # Hide the full attempt_id by default (it's wide); keep it last column
+    # so it's available on horizontal scroll.
+    display_cols = ["attempt", "timestamp", "best_mcc", "n_turns",
+                    "n_errs", "per_turn_trend", "model", "attempt_id"]
+    table = table[display_cols]
+
+    event = st.dataframe(
+        table,
+        use_container_width=True,
+        hide_index=True,
+        height=min(35 * (len(table) + 1) + 10, 600),
+        selection_mode="single-row",
+        on_select="rerun",
+        key="cell_attempts_table",
+    )
+
+    # Drill-in button — enabled only when a row is selected.
+    selected_rows = event.selection.rows if hasattr(event, "selection") else []
+    if selected_rows:
+        row_idx = selected_rows[0]
+        selected_aid = table.iloc[row_idx]["attempt_id"]
+        st.markdown(f"Selected: `{selected_aid}`")
+        if st.button("View attempt →"):
+            _go_to("Attempt", sel_attempt=selected_aid)
+    else:
+        st.caption("Click a row in the table above to enable 'View attempt →'.")
+
+
+# --- Attempt page wrapper -----------------------------------------------
+
+def render_attempt_page(df: pd.DataFrame) -> None:
+    """Wrap render_per_attempt_tab so a pre-selected attempt from
+    session_state is honored on entry (e.g. when the user clicked
+    'View attempt →' on the Cell page)."""
+    render_per_attempt_tab(df, preselected_aid=st.session_state.sel_attempt)
+
+
+# --- main dispatcher ----------------------------------------------------
 
 def main():
-    # Argv after `--` is the source path.
     source = sys.argv[1] if len(sys.argv) > 1 else str(DEFAULT_RESULTS)
 
     st.set_page_config(page_title="validation-bench viewer",
                        layout="wide", initial_sidebar_state="expanded")
+    init_session_state()
 
-    # Sidebar: source metadata.
     with st.sidebar:
         st.markdown("## validation-bench")
         st.markdown(f"**Source:** `{source}`")
@@ -154,83 +640,23 @@ def main():
         if "env" in df.columns:
             st.markdown(f"**Envs:** {df['env'].nunique()}")
 
-    # Main: tabs (only Matrix for v1; placeholders for future pages).
-    tab_matrix, tab_attempts = st.tabs(["Matrix", "Per-attempt (TODO)"])
+        st.markdown("---")
+        # Radio is unkeyed so it doesn't own `current_page` in session_state.
+        # We drive the displayed selection via `index=` and react to user
+        # changes by rerunning.
+        page_idx = PAGES.index(st.session_state.current_page)
+        new_page = st.radio("Page", PAGES, index=page_idx)
+        if new_page != st.session_state.current_page:
+            st.session_state.current_page = new_page
+            st.rerun()
 
-    with tab_matrix:
-        st.markdown("### Cross-(slug, task) matrix")
-        st.caption(
-            "Cells show `[min; max], avg=mean, n=K/N` where K = attempts "
-            "with at least one scored turn, N = every attempt started. "
-            "Background gradient colors by mean MCC (red −1 ↔ green +1)."
-        )
-
-        # Discover dimensions from the data.
-        all_slugs = sorted(df["slug"].unique())
-        all_envs = sorted(df["env"].dropna().unique()) if "env" in df.columns else []
-        all_tasks = sorted(df["task"].unique())
-
-        # Filter widgets — three independent multi-selects.
-        c1, c2, c3 = st.columns([2, 1, 2])
-        with c1:
-            sel_slugs = st.multiselect("Slugs", all_slugs, default=all_slugs)
-        with c2:
-            sel_envs = st.multiselect("Envs", all_envs, default=all_envs)
-        with c3:
-            # Default task list = tasks matching the selected envs.
-            task_candidates = [
-                t for t in all_tasks
-                if any(t.endswith(f"-{e}") or t == e for e in sel_envs)
-            ] if sel_envs else all_tasks
-            sel_tasks = st.multiselect("Tasks", all_tasks, default=task_candidates)
-
-        # Ordering.
-        c4, c5 = st.columns(2)
-        with c4:
-            col_order_name = st.selectbox(
-                "Column order", list(COL_ORDERINGS.keys()),
-                index=1,  # default to hierarchical
-            )
-        with c5:
-            row_order = st.selectbox(
-                "Row order",
-                ["alphabetical", "by mean best-MCC (desc)"],
-                index=0,
-            )
-
-        if not sel_slugs or not sel_tasks:
-            st.warning("Select at least one slug and one task.")
-            return
-
-        # Sort tasks by chosen ordering.
-        col_key = COL_ORDERINGS[col_order_name]
-        ordered_tasks = sorted(sel_tasks, key=col_key)
-
-        # Build the matrix.
-        text_matrix, mean_matrix = build_matrix(df, sel_slugs, ordered_tasks)
-
-        # Row order.
-        if row_order.startswith("by mean"):
-            score = mean_matrix.mean(axis=1, skipna=True).fillna(-2)
-            ordered_slugs = score.sort_values(ascending=False).index.tolist()
-        else:
-            ordered_slugs = sorted(sel_slugs)
-        text_matrix = text_matrix.reindex(ordered_slugs)
-        mean_matrix = mean_matrix.reindex(ordered_slugs)
-
-        # Render: text content with background gradient driven by mean.
-        styled = text_matrix.style.apply(
-            lambda _col: [
-                f"background-color: {_mcc_color(v)}" if pd.notna(v) else ""
-                for v in mean_matrix[_col.name]
-            ],
-            axis=0,
-        )
-        st.dataframe(styled, use_container_width=True, height=min(35 * (len(ordered_slugs) + 1) + 10, 800))
-
-    with tab_attempts:
-        st.markdown("### Per-attempt drill-down")
-        st.caption("Coming soon — click a cell in Matrix to see attempt-level details.")
+    page = st.session_state.current_page
+    if page == "Matrix":
+        render_matrix_page(df)
+    elif page == "Cell":
+        render_cell_page(df)
+    elif page == "Attempt":
+        render_attempt_page(df)
 
 
 def _mcc_color(mcc: float) -> str:
