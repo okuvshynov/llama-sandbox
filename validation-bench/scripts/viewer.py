@@ -18,12 +18,14 @@ Pages (selectable in the sidebar):
   - Leaderboard: one row per model, one column per τ in a fine grid
     (0.00, 0.05, ..., 1.00 — step 0.05, 21 columns), plus a `support`
     column ("n_cells | n_attempts") so thin-coverage rows are visible.
-    Each τ entry is the macro-average of per-cell pass rates
-    `(1/T)·Σ K_t/N_t` across the filtered tasks. Toggle restricts to
-    tasks where every selected model has data (default on) so
-    cross-model rows are apples-to-apples. Sort by any column to see
-    e.g. who's best at "near-perfect" (τ≥0.90) vs "at all usable"
-    (τ≥0.30).
+    Two aggregation modes via radio:
+      - "raw macro-avg": (1/T)·Σ K_t/N_t — every cell counts equally
+        regardless of N_t.
+      - "Beta-Binomial shrinkage": per-(model,τ) latent Beta(α,β)
+        prior fit by MLE; small-N cells get pulled toward the model's
+        mean rate. Models with too few cells fall back to raw rates.
+    Toggle restricts to tasks where every selected model has data
+    (default on) so cross-model rows are apples-to-apples.
   - Cell: all attempts in one (slug, task), with per-turn MCC trend
     + sortable table. Selecting a row + clicking "View attempt →"
     navigates to the Attempt page.
@@ -41,8 +43,11 @@ import sys
 from collections import Counter
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import streamlit as st
+from scipy.optimize import minimize
+from scipy.stats import betabinom
 
 
 HERE = Path(__file__).resolve().parent
@@ -681,25 +686,88 @@ def render_threshold_matrix_page(df: pd.DataFrame) -> None:
 # v1 implements (1) only, with an "intersection" toggle so that cross-
 # model rows are aggregated over the same task set (apples-to-apples).
 
-def _cell_pass_rates(group: pd.DataFrame, taus: list[float]) -> dict[float, float]:
-    """For one (slug, task) cell, return {τ: K/N} for each τ.
+def _per_cell_counts(group: pd.DataFrame, taus: list[float]
+                     ) -> tuple[int, dict[float, int]]:
+    """For one (slug, task) cell, return (N_total, {τ: K_passed}).
 
-    K = attempts whose best per-turn MCC ≥ τ.
-    N = every attempt that started (non-scored attempts count as fail at
-    any τ ≥ 0). NaN if N=0 (caller should filter empty cells out first).
+    K_passed = attempts whose best per-turn MCC ≥ τ.
+    N_total  = every attempt that started (non-scored attempts count
+               toward N but never toward K, so non-compile = fail at
+               any τ ≥ 0).
     """
-    n_total = group["attempt_id"].nunique()
+    n_total = int(group["attempt_id"].nunique())
     if n_total == 0:
-        return {tau: float("nan") for tau in taus}
+        return 0, {tau: 0 for tau in taus}
     with_mcc = group.dropna(subset=["mcc"])
     if with_mcc.empty:
-        return {tau: 0.0 for tau in taus}
+        return n_total, {tau: 0 for tau in taus}
     best = with_mcc.groupby("attempt_id")["mcc"].max()
-    return {tau: float((best >= tau).sum()) / n_total for tau in taus}
+    return n_total, {tau: int((best >= tau).sum()) for tau in taus}
+
+
+def fit_beta_binomial(k_arr: list[int], n_arr: list[int],
+                      max_concentration: float = 1000.0
+                      ) -> tuple[float, float] | None:
+    """MLE fit of (α, β) for the per-model latent Beta prior on cell rates.
+
+    Model:
+      p_t       ~ Beta(α, β)            (per-cell true rate)
+      K_t | p_t ~ Binomial(N_t, p_t)    (observed passes)
+      ⇒ marginal: K_t ~ BetaBinomial(N_t, α, β)
+
+    Returns None when the fit is degenerate — caller should fall back to
+    raw rates. Degenerate cases:
+      - fewer than 2 cells (no between-cell variance to estimate);
+      - all observed rates identical (no signal for the prior shape);
+      - optimizer fails to converge.
+
+    Initialization: method-of-moments on the observed cell rates, with
+    a floor on the variance to prevent ν → ∞ on near-uniform data.
+    Optimizer: Nelder-Mead on log(α), log(β) — keeps params positive
+    without bounds-handling, robust to small-N likelihood landscapes.
+    A concentration cap (α + β ≤ max_concentration) keeps the optimizer
+    from running away when all cells are 0/0 or all 1/1.
+    """
+    k = np.asarray(k_arr, dtype=float)
+    n = np.asarray(n_arr, dtype=float)
+    if len(k) < 2:
+        return None
+    p_hat = np.where(n > 0, k / np.maximum(n, 1), 0.0)
+    if np.allclose(p_hat, p_hat[0]):
+        return None  # no between-cell variance — prior is unidentifiable
+
+    mu = float(np.mean(p_hat))
+    var = float(np.var(p_hat, ddof=1))
+    var = max(var, 1e-3)
+    nu0 = max(mu * (1 - mu) / var - 1, 0.5)
+    alpha0 = float(np.clip(mu * nu0, 0.1, 100.0))
+    beta0 = float(np.clip((1 - mu) * nu0, 0.1, 100.0))
+
+    def neg_log_lik(log_params):
+        alpha, beta = np.exp(log_params)
+        if alpha + beta > max_concentration:
+            return 1e10
+        return -float(np.sum(betabinom.logpmf(k, n, alpha, beta)))
+
+    res = minimize(neg_log_lik, np.log([alpha0, beta0]),
+                   method="Nelder-Mead",
+                   options={"xatol": 1e-3, "fatol": 1e-4, "maxiter": 500})
+    if not res.success:
+        return None
+    alpha, beta = (float(x) for x in np.exp(res.x))
+    return alpha, beta
+
+
+def _shrunken_rate(k: int, n: int, alpha: float, beta: float) -> float:
+    """Posterior mean of p_t under prior Beta(α, β) and observation
+    K_t=k, N_t=n. The K=0/N=0 case never arises since cells with no
+    attempts are excluded earlier in build_leaderboard."""
+    return (alpha + k) / (alpha + beta + n)
 
 
 def build_leaderboard(df: pd.DataFrame, slugs: list[str], tasks: list[str],
-                      taus: list[float], intersection: bool
+                      taus: list[float], intersection: bool,
+                      shrunken: bool = False,
                       ) -> tuple[pd.DataFrame, list[str]]:
     """Returns (leaderboard_df, tasks_used).
 
@@ -708,6 +776,18 @@ def build_leaderboard(df: pd.DataFrame, slugs: list[str], tasks: list[str],
       column per τ ("≥0.00", "≥0.05", ...).
     tasks_used is the actual task set after intersection filtering, so
     the page can show what was aggregated.
+
+    When shrunken=False (default): each τ entry is the macro-average of
+    raw per-cell pass rates — `(1/T) · Σ_t K_t/N_t`.
+
+    When shrunken=True: for each (model, τ), fit a per-model latent
+    Beta(α, β) prior on cell rates via Empirical Bayes (MLE on the
+    Beta-Binomial marginal), then macro-average the *shrunken* rates
+    (α + K_t)/(α + β + N_t). Cells with small N get pulled toward the
+    model's mean rate; cells with large N stay near observed. Models
+    with too few cells (or all-equal cell rates) for a meaningful
+    prior fit fall back to raw rates per-τ — fit_beta_binomial returns
+    None in those cases.
 
     Note: support is a single text column rather than two int columns
     because (a) cells and attempts are highly correlated context numbers
@@ -737,16 +817,31 @@ def build_leaderboard(df: pd.DataFrame, slugs: list[str], tasks: list[str],
             rows.append({"slug": slug, "support": "0 | 0",
                          **{c: float("nan") for c in tau_cols}})
             continue
-        per_cell = []
-        n_attempts_total = 0
+        # Collect per-cell (N_t, {τ: K_t}) once per cell.
+        cell_counts = []
         for task in slug_tasks:
             cell_df = sub[(sub["slug"] == slug) & (sub["task"] == task)]
-            per_cell.append(_cell_pass_rates(cell_df, taus))
-            n_attempts_total += cell_df["attempt_id"].nunique()
-        macro = {
-            _tau_col(tau): sum(c[tau] for c in per_cell) / len(per_cell)
-            for tau in taus
-        }
+            cell_counts.append(_per_cell_counts(cell_df, taus))
+        n_attempts_total = sum(n for n, _ in cell_counts)
+
+        macro: dict[str, float] = {}
+        for tau in taus:
+            k_arr = [k_at[tau] for _, k_at in cell_counts]
+            n_arr = [n for n, _ in cell_counts]
+            if shrunken:
+                fit = fit_beta_binomial(k_arr, n_arr)
+                if fit is not None:
+                    alpha, beta = fit
+                    rates = [_shrunken_rate(k, n, alpha, beta)
+                             for k, n in zip(k_arr, n_arr)]
+                else:
+                    rates = [k / n if n > 0 else 0.0
+                             for k, n in zip(k_arr, n_arr)]
+            else:
+                rates = [k / n if n > 0 else 0.0
+                         for k, n in zip(k_arr, n_arr)]
+            macro[_tau_col(tau)] = sum(rates) / len(rates)
+
         rows.append({"slug": slug,
                      "support": f"{len(slug_tasks)} | {n_attempts_total}",
                      **macro})
@@ -761,15 +856,17 @@ def _tau_col(tau: float) -> str:
 def render_leaderboard_page(df: pd.DataFrame) -> None:
     st.markdown("### Leaderboard — macro-averaged P(MCC ≥ τ) per model")
     st.caption(
-        "One row per model. Each τ column is the unweighted mean of per-cell "
-        "pass rates across the filtered tasks: `(1/T) · Σ_t K_t/N_t`. "
-        "Cells with no attempts contribute 0 to K but still count toward N "
-        "(non-compile = fail). Toggle 'restrict to intersection' to limit "
-        "tasks to those every selected model has attempted, so rows are "
-        "apples-to-apples. The `support` column shows `n_cells | n_attempts` "
-        "— how many tasks contributed and the total attempts those cells "
-        "summed to (helps eyeball whether a cell at the top with thin "
-        "support deserves trust)."
+        "One row per model. Each τ column is the model's aggregated pass "
+        "rate at threshold τ — either the raw macro-average of per-cell "
+        "rates `(1/T)·Σ K_t/N_t`, or a Beta-Binomial shrunk version where "
+        "each model gets a per-τ latent Beta(α,β) prior fit by MLE and "
+        "small-N cells are pulled toward the model's mean. Toggle "
+        "'restrict to intersection' to limit tasks to those every "
+        "selected model has attempted, so rows are apples-to-apples. "
+        "The `support` column shows `n_cells | n_attempts` — how many "
+        "tasks contributed and the total attempts those cells summed "
+        "to (helps eyeball whether a cell at the top with thin support "
+        "deserves trust)."
     )
 
     all_slugs = sorted(df["slug"].unique())
@@ -791,16 +888,26 @@ def render_leaderboard_page(df: pd.DataFrame) -> None:
         sel_tasks = st.multiselect("Tasks", all_tasks, default=task_candidates,
                                    key="lb_tasks")
 
-    c4, c5 = st.columns(2)
+    c4, c5, c6 = st.columns([2, 2, 1])
     with c4:
         intersection = st.checkbox(
             "Restrict to intersection (only tasks every selected model has attempted)",
             value=True, key="lb_intersection",
             help=("Off → each model is averaged over whatever tasks it has data "
-                  "for, so rows aren't directly comparable. The `n_cells` "
-                  "column shows the per-model task count either way."),
+                  "for, so rows aren't directly comparable. The `support` "
+                  "column shows the per-model task/attempt count either way."),
         )
     with c5:
+        mode = st.radio(
+            "Aggregation",
+            ["raw macro-avg", "Beta-Binomial shrinkage"],
+            index=0, horizontal=True, key="lb_mode",
+            help=("Raw: (1/T)·Σ K_t/N_t — every cell weighed equally regardless "
+                  "of N_t.  Shrunken: per-model latent Beta(α,β) prior fit by "
+                  "MLE; small-N cells get pulled toward the model's average. "
+                  "Shrinkage is per-τ (each threshold gets its own prior)."),
+        )
+    with c6:
         sort_options = [_tau_col(t) for t in LEADERBOARD_TAUS] + ["slug"]
         default_sort = _tau_col(0.50)
         sort_col = st.selectbox(
@@ -814,7 +921,8 @@ def render_leaderboard_page(df: pd.DataFrame) -> None:
         return
 
     lb, tasks_used = build_leaderboard(
-        df, sel_slugs, sel_tasks, LEADERBOARD_TAUS, intersection
+        df, sel_slugs, sel_tasks, LEADERBOARD_TAUS, intersection,
+        shrunken=(mode == "Beta-Binomial shrinkage"),
     )
 
     if intersection and not tasks_used:
