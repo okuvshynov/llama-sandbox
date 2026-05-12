@@ -24,8 +24,11 @@ Pages (selectable in the sidebar):
       - "Beta-Binomial shrinkage": per-(model,τ) latent Beta(α,β)
         prior fit by MLE; small-N cells get pulled toward the model's
         mean rate. Models with too few cells fall back to raw rates.
-    Toggle restricts to tasks where every selected model has data
-    (default on) so cross-model rows are apples-to-apples.
+    Optional 95% CI checkbox computes a two-stage parametric bootstrap
+    (resample cells × resample within-cell binomially, B=500) and
+    renders cells as "point [lo, hi]". Sort + colour stay on the
+    point estimate. Toggle restricts to tasks where every selected
+    model has data (default on) so cross-model rows are apples-to-apples.
   - Cell: all attempts in one (slug, task), with per-turn MCC trend
     + sortable table. Selecting a row + clicking "View attempt →"
     navigates to the Attempt page.
@@ -765,13 +768,77 @@ def _shrunken_rate(k: int, n: int, alpha: float, beta: float) -> float:
     return (alpha + k) / (alpha + beta + n)
 
 
+def _bootstrap_macro_avg_ci(k_arr: list[int], n_arr: list[int], *,
+                            shrunken: bool,
+                            alpha: float | None = None,
+                            beta: float | None = None,
+                            B: int = 500, ci_level: float = 0.95,
+                            seed: int = 0) -> tuple[float, float]:
+    """Two-stage parametric bootstrap CI for the macro-average of per-cell
+    pass rates. Used for both raw and shrunken aggregation.
+
+    Stage 1: resample T cells with replacement. Captures uncertainty
+             from "which tasks happened to be in our sample" — usually
+             the dominant source of variance in our T=3..9 regime.
+    Stage 2: for each resampled cell, draw K* ~ Binomial(N, K/N).
+             Captures within-cell binomial noise, which matters more
+             when N is small (e.g. N=2 or N=3 cells).
+
+    For shrunken=True, the supplied (α, β) are held FIXED across
+    bootstrap iterations rather than refit per iteration. This is
+    deliberate: refitting would multiply runtime by the MLE cost (~20ms
+    per fit × B × |τ| × |slugs| would push the page into multi-minute
+    redraws), and the dominant uncertainty is in the cells, not the
+    prior shape. Reasonable for a v1 visualization; would matter more
+    if the prior fit itself were unstable.
+
+    Returns (lo, hi) at the requested CI level (default 95%).
+    Falls back to raw bootstrap if shrunken=True but α/β are None
+    (degenerate fit on the original data).
+    """
+    T = len(k_arr)
+    if T == 0:
+        return float("nan"), float("nan")
+    if shrunken and (alpha is None or beta is None):
+        shrunken = False
+
+    k = np.asarray(k_arr, dtype=int)
+    n = np.asarray(n_arr, dtype=int)
+    rng = np.random.default_rng(seed)
+
+    # Vectorize the bootstrap loop: draw all B×T cell indices at once,
+    # then a single Binomial draw per cell-iteration. Reshape and reduce.
+    idx = rng.integers(0, T, size=(B, T))
+    n_b = n[idx]
+    k_b = k[idx]
+    # Within-cell binomial resample using observed cell rate.
+    with np.errstate(divide="ignore", invalid="ignore"):
+        p_obs = np.where(n_b > 0, k_b / np.maximum(n_b, 1), 0.0)
+    k_star = rng.binomial(n_b, p_obs)
+
+    if shrunken:
+        rates = (alpha + k_star) / (alpha + beta + n_b)
+    else:
+        with np.errstate(divide="ignore", invalid="ignore"):
+            rates = np.where(n_b > 0, k_star / np.maximum(n_b, 1), 0.0)
+
+    macro = rates.mean(axis=1)
+    half = (1 - ci_level) / 2 * 100
+    lo, hi = np.percentile(macro, [half, 100 - half])
+    return float(lo), float(hi)
+
+
 def build_leaderboard(df: pd.DataFrame, slugs: list[str], tasks: list[str],
                       taus: list[float], intersection: bool,
                       shrunken: bool = False,
-                      ) -> tuple[pd.DataFrame, list[str]]:
+                      ci_B: int = 0, ci_level: float = 0.95,
+                      ) -> tuple[pd.DataFrame, pd.DataFrame | None,
+                                 pd.DataFrame | None, list[str]]:
     """Returns (leaderboard_df, tasks_used).
 
-    leaderboard_df has one row per slug, columns:
+    Returns (point_df, lo_df, hi_df, tasks_used).
+
+    point_df has one row per slug, columns:
       slug, support ("cells | attempts" — e.g. "7 | 45"), then one
       column per τ ("≥0.00", "≥0.05", ...).
     tasks_used is the actual task set after intersection filtering, so
@@ -788,6 +855,12 @@ def build_leaderboard(df: pd.DataFrame, slugs: list[str], tasks: list[str],
     with too few cells (or all-equal cell rates) for a meaningful
     prior fit fall back to raw rates per-τ — fit_beta_binomial returns
     None in those cases.
+
+    When ci_B > 0: also compute (1-ci_level) percentile CIs via
+    _bootstrap_macro_avg_ci using ci_B iterations. lo_df and hi_df
+    are returned alongside point_df, with the same row index and τ
+    columns. When ci_B == 0 (default), lo_df and hi_df are None — the
+    common path stays free of bootstrap cost.
 
     Note: support is a single text column rather than two int columns
     because (a) cells and attempts are highly correlated context numbers
@@ -810,12 +883,16 @@ def build_leaderboard(df: pd.DataFrame, slugs: list[str], tasks: list[str],
         tasks_used = list(tasks)
 
     tau_cols = [_tau_col(tau) for tau in taus]
-    rows = []
-    for slug in slugs:
+    rows: list[dict] = []
+    lo_rows: list[dict] = []
+    hi_rows: list[dict] = []
+    for slug_idx, slug in enumerate(slugs):
         slug_tasks = [t for t in tasks_used if bool(cell_present.loc[slug, t])]
         if not slug_tasks:
             rows.append({"slug": slug, "support": "0 | 0",
                          **{c: float("nan") for c in tau_cols}})
+            lo_rows.append({c: float("nan") for c in tau_cols})
+            hi_rows.append({c: float("nan") for c in tau_cols})
             continue
         # Collect per-cell (N_t, {τ: K_t}) once per cell.
         cell_counts = []
@@ -825,9 +902,12 @@ def build_leaderboard(df: pd.DataFrame, slugs: list[str], tasks: list[str],
         n_attempts_total = sum(n for n, _ in cell_counts)
 
         macro: dict[str, float] = {}
-        for tau in taus:
+        lo_d: dict[str, float] = {}
+        hi_d: dict[str, float] = {}
+        for tau_idx, tau in enumerate(taus):
             k_arr = [k_at[tau] for _, k_at in cell_counts]
             n_arr = [n for n, _ in cell_counts]
+            alpha = beta = None
             if shrunken:
                 fit = fit_beta_binomial(k_arr, n_arr)
                 if fit is not None:
@@ -840,13 +920,34 @@ def build_leaderboard(df: pd.DataFrame, slugs: list[str], tasks: list[str],
             else:
                 rates = [k / n if n > 0 else 0.0
                          for k, n in zip(k_arr, n_arr)]
-            macro[_tau_col(tau)] = sum(rates) / len(rates)
+            col = _tau_col(tau)
+            macro[col] = sum(rates) / len(rates)
+            if ci_B > 0:
+                # Per-(slug, τ) seed so the bootstrap is reproducible
+                # and independent across cells (avoids correlated draws
+                # if the same RNG state were reused).
+                seed = 1_000_000 * slug_idx + tau_idx
+                lo, hi = _bootstrap_macro_avg_ci(
+                    k_arr, n_arr,
+                    shrunken=shrunken, alpha=alpha, beta=beta,
+                    B=ci_B, ci_level=ci_level, seed=seed,
+                )
+                lo_d[col] = lo
+                hi_d[col] = hi
 
         rows.append({"slug": slug,
                      "support": f"{len(slug_tasks)} | {n_attempts_total}",
                      **macro})
+        lo_rows.append(lo_d)
+        hi_rows.append(hi_d)
 
-    return pd.DataFrame(rows), tasks_used
+    point_df = pd.DataFrame(rows)
+    if ci_B > 0:
+        lo_df = pd.DataFrame(lo_rows)
+        hi_df = pd.DataFrame(hi_rows)
+    else:
+        lo_df = hi_df = None
+    return point_df, lo_df, hi_df, tasks_used
 
 
 def _tau_col(tau: float) -> str:
@@ -861,12 +962,13 @@ def render_leaderboard_page(df: pd.DataFrame) -> None:
         "rates `(1/T)·Σ K_t/N_t`, or a Beta-Binomial shrunk version where "
         "each model gets a per-τ latent Beta(α,β) prior fit by MLE and "
         "small-N cells are pulled toward the model's mean. Toggle "
-        "'restrict to intersection' to limit tasks to those every "
-        "selected model has attempted, so rows are apples-to-apples. "
-        "The `support` column shows `n_cells | n_attempts` — how many "
-        "tasks contributed and the total attempts those cells summed "
-        "to (helps eyeball whether a cell at the top with thin support "
-        "deserves trust)."
+        "'Show 95% CIs' to render cells as `point [lo, hi]` from a "
+        "two-stage parametric bootstrap (resample cells × resample "
+        "within-cell binomially). Toggle 'restrict to intersection' to "
+        "limit tasks to those every selected model has attempted, so "
+        "rows are apples-to-apples. The `support` column shows "
+        "`n_cells | n_attempts` — how many tasks contributed and the "
+        "total attempts those cells summed to."
     )
 
     all_slugs = sorted(df["slug"].unique())
@@ -888,7 +990,7 @@ def render_leaderboard_page(df: pd.DataFrame) -> None:
         sel_tasks = st.multiselect("Tasks", all_tasks, default=task_candidates,
                                    key="lb_tasks")
 
-    c4, c5, c6 = st.columns([2, 2, 1])
+    c4, c5, c6, c7 = st.columns([2, 2, 1, 1])
     with c4:
         intersection = st.checkbox(
             "Restrict to intersection (only tasks every selected model has attempted)",
@@ -908,6 +1010,15 @@ def render_leaderboard_page(df: pd.DataFrame) -> None:
                   "Shrinkage is per-τ (each threshold gets its own prior)."),
         )
     with c6:
+        show_ci = st.checkbox(
+            "Show 95% CIs", value=False, key="lb_show_ci",
+            help=("Two-stage parametric bootstrap (B=500): resample cells with "
+                  "replacement, then resample within-cell binomially. CI "
+                  "captures uncertainty in 'which tasks happened to be sampled' "
+                  "+ within-cell binomial noise. Cell text becomes "
+                  "'point [lo, hi]'; sort and color still use the point estimate."),
+        )
+    with c7:
         sort_options = [_tau_col(t) for t in LEADERBOARD_TAUS] + ["slug"]
         default_sort = _tau_col(0.50)
         sort_col = st.selectbox(
@@ -920,9 +1031,10 @@ def render_leaderboard_page(df: pd.DataFrame) -> None:
         st.warning("Select at least one slug and one task.")
         return
 
-    lb, tasks_used = build_leaderboard(
+    lb, lb_lo, lb_hi, tasks_used = build_leaderboard(
         df, sel_slugs, sel_tasks, LEADERBOARD_TAUS, intersection,
         shrunken=(mode == "Beta-Binomial shrinkage"),
+        ci_B=500 if show_ci else 0,
     )
 
     if intersection and not tasks_used:
@@ -933,24 +1045,48 @@ def render_leaderboard_page(df: pd.DataFrame) -> None:
         )
         return
 
-    # Sort. Keep NaN at bottom for τ columns; alphabetical for slug.
+    # Sort the point dataframe; CIs follow via reindex so colors / values
+    # stay aligned with the sorted display.
     if sort_col == "slug":
-        lb = lb.sort_values("slug").reset_index(drop=True)
+        order = lb.sort_values("slug").index
     else:
-        lb = lb.sort_values(sort_col, ascending=False, na_position="last").reset_index(drop=True)
+        order = lb.sort_values(sort_col, ascending=False,
+                               na_position="last").index
+    lb = lb.reindex(order).reset_index(drop=True)
+    if lb_lo is not None:
+        lb_lo = lb_lo.reindex(order).reset_index(drop=True)
+        lb_hi = lb_hi.reindex(order).reset_index(drop=True)
 
     st.markdown(f"**Aggregated over {len(tasks_used)} task(s):** "
                 + (", ".join(f"`{t}`" for t in tasks_used) if tasks_used else "_none_"))
 
-    # Color τ columns by P (red 0 → green 1). slug + n_cells stay neutral.
     tau_cols = [_tau_col(t) for t in LEADERBOARD_TAUS]
-    styled = lb.style.apply(
-        lambda col: [
-            f"background-color: {_prob_color(v)}" if pd.notna(v) else ""
-            for v in col
-        ] if col.name in tau_cols else [""] * len(col),
-        axis=0,
-    ).format({c: "{:.2f}" for c in tau_cols}, na_rep="—")
+    if show_ci:
+        # Build a display dataframe whose τ cells are "0.91 [0.83, 0.96]"
+        # strings. The original `lb` dataframe stays around as the source
+        # of truth for cell coloring (point estimate → colour), since the
+        # styled apply lambda below indexes into it directly.
+        display = lb.copy()
+        for col in tau_cols:
+            display[col] = [
+                f"{p:.2f} [{lo:.2f}, {hi:.2f}]" if pd.notna(p) else "—"
+                for p, lo, hi in zip(lb[col], lb_lo[col], lb_hi[col])
+            ]
+        styled = display.style.apply(
+            lambda c: [
+                f"background-color: {_prob_color(v)}" if pd.notna(v) else ""
+                for v in lb[c.name]
+            ] if c.name in tau_cols else [""] * len(c),
+            axis=0,
+        )
+    else:
+        styled = lb.style.apply(
+            lambda c: [
+                f"background-color: {_prob_color(v)}" if pd.notna(v) else ""
+                for v in c
+            ] if c.name in tau_cols else [""] * len(c),
+            axis=0,
+        ).format({c: "{:.2f}" for c in tau_cols}, na_rep="—")
 
     st.dataframe(
         styled,
