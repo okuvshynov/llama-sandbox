@@ -9,6 +9,12 @@ Pages (selectable in the sidebar):
     Cell statistic matches matrix-xan.sh / vb-may-10.sh exactly —
     `[min; max], avg=A, n=K/N`. Drill-in widget below the matrix
     navigates to the Cell page for a chosen (slug, task).
+  - P(MCC≥τ): same matrix layout, but each cell is the fraction of
+    attempts whose best per-turn MCC reaches a configurable threshold τ.
+    Attempts that never produced a scored turn (e.g. all compile errors)
+    count as fail — sidesteps the "what MCC do we impute for a non-
+    compiling validator" question by reframing as "did this combination
+    deliver a usable validator at all?".
   - Cell: all attempts in one (slug, task), with per-turn MCC trend
     + sortable table. Selecting a row + clicking "View attempt →"
     navigates to the Attempt page.
@@ -46,7 +52,7 @@ ENV_LANG = {
     "erlang": "erlang",
 }
 
-PAGES = ["Matrix", "Cell", "Attempt"]
+PAGES = ["Matrix", "P(MCC≥τ)", "Cell", "Attempt"]
 
 
 # --- session-state init -------------------------------------------------
@@ -175,6 +181,60 @@ def build_matrix(df: pd.DataFrame, slugs: list, tasks: list) -> tuple[pd.DataFra
     text_matrix = pd.DataFrame(text_rows).T.reindex(columns=tasks)
     mean_matrix = pd.DataFrame(mean_rows).T.reindex(columns=tasks)
     return text_matrix, mean_matrix
+
+
+# --- threshold (P(MCC ≥ τ)) aggregation ---------------------------------
+
+def aggregate_cell_prob(group: pd.DataFrame, tau: float) -> dict:
+    """For one (slug, task) group, compute P(best per-attempt MCC ≥ τ).
+
+    Numerator: attempts whose best per-turn MCC is ≥ τ.
+    Denominator: every attempt that started — including ones whose every
+    turn failed to score (all compile_error / no_submissions). Those count
+    as fail at any τ ≥ 0, which is the whole point of this metric (a
+    non-compiling validator is a failure, not a missing data point).
+    """
+    n_total = group["attempt_id"].nunique()
+    if n_total == 0:
+        return {"p": None, "n_pass": 0, "n_total": 0, "text": "<empty>"}
+    with_mcc = group.dropna(subset=["mcc"])
+    if with_mcc.empty:
+        return {"p": 0.0, "n_pass": 0, "n_total": n_total,
+                "text": f"0.00 (0/{n_total})"}
+    best_per_attempt = with_mcc.groupby("attempt_id")["mcc"].max()
+    n_pass = int((best_per_attempt >= tau).sum())
+    p = n_pass / n_total
+    return {"p": p, "n_pass": n_pass, "n_total": n_total,
+            "text": f"{p:.2f} ({n_pass}/{n_total})"}
+
+
+def build_prob_matrix(df: pd.DataFrame, slugs: list, tasks: list,
+                      tau: float) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Returns (text_matrix, p_matrix) — the latter for gradient coloring."""
+    sub = df[df["slug"].isin(slugs) & df["task"].isin(tasks)]
+    text_rows: dict = {}
+    p_rows: dict = {}
+    for slug in slugs:
+        text_rows[slug] = {}
+        p_rows[slug] = {}
+        for task in tasks:
+            cell_df = sub[(sub["slug"] == slug) & (sub["task"] == task)]
+            cell = aggregate_cell_prob(cell_df, tau)
+            text_rows[slug][task] = cell["text"]
+            p_rows[slug][task] = cell["p"]
+    text_matrix = pd.DataFrame(text_rows).T.reindex(columns=tasks)
+    p_matrix = pd.DataFrame(p_rows).T.reindex(columns=tasks)
+    return text_matrix, p_matrix
+
+
+def _prob_color(p: float) -> str:
+    """Red 0 → yellow 0.5 → green 1 gradient. Same lightness as _mcc_color
+    so the two matrices look visually consistent."""
+    if p is None or pd.isna(p):
+        return "transparent"
+    clamped = max(0.0, min(1.0, float(p)))
+    hue = clamped * 120.0
+    return f"hsl({hue:.0f}, 65%, 80%)"
 
 
 # --- per-attempt tab -----------------------------------------------------
@@ -487,6 +547,111 @@ def render_matrix_page(df: pd.DataFrame) -> None:
         st.caption("Click any row + any column header in the matrix to pick a cell, then 'View cell →'.")
 
 
+# --- P(MCC ≥ τ) page -----------------------------------------------------
+
+def render_threshold_matrix_page(df: pd.DataFrame) -> None:
+    st.markdown("### Threshold matrix — P(best MCC ≥ τ)")
+    st.caption(
+        "Cells show `P (n_pass/n_total)` where n_pass = attempts whose best "
+        "per-turn MCC reaches τ, n_total = every attempt that started. "
+        "Attempts that produced no scored turn (all compile errors / "
+        "no submissions) count as fail. Background gradient by P "
+        "(red 0 ↔ green 1)."
+    )
+
+    all_slugs = sorted(df["slug"].unique())
+    all_envs = sorted(df["env"].dropna().unique()) if "env" in df.columns else []
+    all_tasks = sorted(df["task"].unique())
+
+    tau = st.slider(
+        "Threshold τ (best per-attempt MCC must reach this to count as pass)",
+        min_value=0.0, max_value=1.0, value=0.5, step=0.05,
+        help=("τ=0 → strictly any model that scored at all; "
+              "τ=0.5 → substantively useful; τ=0.9 → near-perfect; "
+              "τ=1.0 → only perfect MCC counts."),
+        key="thresh_tau",
+    )
+
+    c1, c2, c3 = st.columns([2, 1, 2])
+    with c1:
+        sel_slugs = st.multiselect("Slugs", all_slugs, default=all_slugs,
+                                   key="thresh_slugs")
+    with c2:
+        sel_envs = st.multiselect("Envs", all_envs, default=all_envs,
+                                  key="thresh_envs")
+    with c3:
+        task_candidates = [
+            t for t in all_tasks
+            if any(t.endswith(f"-{e}") or t == e for e in sel_envs)
+        ] if sel_envs else all_tasks
+        sel_tasks = st.multiselect("Tasks", all_tasks, default=task_candidates,
+                                   key="thresh_tasks")
+
+    c4, c5 = st.columns(2)
+    with c4:
+        col_order_name = st.selectbox(
+            "Column order", list(COL_ORDERINGS.keys()),
+            index=1, key="thresh_col_order",
+        )
+    with c5:
+        row_order = st.selectbox(
+            "Row order",
+            ["alphabetical", "by mean P (desc)"],
+            index=0, key="thresh_row_order",
+        )
+
+    if not sel_slugs or not sel_tasks:
+        st.warning("Select at least one slug and one task.")
+        return
+
+    col_key = COL_ORDERINGS[col_order_name]
+    ordered_tasks = sorted(sel_tasks, key=col_key)
+    text_matrix, p_matrix = build_prob_matrix(df, sel_slugs, ordered_tasks, tau)
+
+    if row_order.startswith("by mean"):
+        score = p_matrix.mean(axis=1, skipna=True).fillna(-1)
+        ordered_slugs = score.sort_values(ascending=False).index.tolist()
+    else:
+        ordered_slugs = sorted(sel_slugs)
+    text_matrix = text_matrix.reindex(ordered_slugs)
+    p_matrix = p_matrix.reindex(ordered_slugs)
+
+    styled = text_matrix.style.apply(
+        lambda _col: [
+            f"background-color: {_prob_color(v)}" if pd.notna(v) else ""
+            for v in p_matrix[_col.name]
+        ],
+        axis=0,
+    )
+
+    event = st.dataframe(
+        styled,
+        use_container_width=True,
+        height=min(35 * (len(ordered_slugs) + 1) + 10, 800),
+        selection_mode=["single-row", "single-column"],
+        on_select="rerun",
+        key="thresh_matrix_table",
+    )
+
+    sel_rows = event.selection.rows if hasattr(event, "selection") else []
+    sel_cols = event.selection.columns if hasattr(event, "selection") else []
+    selected_slug = ordered_slugs[sel_rows[0]] if sel_rows else None
+    selected_task = sel_cols[0] if sel_cols else None
+
+    st.markdown("---")
+    if selected_slug and selected_task:
+        st.markdown(f"**Selected cell:** `{selected_slug}` × `{selected_task}`")
+        st.caption("Click 'View cell →' to see all attempts in this (slug, task).")
+        if st.button("View cell →", use_container_width=False, key="thresh_view_cell"):
+            _go_to("Cell", sel_slug=selected_slug, sel_task=selected_task)
+    elif selected_slug:
+        st.caption(f"Row selected: `{selected_slug}`. Click a **column header** to pick a task.")
+    elif selected_task:
+        st.caption(f"Column selected: `{selected_task}`. Click any **row** to pick a slug.")
+    else:
+        st.caption("Click any row + any column header in the matrix to pick a cell, then 'View cell →'.")
+
+
 # --- Cell page -----------------------------------------------------------
 
 def _per_turn_trend(rows: pd.DataFrame) -> str:
@@ -661,6 +826,8 @@ def main():
     page = st.session_state.current_page
     if page == "Matrix":
         render_matrix_page(df)
+    elif page == "P(MCC≥τ)":
+        render_threshold_matrix_page(df)
     elif page == "Cell":
         render_cell_page(df)
     elif page == "Attempt":
