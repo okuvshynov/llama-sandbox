@@ -1,0 +1,5 @@
+{
+  "display_name": "HCL2 (HashiCorp Configuration Language v2 Native Syntax)",
+  "has_spec_body": false,
+  "oracle": "scripts/oracles/hcl-check (Go binary using github.com/hashicorp/hcl/v2/hclparse — accepts iff parser returns no diagnostic errors)"
+}

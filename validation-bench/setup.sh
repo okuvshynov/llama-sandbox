@@ -143,7 +143,7 @@ generate_corpus_spec() {
         printf '{"id": "%s", "input_file": "tests/%s.%s", "expected": "%s", "label": "%s"}\n' \
             "$test_id" "$test_id" "$extension" "$class" "$label" >> "$out"
         n_total=$((n_total + 1))
-    done < <(find "$corpus_dir" -type f -name "*.$extension" | sort)
+    done < <(find -L "$corpus_dir" -type f -name "*.$extension" | sort)
 
     if [ "$n_mismatch" -gt 0 ]; then
         echo "  $n_mismatch mismatch(es); aborting" >&2
@@ -162,7 +162,8 @@ if command -v go >/dev/null 2>&1; then
     echo "Building scripts/oracles/hcl-check ..."
     (cd scripts/oracles/hcl-check && go build -o hcl-check .)
 fi
-generate_corpus_spec "hcl-2"      "scripts/oracles/hcl-check/hcl-check"     "hcl"
+generate_corpus_spec "hcl-2"        "scripts/oracles/hcl-check/hcl-check"   "hcl"
+generate_corpus_spec "hcl-2-nospec" "scripts/oracles/hcl-check/hcl-check"   "hcl"
 
 # yaml-test-suite uses a per-directory test layout (data branch): each test
 # is a directory containing in.yaml plus auxiliary files; presence of an
