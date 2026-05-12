@@ -53,6 +53,16 @@ purged.
   anchored-sequence and alias keys) is documented with libfyaml as
   third-party agreement against the model and a YAML 1.2.2 spec
   citation explaining why arbitrary nodes are valid as flow keys.
+- `hcl-2-cpp17-opus-4-7-number-edge/` — claude-opus-4-7-adaptive's
+  one-miss HCL2 submission (MCC=0.985, 150/151 passed). The single
+  failure is a lexer-permissiveness bug on `x = 1.2.3`: Opus's
+  `parseNumber()` consumes `1.2` and silently leaves the trailing
+  `.3` for the expression parser to ignore, so the document parses
+  as `x = 1.2` plus junk. README walks through the failing
+  five-line function, explains what the lexer would need to do to
+  reject, and pairs the entry with the YAML-opus example as a
+  "almost-perfect with one informative miss" companion piece (lexer
+  corner vs. grammar rule).
 
 ## Adding an example
 
