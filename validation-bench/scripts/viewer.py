@@ -16,12 +16,14 @@ Pages (selectable in the sidebar):
     compiling validator" question by reframing as "did this combination
     deliver a usable validator at all?".
   - Leaderboard: one row per model, one column per τ in a fine grid
-    (0.00, 0.05, ..., 1.00 — step 0.05, 21 columns). Each entry is the
-    macro-average of per-cell pass rates `(1/T)·Σ K_t/N_t` across the
-    filtered tasks. Toggle restricts to tasks where every selected
-    model has data (default on) so cross-model rows are apples-to-apples.
-    Sort by any column to see e.g. who's best at "near-perfect" (τ≥0.90)
-    vs "at all usable" (τ≥0.30).
+    (0.00, 0.05, ..., 1.00 — step 0.05, 21 columns), plus a `support`
+    column ("n_cells | n_attempts") so thin-coverage rows are visible.
+    Each τ entry is the macro-average of per-cell pass rates
+    `(1/T)·Σ K_t/N_t` across the filtered tasks. Toggle restricts to
+    tasks where every selected model has data (default on) so
+    cross-model rows are apples-to-apples. Sort by any column to see
+    e.g. who's best at "near-perfect" (τ≥0.90) vs "at all usable"
+    (τ≥0.30).
   - Cell: all attempts in one (slug, task), with per-turn MCC trend
     + sortable table. Selecting a row + clicking "View attempt →"
     navigates to the Attempt page.
@@ -702,9 +704,15 @@ def build_leaderboard(df: pd.DataFrame, slugs: list[str], tasks: list[str],
     """Returns (leaderboard_df, tasks_used).
 
     leaderboard_df has one row per slug, columns:
-      slug, n_cells, then one column per τ ("≥0.00", "≥0.25", ...).
+      slug, support ("cells | attempts" — e.g. "7 | 45"), then one
+      column per τ ("≥0.00", "≥0.05", ...).
     tasks_used is the actual task set after intersection filtering, so
     the page can show what was aggregated.
+
+    Note: support is a single text column rather than two int columns
+    because (a) cells and attempts are highly correlated context numbers
+    rather than independently sortable metrics, and (b) the page already
+    has 21 τ columns — every saved column matters for readability.
     """
     sub = df[df["slug"].isin(slugs) & df["task"].isin(tasks)]
 
@@ -726,18 +734,22 @@ def build_leaderboard(df: pd.DataFrame, slugs: list[str], tasks: list[str],
     for slug in slugs:
         slug_tasks = [t for t in tasks_used if bool(cell_present.loc[slug, t])]
         if not slug_tasks:
-            rows.append({"slug": slug, "n_cells": 0,
+            rows.append({"slug": slug, "support": "0 | 0",
                          **{c: float("nan") for c in tau_cols}})
             continue
         per_cell = []
+        n_attempts_total = 0
         for task in slug_tasks:
             cell_df = sub[(sub["slug"] == slug) & (sub["task"] == task)]
             per_cell.append(_cell_pass_rates(cell_df, taus))
+            n_attempts_total += cell_df["attempt_id"].nunique()
         macro = {
             _tau_col(tau): sum(c[tau] for c in per_cell) / len(per_cell)
             for tau in taus
         }
-        rows.append({"slug": slug, "n_cells": len(slug_tasks), **macro})
+        rows.append({"slug": slug,
+                     "support": f"{len(slug_tasks)} | {n_attempts_total}",
+                     **macro})
 
     return pd.DataFrame(rows), tasks_used
 
@@ -754,7 +766,10 @@ def render_leaderboard_page(df: pd.DataFrame) -> None:
         "Cells with no attempts contribute 0 to K but still count toward N "
         "(non-compile = fail). Toggle 'restrict to intersection' to limit "
         "tasks to those every selected model has attempted, so rows are "
-        "apples-to-apples."
+        "apples-to-apples. The `support` column shows `n_cells | n_attempts` "
+        "— how many tasks contributed and the total attempts those cells "
+        "summed to (helps eyeball whether a cell at the top with thin "
+        "support deserves trust)."
     )
 
     all_slugs = sorted(df["slug"].unique())
@@ -786,7 +801,7 @@ def render_leaderboard_page(df: pd.DataFrame) -> None:
                   "column shows the per-model task count either way."),
         )
     with c5:
-        sort_options = [_tau_col(t) for t in LEADERBOARD_TAUS] + ["slug", "n_cells"]
+        sort_options = [_tau_col(t) for t in LEADERBOARD_TAUS] + ["slug"]
         default_sort = _tau_col(0.50)
         sort_col = st.selectbox(
             "Sort by", sort_options,
