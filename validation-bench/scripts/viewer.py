@@ -5,7 +5,7 @@ Usage:
     streamlit run scripts/viewer.py                 # defaults to results/results.jsonl
 
 Pages (selectable in the sidebar):
-  - Matrix: slug × task cell matrix with toggleable slugs/envs/tasks.
+  - Matrix: slug × task cell matrix with toggleable slugs and tasks.
     Cell statistic matches matrix-xan.sh / vb-may-10.sh exactly —
     `[min; max], avg=A, n=K/N`. Drill-in widget below the matrix
     navigates to the Cell page for a chosen (slug, task).
@@ -29,6 +29,12 @@ Pages (selectable in the sidebar):
     renders cells as "point [lo, hi]". Sort + colour stay on the
     point estimate. Toggle restricts to tasks where every selected
     model has data (default on) so cross-model rows are apples-to-apples.
+  - Curves: same data as Leaderboard rendered as a line chart — one
+    line per model (point estimate), with a translucent shaded band
+    showing the 95% bootstrap CI. X axis is τ ∈ [0, 1]; Y axis is
+    P(MCC ≥ τ) ∈ [0, 1]. Same filter / mode / intersection controls
+    as Leaderboard. Click a model in the legend to highlight it (other
+    models fade); useful when many bands overlap.
   - Cell: all attempts in one (slug, task), with per-turn MCC trend
     + sortable table. Selecting a row + clicking "View attempt →"
     navigates to the Attempt page.
@@ -46,6 +52,7 @@ import sys
 from collections import Counter
 from pathlib import Path
 
+import altair as alt
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -69,7 +76,7 @@ ENV_LANG = {
     "erlang": "erlang",
 }
 
-PAGES = ["Matrix", "P(MCC≥τ)", "Leaderboard", "Cell", "Attempt"]
+PAGES = ["Matrix", "P(MCC≥τ)", "Leaderboard", "Curves", "Cell", "Attempt"]
 
 LEADERBOARD_TAUS = [round(0.05 * i, 2) for i in range(21)]  # 0.00, 0.05, ..., 1.00
 
@@ -480,21 +487,16 @@ def render_matrix_page(df: pd.DataFrame) -> None:
 
     # Discover dimensions from the data.
     all_slugs = sorted(df["slug"].unique())
-    all_envs = sorted(df["env"].dropna().unique()) if "env" in df.columns else []
     all_tasks = sorted(df["task"].unique())
 
-    # Filter widgets — three independent multi-selects.
-    c1, c2, c3 = st.columns([2, 1, 2])
+    # Filter widgets — two multi-selects (slugs, tasks). The data model
+    # is task = (env, spec); env is a substring of task, so a separate
+    # env filter would be redundant and confusing.
+    c1, c2 = st.columns(2)
     with c1:
         sel_slugs = st.multiselect("Slugs", all_slugs, default=all_slugs)
     with c2:
-        sel_envs = st.multiselect("Envs", all_envs, default=all_envs)
-    with c3:
-        task_candidates = [
-            t for t in all_tasks
-            if any(t.endswith(f"-{e}") or t == e for e in sel_envs)
-        ] if sel_envs else all_tasks
-        sel_tasks = st.multiselect("Tasks", all_tasks, default=task_candidates)
+        sel_tasks = st.multiselect("Tasks", all_tasks, default=all_tasks)
 
     c4, c5 = st.columns(2)
     with c4:
@@ -579,7 +581,6 @@ def render_threshold_matrix_page(df: pd.DataFrame) -> None:
     )
 
     all_slugs = sorted(df["slug"].unique())
-    all_envs = sorted(df["env"].dropna().unique()) if "env" in df.columns else []
     all_tasks = sorted(df["task"].unique())
 
     tau = st.slider(
@@ -591,19 +592,12 @@ def render_threshold_matrix_page(df: pd.DataFrame) -> None:
         key="thresh_tau",
     )
 
-    c1, c2, c3 = st.columns([2, 1, 2])
+    c1, c2 = st.columns(2)
     with c1:
         sel_slugs = st.multiselect("Slugs", all_slugs, default=all_slugs,
                                    key="thresh_slugs")
     with c2:
-        sel_envs = st.multiselect("Envs", all_envs, default=all_envs,
-                                  key="thresh_envs")
-    with c3:
-        task_candidates = [
-            t for t in all_tasks
-            if any(t.endswith(f"-{e}") or t == e for e in sel_envs)
-        ] if sel_envs else all_tasks
-        sel_tasks = st.multiselect("Tasks", all_tasks, default=task_candidates,
+        sel_tasks = st.multiselect("Tasks", all_tasks, default=all_tasks,
                                    key="thresh_tasks")
 
     c4, c5 = st.columns(2)
@@ -972,22 +966,14 @@ def render_leaderboard_page(df: pd.DataFrame) -> None:
     )
 
     all_slugs = sorted(df["slug"].unique())
-    all_envs = sorted(df["env"].dropna().unique()) if "env" in df.columns else []
     all_tasks = sorted(df["task"].unique())
 
-    c1, c2, c3 = st.columns([2, 1, 2])
+    c1, c2 = st.columns(2)
     with c1:
         sel_slugs = st.multiselect("Slugs", all_slugs, default=all_slugs,
                                    key="lb_slugs")
     with c2:
-        sel_envs = st.multiselect("Envs", all_envs, default=all_envs,
-                                  key="lb_envs")
-    with c3:
-        task_candidates = [
-            t for t in all_tasks
-            if any(t.endswith(f"-{e}") or t == e for e in sel_envs)
-        ] if sel_envs else all_tasks
-        sel_tasks = st.multiselect("Tasks", all_tasks, default=task_candidates,
+        sel_tasks = st.multiselect("Tasks", all_tasks, default=all_tasks,
                                    key="lb_tasks")
 
     c4, c5, c6, c7 = st.columns([2, 2, 1, 1])
@@ -1149,6 +1135,130 @@ def _attempts_table(cell_df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+# --- Curves page ---------------------------------------------------------
+
+def render_curves_page(df: pd.DataFrame) -> None:
+    st.markdown("### Reliability curves — P(MCC ≥ τ) per model with 95% CI")
+    st.caption(
+        "Same numbers as the Leaderboard, plotted as a line chart. Each "
+        "model gets one line (point estimate of P(MCC ≥ τ)) plus a "
+        "translucent shaded band for its 95% bootstrap CI. The shape of "
+        "the curve says something the table can't: a flat-then-cliff "
+        "profile means 'usually near-perfect, rarely exactly perfect', "
+        "vs a smooth slope meaning 'gradually degrading reliability'. "
+        "Click any model in the legend to fade the others."
+    )
+
+    all_slugs = sorted(df["slug"].unique())
+    all_tasks = sorted(df["task"].unique())
+
+    c1, c2 = st.columns(2)
+    with c1:
+        sel_slugs = st.multiselect("Slugs", all_slugs, default=all_slugs,
+                                   key="curves_slugs")
+    with c2:
+        sel_tasks = st.multiselect("Tasks", all_tasks, default=all_tasks,
+                                   key="curves_tasks")
+
+    c3, c4 = st.columns([2, 2])
+    with c3:
+        intersection = st.checkbox(
+            "Restrict to intersection (only tasks every selected model has attempted)",
+            value=True, key="curves_intersection",
+            help=("Off → each model is averaged over whatever tasks it has data "
+                  "for, so curves aren't directly comparable."),
+        )
+    with c4:
+        mode = st.radio(
+            "Aggregation",
+            ["raw macro-avg", "Beta-Binomial shrinkage"],
+            index=0, horizontal=True, key="curves_mode",
+        )
+
+    if not sel_slugs or not sel_tasks:
+        st.warning("Select at least one slug and one task.")
+        return
+
+    lb, lb_lo, lb_hi, tasks_used = build_leaderboard(
+        df, sel_slugs, sel_tasks, LEADERBOARD_TAUS, intersection,
+        shrunken=(mode == "Beta-Binomial shrinkage"),
+        ci_B=500,
+    )
+
+    if intersection and not tasks_used:
+        st.warning(
+            "No tasks are common to every selected model — try unchecking "
+            "'restrict to intersection', or removing the model with the "
+            "thinnest coverage."
+        )
+        return
+
+    # Reshape (slug × τ-columns) → long-form (slug, τ, point, lo, hi).
+    # Altair wants tidy long-form; one row per (slug, τ) data point.
+    long_rows: list[dict] = []
+    for i, row in lb.iterrows():
+        slug = row["slug"]
+        for tau in LEADERBOARD_TAUS:
+            col = _tau_col(tau)
+            long_rows.append({
+                "slug": slug,
+                "tau": tau,
+                "point": row[col],
+                "lo": lb_lo.iloc[i][col],
+                "hi": lb_hi.iloc[i][col],
+            })
+    long_df = pd.DataFrame(long_rows).dropna(subset=["point"])
+
+    st.markdown(f"**Aggregated over {len(tasks_used)} task(s):** "
+                + (", ".join(f"`{t}`" for t in tasks_used) if tasks_used else "_none_"))
+
+    # Legend-click selection: clicking a model in the legend fades the
+    # others. Using mark_point so the selection works on the line color
+    # encoding (`fields=['slug']`); applied to both layers so they fade
+    # together.
+    selection = alt.selection_point(fields=["slug"], bind="legend")
+
+    band = (
+        alt.Chart(long_df)
+        .mark_area(opacity=0.18)
+        .encode(
+            x=alt.X("tau:Q",
+                    title="threshold τ",
+                    scale=alt.Scale(domain=[0, 1])),
+            y=alt.Y("lo:Q",
+                    title="P(MCC ≥ τ)",
+                    scale=alt.Scale(domain=[0, 1])),
+            y2="hi:Q",
+            color=alt.Color("slug:N", legend=alt.Legend(title="model")),
+            opacity=alt.condition(selection, alt.value(0.18), alt.value(0.03)),
+        )
+    )
+
+    line = (
+        alt.Chart(long_df)
+        .mark_line(point=alt.OverlayMarkDef(size=20))
+        .encode(
+            x="tau:Q",
+            y=alt.Y("point:Q", scale=alt.Scale(domain=[0, 1])),
+            color="slug:N",
+            opacity=alt.condition(selection, alt.value(1.0), alt.value(0.15)),
+            tooltip=[
+                alt.Tooltip("slug:N", title="model"),
+                alt.Tooltip("tau:Q", title="τ", format=".2f"),
+                alt.Tooltip("point:Q", title="P", format=".3f"),
+                alt.Tooltip("lo:Q", title="lo", format=".3f"),
+                alt.Tooltip("hi:Q", title="hi", format=".3f"),
+            ],
+        )
+    )
+
+    chart = (band + line).add_params(selection).properties(
+        height=500
+    ).interactive(bind_x=False, bind_y=False)
+
+    st.altair_chart(chart, use_container_width=True)
+
+
 def render_cell_page(df: pd.DataFrame) -> None:
     st.markdown("### Cell view — attempts in one (slug, task)")
     st.caption(
@@ -1275,6 +1385,8 @@ def main():
         render_threshold_matrix_page(df)
     elif page == "Leaderboard":
         render_leaderboard_page(df)
+    elif page == "Curves":
+        render_curves_page(df)
     elif page == "Cell":
         render_cell_page(df)
     elif page == "Attempt":
