@@ -1,0 +1,1 @@
+x = upper(trim(input, " "))

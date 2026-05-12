@@ -21,7 +21,7 @@ docker build -t vb-sandbox-d      data/envs/d/       # D (LDC) tasks
 - [yaml-test-suite](https://github.com/yaml/yaml-test-suite) (`data` branch) → `data/specs/yaml-1.2{,-nospec}/tests/` (pinned at `6ad3d2c`); 1.3-only tests are filtered out
 - [JSONTestSuite](https://github.com/nst/JSONTestSuite) → `data/specs/json-1.0{,-nospec}/tests/` (pinned at `1ef36fa`); `y_*`/`n_*` files become valid/invalid tests, `i_*` implementation-defined files are skipped
 
-For each, it clones into `.cache/`, generates `tests.jsonl`, and symlinks `data/specs/<spec>/tests/` to the cached corpus. The hand-curated specs (`lua-5.4`, `palindrome`) re-derive labels via a configured oracle. Run it once after cloning the repo, or again after bumping a pinned commit.
+For each, it clones into `.cache/`, generates `tests.jsonl`, and symlinks `data/specs/<spec>/tests/` to the cached corpus. The hand-curated specs (`lua-5.4`, `palindrome`, `hcl-2`) re-derive labels via a configured oracle — for `hcl-2` setup.sh builds the Go oracle in `scripts/oracles/hcl-check/` first (requires a Go toolchain ≥ 1.24); the corpus source files are checked in under `data/specs/hcl-2/corpus/` and the script regenerates them from the inline TESTS table when needed. Run setup.sh once after cloning the repo, or again after bumping a pinned commit.
 
 ## Layout
 
@@ -37,10 +37,10 @@ Add a new env (e.g. `cpp20`, `rust`, `go`):
 2. `data/envs/<env>/meta.json` — `language`, `docker_image`, `source_filename`, `prepare_cmd`, `run_cmd`, `compile_cmd`
 3. For each spec the env should support, create `data/tasks/<spec>-<env>/{task.json, preamble.md}`. The composer wires up the rest.
 
-Add a new spec (e.g. `json`, `yaml`):
+Add a new spec (e.g. `json`, `yaml`, `hcl-2`):
 
-1. `data/specs/<spec>/spec.md` — the reference text to embed in the prompt
-2. `data/specs/<spec>/meta.json` — `display_name`, `has_spec_body`, `oracle`
-3. Source the corpus into either `data/specs/<spec>/corpus/` (hand-curated, label-validated by `setup.sh`) or by extending `setup.sh`'s upstream-fetch path.
+1. `data/specs/<spec>/spec_body.md` — the reference text to embed in the prompt (omit if `has_spec_body: false`)
+2. `data/specs/<spec>/meta.json` — `display_name`, `has_spec_body`, `oracle` (one-line description of where labels come from)
+3. Source the corpus into `data/specs/<spec>/tests/{valid,invalid}/...` plus a `data/specs/<spec>/tests.jsonl` manifest. Two patterns in use today: (a) extend `setup.sh`'s upstream-fetch path for specs with a canonical test repo (toml-test, yaml-test-suite, JSONTestSuite); (b) ship a hand-curated corpus + a `build_corpus.py`/`verify_corpus.py` that uses an oracle binary in `scripts/oracles/<name>/` to verify labels (see `palindrome`, `hcl-2`).
 
 Other directories worth knowing about: `examples/` — a small museum of interesting model submissions surfaced by past runs (failure modes, recovery patterns, scoring quirks). Each subdirectory has the source the model produced plus a write-up of what's interesting about it.

@@ -1,0 +1,1 @@
+msg = "%{ if cond }body"

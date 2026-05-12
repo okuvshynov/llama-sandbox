@@ -1,0 +1,2 @@
+msg = <<EOT
+EOT

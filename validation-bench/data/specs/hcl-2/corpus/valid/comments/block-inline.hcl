@@ -1,0 +1,1 @@
+foo = /* inline */ 1
