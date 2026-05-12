@@ -278,7 +278,7 @@ def render_per_attempt_tab(df: pd.DataFrame, preselected_aid: str | None = None)
     if not sel_aid:
         return
 
-    rows = sub[sub["attempt_id"] == sel_aid].sort_values("turn")
+    rows = sub[sub["attempt_id"] == sel_aid].sort_values("turn").reset_index(drop=True)
     first = rows.iloc[0]
 
     # --- attempt summary block ---
@@ -321,20 +321,28 @@ def render_per_attempt_tab(df: pd.DataFrame, preselected_aid: str | None = None)
     st.divider()
 
     # --- per-turn details ---
+    # Submission dirs (`submissions/1`, `/2`, ...) are numbered by the
+    # harness on every accepted `submit` tool call — independent of the
+    # `turn` field, which counts conversational turns. They diverge when
+    # a turn produces zero submissions (e.g. model replies in plain text
+    # with no tool call) or more than one. Each results.jsonl row equals
+    # one submission, written in submission order — so the K-th row (after
+    # sorting by turn) maps to `submissions/K`.
     lang = ENV_LANG.get(first.get("env", ""), "text")
-    for _, r in rows.iterrows():
+    for sub_idx, (_, r) in enumerate(rows.iterrows(), start=1):
         turn = int(r["turn"])
-        sub_dir = attempt_dir / "submissions" / str(turn + 1)
+        sub_dir = attempt_dir / "submissions" / str(sub_idx)
 
         # Header
+        head_suffix = f" (submission {sub_idx})" if sub_idx != turn else ""
         if pd.notna(r.get("mcc")):
             cm_parts = [f"TP={int(r.get('tp',0))}",
                         f"FN={int(r.get('fn',0))}",
                         f"FP={int(r.get('fp',0))}",
                         f"TN={int(r.get('tn',0))}"]
-            head = f"### Turn {turn} — MCC={r['mcc']:+.4f} ({' '.join(cm_parts)})"
+            head = f"### Turn {turn}{head_suffix} — MCC={r['mcc']:+.4f} ({' '.join(cm_parts)})"
         else:
-            head = f"### Turn {turn} — ⚠️ {r.get('error','?')}"
+            head = f"### Turn {turn}{head_suffix} — ⚠️ {r.get('error','?')}"
         st.markdown(head)
 
         if not sub_dir.is_dir():
