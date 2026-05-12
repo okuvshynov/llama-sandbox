@@ -15,6 +15,13 @@ Pages (selectable in the sidebar):
     count as fail — sidesteps the "what MCC do we impute for a non-
     compiling validator" question by reframing as "did this combination
     deliver a usable validator at all?".
+  - Leaderboard: one row per model, one column per τ in a fine grid
+    (0.00, 0.05, ..., 1.00 — step 0.05, 21 columns). Each entry is the
+    macro-average of per-cell pass rates `(1/T)·Σ K_t/N_t` across the
+    filtered tasks. Toggle restricts to tasks where every selected
+    model has data (default on) so cross-model rows are apples-to-apples.
+    Sort by any column to see e.g. who's best at "near-perfect" (τ≥0.90)
+    vs "at all usable" (τ≥0.30).
   - Cell: all attempts in one (slug, task), with per-turn MCC trend
     + sortable table. Selecting a row + clicking "View attempt →"
     navigates to the Attempt page.
@@ -52,7 +59,9 @@ ENV_LANG = {
     "erlang": "erlang",
 }
 
-PAGES = ["Matrix", "P(MCC≥τ)", "Cell", "Attempt"]
+PAGES = ["Matrix", "P(MCC≥τ)", "Leaderboard", "Cell", "Attempt"]
+
+LEADERBOARD_TAUS = [round(0.05 * i, 2) for i in range(21)]  # 0.00, 0.05, ..., 1.00
 
 
 # --- session-state init -------------------------------------------------
@@ -652,6 +661,183 @@ def render_threshold_matrix_page(df: pd.DataFrame) -> None:
         st.caption("Click any row + any column header in the matrix to pick a cell, then 'View cell →'.")
 
 
+# --- Leaderboard page ----------------------------------------------------
+#
+# Aggregates per-cell pass rates into one number per (model, τ). Three
+# choices were considered:
+#   1. Macro-average:  (1/T) · Σ_t K_t/N_t — every task counts equally,
+#      regardless of how many attempts that cell happened to accumulate.
+#      Matches the framing "expected pass rate over the population of
+#      tasks I care about". Trade: a cell with N=1 carries the same
+#      weight as N=10.
+#   2. Micro-average:  Σ K_t / Σ N_t — pooled. Cells you swept more
+#      deeply (often for accidental reasons) dominate. Wrong here.
+#   3. Beta-binomial shrinkage: per-model latent Beta prior, per-cell
+#      rates pulled toward the model mean by Empirical Bayes. Proper
+#      CIs free. Worth doing once N=3-vs-11 spread visibly distorts
+#      rankings — punted to v2.
+# v1 implements (1) only, with an "intersection" toggle so that cross-
+# model rows are aggregated over the same task set (apples-to-apples).
+
+def _cell_pass_rates(group: pd.DataFrame, taus: list[float]) -> dict[float, float]:
+    """For one (slug, task) cell, return {τ: K/N} for each τ.
+
+    K = attempts whose best per-turn MCC ≥ τ.
+    N = every attempt that started (non-scored attempts count as fail at
+    any τ ≥ 0). NaN if N=0 (caller should filter empty cells out first).
+    """
+    n_total = group["attempt_id"].nunique()
+    if n_total == 0:
+        return {tau: float("nan") for tau in taus}
+    with_mcc = group.dropna(subset=["mcc"])
+    if with_mcc.empty:
+        return {tau: 0.0 for tau in taus}
+    best = with_mcc.groupby("attempt_id")["mcc"].max()
+    return {tau: float((best >= tau).sum()) / n_total for tau in taus}
+
+
+def build_leaderboard(df: pd.DataFrame, slugs: list[str], tasks: list[str],
+                      taus: list[float], intersection: bool
+                      ) -> tuple[pd.DataFrame, list[str]]:
+    """Returns (leaderboard_df, tasks_used).
+
+    leaderboard_df has one row per slug, columns:
+      slug, n_cells, then one column per τ ("≥0.00", "≥0.25", ...).
+    tasks_used is the actual task set after intersection filtering, so
+    the page can show what was aggregated.
+    """
+    sub = df[df["slug"].isin(slugs) & df["task"].isin(tasks)]
+
+    # cell_present[slug, task] = True iff that (slug, task) has ≥1 row.
+    if sub.empty:
+        cell_present = pd.DataFrame(False, index=slugs, columns=tasks)
+    else:
+        cell_present = (sub.groupby(["slug", "task"]).size().unstack(fill_value=0) > 0)
+        cell_present = cell_present.reindex(index=slugs, columns=tasks, fill_value=False)
+
+    if intersection:
+        # Only tasks where every selected slug has at least one attempt.
+        tasks_used = [t for t in tasks if bool(cell_present[t].all())]
+    else:
+        tasks_used = list(tasks)
+
+    tau_cols = [_tau_col(tau) for tau in taus]
+    rows = []
+    for slug in slugs:
+        slug_tasks = [t for t in tasks_used if bool(cell_present.loc[slug, t])]
+        if not slug_tasks:
+            rows.append({"slug": slug, "n_cells": 0,
+                         **{c: float("nan") for c in tau_cols}})
+            continue
+        per_cell = []
+        for task in slug_tasks:
+            cell_df = sub[(sub["slug"] == slug) & (sub["task"] == task)]
+            per_cell.append(_cell_pass_rates(cell_df, taus))
+        macro = {
+            _tau_col(tau): sum(c[tau] for c in per_cell) / len(per_cell)
+            for tau in taus
+        }
+        rows.append({"slug": slug, "n_cells": len(slug_tasks), **macro})
+
+    return pd.DataFrame(rows), tasks_used
+
+
+def _tau_col(tau: float) -> str:
+    return f"≥{tau:.2f}"
+
+
+def render_leaderboard_page(df: pd.DataFrame) -> None:
+    st.markdown("### Leaderboard — macro-averaged P(MCC ≥ τ) per model")
+    st.caption(
+        "One row per model. Each τ column is the unweighted mean of per-cell "
+        "pass rates across the filtered tasks: `(1/T) · Σ_t K_t/N_t`. "
+        "Cells with no attempts contribute 0 to K but still count toward N "
+        "(non-compile = fail). Toggle 'restrict to intersection' to limit "
+        "tasks to those every selected model has attempted, so rows are "
+        "apples-to-apples."
+    )
+
+    all_slugs = sorted(df["slug"].unique())
+    all_envs = sorted(df["env"].dropna().unique()) if "env" in df.columns else []
+    all_tasks = sorted(df["task"].unique())
+
+    c1, c2, c3 = st.columns([2, 1, 2])
+    with c1:
+        sel_slugs = st.multiselect("Slugs", all_slugs, default=all_slugs,
+                                   key="lb_slugs")
+    with c2:
+        sel_envs = st.multiselect("Envs", all_envs, default=all_envs,
+                                  key="lb_envs")
+    with c3:
+        task_candidates = [
+            t for t in all_tasks
+            if any(t.endswith(f"-{e}") or t == e for e in sel_envs)
+        ] if sel_envs else all_tasks
+        sel_tasks = st.multiselect("Tasks", all_tasks, default=task_candidates,
+                                   key="lb_tasks")
+
+    c4, c5 = st.columns(2)
+    with c4:
+        intersection = st.checkbox(
+            "Restrict to intersection (only tasks every selected model has attempted)",
+            value=True, key="lb_intersection",
+            help=("Off → each model is averaged over whatever tasks it has data "
+                  "for, so rows aren't directly comparable. The `n_cells` "
+                  "column shows the per-model task count either way."),
+        )
+    with c5:
+        sort_options = [_tau_col(t) for t in LEADERBOARD_TAUS] + ["slug", "n_cells"]
+        default_sort = _tau_col(0.50)
+        sort_col = st.selectbox(
+            "Sort by", sort_options,
+            index=sort_options.index(default_sort),
+            key="lb_sort",
+        )
+
+    if not sel_slugs or not sel_tasks:
+        st.warning("Select at least one slug and one task.")
+        return
+
+    lb, tasks_used = build_leaderboard(
+        df, sel_slugs, sel_tasks, LEADERBOARD_TAUS, intersection
+    )
+
+    if intersection and not tasks_used:
+        st.warning(
+            "No tasks are common to every selected model — try unchecking "
+            "'restrict to intersection', or removing the model with the "
+            "thinnest coverage."
+        )
+        return
+
+    # Sort. Keep NaN at bottom for τ columns; alphabetical for slug.
+    if sort_col == "slug":
+        lb = lb.sort_values("slug").reset_index(drop=True)
+    else:
+        lb = lb.sort_values(sort_col, ascending=False, na_position="last").reset_index(drop=True)
+
+    st.markdown(f"**Aggregated over {len(tasks_used)} task(s):** "
+                + (", ".join(f"`{t}`" for t in tasks_used) if tasks_used else "_none_"))
+
+    # Color τ columns by P (red 0 → green 1). slug + n_cells stay neutral.
+    tau_cols = [_tau_col(t) for t in LEADERBOARD_TAUS]
+    styled = lb.style.apply(
+        lambda col: [
+            f"background-color: {_prob_color(v)}" if pd.notna(v) else ""
+            for v in col
+        ] if col.name in tau_cols else [""] * len(col),
+        axis=0,
+    ).format({c: "{:.2f}" for c in tau_cols}, na_rep="—")
+
+    st.dataframe(
+        styled,
+        use_container_width=True,
+        hide_index=True,
+        height=min(35 * (len(lb) + 1) + 10, 600),
+        key="lb_table",
+    )
+
+
 # --- Cell page -----------------------------------------------------------
 
 def _per_turn_trend(rows: pd.DataFrame) -> str:
@@ -828,6 +1014,8 @@ def main():
         render_matrix_page(df)
     elif page == "P(MCC≥τ)":
         render_threshold_matrix_page(df)
+    elif page == "Leaderboard":
+        render_leaderboard_page(df)
     elif page == "Cell":
         render_cell_page(df)
     elif page == "Attempt":
