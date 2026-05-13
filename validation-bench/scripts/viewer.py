@@ -100,8 +100,8 @@ ENV_LANG = {
     "erlang": "erlang",
 }
 
-PAGES = ["Matrix", "P(MCC≥τ)", "Leaderboard", "Curves", "Accuracy",
-         "Distribution", "Variance", "Cell", "Attempt"]
+PAGES = ["Matrix", "P(MCC≥τ)", "Leaderboard", "Turn budget", "Curves",
+         "Accuracy", "Distribution", "Variance", "Cell", "Attempt"]
 
 DISTRIBUTION_BUCKETS = (
     ["≤0 / failed"]
@@ -714,7 +714,8 @@ def render_threshold_matrix_page(df: pd.DataFrame) -> None:
 # model rows are aggregated over the same task set (apples-to-apples).
 
 def _per_cell_counts(group: pd.DataFrame, taus: list[float],
-                     score_col: str = "mcc"
+                     score_col: str = "mcc",
+                     max_turns: int | None = None,
                      ) -> tuple[int, dict[float, int]]:
     """For one (slug, task) cell, return (N_total, {τ: K_passed}).
 
@@ -726,11 +727,19 @@ def _per_cell_counts(group: pd.DataFrame, taus: list[float],
     score_col defaults to "mcc" but can be any per-row numeric column —
     e.g. an accuracy column derived from (tp + tn) / (tp + fn + fp + tn).
     Callers responsible for ensuring the column exists in `group`.
+
+    max_turns: when set, only rows with `turn < max_turns` contribute to
+    each attempt's best — i.e. "what would this cell look like if the
+    model had only been given max_turns shots?". N_total still reflects
+    every attempt that started, so an attempt whose in-budget turns all
+    failed to score counts as a fail at any τ ≥ 0 (cap monotonicity:
+    raising the cap can only raise pass rates, never lower them).
     """
     n_total = int(group["attempt_id"].nunique())
     if n_total == 0:
         return 0, {tau: 0 for tau in taus}
-    scored = group.dropna(subset=[score_col])
+    filt = group if max_turns is None else group[group["turn"] < max_turns]
+    scored = filt.dropna(subset=[score_col])
     if scored.empty:
         return n_total, {tau: 0 for tau in taus}
     best = scored.groupby("attempt_id")[score_col].max()
@@ -862,6 +871,7 @@ def build_leaderboard(df: pd.DataFrame, slugs: list[str], tasks: list[str],
                       shrunken: bool = False,
                       ci_B: int = 0, ci_level: float = 0.95,
                       score_col: str = "mcc",
+                      max_turns: int | None = None,
                       ) -> tuple[pd.DataFrame, pd.DataFrame | None,
                                  pd.DataFrame | None, list[str]]:
     """Returns (leaderboard_df, tasks_used).
@@ -928,7 +938,9 @@ def build_leaderboard(df: pd.DataFrame, slugs: list[str], tasks: list[str],
         cell_counts = []
         for task in slug_tasks:
             cell_df = sub[(sub["slug"] == slug) & (sub["task"] == task)]
-            cell_counts.append(_per_cell_counts(cell_df, taus, score_col=score_col))
+            cell_counts.append(_per_cell_counts(cell_df, taus,
+                                                score_col=score_col,
+                                                max_turns=max_turns))
         n_attempts_total = sum(n for n, _ in cell_counts)
 
         macro: dict[str, float] = {}
@@ -1116,6 +1128,173 @@ def render_leaderboard_page(df: pd.DataFrame) -> None:
         hide_index=True,
         height=min(35 * (len(lb) + 1) + 10, 600),
         key="lb_table",
+    )
+
+
+# --- Turn budget page ----------------------------------------------------
+# Same table as Leaderboard but with a per-attempt turn cap. The cap K
+# means "only turns 0..K-1 count toward each attempt's best MCC" — i.e.
+# what would the model's pass rate look like if it had only been given
+# K turns to converge? Denominators stay based on all started attempts
+# so the cap is monotone: raising K can only raise pass rates.
+#
+# Note on K=1 (one-shot): the task prompts explicitly tell the model it
+# will be allowed to resubmit, so K=1 systematically under-rates models
+# that hedge on the first turn intending to refine. Useful as a lower
+# bound, but the K=2..max range is where the interesting comparisons
+# live. Also: ~14% of attempts have no turn=0 row (model produced no
+# parsable submission on the first shot); those count as fails at K=1.
+
+def render_turn_budget_page(df: pd.DataFrame) -> None:
+    st.markdown("### Turn budget — macro-averaged P(MCC ≥ τ) under a turn cap")
+    st.caption(
+        "Same metric as Leaderboard, but with a per-attempt turn cap. "
+        "K=3 answers 'what would each model's pass rate look like if it "
+        "only had 3 turns to converge?' — useful for separating models "
+        "that succeed on turn 0 from ones that lean on the resubmission "
+        "loop. Denominators are unchanged (all started attempts), so the "
+        "table is monotone in K: raising the cap can only raise rates. "
+        "K=1 (one-shot) is shown but is misleading — the prompt tells "
+        "the model it can resubmit, so models that hedge early are "
+        "underrated; ~14% of attempts produce no parsable submission on "
+        "turn 0 and therefore can't pass at K=1 regardless of skill."
+    )
+
+    all_slugs = sorted(df["slug"].unique())
+    all_tasks = sorted(df["task"].unique())
+
+    # Detect observed turn range from data. Turns are 0-indexed; a value
+    # of K in the selector means "rows with turn < K count", so the
+    # natural maximum is max_turn_observed + 1.
+    if "turn" in df.columns and df["turn"].notna().any():
+        max_turn_observed = int(df["turn"].max())
+    else:
+        max_turn_observed = 4
+    max_cap = max_turn_observed + 1
+
+    c1, c2 = st.columns(2)
+    with c1:
+        sel_slugs = st.multiselect("Slugs", all_slugs, default=all_slugs,
+                                   key="tb_slugs")
+    with c2:
+        sel_tasks = st.multiselect("Tasks", all_tasks, default=all_tasks,
+                                   key="tb_tasks")
+
+    c3, c4, c5, c6 = st.columns([1, 2, 2, 1])
+    with c3:
+        # Options: 1..max_cap, plus "all" (no filter). "all" is the
+        # default — matches the Leaderboard page exactly so users can
+        # confirm the new page reproduces the old numbers before
+        # lowering the cap.
+        cap_options = [str(k) for k in range(1, max_cap + 1)] + ["all"]
+        cap_choice = st.selectbox(
+            "Turn budget K", cap_options,
+            index=len(cap_options) - 1, key="tb_cap",
+            help=("K = number of turns the model is allowed. Only rows "
+                  "with turn < K contribute to each attempt's best MCC. "
+                  "'all' applies no cap and reproduces the Leaderboard."),
+        )
+        max_turns_filter = None if cap_choice == "all" else int(cap_choice)
+    with c4:
+        intersection = st.checkbox(
+            "Restrict to intersection (only tasks every selected model has attempted)",
+            value=True, key="tb_intersection",
+            help=("Off → each model is averaged over whatever tasks it has data "
+                  "for, so rows aren't directly comparable."),
+        )
+    with c5:
+        mode = st.radio(
+            "Aggregation",
+            ["raw macro-avg", "Beta-Binomial shrinkage"],
+            index=0, horizontal=True, key="tb_mode",
+            help=("Same options as the Leaderboard page — see there for "
+                  "the math. Shrinkage is per-τ, applied after the turn "
+                  "cap, so the prior is fit on cap-aware cell rates."),
+        )
+    with c6:
+        show_ci = st.checkbox(
+            "Show 95% CIs", value=False, key="tb_show_ci",
+            help=("Two-stage parametric bootstrap (B=500). Same as "
+                  "Leaderboard — the CI captures task-resampling and "
+                  "within-cell binomial noise after the cap is applied."),
+        )
+
+    c7, _ = st.columns([1, 4])
+    with c7:
+        sort_options = [_tau_col(t) for t in LEADERBOARD_TAUS] + ["slug"]
+        default_sort = _tau_col(0.50)
+        sort_col = st.selectbox(
+            "Sort by", sort_options,
+            index=sort_options.index(default_sort),
+            key="tb_sort",
+        )
+
+    if not sel_slugs or not sel_tasks:
+        st.warning("Select at least one slug and one task.")
+        return
+
+    lb, lb_lo, lb_hi, tasks_used = build_leaderboard(
+        df, sel_slugs, sel_tasks, LEADERBOARD_TAUS, intersection,
+        shrunken=(mode == "Beta-Binomial shrinkage"),
+        ci_B=500 if show_ci else 0,
+        max_turns=max_turns_filter,
+    )
+
+    if intersection and not tasks_used:
+        st.warning(
+            "No tasks are common to every selected model — try unchecking "
+            "'restrict to intersection', or removing the model with the "
+            "thinnest coverage."
+        )
+        return
+
+    if sort_col == "slug":
+        order = lb.sort_values("slug").index
+    else:
+        order = lb.sort_values(sort_col, ascending=False,
+                               na_position="last").index
+    lb = lb.reindex(order).reset_index(drop=True)
+    if lb_lo is not None:
+        lb_lo = lb_lo.reindex(order).reset_index(drop=True)
+        lb_hi = lb_hi.reindex(order).reset_index(drop=True)
+
+    cap_label = "no cap" if max_turns_filter is None else f"K={max_turns_filter}"
+    st.markdown(
+        f"**Turn budget:** {cap_label} &nbsp;·&nbsp; "
+        f"**Aggregated over {len(tasks_used)} task(s):** "
+        + (", ".join(f"`{t}`" for t in tasks_used) if tasks_used else "_none_")
+    )
+
+    tau_cols = [_tau_col(t) for t in LEADERBOARD_TAUS]
+    if show_ci:
+        display = lb.copy()
+        for col in tau_cols:
+            display[col] = [
+                f"{p:.2f} [{lo:.2f}, {hi:.2f}]" if pd.notna(p) else "—"
+                for p, lo, hi in zip(lb[col], lb_lo[col], lb_hi[col])
+            ]
+        styled = display.style.apply(
+            lambda c: [
+                f"background-color: {_prob_color(v)}" if pd.notna(v) else ""
+                for v in lb[c.name]
+            ] if c.name in tau_cols else [""] * len(c),
+            axis=0,
+        )
+    else:
+        styled = lb.style.apply(
+            lambda c: [
+                f"background-color: {_prob_color(v)}" if pd.notna(v) else ""
+                for v in c
+            ] if c.name in tau_cols else [""] * len(c),
+            axis=0,
+        ).format({c: "{:.2f}" for c in tau_cols}, na_rep="—")
+
+    st.dataframe(
+        styled,
+        use_container_width=True,
+        hide_index=True,
+        height=min(35 * (len(lb) + 1) + 10, 600),
+        key="tb_table",
     )
 
 
@@ -1887,6 +2066,8 @@ def main():
         render_threshold_matrix_page(df)
     elif page == "Leaderboard":
         render_leaderboard_page(df)
+    elif page == "Turn budget":
+        render_turn_budget_page(df)
     elif page == "Curves":
         render_curves_page(df)
     elif page == "Accuracy":
