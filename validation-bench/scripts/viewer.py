@@ -35,6 +35,13 @@ Pages (selectable in the sidebar):
     P(MCC ≥ τ) ∈ [0, 1]. Same filter / mode / intersection controls
     as Leaderboard. Click a model in the legend to highlight it (other
     models fade); useful when many bands overlap.
+  - Distribution: bar chart of best-per-attempt MCC counts, bucketed
+    into a single "≤0 / failed" group plus 10 right-closed bins of
+    width 0.1. Group-by selects how the bars are colored: model
+    (slug), spec (e.g. toml-1.0, hcl-2-nospec), spec/nospec (whether
+    the spec body was embedded in the prompt), or environment
+    (cpp17, zig, ...). Normalize toggle switches between raw counts
+    and within-group %.
   - Cell: all attempts in one (slug, task), with per-turn MCC trend
     + sortable table. Selecting a row + clicking "View attempt →"
     navigates to the Attempt page.
@@ -76,7 +83,13 @@ ENV_LANG = {
     "erlang": "erlang",
 }
 
-PAGES = ["Matrix", "P(MCC≥τ)", "Leaderboard", "Curves", "Cell", "Attempt"]
+PAGES = ["Matrix", "P(MCC≥τ)", "Leaderboard", "Curves", "Distribution",
+         "Cell", "Attempt"]
+
+DISTRIBUTION_BUCKETS = (
+    ["≤0 / failed"]
+    + [f"({i / 10:.1f}, {(i + 1) / 10:.1f}]" for i in range(10)]
+)
 
 LEADERBOARD_TAUS = [round(0.05 * i, 2) for i in range(21)]  # 0.00, 0.05, ..., 1.00
 
@@ -1259,6 +1272,163 @@ def render_curves_page(df: pd.DataFrame) -> None:
     st.altair_chart(chart, use_container_width=True)
 
 
+# --- Distribution page ---------------------------------------------------
+
+def _bucket_for_mcc(best_mcc: float | None) -> str:
+    """Map a best-per-attempt MCC to its bucket label.
+
+    No-MCC attempts (compile errors / no_submissions) and any MCC ≤ 0
+    collapse into the single "≤0 / failed" bucket — they're all "the
+    model didn't produce a usable validator." Above 0 we use 10
+    right-closed bins of width 0.1; MCC=1.0 lands in (0.9, 1.0].
+    """
+    if best_mcc is None or pd.isna(best_mcc) or best_mcc <= 0:
+        return DISTRIBUTION_BUCKETS[0]
+    # ceil(mcc * 10) / 10 → upper edge of right-closed bin
+    upper = min(1.0, np.ceil(best_mcc * 10) / 10)
+    lower = upper - 0.1
+    return f"({lower:.1f}, {upper:.1f}]"
+
+
+def _task_to_env(task: str) -> str:
+    """Last hyphen-separated token. Works for every existing env name
+    (cpp17, zig, d, go, lua, erlang) since none of them contain '-'."""
+    return task.rsplit("-", 1)[-1] if "-" in task else task
+
+
+def _task_to_spec(task: str) -> str:
+    """Everything before the env suffix. e.g. 'hcl-2-nospec-zig' →
+    'hcl-2-nospec'."""
+    return task.rsplit("-", 1)[0] if "-" in task else task
+
+
+def _task_to_spec_or_nospec(task: str) -> str:
+    """Coarse: did this task embed the spec text in the prompt or not?"""
+    return "nospec" if "-nospec-" in f"-{task}-" or task.endswith("-nospec") else "with-spec"
+
+
+GROUP_BY_OPTIONS = {
+    "model": lambda row: row["slug"],
+    "spec": lambda row: _task_to_spec(row["task"]),
+    "spec/nospec": lambda row: _task_to_spec_or_nospec(row["task"]),
+    "environment": lambda row: _task_to_env(row["task"]),
+}
+
+
+def render_distribution_page(df: pd.DataFrame) -> None:
+    st.markdown("### Score distribution — best-per-attempt MCC, bucketed")
+    st.caption(
+        "Each attempt contributes one count. The score plotted is the "
+        "best MCC across that attempt's turns. Attempts that never "
+        "produced a scored turn (compile errors, no submissions, …) "
+        "and attempts with best MCC ≤ 0 (worse-than-coin-flip or "
+        "exactly random) collapse into the single leftmost bucket — "
+        "the operational definition is 'didn't produce a usable "
+        "validator.' Above 0, bins are right-closed of width 0.1; MCC=1.0 "
+        "lands in (0.9, 1.0]. Group-by colors the bars; normalize toggles "
+        "between raw counts and within-group percentages."
+    )
+
+    all_slugs = sorted(df["slug"].unique())
+    all_tasks = sorted(df["task"].unique())
+
+    c1, c2 = st.columns(2)
+    with c1:
+        sel_slugs = st.multiselect("Slugs", all_slugs, default=all_slugs,
+                                   key="dist_slugs")
+    with c2:
+        sel_tasks = st.multiselect("Tasks", all_tasks, default=all_tasks,
+                                   key="dist_tasks")
+
+    c3, c4 = st.columns([3, 2])
+    with c3:
+        group_by = st.radio(
+            "Group by",
+            list(GROUP_BY_OPTIONS.keys()),
+            index=0, horizontal=True, key="dist_groupby",
+        )
+    with c4:
+        normalize = st.checkbox(
+            "Show as % (normalized within group)", value=False,
+            key="dist_normalize",
+            help=("Off → raw attempt counts. On → each group sums to 100%. "
+                  "Normalize when groups have very different sizes (e.g. "
+                  "10 attempts for one slug vs 50 for another) so the "
+                  "shape comparison isn't dominated by sample size."),
+        )
+
+    if not sel_slugs or not sel_tasks:
+        st.warning("Select at least one slug and one task.")
+        return
+
+    sub = df[df["slug"].isin(sel_slugs) & df["task"].isin(sel_tasks)]
+
+    # One row per attempt: best MCC across turns + group + bucket.
+    rows: list[dict] = []
+    for (slug, task, aid), g in sub.groupby(["slug", "task", "attempt_id"]):
+        mccs = g["mcc"].dropna()
+        best = float(mccs.max()) if not mccs.empty else None
+        meta = {"slug": slug, "task": task, "attempt_id": aid}
+        rows.append({
+            **meta,
+            "best_mcc": best,
+            "bucket": _bucket_for_mcc(best),
+            "group": GROUP_BY_OPTIONS[group_by]({"slug": slug, "task": task}),
+        })
+    if not rows:
+        st.warning("No attempts match the current filters.")
+        return
+    attempts = pd.DataFrame(rows)
+
+    # (group, bucket) → count. Ensure every (group, bucket) cell exists
+    # so empty buckets render as 0-height (otherwise Altair drops them
+    # from the layout and bars between non-empty buckets shift around).
+    counts = (attempts.groupby(["group", "bucket"]).size()
+              .reset_index(name="count"))
+    all_groups = sorted(attempts["group"].unique())
+    full_grid = pd.MultiIndex.from_product(
+        [all_groups, DISTRIBUTION_BUCKETS], names=["group", "bucket"]
+    ).to_frame(index=False)
+    counts = full_grid.merge(counts, on=["group", "bucket"], how="left").fillna({"count": 0})
+    counts["count"] = counts["count"].astype(int)
+    if normalize:
+        totals = counts.groupby("group")["count"].transform("sum")
+        # Avoid div-by-zero if a group somehow has no attempts post-filter.
+        counts["pct"] = np.where(totals > 0, counts["count"] / totals * 100, 0.0)
+
+    # Summary line above the chart so the user sees the support.
+    n_attempts = len(attempts)
+    n_failed = int((attempts["bucket"] == DISTRIBUTION_BUCKETS[0]).sum())
+    st.markdown(f"**Attempts:** {n_attempts:,} total, {n_failed:,} in "
+                f"`≤0 / failed` ({n_failed / n_attempts * 100:.1f}%)")
+
+    y_field = "pct:Q" if normalize else "count:Q"
+    y_title = "% of attempts (within group)" if normalize else "attempts"
+    tooltip = [
+        alt.Tooltip("group:N", title=group_by),
+        alt.Tooltip("bucket:O", title="bucket"),
+        alt.Tooltip("count:Q", title="count"),
+    ]
+    if normalize:
+        tooltip.append(alt.Tooltip("pct:Q", title="%", format=".1f"))
+
+    chart = (
+        alt.Chart(counts)
+        .mark_bar()
+        .encode(
+            x=alt.X("bucket:O", sort=DISTRIBUTION_BUCKETS,
+                    title="best-MCC bucket"),
+            y=alt.Y(y_field, title=y_title),
+            color=alt.Color("group:N",
+                            legend=alt.Legend(title=group_by)),
+            xOffset=alt.XOffset("group:N"),
+            tooltip=tooltip,
+        )
+        .properties(height=420)
+    )
+    st.altair_chart(chart, use_container_width=True)
+
+
 def render_cell_page(df: pd.DataFrame) -> None:
     st.markdown("### Cell view — attempts in one (slug, task)")
     st.caption(
@@ -1387,6 +1557,8 @@ def main():
         render_leaderboard_page(df)
     elif page == "Curves":
         render_curves_page(df)
+    elif page == "Distribution":
+        render_distribution_page(df)
     elif page == "Cell":
         render_cell_page(df)
     elif page == "Attempt":
