@@ -81,7 +81,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 from scipy.optimize import minimize
-from scipy.stats import betabinom
+from scipy.stats import betabinom, binom
 
 
 HERE = Path(__file__).resolve().parent
@@ -102,7 +102,7 @@ ENV_LANG = {
 
 PAGES = ["Matrix", "P(MCC≥τ)", "Leaderboard", "Turn budget", "Curves",
          "Accuracy", "Distribution", "Variance", "Saturation",
-         "Cell", "Attempt"]
+         "Pair compare", "Cell", "Attempt"]
 
 DISTRIBUTION_BUCKETS = (
     ["≤0 / failed"]
@@ -2196,6 +2196,286 @@ def render_saturation_page(df: pd.DataFrame) -> None:
     st.dataframe(styled, use_container_width=True)
 
 
+# --- Pair compare page --------------------------------------------------
+# Paired (model, spec) comparison of pass rates between two envs. The
+# question this answers: "for the same model and spec, does env_a make
+# the task systematically easier or harder than env_b?". Spec is held
+# fixed so spec-difficulty doesn't confound; the model is held fixed so
+# model strength doesn't confound; the env varies, isolating its effect.
+#
+# Caveats baked into the page:
+#   - At low τ (e.g. 0.5) many pairs are ceiling-bound (P=1 in both
+#     envs) → Δ=0 → ties dominate the sign test. Raising τ converts
+#     ties into measurable differences and is usually the right move
+#     for env-comparison.
+#   - Some pairs have very small N in one env (e.g. N_zig=1). Those
+#     P estimates are wildly noisy. Point size is scaled by min(N_a,
+#     N_b) so confident pairs are visually dominant.
+#   - The bootstrap CI resamples (slug, spec) pairs with replacement —
+#     same caveat as the Leaderboard CIs: it quantifies precision of
+#     the mean Δ over the observed pair-set, not generalization to
+#     unseen spec/env combinations.
+
+def render_pair_compare_page(df: pd.DataFrame) -> None:
+    st.markdown("### Pair compare — paired P(MCC ≥ τ) for env_a vs env_b across (model, spec) cells")
+    st.caption(
+        "Scatter of per-cell pass rates: X = P(MCC ≥ τ) in env_a, "
+        "Y = same in env_b. One point per (model, spec) pair where "
+        "both envs have ≥ 1 attempt. The dashed diagonal is 'no "
+        "difference'; points **above** the diagonal mean env_b is "
+        "easier, points **below** mean env_a is easier. Point size = "
+        "min(N_a, N_b) so confident pairs dominate. Summary below: "
+        "sign-test, mean signed Δ, bootstrap 95% CI on the mean. "
+        "Raise τ to convert ceiling-bound ties (both envs at 1.0) into "
+        "measurable differences — env-comparison signal at τ=0.5 is "
+        "usually swamped by ties when both envs saturate."
+    )
+
+    if "env" not in df.columns or "spec" not in df.columns:
+        st.error("`env` and `spec` columns required — Pair compare needs them.")
+        return
+
+    all_envs = sorted(df["env"].dropna().unique())
+    if len(all_envs) < 2:
+        st.warning("Need at least 2 envs in the data to pair-compare.")
+        return
+
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        env_a_default = "cpp17" if "cpp17" in all_envs else all_envs[0]
+        env_a = st.selectbox("env_a (X-axis)", all_envs,
+                             index=all_envs.index(env_a_default),
+                             key="pc_env_a")
+    with c2:
+        env_b_options = [e for e in all_envs if e != env_a]
+        env_b_default = "zig" if "zig" in env_b_options else env_b_options[0]
+        env_b = st.selectbox("env_b (Y-axis)", env_b_options,
+                             index=env_b_options.index(env_b_default),
+                             key="pc_env_b")
+    with c3:
+        tau = st.slider("Threshold τ", 0.0, 1.0, 0.5, step=0.05, key="pc_tau",
+                        help=("Per-attempt pass = best-per-turn MCC ≥ τ. "
+                              "Higher τ converts ceiling-bound ties (both "
+                              "envs at 1.0) into measurable differences."))
+    with c4:
+        group_by = st.selectbox(
+            "Color by", ["spec", "spec-root", "slug", "none"],
+            index=0, key="pc_group",
+            help=("spec → full spec (yaml-1.2 vs yaml-1.2-nospec separate). "
+                  "spec-root → collapse nospec variants onto their root. "
+                  "slug → one color per model. none → all gray."),
+        )
+
+    sub = df[df["env"].isin([env_a, env_b])]
+    if sub.empty:
+        st.warning(f"No data for env_a={env_a} or env_b={env_b}.")
+        return
+
+    all_slugs = sorted(sub["slug"].unique())
+    all_specs = sorted(sub["spec"].unique())
+
+    c5, c6 = st.columns(2)
+    with c5:
+        sel_slugs = st.multiselect("Slugs", all_slugs, default=all_slugs,
+                                   key="pc_slugs")
+    with c6:
+        sel_specs = st.multiselect("Specs", all_specs, default=all_specs,
+                                   key="pc_specs")
+
+    if not sel_slugs or not sel_specs:
+        st.warning("Select at least one slug and one spec.")
+        return
+
+    sub = sub[sub["slug"].isin(sel_slugs) & sub["spec"].isin(sel_specs)]
+    if sub.empty:
+        st.warning("No rows match the current slug/spec/env selection.")
+        return
+
+    # Per-attempt best MCC (reuses the shared helper). Env/spec are
+    # attached via task → env/spec lookup since _attempt_score_table
+    # carries neither.
+    per_attempt = _attempt_score_table(sub)
+    task_env = sub.drop_duplicates("task").set_index("task")["env"].to_dict()
+    task_spec = sub.drop_duplicates("task").set_index("task")["spec"].to_dict()
+    per_attempt["env"] = per_attempt["task"].map(task_env)
+    per_attempt["spec"] = per_attempt["task"].map(task_spec)
+
+    # Per (slug, spec, env): pass count, attempt count, pass rate at τ.
+    def _stats(g: pd.DataFrame) -> pd.Series:
+        n = len(g)
+        scored = g["mcc"].dropna()
+        n_pass = int((scored >= tau).sum())
+        return pd.Series({"n": n, "n_pass": n_pass,
+                          "p": n_pass / n if n > 0 else float("nan")})
+
+    cells = (per_attempt.groupby(["slug", "spec", "env"], group_keys=False)
+             .apply(_stats).reset_index())
+    # Pivot to wide: one row per (slug, spec), columns for each env's p and n.
+    p_wide = cells.pivot(index=["slug", "spec"], columns="env", values="p")
+    n_wide = cells.pivot(index=["slug", "spec"], columns="env", values="n")
+    if env_a not in p_wide.columns or env_b not in p_wide.columns:
+        st.warning(
+            f"No (slug, spec) pairs have data in BOTH {env_a} and {env_b} "
+            "for the current selection."
+        )
+        return
+
+    paired = pd.DataFrame({
+        "p_a": p_wide[env_a],
+        "p_b": p_wide[env_b],
+        "n_a": n_wide[env_a],
+        "n_b": n_wide[env_b],
+    }).reset_index().dropna(subset=["p_a", "p_b"])
+
+    if paired.empty:
+        st.warning(
+            f"No (slug, spec) pairs have data in BOTH {env_a} and {env_b}."
+        )
+        return
+
+    # Δ > 0 ⇔ env_a easier (P higher); Δ < 0 ⇔ env_b easier.
+    paired["delta"] = paired["p_a"] - paired["p_b"]
+    paired["min_n"] = paired[["n_a", "n_b"]].min(axis=1).astype(int)
+
+    if group_by == "spec":
+        paired["group"] = paired["spec"]
+    elif group_by == "spec-root":
+        paired["group"] = paired["spec"].str.replace("-nospec", "", regex=False)
+    elif group_by == "slug":
+        paired["group"] = paired["slug"]
+    else:
+        paired["group"] = ""
+
+    n_total = len(paired)
+    EPS = 1e-9
+    n_pos = int((paired["delta"] > EPS).sum())
+    n_neg = int((paired["delta"] < -EPS).sum())
+    n_zero = n_total - n_pos - n_neg
+    mean_delta = float(paired["delta"].mean())
+
+    # Bootstrap CI on the mean Δ — resample (slug, spec) pairs with
+    # replacement. Doesn't model within-cell noise (small N pairs are
+    # treated as point values); fine for v1 since the dominant variance
+    # in our regime is the small number of pairs.
+    rng = np.random.default_rng(0)
+    B = 2000
+    deltas = paired["delta"].to_numpy()
+    boot_means = np.array([deltas[rng.integers(0, n_total, n_total)].mean()
+                           for _ in range(B)])
+    lo, hi = (float(x) for x in np.percentile(boot_means, [2.5, 97.5]))
+
+    # Exact two-sided sign test on non-tie pairs. n_eff=0 → undefined.
+    n_eff = n_pos + n_neg
+    if n_eff > 0:
+        k = max(n_pos, n_neg)
+        upper = float(binom.sf(k - 1, n_eff, 0.5))
+        lower = float(binom.cdf(n_eff - k, n_eff, 0.5))
+        p_two = float(min(upper + lower, 1.0))
+        sign_txt = f"sign-test p (excl. ties, n_eff={n_eff}): **{p_two:.3f}**"
+    else:
+        sign_txt = "sign-test undefined (no non-tie pairs)"
+
+    if lo > 0:
+        verdict = f"`{env_a}` advantage — CI excludes 0"
+    elif hi < 0:
+        verdict = f"`{env_b}` advantage — CI excludes 0"
+    else:
+        verdict = "CI includes 0 — no detectable directional difference"
+
+    st.markdown(
+        f"**τ = {tau:.2f}** &nbsp;·&nbsp; **{n_total}** paired (slug, spec) cells "
+        f"&nbsp;·&nbsp; Δ = P(`{env_a}`) − P(`{env_b}`). "
+        f"Above-diagonal = `{env_b}` easier; below-diagonal = `{env_a}` easier."
+    )
+    st.markdown(
+        f"**Sign:** `{env_a}` > `{env_b}`: **{n_pos}** &nbsp;·&nbsp; "
+        f"`{env_a}` < `{env_b}`: **{n_neg}** &nbsp;·&nbsp; "
+        f"ties: **{n_zero}** &nbsp;·&nbsp; {sign_txt}"
+    )
+    st.markdown(
+        f"**Mean Δ:** **{mean_delta:+.3f}** &nbsp;·&nbsp; "
+        f"**95% bootstrap CI** (B={B}, resample over pairs): "
+        f"**[{lo:+.3f}, {hi:+.3f}]** &nbsp;·&nbsp; _{verdict}_"
+    )
+
+    # Jitter to break stacking at corners (0,0), (1,1), (0,1), (1,0)
+    # where many cells pile up at low τ. Same RNG state regardless of
+    # B above (advances internally; that's fine — visual jitter only).
+    JITTER = 0.012
+    paired["x_j"] = paired["p_a"] + rng.uniform(-JITTER, JITTER, size=n_total)
+    paired["y_j"] = paired["p_b"] + rng.uniform(-JITTER, JITTER, size=n_total)
+
+    diag = pd.DataFrame({"x": [0, 1], "y": [0, 1]})
+    diag_chart = (
+        alt.Chart(diag)
+        .mark_line(strokeDash=[4, 4], color="gray", strokeWidth=1)
+        .encode(x="x:Q", y="y:Q")
+    )
+
+    use_color = group_by != "none"
+    selection = alt.selection_point(fields=["group"], bind="legend")
+    color_enc = (alt.Color("group:N", legend=alt.Legend(title=group_by))
+                 if use_color else alt.value("#5b6772"))
+    opacity_enc = (alt.condition(selection, alt.value(0.8), alt.value(0.12))
+                   if use_color else alt.value(0.75))
+
+    points = (
+        alt.Chart(paired)
+        .mark_circle()
+        .encode(
+            x=alt.X("x_j:Q", title=f"P({env_a})",
+                    scale=alt.Scale(domain=[-0.05, 1.05])),
+            y=alt.Y("y_j:Q", title=f"P({env_b})",
+                    scale=alt.Scale(domain=[-0.05, 1.05])),
+            size=alt.Size("min_n:Q", title="min(N_a, N_b)",
+                          scale=alt.Scale(range=[40, 400])),
+            color=color_enc,
+            opacity=opacity_enc,
+            tooltip=[
+                alt.Tooltip("slug:N", title="model"),
+                alt.Tooltip("spec:N", title="spec"),
+                alt.Tooltip("p_a:Q", title=f"P({env_a})", format=".3f"),
+                alt.Tooltip("p_b:Q", title=f"P({env_b})", format=".3f"),
+                alt.Tooltip("n_a:Q", title=f"N({env_a})"),
+                alt.Tooltip("n_b:Q", title=f"N({env_b})"),
+                alt.Tooltip("delta:Q", title="Δ", format="+.3f"),
+            ],
+        )
+    )
+    if use_color:
+        points = points.add_params(selection)
+
+    chart = ((diag_chart + points)
+             .properties(height=520)
+             .interactive(bind_x=False, bind_y=False))
+    st.altair_chart(chart, use_container_width=True)
+
+    # Per-spec breakdown — surfaces whether the cpp17/zig signal is
+    # universal or spec-dependent (the answer is usually spec-dependent).
+    st.markdown("---")
+    st.markdown(
+        f"**Per-spec breakdown** — mean Δ over models, "
+        f"Δ = P(`{env_a}`) − P(`{env_b}`):"
+    )
+    per_spec = (paired.groupby("spec")
+                .agg(
+                    n_models=("slug", "count"),
+                    mean_delta=("delta", "mean"),
+                    sd_delta=("delta", lambda x: float(x.std(ddof=1))
+                              if len(x) > 1 else 0.0),
+                    n_pos=("delta", lambda x: int((x > EPS).sum())),
+                    n_zero=("delta", lambda x: int((x.abs() <= EPS).sum())),
+                    n_neg=("delta", lambda x: int((x < -EPS).sum())),
+                )
+                .reset_index()
+                .sort_values("mean_delta", ascending=False))
+    styled = per_spec.style.format({
+        "mean_delta": "{:+.3f}",
+        "sd_delta": "{:.3f}",
+    })
+    st.dataframe(styled, hide_index=True, use_container_width=True)
+
+
 def render_cell_page(df: pd.DataFrame) -> None:
     st.markdown("### Cell view — attempts in one (slug, task)")
     st.caption(
@@ -2334,6 +2614,8 @@ def main():
         render_variance_page(df)
     elif page == "Saturation":
         render_saturation_page(df)
+    elif page == "Pair compare":
+        render_pair_compare_page(df)
     elif page == "Cell":
         render_cell_page(df)
     elif page == "Attempt":
