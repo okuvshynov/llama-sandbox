@@ -49,6 +49,16 @@ Pages (selectable in the sidebar):
     the spec body was embedded in the prompt), or environment
     (cpp17, zig, ...). Normalize toggle switches between raw counts
     and within-group %.
+  - Variance: simulates "you only get one attempt per cell" — for
+    each (model, task) cell, picks ONE random attempt and counts as
+    pass iff its best-per-turn MCC ≥ τ. The plot is a trace of N
+    independent random samples: X axis = seed, Y axis = pass count,
+    one line per model. Variance shows up directly as line wiggle —
+    flat lines = stable models whose ranking doesn't depend on
+    luck; jagged lines = models whose pass count swings by 3-5+
+    depending on which attempt got drawn. Correlated jumps across
+    several lines = "lucky seed" affecting many models; uncorrelated
+    jumps = independent per-model sampling variance.
   - Cell: all attempts in one (slug, task), with per-turn MCC trend
     + sortable table. Selecting a row + clicking "View attempt →"
     navigates to the Attempt page.
@@ -91,7 +101,7 @@ ENV_LANG = {
 }
 
 PAGES = ["Matrix", "P(MCC≥τ)", "Leaderboard", "Curves", "Accuracy",
-         "Distribution", "Cell", "Attempt"]
+         "Distribution", "Variance", "Cell", "Attempt"]
 
 DISTRIBUTION_BUCKETS = (
     ["≤0 / failed"]
@@ -1578,6 +1588,179 @@ def render_distribution_page(df: pd.DataFrame) -> None:
     st.altair_chart(chart, use_container_width=True)
 
 
+# --- Variance page ------------------------------------------------------
+
+def _attempt_score_table(sub: pd.DataFrame) -> pd.DataFrame:
+    """Per-attempt best MCC table, including attempts that produced no
+    scored turn (best=NaN, treated as fail at any τ ≥ 0)."""
+    all_attempts = (sub.groupby(["slug", "task", "attempt_id"])
+                    .size().reset_index(name="n_turns"))
+    best = (sub.dropna(subset=["mcc"])
+            .groupby(["slug", "task", "attempt_id"])["mcc"]
+            .max().reset_index())
+    return all_attempts.merge(best, on=["slug", "task", "attempt_id"], how="left")
+
+
+def _build_cell_arrays(per_attempt: pd.DataFrame, slugs: list[str], tasks: list[str]
+                       ) -> dict[tuple[str, str], np.ndarray]:
+    """For each (slug, task), a numpy array of best-MCC values per
+    attempt. NaN → -inf (so any threshold rejects). Used by both the
+    single-sample and bootstrap-distribution code paths so per-cell
+    pandas filtering only happens once."""
+    out: dict[tuple[str, str], np.ndarray] = {}
+    for slug in slugs:
+        for task in tasks:
+            arr = per_attempt[(per_attempt.slug == slug)
+                              & (per_attempt.task == task)]["mcc"].to_numpy()
+            if len(arr) == 0:
+                continue
+            arr = np.where(np.isnan(arr), -np.inf, arr)
+            out[(slug, task)] = arr
+    return out
+
+
+def render_variance_page(df: pd.DataFrame) -> None:
+    st.markdown("### Single-attempt variance — pass count per model across N independent random samples")
+    st.caption(
+        "For each random sample (seed), each (model, task) cell gets ONE "
+        "randomly-picked attempt; the attempt counts as a pass iff its "
+        "best-per-turn MCC ≥ τ. The chart traces the per-model pass count "
+        "as a function of seed — flat lines mean the model's ranking "
+        "doesn't depend on which attempt got drawn (Opus typical), wiggly "
+        "lines mean the count swings by several tasks based on luck "
+        "(mid-tier typical). Correlated jumps across multiple lines at "
+        "the same seed = a 'lucky seed' boosting many models together; "
+        "uncorrelated jumps = independent per-model variance."
+    )
+
+    all_slugs = sorted(df["slug"].unique())
+    all_tasks = sorted(df["task"].unique())
+
+    c1, c2 = st.columns(2)
+    with c1:
+        sel_slugs = st.multiselect("Slugs", all_slugs, default=all_slugs,
+                                   key="var_slugs")
+    with c2:
+        sel_tasks = st.multiselect("Tasks", all_tasks, default=all_tasks,
+                                   key="var_tasks")
+
+    c3, c4, c5 = st.columns([3, 2, 2])
+    with c3:
+        tau = st.slider(
+            "Threshold τ (best per-attempt MCC must reach this to count as pass)",
+            min_value=0.0, max_value=1.0, value=0.5, step=0.05,
+            key="var_tau",
+        )
+    with c4:
+        intersection = st.checkbox(
+            "Restrict to intersection (same task set across models)",
+            value=True, key="var_intersection",
+        )
+    with c5:
+        n_samples = st.slider(
+            "Samples (X-axis range)",
+            min_value=20, max_value=500, value=100, step=10,
+            key="var_n_samples",
+            help=("Number of independent random samplings to plot. Each "
+                  "sample = one random pick per (model, task) cell at the "
+                  "same seed. More samples → smoother variance picture, "
+                  "but more visual noise on the chart and slightly slower "
+                  "to redraw."),
+        )
+
+    if not sel_slugs or not sel_tasks:
+        st.warning("Select at least one slug and one task.")
+        return
+
+    sub = df[df["slug"].isin(sel_slugs) & df["task"].isin(sel_tasks)]
+    per_attempt = _attempt_score_table(sub)
+
+    # Determine task set per intersection toggle.
+    cell_present = (sub.groupby(["slug", "task"]).size()
+                    .unstack(fill_value=0) > 0)
+    cell_present = cell_present.reindex(index=sel_slugs, columns=sel_tasks,
+                                        fill_value=False)
+    if intersection:
+        tasks_used = [t for t in sel_tasks if bool(cell_present[t].all())]
+    else:
+        tasks_used = list(sel_tasks)
+
+    if intersection and not tasks_used:
+        st.warning(
+            "No tasks are common to every selected model — try unchecking "
+            "intersection, or removing the model with the thinnest coverage."
+        )
+        return
+
+    cell_arrays = _build_cell_arrays(per_attempt, sel_slugs, tasks_used)
+
+    # --- Run N samples, accumulate (seed, slug) → pass count.
+    # Each seed gets its own RNG so traces are reproducible *and* a "lucky
+    # seed" pattern (correlated jumps across slugs) can emerge from shared
+    # randomness within a seed. Vectorized over tasks within each slug ×
+    # seed; total cost is N × |slugs| × |tasks| ~= 100 × 11 × 11 ≈ 12k
+    # numpy index ops, microseconds each.
+    trace_rows: list[dict] = []
+    for seed in range(int(n_samples)):
+        rng = np.random.default_rng(seed)
+        for slug in sel_slugs:
+            passed = 0
+            total = 0
+            for task in tasks_used:
+                arr = cell_arrays.get((slug, task))
+                if arr is None:
+                    continue
+                total += 1
+                if arr[rng.integers(0, len(arr))] >= tau:
+                    passed += 1
+            trace_rows.append({"seed": seed, "slug": slug,
+                               "passed": passed, "total": total})
+    trace_df = pd.DataFrame(trace_rows)
+
+    total_tasks = (trace_df.groupby("slug")["total"].first().max()
+                   if not trace_df.empty else 0)
+    means = (trace_df.groupby("slug")["passed"].mean()
+             .sort_values(ascending=False))
+    st.markdown(
+        f"**τ = {tau:.2f}, samples = {n_samples}, tasks evaluated per "
+        f"model: {total_tasks}** (intersection ON → same task set "
+        f"everywhere; intersection OFF → per-model coverage, see "
+        f"`total` in tooltip). Mean pass count per model over the "
+        f"{n_samples} samples: "
+        + ", ".join(f"`{s.rsplit('-', 1)[-1]}={m:.1f}`"
+                    for s, m in means.items())
+    )
+
+    # Color order = mean pass count desc, so legend matches the visual
+    # ranking.
+    slug_order = means.index.tolist()
+    selection = alt.selection_point(fields=["slug"], bind="legend")
+
+    chart = (
+        alt.Chart(trace_df)
+        .mark_line(opacity=0.85, strokeWidth=1.5)
+        .encode(
+            x=alt.X("seed:Q", title="random sample (seed)"),
+            y=alt.Y("passed:Q", title="passed (out of total)",
+                    scale=alt.Scale(domain=[0, max(1, int(total_tasks))])),
+            color=alt.Color("slug:N", sort=slug_order,
+                            legend=alt.Legend(title="model")),
+            opacity=alt.condition(selection, alt.value(0.85), alt.value(0.12)),
+            tooltip=[
+                alt.Tooltip("slug:N", title="model"),
+                alt.Tooltip("seed:Q", title="seed"),
+                alt.Tooltip("passed:Q", title="passed"),
+                alt.Tooltip("total:Q", title="total"),
+            ],
+        )
+        .add_params(selection)
+        .properties(height=460)
+        .interactive(bind_y=False)
+    )
+
+    st.altair_chart(chart, use_container_width=True)
+
+
 def render_cell_page(df: pd.DataFrame) -> None:
     st.markdown("### Cell view — attempts in one (slug, task)")
     st.caption(
@@ -1710,6 +1893,8 @@ def main():
         render_accuracy_curves_page(df)
     elif page == "Distribution":
         render_distribution_page(df)
+    elif page == "Variance":
+        render_variance_page(df)
     elif page == "Cell":
         render_cell_page(df)
     elif page == "Attempt":
