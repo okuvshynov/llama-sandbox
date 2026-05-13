@@ -155,15 +155,18 @@ generate_corpus_spec() {
 generate_corpus_spec "lua-5.4"    "luac5.4 -p"                              "lua"
 generate_corpus_spec "palindrome" "python3 scripts/oracles/palindrome-check.py" "txt"
 
-# hcl-2's oracle is a Go binary built from scripts/oracles/hcl-check/.
-# Build it first; setup is a no-op for hcl-2 if Go is unavailable (the
+# hcl-2's and cbor-1.0's oracles are Go binaries. Build both first (Go
+# required); setup is a no-op for either spec if Go is unavailable (the
 # subsequent generate_corpus_spec call's `command -v` check fails loudly).
 if command -v go >/dev/null 2>&1; then
     echo "Building scripts/oracles/hcl-check ..."
     (cd scripts/oracles/hcl-check && go build -o hcl-check .)
+    echo "Building scripts/oracles/cbor-check ..."
+    (cd scripts/oracles/cbor-check && go build -o cbor-check .)
 fi
 generate_corpus_spec "hcl-2"        "scripts/oracles/hcl-check/hcl-check"   "hcl"
 generate_corpus_spec "hcl-2-nospec" "scripts/oracles/hcl-check/hcl-check"   "hcl"
+generate_corpus_spec "cbor-1.0"     "scripts/oracles/cbor-check/cbor-check" "cbor"
 
 # yaml-test-suite uses a per-directory test layout (data branch): each test
 # is a directory containing in.yaml plus auxiliary files; presence of an

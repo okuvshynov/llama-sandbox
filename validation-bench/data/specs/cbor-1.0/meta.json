@@ -1,0 +1,5 @@
+{
+  "display_name": "CBOR (RFC 8949)",
+  "has_spec_body": true,
+  "oracle": "scripts/oracles/cbor-check (Go binary using github.com/fxamacker/cbor/v2 — accepts iff cbor.Wellformed returns no error, i.e. exactly one well-formed CBOR data item per RFC 8949 §3, no trailing bytes)"
+}

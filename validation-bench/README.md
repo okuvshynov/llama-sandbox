@@ -21,7 +21,7 @@ docker build -t vb-sandbox-d      data/envs/d/       # D (LDC) tasks
 - [yaml-test-suite](https://github.com/yaml/yaml-test-suite) (`data` branch) → `data/specs/yaml-1.2{,-nospec}/tests/` (pinned at `6ad3d2c`); 1.3-only tests are filtered out
 - [JSONTestSuite](https://github.com/nst/JSONTestSuite) → `data/specs/json-1.0{,-nospec}/tests/` (pinned at `1ef36fa`); `y_*`/`n_*` files become valid/invalid tests, `i_*` implementation-defined files are skipped
 
-For each, it clones into `.cache/`, generates `tests.jsonl`, and symlinks `data/specs/<spec>/tests/` to the cached corpus. The hand-curated specs (`lua-5.4`, `palindrome`, `hcl-2`) re-derive labels via a configured oracle — for `hcl-2` setup.sh builds the Go oracle in `scripts/oracles/hcl-check/` first (requires a Go toolchain ≥ 1.24); the corpus source files are checked in under `data/specs/hcl-2/corpus/` and the script regenerates them from the inline TESTS table when needed. Run setup.sh once after cloning the repo, or again after bumping a pinned commit.
+For each, it clones into `.cache/`, generates `tests.jsonl`, and symlinks `data/specs/<spec>/tests/` to the cached corpus. The hand-curated specs (`lua-5.4`, `palindrome`, `hcl-2`, `cbor-1.0`) re-derive labels via a configured oracle — for `hcl-2` and `cbor-1.0` setup.sh builds Go oracles in `scripts/oracles/{hcl-check,cbor-check}/` first (requires a Go toolchain ≥ 1.24); the corpus source files are checked in under `data/specs/<spec>/corpus/` and a `build_corpus.py` script regenerates them from an inline TESTS table when needed. Run setup.sh once after cloning the repo, or again after bumping a pinned commit.
 
 ## Layout
 
