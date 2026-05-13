@@ -101,7 +101,8 @@ ENV_LANG = {
 }
 
 PAGES = ["Matrix", "P(MCC≥τ)", "Leaderboard", "Turn budget", "Curves",
-         "Accuracy", "Distribution", "Variance", "Cell", "Attempt"]
+         "Accuracy", "Distribution", "Variance", "Saturation",
+         "Cell", "Attempt"]
 
 DISTRIBUTION_BUCKETS = (
     ["≤0 / failed"]
@@ -1940,6 +1941,261 @@ def render_variance_page(df: pd.DataFrame) -> None:
     st.altair_chart(chart, use_container_width=True)
 
 
+# --- Saturation page ----------------------------------------------------
+# Empirical "diminishing returns on more attempts per cell". The macro-avg
+# SE decomposes as Var(p̂) ≈ (1/T)·(Var(p_t) + E[p_t(1-p_t)/N_t]):
+# the second term shrinks as 1/N, the first only shrinks with more T.
+# This page subsamples N' attempts (without replacement) from each cell
+# S times, computes the macro-avg per subsample, and reports the empirical
+# SE — recombined in quadrature with the across-cell SE to give a "total
+# SE if you'd actually only run N' attempts" estimate. The dashed line
+# per slug is the across-cell asymptote: the irreducible part that more
+# attempts can never fix.
+#
+# Caveats baked in:
+#   - The across-cell SE uses observed K_t/N_t as proxies for true cell
+#     rates. This slightly overestimates Var(p_t) for small N_t (the
+#     within-cell sampling noise leaks into the cross-cell sample
+#     variance). v1 ships without a bias correction; for N_t ≥ 5 the
+#     inflation is modest and the visual story is unchanged.
+#   - Subsampling assumes attempts within a cell are exchangeable. If
+#     attempts share strong prompt-seeded modes the empirical SE will
+#     undershoot what a fresh sweep would show.
+#   - Only cells with N_t ≥ N'_max qualify, so the task set is fixed
+#     across the X-axis (per intersection toggle). Cells that don't
+#     qualify drop out of T entirely for the plot.
+
+def render_saturation_page(df: pd.DataFrame) -> None:
+    st.markdown("### Saturation — predicted SE of macro-avg P(MCC ≥ τ) vs attempts-per-cell N′")
+    st.caption(
+        "How much do you gain from more attempts per cell? Y-axis is "
+        "`total SE = √(within² + across²)`. The within term is the "
+        "empirical SE from subsampling N′ attempts without replacement "
+        "from each cell, S times. The across term is estimated from "
+        "Var(K_t/N_t) across cells and is irreducible without more "
+        "tasks — shown as the dashed asymptote per slug. The 'reasonable "
+        "N′' for a model is where the solid line has visibly merged onto "
+        "its dashed asymptote: beyond that point, more attempts per cell "
+        "buy you essentially nothing; only broader spec/env coverage will. "
+        "Note: 'reasonable N′' is τ-dependent — it's largest where the "
+        "model's per-cell rates cluster near 0.5 (max p(1-p)), and "
+        "smaller at extremes where cells are mostly 0 or 1."
+    )
+
+    all_slugs = sorted(df["slug"].unique())
+    all_tasks = sorted(df["task"].unique())
+
+    c1, c2 = st.columns(2)
+    with c1:
+        sel_slugs = st.multiselect("Slugs", all_slugs, default=all_slugs,
+                                   key="sat_slugs")
+    with c2:
+        sel_tasks = st.multiselect("Tasks", all_tasks, default=all_tasks,
+                                   key="sat_tasks")
+
+    if not sel_slugs or not sel_tasks:
+        st.warning("Select at least one slug and one task.")
+        return
+
+    sub = df[df["slug"].isin(sel_slugs) & df["task"].isin(sel_tasks)]
+    per_attempt = _attempt_score_table(sub)
+    if per_attempt.empty:
+        st.warning("No attempts in the selected slug × task region.")
+        return
+
+    cell_n_series = per_attempt.groupby(["slug", "task"]).size()
+    max_possible_np = int(cell_n_series.max())
+    if max_possible_np < 2:
+        st.warning("Need at least one cell with N_t ≥ 2 for a saturation curve.")
+        return
+
+    c3, c4, c5, c6 = st.columns([2, 2, 2, 2])
+    with c3:
+        tau = st.slider(
+            "Threshold τ", min_value=0.0, max_value=1.0,
+            value=0.5, step=0.05, key="sat_tau",
+            help=("Per-attempt pass = best-per-turn MCC ≥ τ. The saturation "
+                  "point is τ-dependent — try shifting τ to see how the "
+                  "'reasonable N′' moves."),
+        )
+    with c4:
+        np_max = st.slider(
+            "X-axis max N′", min_value=2, max_value=max_possible_np,
+            value=min(max_possible_np, 8), step=1, key="sat_np_max",
+            help=("Cells with fewer attempts than this are excluded so the "
+                  "task set is fixed across the X-axis. Higher = longer "
+                  "curve, fewer qualifying cells; lower = shorter curve, "
+                  "more cells."),
+        )
+    with c5:
+        n_subsamples = st.slider(
+            "Subsample iterations S",
+            min_value=50, max_value=1000, value=200, step=50,
+            key="sat_n_subsamples",
+            help=("How many subsamples per (model, N′) point. Higher S → "
+                  "smoother curve, costlier redraw. 200 is usually enough "
+                  "for the visual story."),
+        )
+    with c6:
+        intersection = st.checkbox(
+            "Restrict to intersection",
+            value=True, key="sat_intersection",
+            help=("ON → only tasks where EVERY selected slug has at least "
+                  "N_t ≥ N′_max; same task set across slugs, fair "
+                  "comparison. OFF → each slug uses its own qualifying "
+                  "task subset."),
+        )
+
+    cell_n_df = (cell_n_series.unstack(fill_value=0)
+                 .reindex(index=sel_slugs, columns=sel_tasks, fill_value=0))
+    qualifies = cell_n_df >= np_max
+    if intersection:
+        common = [t for t in sel_tasks if bool(qualifies[t].all())]
+        if not common:
+            st.warning(
+                f"No tasks have N_t ≥ {np_max} for every selected slug. "
+                f"Lower 'X-axis max N′' or remove the slug with the "
+                f"thinnest coverage."
+            )
+            return
+        tasks_per_slug = {slug: common for slug in sel_slugs}
+    else:
+        tasks_per_slug = {
+            slug: [t for t in sel_tasks if bool(qualifies.loc[slug, t])]
+            for slug in sel_slugs
+        }
+
+    rng = np.random.default_rng(0)
+    np_range = list(range(1, np_max + 1))
+    curve_rows: list[dict] = []
+    asym_rows: list[dict] = []
+
+    for slug in sel_slugs:
+        tasks_used = tasks_per_slug[slug]
+        if not tasks_used:
+            continue
+        # Per-cell attempt arrays. NaN best-MCC → -inf so it fails any τ ≥ 0.
+        cell_arrays: list[np.ndarray] = []
+        for task in tasks_used:
+            arr = per_attempt[(per_attempt.slug == slug)
+                              & (per_attempt.task == task)]["mcc"].to_numpy()
+            arr = np.where(np.isnan(arr), -np.inf, arr)
+            cell_arrays.append(arr)
+        T = len(cell_arrays)
+        if T == 0:
+            continue
+
+        # Across-cell variance contribution to the macro-avg SE: Var(p̂_t)/T.
+        # ddof=1 for sample variance; T==1 has no across-cell variance.
+        p_hat = np.array([float((arr >= tau).mean()) for arr in cell_arrays])
+        across_var = float(np.var(p_hat, ddof=1) / T) if T >= 2 else 0.0
+        across_se = float(np.sqrt(across_var))
+
+        # Within-cell SE per N' via subsampling without replacement.
+        # argsort-of-random gives independent permutations; first N'
+        # columns are the subsampled indices.
+        for np_ in np_range:
+            rates = np.empty((n_subsamples, T))
+            for ti, arr in enumerate(cell_arrays):
+                L = len(arr)
+                idxs = np.argsort(rng.random((n_subsamples, L)), axis=1)[:, :np_]
+                rates[:, ti] = (arr[idxs] >= tau).mean(axis=1)
+            macro = rates.mean(axis=1)
+            within_se = (float(np.std(macro, ddof=1))
+                         if n_subsamples > 1 else 0.0)
+            total_se = float(np.sqrt(within_se ** 2 + across_var))
+            curve_rows.append({"slug": slug, "np": np_,
+                               "within_se": within_se,
+                               "across_se": across_se,
+                               "total_se": total_se, "T": T})
+        asym_rows.append({"slug": slug, "across_se": across_se, "T": T})
+
+    if not curve_rows:
+        st.warning(
+            "No qualifying cells in any selected slug at this N′_max. "
+            "Lower 'X-axis max N′'."
+        )
+        return
+
+    curve_df = pd.DataFrame(curve_rows)
+    asym_df = pd.DataFrame(asym_rows)
+
+    T_per_slug = asym_df.set_index("slug")["T"].to_dict()
+    st.markdown(
+        f"**τ = {tau:.2f}, S = {n_subsamples}, N′ ∈ [1, {np_max}]** &nbsp;·&nbsp; "
+        f"tasks per model (qualifying cells only): "
+        + ", ".join(f"`{s.rsplit('-', 1)[-1]}: T={t}`"
+                    for s, t in T_per_slug.items())
+    )
+
+    # Legend ordered by total_se at N'=1 desc — most-improvable-by-more-attempts on top.
+    se_at_1 = (curve_df[curve_df.np == 1].set_index("slug")["total_se"]
+               .sort_values(ascending=False))
+    slug_order = se_at_1.index.tolist()
+
+    selection = alt.selection_point(fields=["slug"], bind="legend")
+
+    line = (
+        alt.Chart(curve_df)
+        .mark_line(point=alt.OverlayMarkDef(size=30), strokeWidth=2)
+        .encode(
+            x=alt.X("np:Q", title="attempts per cell N′",
+                    scale=alt.Scale(domain=[1, np_max])),
+            y=alt.Y("total_se:Q",
+                    title="total SE of macro-avg P(MCC ≥ τ)",
+                    scale=alt.Scale(zero=True)),
+            color=alt.Color("slug:N", sort=slug_order,
+                            legend=alt.Legend(title="model")),
+            opacity=alt.condition(selection, alt.value(1.0), alt.value(0.15)),
+            tooltip=[
+                alt.Tooltip("slug:N", title="model"),
+                alt.Tooltip("np:Q", title="N′"),
+                alt.Tooltip("total_se:Q", title="total SE", format=".4f"),
+                alt.Tooltip("within_se:Q", title="within SE", format=".4f"),
+                alt.Tooltip("across_se:Q", title="across SE", format=".4f"),
+                alt.Tooltip("T:Q", title="T (tasks)"),
+            ],
+        )
+    )
+
+    # Dashed asymptote per slug: the across-cell SE the curve approaches.
+    asymptote = (
+        alt.Chart(asym_df)
+        .mark_rule(strokeDash=[4, 4], strokeWidth=1.5)
+        .encode(
+            y="across_se:Q",
+            color=alt.Color("slug:N", sort=slug_order, legend=None),
+            opacity=alt.condition(selection, alt.value(0.55), alt.value(0.08)),
+            tooltip=[
+                alt.Tooltip("slug:N", title="model"),
+                alt.Tooltip("across_se:Q", title="across SE (asymptote)",
+                            format=".4f"),
+                alt.Tooltip("T:Q", title="T (tasks)"),
+            ],
+        )
+    )
+
+    chart = ((asymptote + line).add_params(selection)
+             .properties(height=480)
+             .interactive(bind_x=False, bind_y=False))
+
+    st.altair_chart(chart, use_container_width=True)
+
+    # Companion table: total SE per (slug × N′). Useful for reading off
+    # the exact saturation point when the chart's visual flattening is
+    # too subtle to eyeball.
+    st.markdown("---")
+    st.markdown("**Total SE table** (rows = slug, columns = N′):")
+    table = (curve_df.pivot(index="slug", columns="np", values="total_se")
+             .reindex(slug_order))
+    table.columns = [f"N′={c}" for c in table.columns]
+    # Append the asymptote as a final column for quick eyeballing of the gap.
+    asym_lookup = asym_df.set_index("slug")["across_se"]
+    table["asymptote"] = asym_lookup.reindex(slug_order)
+    styled = table.style.format("{:.4f}", na_rep="—")
+    st.dataframe(styled, use_container_width=True)
+
+
 def render_cell_page(df: pd.DataFrame) -> None:
     st.markdown("### Cell view — attempts in one (slug, task)")
     st.caption(
@@ -2076,6 +2332,8 @@ def main():
         render_distribution_page(df)
     elif page == "Variance":
         render_variance_page(df)
+    elif page == "Saturation":
+        render_saturation_page(df)
     elif page == "Cell":
         render_cell_page(df)
     elif page == "Attempt":
