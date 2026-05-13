@@ -35,6 +35,13 @@ Pages (selectable in the sidebar):
     P(MCC ≥ τ) ∈ [0, 1]. Same filter / mode / intersection controls
     as Leaderboard. Click a model in the legend to highlight it (other
     models fade); useful when many bands overlap.
+  - Accuracy: same chart shape as Curves but the underlying score is
+    per-attempt accuracy (TP+TN)/(TP+FN+FP+TN) — "fraction of test
+    cases classified correctly" — instead of MCC. Useful when you
+    care about raw test pass rate rather than the imbalance-adjusted
+    MCC; less informative on heavily imbalanced corpora (e.g. an
+    "always say valid" classifier scores accuracy ≈ valid_fraction
+    while MCC stays ≈ 0).
   - Distribution: bar chart of best-per-attempt MCC counts, bucketed
     into a single "≤0 / failed" group plus 10 right-closed bins of
     width 0.1. Group-by selects how the bars are colored: model
@@ -83,8 +90,8 @@ ENV_LANG = {
     "erlang": "erlang",
 }
 
-PAGES = ["Matrix", "P(MCC≥τ)", "Leaderboard", "Curves", "Distribution",
-         "Cell", "Attempt"]
+PAGES = ["Matrix", "P(MCC≥τ)", "Leaderboard", "Curves", "Accuracy",
+         "Distribution", "Cell", "Attempt"]
 
 DISTRIBUTION_BUCKETS = (
     ["≤0 / failed"]
@@ -696,22 +703,27 @@ def render_threshold_matrix_page(df: pd.DataFrame) -> None:
 # v1 implements (1) only, with an "intersection" toggle so that cross-
 # model rows are aggregated over the same task set (apples-to-apples).
 
-def _per_cell_counts(group: pd.DataFrame, taus: list[float]
+def _per_cell_counts(group: pd.DataFrame, taus: list[float],
+                     score_col: str = "mcc"
                      ) -> tuple[int, dict[float, int]]:
     """For one (slug, task) cell, return (N_total, {τ: K_passed}).
 
-    K_passed = attempts whose best per-turn MCC ≥ τ.
+    K_passed = attempts whose best per-turn `score_col` value ≥ τ.
     N_total  = every attempt that started (non-scored attempts count
                toward N but never toward K, so non-compile = fail at
                any τ ≥ 0).
+
+    score_col defaults to "mcc" but can be any per-row numeric column —
+    e.g. an accuracy column derived from (tp + tn) / (tp + fn + fp + tn).
+    Callers responsible for ensuring the column exists in `group`.
     """
     n_total = int(group["attempt_id"].nunique())
     if n_total == 0:
         return 0, {tau: 0 for tau in taus}
-    with_mcc = group.dropna(subset=["mcc"])
-    if with_mcc.empty:
+    scored = group.dropna(subset=[score_col])
+    if scored.empty:
         return n_total, {tau: 0 for tau in taus}
-    best = with_mcc.groupby("attempt_id")["mcc"].max()
+    best = scored.groupby("attempt_id")[score_col].max()
     return n_total, {tau: int((best >= tau).sum()) for tau in taus}
 
 
@@ -839,6 +851,7 @@ def build_leaderboard(df: pd.DataFrame, slugs: list[str], tasks: list[str],
                       taus: list[float], intersection: bool,
                       shrunken: bool = False,
                       ci_B: int = 0, ci_level: float = 0.95,
+                      score_col: str = "mcc",
                       ) -> tuple[pd.DataFrame, pd.DataFrame | None,
                                  pd.DataFrame | None, list[str]]:
     """Returns (leaderboard_df, tasks_used).
@@ -905,7 +918,7 @@ def build_leaderboard(df: pd.DataFrame, slugs: list[str], tasks: list[str],
         cell_counts = []
         for task in slug_tasks:
             cell_df = sub[(sub["slug"] == slug) & (sub["task"] == task)]
-            cell_counts.append(_per_cell_counts(cell_df, taus))
+            cell_counts.append(_per_cell_counts(cell_df, taus, score_col=score_col))
         n_attempts_total = sum(n for n, _ in cell_counts)
 
         macro: dict[str, float] = {}
@@ -1272,6 +1285,142 @@ def render_curves_page(df: pd.DataFrame) -> None:
     st.altair_chart(chart, use_container_width=True)
 
 
+# --- Accuracy curves page -----------------------------------------------
+
+def render_accuracy_curves_page(df: pd.DataFrame) -> None:
+    st.markdown("### Accuracy curves — P(test pass rate ≥ τ) per model with 95% CI")
+    st.caption(
+        "Same chart shape as the Curves page, but the underlying score "
+        "is per-attempt accuracy `(TP + TN) / (TP + FN + FP + TN)` — "
+        "the fraction of test cases this attempt classified correctly. "
+        "X axis is τ ∈ [0, 1] (fraction correct); Y axis is the "
+        "macro-averaged P(accuracy ≥ τ) across the filtered tasks, "
+        "with a translucent band for the 95% bootstrap CI. Caveat: "
+        "accuracy can flatter trivial classifiers on imbalanced corpora "
+        "— an 'always valid' validator scores accuracy ≈ valid_fraction "
+        "while MCC stays ≈ 0. Use Curves (MCC) for the imbalance-"
+        "adjusted view; this page for the 'how many tests right' view."
+    )
+
+    # Compute the accuracy column from the per-row confusion matrix.
+    # NaN-safe: rows with no scored cm (compile errors, no submissions)
+    # don't have tp/fn/fp/tn populated, so the sum + division naturally
+    # produces NaN, which dropna() then filters out in _per_cell_counts.
+    df = df.copy()
+    cm_cols = ["tp", "fn", "fp", "tn"]
+    if not all(c in df.columns for c in cm_cols):
+        st.error(f"Missing confusion-matrix columns in results.jsonl: "
+                 f"need {cm_cols}, have {list(df.columns)}")
+        return
+    cm_total = df[cm_cols].sum(axis=1, min_count=4)
+    df["accuracy"] = np.where(cm_total > 0,
+                              (df["tp"] + df["tn"]) / cm_total,
+                              np.nan)
+
+    all_slugs = sorted(df["slug"].unique())
+    all_tasks = sorted(df["task"].unique())
+
+    c1, c2 = st.columns(2)
+    with c1:
+        sel_slugs = st.multiselect("Slugs", all_slugs, default=all_slugs,
+                                   key="acc_slugs")
+    with c2:
+        sel_tasks = st.multiselect("Tasks", all_tasks, default=all_tasks,
+                                   key="acc_tasks")
+
+    c3, c4 = st.columns([2, 2])
+    with c3:
+        intersection = st.checkbox(
+            "Restrict to intersection (only tasks every selected model has attempted)",
+            value=True, key="acc_intersection",
+        )
+    with c4:
+        mode = st.radio(
+            "Aggregation",
+            ["raw macro-avg", "Beta-Binomial shrinkage"],
+            index=0, horizontal=True, key="acc_mode",
+        )
+
+    if not sel_slugs or not sel_tasks:
+        st.warning("Select at least one slug and one task.")
+        return
+
+    lb, lb_lo, lb_hi, tasks_used = build_leaderboard(
+        df, sel_slugs, sel_tasks, LEADERBOARD_TAUS, intersection,
+        shrunken=(mode == "Beta-Binomial shrinkage"),
+        ci_B=500,
+        score_col="accuracy",
+    )
+
+    if intersection and not tasks_used:
+        st.warning(
+            "No tasks are common to every selected model — try unchecking "
+            "'restrict to intersection', or removing the model with the "
+            "thinnest coverage."
+        )
+        return
+
+    # Reshape (slug × τ-columns) → long-form (slug, τ, point, lo, hi).
+    long_rows: list[dict] = []
+    for i, row in lb.iterrows():
+        slug = row["slug"]
+        for tau in LEADERBOARD_TAUS:
+            col = _tau_col(tau)
+            long_rows.append({
+                "slug": slug,
+                "tau": tau,
+                "point": row[col],
+                "lo": lb_lo.iloc[i][col],
+                "hi": lb_hi.iloc[i][col],
+            })
+    long_df = pd.DataFrame(long_rows).dropna(subset=["point"])
+
+    st.markdown(f"**Aggregated over {len(tasks_used)} task(s):** "
+                + (", ".join(f"`{t}`" for t in tasks_used) if tasks_used else "_none_"))
+
+    selection = alt.selection_point(fields=["slug"], bind="legend")
+
+    band = (
+        alt.Chart(long_df)
+        .mark_area(opacity=0.18)
+        .encode(
+            x=alt.X("tau:Q",
+                    title="threshold τ (fraction of tests correct)",
+                    scale=alt.Scale(domain=[0, 1])),
+            y=alt.Y("lo:Q",
+                    title="P(accuracy ≥ τ)",
+                    scale=alt.Scale(domain=[0, 1])),
+            y2="hi:Q",
+            color=alt.Color("slug:N", legend=alt.Legend(title="model")),
+            opacity=alt.condition(selection, alt.value(0.18), alt.value(0.03)),
+        )
+    )
+
+    line = (
+        alt.Chart(long_df)
+        .mark_line(point=alt.OverlayMarkDef(size=20))
+        .encode(
+            x="tau:Q",
+            y=alt.Y("point:Q", scale=alt.Scale(domain=[0, 1])),
+            color="slug:N",
+            opacity=alt.condition(selection, alt.value(1.0), alt.value(0.15)),
+            tooltip=[
+                alt.Tooltip("slug:N", title="model"),
+                alt.Tooltip("tau:Q", title="τ", format=".2f"),
+                alt.Tooltip("point:Q", title="P", format=".3f"),
+                alt.Tooltip("lo:Q", title="lo", format=".3f"),
+                alt.Tooltip("hi:Q", title="hi", format=".3f"),
+            ],
+        )
+    )
+
+    chart = (band + line).add_params(selection).properties(
+        height=500
+    ).interactive(bind_x=False, bind_y=False)
+
+    st.altair_chart(chart, use_container_width=True)
+
+
 # --- Distribution page ---------------------------------------------------
 
 def _bucket_for_mcc(best_mcc: float | None) -> str:
@@ -1557,6 +1706,8 @@ def main():
         render_leaderboard_page(df)
     elif page == "Curves":
         render_curves_page(df)
+    elif page == "Accuracy":
+        render_accuracy_curves_page(df)
     elif page == "Distribution":
         render_distribution_page(df)
     elif page == "Cell":
