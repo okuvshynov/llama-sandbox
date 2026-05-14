@@ -101,8 +101,8 @@ ENV_LANG = {
 }
 
 PAGES = ["Matrix", "P(MCC≥τ)", "Leaderboard", "Turn budget", "Curves",
-         "Accuracy", "Distribution", "Variance", "Saturation",
-         "Pair compare", "Cell", "Attempt"]
+         "Accuracy", "Accuracy (corpus)", "Distribution", "Variance",
+         "Saturation", "Pair compare", "Cell", "Attempt"]
 
 DISTRIBUTION_BUCKETS = (
     ["≤0 / failed"]
@@ -812,16 +812,34 @@ def _bootstrap_macro_avg_ci(k_arr: list[int], n_arr: list[int], *,
                             alpha: float | None = None,
                             beta: float | None = None,
                             B: int = 500, ci_level: float = 0.95,
-                            seed: int = 0) -> tuple[float, float]:
-    """Two-stage parametric bootstrap CI for the macro-average of per-cell
-    pass rates. Used for both raw and shrunken aggregation.
+                            seed: int = 0,
+                            corpus_only: bool = False,
+                            ) -> tuple[float, float]:
+    """Parametric bootstrap CI for the macro-average of per-cell pass rates.
+    Used for both raw and shrunken aggregation.
 
-    Stage 1: resample T cells with replacement. Captures uncertainty
-             from "which tasks happened to be in our sample" — usually
-             the dominant source of variance in our T=3..9 regime.
-    Stage 2: for each resampled cell, draw K* ~ Binomial(N, K/N).
-             Captures within-cell binomial noise, which matters more
-             when N is small (e.g. N=2 or N=3 cells).
+    Two modes:
+      corpus_only=False (default, "population CI"):
+        Two-stage bootstrap.
+          Stage 1: resample T cells with replacement. Captures
+                   uncertainty from "which tasks happened to be in our
+                   sample" — usually the dominant source of variance in
+                   the T=3..9 regime. Implies the corpus is one i.i.d.
+                   draw from some larger task population.
+          Stage 2: for each resampled cell, draw K* ~ Binomial(N, K/N).
+                   Captures within-cell binomial noise.
+        CI interpretation: "if I'd drawn another T-sized sample from
+        the same population, the macro-avg would fall here in 95% of
+        cases".
+
+      corpus_only=True ("reproducibility CI"):
+        Stage 1 SKIPPED. T cells are held fixed; only Stage 2 runs.
+        CI interpretation: "if I reran the same sweep on the same
+        corpus with fresh attempts, the macro-avg would land here in
+        95% of reruns". Removes the corpus-representativeness
+        assumption — the corpus is what it is, not a sample of
+        anything. Goes to zero as N_t → ∞ at every cell (saturable
+        with more attempts).
 
     For shrunken=True, the supplied (α, β) are held FIXED across
     bootstrap iterations rather than refit per iteration. This is
@@ -845,11 +863,18 @@ def _bootstrap_macro_avg_ci(k_arr: list[int], n_arr: list[int], *,
     n = np.asarray(n_arr, dtype=int)
     rng = np.random.default_rng(seed)
 
-    # Vectorize the bootstrap loop: draw all B×T cell indices at once,
-    # then a single Binomial draw per cell-iteration. Reshape and reduce.
-    idx = rng.integers(0, T, size=(B, T))
-    n_b = n[idx]
-    k_b = k[idx]
+    if corpus_only:
+        # Skip Stage 1 entirely: every bootstrap iteration uses the
+        # same T fixed cells. Only Stage 2's within-cell binomial draws
+        # provide variation. Broadcast (T,) → (B, T) for the binomial
+        # call to stay vectorized.
+        n_b = np.broadcast_to(n, (B, T))
+        k_b = np.broadcast_to(k, (B, T))
+    else:
+        # Vectorize Stage 1: draw all B×T cell indices at once.
+        idx = rng.integers(0, T, size=(B, T))
+        n_b = n[idx]
+        k_b = k[idx]
     # Within-cell binomial resample using observed cell rate.
     with np.errstate(divide="ignore", invalid="ignore"):
         p_obs = np.where(n_b > 0, k_b / np.maximum(n_b, 1), 0.0)
@@ -873,6 +898,7 @@ def build_leaderboard(df: pd.DataFrame, slugs: list[str], tasks: list[str],
                       ci_B: int = 0, ci_level: float = 0.95,
                       score_col: str = "mcc",
                       max_turns: int | None = None,
+                      ci_corpus_only: bool = False,
                       ) -> tuple[pd.DataFrame, pd.DataFrame | None,
                                  pd.DataFrame | None, list[str]]:
     """Returns (leaderboard_df, tasks_used).
@@ -974,6 +1000,7 @@ def build_leaderboard(df: pd.DataFrame, slugs: list[str], tasks: list[str],
                     k_arr, n_arr,
                     shrunken=shrunken, alpha=alpha, beta=beta,
                     B=ci_B, ci_level=ci_level, seed=seed,
+                    corpus_only=ci_corpus_only,
                 )
                 lo_d[col] = lo
                 hi_d[col] = hi
@@ -1507,6 +1534,12 @@ def render_accuracy_curves_page(df: pd.DataFrame) -> None:
                               (df["tp"] + df["tn"]) / cm_total,
                               np.nan)
 
+    # 0.01 step (101 points): coarser grids hide the interesting 0.9-1.0
+    # band where models cluster. The Leaderboard / Turn budget pages keep
+    # the 21-point grid because their table layout would become unwieldy;
+    # here the chart is continuous so resolution is free.
+    accuracy_taus = [round(0.01 * i, 2) for i in range(101)]
+
     all_slugs = sorted(df["slug"].unique())
     all_tasks = sorted(df["task"].unique())
 
@@ -1536,7 +1569,7 @@ def render_accuracy_curves_page(df: pd.DataFrame) -> None:
         return
 
     lb, lb_lo, lb_hi, tasks_used = build_leaderboard(
-        df, sel_slugs, sel_tasks, LEADERBOARD_TAUS, intersection,
+        df, sel_slugs, sel_tasks, accuracy_taus, intersection,
         shrunken=(mode == "Beta-Binomial shrinkage"),
         ci_B=500,
         score_col="accuracy",
@@ -1554,7 +1587,156 @@ def render_accuracy_curves_page(df: pd.DataFrame) -> None:
     long_rows: list[dict] = []
     for i, row in lb.iterrows():
         slug = row["slug"]
-        for tau in LEADERBOARD_TAUS:
+        for tau in accuracy_taus:
+            col = _tau_col(tau)
+            long_rows.append({
+                "slug": slug,
+                "tau": tau,
+                "point": row[col],
+                "lo": lb_lo.iloc[i][col],
+                "hi": lb_hi.iloc[i][col],
+            })
+    long_df = pd.DataFrame(long_rows).dropna(subset=["point"])
+
+    st.markdown(f"**Aggregated over {len(tasks_used)} task(s):** "
+                + (", ".join(f"`{t}`" for t in tasks_used) if tasks_used else "_none_"))
+
+    selection = alt.selection_point(fields=["slug"], bind="legend")
+
+    band = (
+        alt.Chart(long_df)
+        .mark_area(opacity=0.18)
+        .encode(
+            x=alt.X("tau:Q",
+                    title="threshold τ (fraction of tests correct)",
+                    scale=alt.Scale(domain=[0, 1])),
+            y=alt.Y("lo:Q",
+                    title="P(accuracy ≥ τ)",
+                    scale=alt.Scale(domain=[0, 1])),
+            y2="hi:Q",
+            color=alt.Color("slug:N", legend=alt.Legend(title="model")),
+            opacity=alt.condition(selection, alt.value(0.18), alt.value(0.03)),
+        )
+    )
+
+    line = (
+        alt.Chart(long_df)
+        .mark_line(point=alt.OverlayMarkDef(size=20))
+        .encode(
+            x="tau:Q",
+            y=alt.Y("point:Q", scale=alt.Scale(domain=[0, 1])),
+            color="slug:N",
+            opacity=alt.condition(selection, alt.value(1.0), alt.value(0.15)),
+            tooltip=[
+                alt.Tooltip("slug:N", title="model"),
+                alt.Tooltip("tau:Q", title="τ", format=".2f"),
+                alt.Tooltip("point:Q", title="P", format=".3f"),
+                alt.Tooltip("lo:Q", title="lo", format=".3f"),
+                alt.Tooltip("hi:Q", title="hi", format=".3f"),
+            ],
+        )
+    )
+
+    chart = (band + line).add_params(selection).properties(
+        height=500
+    ).interactive(bind_x=False, bind_y=False)
+
+    st.altair_chart(chart, use_container_width=True)
+
+
+# --- Accuracy curves (corpus-only CI) page ------------------------------
+# Twin of render_accuracy_curves_page. The only mechanical difference is
+# the CI: corpus_only=True drops Stage 1 of the bootstrap (no resampling
+# of which tasks are in the corpus), keeping only Stage 2 (within-cell
+# binomial). Interpretation: "if I reran the same sweep on the same
+# corpus with fresh attempts, the macro-avg would land here in 95% of
+# reruns". No claim of generalization to specs/envs outside this corpus.
+#
+# Two pages rather than one toggle because the framings communicate
+# different things to a reader and we want to compare them side-by-side
+# without one mode silently overwriting the other's last-used state.
+
+def render_accuracy_corpus_curves_page(df: pd.DataFrame) -> None:
+    st.markdown("### Accuracy curves (corpus-only CI) — P(test pass rate ≥ τ) with rerun CI")
+    st.caption(
+        "Same point-estimates as the Accuracy page, but the CI is built "
+        "**without** Stage 1 of the bootstrap (no resampling of which "
+        "tasks are in the corpus). Only within-cell binomial noise "
+        "contributes. Interpretation: *'if I reran this same sweep on "
+        "the same corpus with fresh attempts, the macro-avg would land "
+        "in [lo, hi] in 95% of reruns'*. This drops the implicit claim "
+        "that the corpus is a representative sample of 'all validation "
+        "tasks' — useful when the corpus is deliberately picked (which "
+        "ours is). Expect tighter bands than the population-CI version, "
+        "especially at τ near 0 or 1 where Stage 1 was the dominant "
+        "noise source. Saturable: bands shrink toward zero as N_t per "
+        "cell grows."
+    )
+
+    # Accuracy column derived from confusion-matrix counts, same as
+    # the population-CI page. NaN-safe for non-scored rows.
+    df = df.copy()
+    cm_cols = ["tp", "fn", "fp", "tn"]
+    if not all(c in df.columns for c in cm_cols):
+        st.error(f"Missing confusion-matrix columns in results.jsonl: "
+                 f"need {cm_cols}, have {list(df.columns)}")
+        return
+    cm_total = df[cm_cols].sum(axis=1, min_count=4)
+    df["accuracy"] = np.where(cm_total > 0,
+                              (df["tp"] + df["tn"]) / cm_total,
+                              np.nan)
+
+    # 0.01 step (101 points) — same as the Accuracy page.
+    accuracy_taus = [round(0.01 * i, 2) for i in range(101)]
+
+    all_slugs = sorted(df["slug"].unique())
+    all_tasks = sorted(df["task"].unique())
+
+    c1, c2 = st.columns(2)
+    with c1:
+        sel_slugs = st.multiselect("Slugs", all_slugs, default=all_slugs,
+                                   key="acc_corp_slugs")
+    with c2:
+        sel_tasks = st.multiselect("Tasks", all_tasks, default=all_tasks,
+                                   key="acc_corp_tasks")
+
+    c3, c4 = st.columns([2, 2])
+    with c3:
+        intersection = st.checkbox(
+            "Restrict to intersection (only tasks every selected model has attempted)",
+            value=True, key="acc_corp_intersection",
+        )
+    with c4:
+        mode = st.radio(
+            "Aggregation",
+            ["raw macro-avg", "Beta-Binomial shrinkage"],
+            index=0, horizontal=True, key="acc_corp_mode",
+        )
+
+    if not sel_slugs or not sel_tasks:
+        st.warning("Select at least one slug and one task.")
+        return
+
+    lb, lb_lo, lb_hi, tasks_used = build_leaderboard(
+        df, sel_slugs, sel_tasks, accuracy_taus, intersection,
+        shrunken=(mode == "Beta-Binomial shrinkage"),
+        ci_B=500,
+        score_col="accuracy",
+        ci_corpus_only=True,
+    )
+
+    if intersection and not tasks_used:
+        st.warning(
+            "No tasks are common to every selected model — try unchecking "
+            "'restrict to intersection', or removing the model with the "
+            "thinnest coverage."
+        )
+        return
+
+    long_rows: list[dict] = []
+    for i, row in lb.iterrows():
+        slug = row["slug"]
+        for tau in accuracy_taus:
             col = _tau_col(tau)
             long_rows.append({
                 "slug": slug,
@@ -2608,6 +2790,8 @@ def main():
         render_curves_page(df)
     elif page == "Accuracy":
         render_accuracy_curves_page(df)
+    elif page == "Accuracy (corpus)":
+        render_accuracy_corpus_curves_page(df)
     elif page == "Distribution":
         render_distribution_page(df)
     elif page == "Variance":
