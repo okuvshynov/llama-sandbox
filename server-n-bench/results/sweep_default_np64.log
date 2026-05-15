@@ -1,0 +1,23 @@
+SWEEP  max_tokens=128  total_slots=64  reps=3  n values=[1, 2, 4, 8, 16, 32, 64]
+  n=1   done: gen    4.9s  agg   25.9 tok/s  (spread 25.9-26.0)
+  n=2   done: gen   10.0s  agg   25.6 tok/s  (spread 25.5-25.6)
+  n=4   done: gen   17.2s  agg   29.8 tok/s  (spread 29.8-29.9)
+  n=8   done: gen   27.5s  agg   37.2 tok/s  (spread 37.2-37.3)
+  n=16  done: gen   40.0s  agg   51.2 tok/s  (spread 51.0-51.2)
+  n=32  done: gen   55.9s  agg   73.2 tok/s  (spread 72.8-73.4)
+  n=64  done: gen   93.7s  agg   87.5 tok/s  (spread 87.4-87.6)
+
+   n   wall(s)  prompt(s)   gen(s)  tok/dec  agg tok/s  per-stream  speedup
+--------------------------------------------------------------------------
+   1      5.03       0.09     4.94     1.00       25.9       25.93    1.00x
+   2     10.08       0.09     9.99     2.00       25.6       12.82    0.99x
+   4     17.25       0.09    17.16     4.00       29.8        7.46    1.15x
+   8     27.58       0.09    27.49     8.00       37.2        4.66    1.44x
+  16     40.15       0.11    40.04    16.00       51.2        3.20    1.97x
+  32     58.36       2.42    55.94    31.51       73.2        2.29    2.82x
+  64     94.09       0.43    93.67    64.00       87.5        1.37    3.37x
+
+(values are the median of 3 runs per n)
+
+speedup = aggregate throughput(n) / throughput(1)
+        = how much faster n completions as one request is vs serial
