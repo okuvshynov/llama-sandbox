@@ -15,17 +15,20 @@ individual run as one JSONL row to PATH -- so reps>1 preserves variance instead
 of collapsing to the median. In sweep mode that's REPS rows per n value; in A/B
 mode it's the parallel run plus one row per sequential request.
 
-The A/B test runs both phases "cold" with DISTINCT prompts so neither benefits
-from the other's KV cache -- each phase pays for exactly one prompt processing,
-which is what really happens for each workload:
-  - parallel  : 1 request n=N -> prompt processed once, N generations batched
-  - sequential: N requests    -> prompt on req #1, reused for #2..N, serial gen
+"Cold" runs are guaranteed by erasing every slot's prompt cache via
+POST /slots/{id}?action=erase right before each measured run, instead of by
+salting the prompt with a per-run tag. One shared prompt is reused everywhere.
+  - parallel  : erase all slots, then 1 request n=N -> prompt processed once,
+                N generations batched
+  - sequential: erase all slots once, then N requests -> prompt on req #1,
+                reused for #2..N (no clear between them), serial gen
+  - sweep     : erase all slots before each individual run
 
-The sweep runs one cold parallel request per n value and reports aggregate /
-per-stream throughput; speedup is throughput(n) / throughput(1), i.e. how much
-faster generating n completions as one request is vs running them serially.
+Server must be started with: -np <max n you want to test> --metrics --slot-save-path PATH
 
-Server must be started with: -np <max n you want to test> --metrics
+(--slot-save-path is required because it gates the entire /slots/* action
+endpoint -- erase doesn't actually write to PATH, but the flag must be set.
+server-context.cpp:3572)
 
 NOTE on the /metrics prompt_tokens_total counter: for an n>1 request the server
 copies the parent slot's prompt-token count into every child slot
@@ -66,14 +69,12 @@ def jdump(row):
         f.write(json.dumps(row) + "\n")
 
 # ---- helpers ----------------------------------------------------------------
-def make_prompt(tag):
+def make_prompt():
     body = ("The llama.cpp server schedules requests onto a fixed pool of slots. "
             "Each slot owns a slice of the KV cache and holds one sequence. "
             "When a request arrives the scheduler picks the slot whose cached "
             "prompt shares the longest common prefix with the incoming prompt. ")
-    # distinct prefix per tag => ~0 common prefix between prompts => no cross-run
-    # cache hits; the run for a given tag is therefore always cold.
-    return (f"[experiment {tag}] You are a careful technical writer.\n\n"
+    return ("You are a careful technical writer.\n\n"
             + body * 12
             + "\n\nTask: write a detailed explanation of how request batching works.")
 
@@ -113,9 +114,36 @@ def total_slots():
     except Exception:
         return 0
 
-def run_parallel(n, tag):
-    """One cold parallel request with n completions. Returns timing dict."""
-    prompt = make_prompt(tag)
+def clear_slots(n_slots):
+    """Erase the prompt cache of every slot. Required setup for a 'cold' run.
+
+    /slots/{id}?action=erase requires the server to be started with
+    --slot-save-path; without that flag the endpoint returns 501. There is no
+    -1-broadcast form on this endpoint -- iterate explicitly.
+    """
+    for sid in range(n_slots):
+        req = urllib.request.Request(BASE + f"/slots/{sid}?action=erase",
+                                     data=b"", method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=10):
+                pass
+        except urllib.error.HTTPError as e:
+            body = e.read().decode(errors="replace")
+            if "slot-save-path" in body:
+                sys.exit("/slots erase needs the server started with "
+                         "--slot-save-path PATH (any path; erase doesn't write "
+                         "to it but the flag gates the endpoint).")
+            sys.exit(f"/slots/{sid}?action=erase failed: {e.code} {body}")
+        except Exception as e:
+            sys.exit(f"/slots/{sid}?action=erase failed: {e}")
+
+def run_parallel(n):
+    """One cold parallel request with n completions. Returns timing dict.
+
+    Setup: erase every slot's prompt cache so the run is genuinely cold.
+    """
+    clear_slots(SLOTS)
+    prompt = make_prompt()
     m0 = metrics(); t0 = time.time()
     r = post(prompt, n, SEED)
     wall = time.time() - t0
@@ -133,19 +161,22 @@ def median(xs):
     return s[m] if len(s) % 2 else (s[m - 1] + s[m]) / 2
 
 # ============================================================================
+SLOTS = total_slots()
+if SLOTS <= 0:
+    sys.exit(f"Could not read total_slots from {BASE}/props -- is the server up?")
+
 if SWEEP:
-    slots = total_slots()
-    nlist = [n for n in NLIST if slots == 0 or n <= slots]
+    nlist = [n for n in NLIST if n <= SLOTS]
     skipped = [n for n in NLIST if n not in nlist]
-    print(f"SWEEP  max_tokens={MAX_TOKENS}  total_slots={slots}  reps={REPS}  n values={nlist}")
+    print(f"SWEEP  max_tokens={MAX_TOKENS}  total_slots={SLOTS}  reps={REPS}  n values={nlist}")
     if skipped:
-        print(f"  (skipping {skipped}: exceeds -np {slots}; restart server with a bigger -np)")
+        print(f"  (skipping {skipped}: exceeds -np {SLOTS}; restart server with a bigger -np)")
 
     rows = []
     for n in nlist:
         runs = []
         for rep in range(REPS):
-            r = run_parallel(n, f"n{n}-r{rep}")
+            r = run_parallel(n)
             r["agg_tps"]        = r["gen_tok"] / r["gen_s"]
             r["per_stream_tps"] = MAX_TOKENS / r["gen_s"]
             r["tok_per_decode"] = r["gen_tok"] / r["decodes"]
@@ -174,9 +205,9 @@ if SWEEP:
     sys.exit(0)
 
 # ---- default: A/B test ------------------------------------------------------
-print(f"A/B  max_tokens={MAX_TOKENS}  n={N}  (both phases cold, distinct prompts)")
+print(f"A/B  max_tokens={MAX_TOKENS}  n={N}  (both phases cold via /slots erase)")
 
-p = run_parallel(N, "PAR")
+p = run_parallel(N)
 jdump({"mode": "ab_parallel", "max_tokens": MAX_TOKENS,
        "agg_tps": p["gen_tok"] / p["gen_s"],
        "per_stream_tps": MAX_TOKENS / p["gen_s"],
@@ -189,12 +220,13 @@ print(f"  decode calls        : {p['decodes']:8.0f}   for {p['gen_tok']} gen tok
 print(f"  tokens per decode   : {p['gen_tok']/p['decodes']:8.2f}   (~busy slots per step)")
 print(f"  gen-only time       : {p['gen_s']:8.2f} s  -> {p['gen_tok']/p['gen_s']:.1f} tok/s aggregate")
 
+clear_slots(SLOTS)  # cold req#1; intentionally NOT cleared between #2..N so they hit the cache
 m0 = metrics(); t0 = time.time()
 seq_prompt_s = 0.0
 cache_ns, proc_ns = [], []
 for i in range(N):
     rt0 = time.time()
-    r = post(make_prompt("SEQ"), 1, SEED + i)
+    r = post(make_prompt(), 1, SEED + i)
     rwall = time.time() - rt0
     t = r.get("timings", {})
     cache_ns.append(int(t.get("cache_n", -1)))

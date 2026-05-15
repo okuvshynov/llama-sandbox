@@ -11,7 +11,31 @@ Two modes:
 - **Sweep**: scaling curve over a list of `n` values, with reps + median for noise.
 
 The OpenAI `n` is parsed at `tools/server/server-task.cpp:262` (alias for the
-llama.cpp-native `n_cmpl`). Server must be started with `-np <max-n> --metrics`.
+llama.cpp-native `n_cmpl`).
+
+Start the server with:
+
+```
+... -np <max-n> --metrics --slot-save-path /tmp/llama-slots
+```
+
+`--slot-save-path` is required because it gates the `/slots/{id}?action=erase`
+endpoint that this script uses to guarantee cold runs (see below). The path
+itself is not written by `erase`, but the flag must be present.
+
+## Cold runs via `/slots/{id}?action=erase`
+
+Both modes need each measured run to start with an empty KV cache so we are
+actually measuring prompt-processing + generation, not cache hits. The script
+calls `POST /slots/{id}?action=erase` for every slot before each cold run
+(setup), instead of varying the prompt with a per-run tag. There is no
+`-1`-broadcast form on this endpoint — the script iterates over `0..total_slots-1`.
+
+- **Sweep**: erase all slots before every individual run (every `(n, rep)`).
+- **A/B parallel**: erase all slots, then issue one `n=N` request.
+- **A/B sequential**: erase all slots once, then run N back-to-back `n=1`
+  requests *without* clearing between them — that's the property under test
+  (req #1 processes the prompt; #2..N reuse it via prefix cache).
 
 ## Run
 
