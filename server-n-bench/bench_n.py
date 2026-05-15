@@ -10,6 +10,11 @@ Two modes:
 `reps` (default 1) runs each n value that many times; the sweep then reports the
 median run and the min-max spread, so single-sample noise is visible.
 
+Pass `--jsonl PATH` (any position before the positional args) to append every
+individual run as one JSONL row to PATH -- so reps>1 preserves variance instead
+of collapsing to the median. In sweep mode that's REPS rows per n value; in A/B
+mode it's the parallel run plus one row per sequential request.
+
 The A/B test runs both phases "cold" with DISTINCT prompts so neither benefits
 from the other's KV cache -- each phase pays for exactly one prompt processing,
 which is what really happens for each workload:
@@ -35,6 +40,15 @@ SEED = 1234
 
 # ---- args -------------------------------------------------------------------
 argv = sys.argv[1:]
+JSONL_PATH = None
+# pull `--jsonl PATH` out of argv from any position; everything else stays positional
+i = 0
+while i < len(argv):
+    if argv[i] == "--jsonl" and i + 1 < len(argv):
+        JSONL_PATH = argv[i + 1]
+        del argv[i:i + 2]
+    else:
+        i += 1
 SWEEP = argv and argv[0] == "--sweep"
 if SWEEP:
     argv = argv[1:]
@@ -43,6 +57,13 @@ N          = int(argv[1]) if (not SWEEP and len(argv) > 1) else 16
 NLIST      = [int(x) for x in argv[1].split(",")] if (SWEEP and len(argv) > 1) \
              else [1, 2, 4, 8, 16, 32, 64]
 REPS       = int(argv[2]) if (SWEEP and len(argv) > 2) else 1
+
+def jdump(row):
+    if JSONL_PATH is None:
+        return
+    row = {"ts": time.time(), **row}
+    with open(JSONL_PATH, "a") as f:
+        f.write(json.dumps(row) + "\n")
 
 # ---- helpers ----------------------------------------------------------------
 def make_prompt(tag):
@@ -123,15 +144,17 @@ if SWEEP:
     rows = []
     for n in nlist:
         runs = []
-        for _ in range(REPS):
-            r = run_parallel(n, f"n{n}")
-            r["agg_tps"] = r["gen_tok"] / r["gen_s"]
+        for rep in range(REPS):
+            r = run_parallel(n, f"n{n}-r{rep}")
+            r["agg_tps"]        = r["gen_tok"] / r["gen_s"]
+            r["per_stream_tps"] = MAX_TOKENS / r["gen_s"]
+            r["tok_per_decode"] = r["gen_tok"] / r["decodes"]
             runs.append(r)
+            jdump({"mode": "sweep", "rep": rep, "reps": REPS,
+                   "max_tokens": MAX_TOKENS, **r})
         agg = [r["agg_tps"] for r in runs]
         med = sorted(runs, key=lambda r: r["agg_tps"])[len(runs) // 2]  # median run
         med["agg_min"], med["agg_max"] = min(agg), max(agg)
-        med["per_stream_tps"] = MAX_TOKENS / med["gen_s"]
-        med["tok_per_decode"] = med["gen_tok"] / med["decodes"]
         rows.append(med)
         spread = f"  (spread {min(agg):.1f}-{max(agg):.1f})" if REPS > 1 else ""
         print(f"  n={n:<3d} done: gen {med['gen_s']:6.1f}s  agg {med['agg_tps']:6.1f} tok/s{spread}")
@@ -154,6 +177,10 @@ if SWEEP:
 print(f"A/B  max_tokens={MAX_TOKENS}  n={N}  (both phases cold, distinct prompts)")
 
 p = run_parallel(N, "PAR")
+jdump({"mode": "ab_parallel", "max_tokens": MAX_TOKENS,
+       "agg_tps": p["gen_tok"] / p["gen_s"],
+       "per_stream_tps": MAX_TOKENS / p["gen_s"],
+       "tok_per_decode": p["gen_tok"] / p["decodes"], **p})
 print(f"\n=== PARALLEL  (1 request, n={N}) ===")
 print(f"  wall clock          : {p['wall']:8.2f} s")
 print(f"  prompt (parent)     : {p['prompt_n']:.0f} proc / {p['cache_n']:.0f} cached"
@@ -166,11 +193,20 @@ m0 = metrics(); t0 = time.time()
 seq_prompt_s = 0.0
 cache_ns, proc_ns = [], []
 for i in range(N):
+    rt0 = time.time()
     r = post(make_prompt("SEQ"), 1, SEED + i)
+    rwall = time.time() - rt0
     t = r.get("timings", {})
     cache_ns.append(int(t.get("cache_n", -1)))
     proc_ns.append(int(t.get("prompt_n", -1)))
-    seq_prompt_s += t.get("prompt_ms", 0) / 1e3
+    rprompt_s = t.get("prompt_ms", 0) / 1e3
+    seq_prompt_s += rprompt_s
+    jdump({"mode": "ab_sequential", "req_idx": i, "n_total": N,
+           "max_tokens": MAX_TOKENS, "wall": rwall,
+           "prompt_s": rprompt_s, "gen_s": rwall - rprompt_s,
+           "gen_tok": MAX_TOKENS,
+           "prompt_n": int(t.get("prompt_n", -1)),
+           "cache_n": int(t.get("cache_n", -1))})
 seq_dt = time.time() - t0
 seq_decodes = metrics()["n_decode_total"] - m0["n_decode_total"]
 seq_gen_s   = seq_dt - seq_prompt_s

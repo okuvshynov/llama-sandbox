@@ -21,7 +21,16 @@ python3 bench_n.py [max_tokens]
 
 # Sweep with 3 reps per n
 python3 bench_n.py --sweep 128 1,2,4,8,16,32,64 3
+
+# Same sweep, also append every individual run to a JSONL file
+python3 bench_n.py --jsonl results/sweep.jsonl --sweep 128 1,2,4,8,16,32,64 3
 ```
+
+`--jsonl PATH` accepts any position. It appends one row per individual run
+(not per-`n` median), so `reps>1` preserves the full sample for variance work.
+In sweep mode that's `REPS` rows per `n` value with `mode=sweep`; in A/B mode
+it's one `mode=ab_parallel` row plus N `mode=ab_sequential` rows (one per
+request, with `req_idx`).
 
 ## Caveat — `/metrics prompt_tokens_total` is misleading for n>1
 
