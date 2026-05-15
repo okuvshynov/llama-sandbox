@@ -56,6 +56,11 @@ In sweep mode that's `REPS` rows per `n` value with `mode=sweep`; in A/B mode
 it's one `mode=ab_parallel` row plus N `mode=ab_sequential` rows (one per
 request, with `req_idx`).
 
+Every row also carries server metadata from `/props` (`model`, `model_path`,
+`build_info`, `total_slots`) plus a `ts` epoch timestamp, so concatenated
+runs across builds/models stay self-describing. `build_info` is the
+llama.cpp `b<number>-<commit>` string (set in `common/build-info.cpp.in`).
+
 ## Caveat — `/metrics prompt_tokens_total` is misleading for n>1
 
 For an `n>1` request the server's `copy_state_to()` copies the parent slot's

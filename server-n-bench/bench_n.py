@@ -36,7 +36,7 @@ copies the parent slot's prompt-token count into every child slot
 work. This script reads real prompt cost from each response's `timings` block
 and only uses /metrics for decode-call counts (which are correct).
 """
-import json, time, sys, urllib.request, urllib.error
+import json, os.path, time, sys, urllib.request, urllib.error
 
 BASE = "http://127.0.0.1:8080"
 SEED = 1234
@@ -61,10 +61,12 @@ NLIST      = [int(x) for x in argv[1].split(",")] if (SWEEP and len(argv) > 1) \
              else [1, 2, 4, 8, 16, 32, 64]
 REPS       = int(argv[2]) if (SWEEP and len(argv) > 2) else 1
 
+META = {}  # populated from /props once SLOTS is fetched (see bottom of helpers)
+
 def jdump(row):
     if JSONL_PATH is None:
         return
-    row = {"ts": time.time(), **row}
+    row = {"ts": time.time(), **META, **row}
     with open(JSONL_PATH, "a") as f:
         f.write(json.dumps(row) + "\n")
 
@@ -107,12 +109,13 @@ def metrics():
             out[k[len("llamacpp:"):]] = float(v)
     return out
 
-def total_slots():
+def fetch_props():
+    """Fetch /props once. Returns the full dict; caller picks fields."""
     try:
         with urllib.request.urlopen(BASE + "/props", timeout=10) as r:
-            return int(json.loads(r.read()).get("total_slots", 0))
-    except Exception:
-        return 0
+            return json.loads(r.read())
+    except Exception as e:
+        sys.exit(f"Could not read {BASE}/props ({e}) -- is the server up?")
 
 def clear_slots(n_slots):
     """Erase the prompt cache of every slot. Required setup for a 'cold' run.
@@ -161,9 +164,17 @@ def median(xs):
     return s[m] if len(s) % 2 else (s[m - 1] + s[m]) / 2
 
 # ============================================================================
-SLOTS = total_slots()
+PROPS = fetch_props()
+SLOTS = int(PROPS.get("total_slots", 0))
 if SLOTS <= 0:
-    sys.exit(f"Could not read total_slots from {BASE}/props -- is the server up?")
+    sys.exit(f"/props returned total_slots={SLOTS} -- is the server configured with -np?")
+META.update({
+    "model":       PROPS.get("model_alias") or os.path.basename(PROPS.get("model_path", "")),
+    "model_path":  PROPS.get("model_path", ""),
+    "build_info":  PROPS.get("build_info", ""),
+    "total_slots": SLOTS,
+})
+print(f"server: model={META['model']!r}  build={META['build_info']!r}  total_slots={SLOTS}")
 
 if SWEEP:
     nlist = [n for n in NLIST if n <= SLOTS]
