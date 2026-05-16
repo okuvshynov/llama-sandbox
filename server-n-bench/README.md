@@ -78,6 +78,12 @@ Every row also carries server metadata from `/props` (`model`, `model_path`,
 runs across builds/models stay self-describing. `build_info` is the
 llama.cpp `b<number>-<commit>` string (set in `common/build-info.cpp.in`).
 
+The `device` field records the compute device. llama.cpp's HTTP API does
+not expose this (no `/devices` endpoint; `ggml_backend_dev_*` is internal
+only), so the value comes from the `BENCH_N_DEVICE` env var — set it to
+whatever short label disambiguates this run (`"M2 Ultra"`, `"RTX 4090"`,
+`"Threadripper 7970X"`, etc.). Defaults to `"unknown"` when unset.
+
 ## Caveat — `/metrics prompt_tokens_total` is misleading for n>1
 
 For an `n>1` request the server's `copy_state_to()` copies the parent slot's

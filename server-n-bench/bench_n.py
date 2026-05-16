@@ -86,6 +86,21 @@ def jdump(row):
         f.write(json.dumps(row) + "\n")
 
 # ---- helpers ----------------------------------------------------------------
+def detect_device():
+    """Return a single string identifying the compute device.
+
+    llama.cpp does not expose runtime device info via its HTTP API: there is
+    no /devices endpoint, and the internal ggml_backend_dev_count() /
+    ggml_backend_dev_get() (ggml/include/ggml-backend.h:239) is never wired
+    through to a route. The closest thing on the wire is /props's build_info,
+    which captures the binary but not the runtime device.
+
+    Per user choice (manual-only) this reads the BENCH_N_DEVICE env var.
+    Returns "unknown" when unset. Multi-device cases (RPC, CPU+GPU offload)
+    are left to the user to encode -- e.g. "M2 Ultra" or "RTX 4090 + 7950X".
+    """
+    return os.environ.get("BENCH_N_DEVICE", "unknown")
+
 # Seed corpus for --n-prompt is read from a sibling file at startup. Default
 # is seed_corpus.cpp (a few canonical algorithms in C++) -- representative of
 # a coding workload, which matters for MoE models where expert routing depends
@@ -232,8 +247,10 @@ META.update({
     "model_path":  PROPS.get("model_path", ""),
     "build_info":  PROPS.get("build_info", ""),
     "total_slots": SLOTS,
+    "device":      detect_device(),
 })
-print(f"server: model={META['model']!r}  build={META['build_info']!r}  total_slots={SLOTS}")
+print(f"server: model={META['model']!r}  build={META['build_info']!r}  "
+      f"total_slots={SLOTS}  device={META['device']!r}")
 
 # Build the shared prompt once. With --n-prompt we tokenize a public-domain
 # seed, repeat-and-truncate to the target token count, then detokenize back
