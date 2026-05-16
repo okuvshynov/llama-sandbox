@@ -51,7 +51,16 @@ python3 bench_n.py --jsonl results/sweep.jsonl --sweep 128 1,2,4,8,16,32,64 3
 
 # Sweep with a longer prompt (~2048 tokens, tokenized via /tokenize)
 python3 bench_n.py --n-prompt 2048 --sweep 128 1,2,4,8,16,32,64 3
+
+# Target a remote llama-server (e.g. a runpod tunnel; https works as-is)
+python3 bench_n.py --base-url https://abc-8080.proxy.runpod.net/ --sweep ...
 ```
+
+`--base-url URL` overrides the default `http://127.0.0.1:8080`. Trailing
+slash is stripped. HTTPS works out of the box (urllib's system CA bundle);
+no extra flag needed for valid certs. The chosen URL is also recorded in
+each jsonl row as `base_url` so concatenated sweeps from local + remote
+servers stay disambiguated.
 
 `--n-prompt N` builds the prompt by reading a sibling seed corpus (default
 `seed_corpus.cpp` -- a few canonical algorithms in C++; override with the

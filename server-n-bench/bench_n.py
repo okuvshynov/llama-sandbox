@@ -25,6 +25,12 @@ wrapper tokens on the wire; the actual `prompt_n` ends up in each jsonl
 row's timings so the on-the-wire count is recoverable. Without --n-prompt,
 the original made-up technical-writer prompt is used.
 
+Pass `--base-url URL` (any position) to target a non-default server -- e.g.
+a tunneled remote (`--base-url https://abc-8080.proxy.runpod.net/`) or a
+non-standard local port. Trailing slash is stripped. https:// works as-is
+via urllib's system CA bundle (no extra config). Default is
+http://127.0.0.1:8080.
+
 "Cold" runs are guaranteed by erasing every slot's prompt cache via
 POST /slots/{id}?action=erase right before each measured run, instead of by
 salting the prompt with a per-run tag. One shared prompt is reused everywhere.
@@ -51,12 +57,23 @@ import json, os.path, time, sys, urllib.request, urllib.error
 BASE = "http://127.0.0.1:8080"
 SEED = 1234
 
+# Install a non-default User-Agent globally. Some proxies in front of remote
+# llama-server tunnels (runpod, cloudflare) reject the stdlib's default
+# "Python-urllib/3.x" with HTTP 403 while letting curl through. addheaders
+# act as defaults; explicit headers on a Request (e.g. Content-Type) still
+# win.
+_opener = urllib.request.build_opener()
+_opener.addheaders = [("User-Agent", "bench_n.py/0.1")]
+urllib.request.install_opener(_opener)
+
 # ---- args -------------------------------------------------------------------
 argv = sys.argv[1:]
 JSONL_PATH = None
 N_PROMPT   = None  # if set, build a prompt that tokenizes to ~N_PROMPT tokens
-# pull --jsonl PATH and --n-prompt N out of argv from any position; everything
-# else stays positional.
+# pull --jsonl PATH, --n-prompt N, --base-url URL out of argv from any position;
+# everything else stays positional. https:// works as-is via urllib's system
+# CA bundle -- e.g. --base-url https://something.proxy.runpod.net/ for a
+# tunneled remote llama-server.
 i = 0
 while i < len(argv):
     if argv[i] == "--jsonl" and i + 1 < len(argv):
@@ -64,6 +81,9 @@ while i < len(argv):
         del argv[i:i + 2]
     elif argv[i] == "--n-prompt" and i + 1 < len(argv):
         N_PROMPT = int(argv[i + 1])
+        del argv[i:i + 2]
+    elif argv[i] == "--base-url" and i + 1 < len(argv):
+        BASE = argv[i + 1].rstrip("/")
         del argv[i:i + 2]
     else:
         i += 1
@@ -243,13 +263,14 @@ SLOTS = int(PROPS.get("total_slots", 0))
 if SLOTS <= 0:
     sys.exit(f"/props returned total_slots={SLOTS} -- is the server configured with -np?")
 META.update({
+    "base_url":    BASE,
     "model":       PROPS.get("model_alias") or os.path.basename(PROPS.get("model_path", "")),
     "model_path":  PROPS.get("model_path", ""),
     "build_info":  PROPS.get("build_info", ""),
     "total_slots": SLOTS,
     "device":      detect_device(),
 })
-print(f"server: model={META['model']!r}  build={META['build_info']!r}  "
+print(f"server: base={BASE}  model={META['model']!r}  build={META['build_info']!r}  "
       f"total_slots={SLOTS}  device={META['device']!r}")
 
 # Build the shared prompt once. With --n-prompt we tokenize a public-domain
