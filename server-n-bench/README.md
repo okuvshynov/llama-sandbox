@@ -48,7 +48,24 @@ python3 bench_n.py --sweep 128 1,2,4,8,16,32,64 3
 
 # Same sweep, also append every individual run to a JSONL file
 python3 bench_n.py --jsonl results/sweep.jsonl --sweep 128 1,2,4,8,16,32,64 3
+
+# Sweep with a longer prompt (~2048 tokens, tokenized via /tokenize)
+python3 bench_n.py --n-prompt 2048 --sweep 128 1,2,4,8,16,32,64 3
 ```
+
+`--n-prompt N` builds the prompt by reading a sibling seed corpus (default
+`seed_corpus.cpp` -- a few canonical algorithms in C++; override with the
+`BENCH_N_SEED` env var pointing at any text file), POSTing it to `/tokenize`,
+repeating the resulting token list to reach `N` tokens, truncating, and
+POSTing back through `/detokenize`. Code (rather than prose) is the default
+so that MoE expert routing matches what would happen on a real coding
+workload — for dense models the choice of seed doesn't matter, but for MoE
+the same `N` of tokens of prose vs code can fire substantially different
+expert sets and produce different throughput numbers. The chat template
+wraps it on the wire so the actual `prompt_n` in each jsonl row is a few
+tokens larger than `N`; both numbers are preserved (`n_prompt_target` and
+`seed_corpus` in row metadata vs `prompt_n` in row body). Without
+`--n-prompt`, the original made-up technical-writer prompt is used.
 
 `--jsonl PATH` accepts any position. It appends one row per individual run
 (not per-`n` median), so `reps>1` preserves the full sample for variance work.
