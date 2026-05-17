@@ -5,18 +5,23 @@ single primitive request, optionally appends a JSONL row, and exits.
 Sweeps and repetitions are driven by shell loops; medians and tables are
 computed post-hoc from the JSONL.
 
-Currently two scripts; a third (`bench_parallel.py`) is planned.
+Three scripts, each measuring a distinct property of the OpenAI-style
+multi-completion path.
 
-- **`bench_n.py`** — one cold parallel `n=N` request. Tests the
-  OpenAI-style `n` parameter (the server processes the prompt once and
-  batches N generations across slots). Parsed at
-  `tools/server/server-task.cpp:262` as an alias for `n_cmpl`.
+- **`bench_n.py`** — one cold `n=N` request. Tests the OpenAI-style `n`
+  parameter (the server processes the prompt once and batches N
+  generations across slots). Parsed at `tools/server/server-task.cpp:262`
+  as an alias for `n_cmpl`.
 - **`bench_sequential.py`** — N sequential `n=1` requests, cold req #1
   then #2..N reuse the prompt KV via prefix cache (no slot clear between
   them). Tests the cache-hit path.
-- **`bench_parallel.py`** *(future)* — N independent concurrent clients
-  sharing a prefix, to test how the scheduler aggregates simultaneous
-  requests at runtime.
+- **`bench_parallel.py`** — N concurrent `n=1` requests issued
+  simultaneously from N client threads (gated by a `threading.Barrier`
+  so they reach the server within microseconds of each other). Tests
+  whether the scheduler recognizes the shared prefix at arrival time and
+  shares prompt processing, or whether each request pays the prompt cost
+  independently. Read each row's `cache_n` vs `prompt_n` to see who hit
+  the cache.
 
 Shared logic lives in `bench_lib.py` (prompt building, `/props`,
 `/metrics`, `clear_slots`, `post`, `jdump`, common arg parsing).
@@ -41,6 +46,11 @@ iterate over `0..total_slots-1`.
 - `bench_n.py` — erase all slots, then one `n=N` request.
 - `bench_sequential.py` — erase all slots once, then N back-to-back `n=1`
   requests *without* clearing between them; that's the property under test.
+- `bench_parallel.py` — erase all slots once, then release N
+  barrier-synchronized client threads that each issue one `n=1` request.
+  Whether the second-through-Nth requests find a populated prefix cache
+  is exactly what the test is measuring, so nothing is cleared between
+  them either.
 
 ## Run
 
@@ -60,6 +70,9 @@ done
 
 # Sequential cache-warm test (16 requests, one row per request with req_idx)
 python bench_sequential.py --jsonl results/sequential.jsonl 256 16
+
+# Concurrent arrival test (16 client threads, barrier-released together)
+python bench_parallel.py --jsonl results/parallel.jsonl 256 16
 
 # Target a remote llama-server (e.g. a runpod tunnel; HTTPS works as-is)
 python bench_n.py --base-url https://abc-8080.proxy.runpod.net/ 256 16
