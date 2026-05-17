@@ -1,3 +1,5 @@
+__pycache__/
+
 # Re-include the sweep logs the README references as canonical artifacts;
 # the repo-root .gitignore excludes *.log globally for runtime noise.
 !results/*.log
