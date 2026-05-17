@@ -73,36 +73,32 @@ no extra flag needed for valid certs. The chosen URL is recorded in each
 JSONL row as `base_url` so concatenated sweeps from local + remote servers
 stay disambiguated.
 
-`--n-prompt N` builds the prompt by reading a sibling seed corpus
-(default `seed_corpus.cpp` — canonical algorithms in C++; override with
-the `BENCH_N_SEED` env var pointing at any text file), POSTing it to
-`/tokenize`, repeating the resulting token list to reach `N` tokens,
-truncating, and POSTing back through `/detokenize`. Code (rather than
+The prompt is always built from a sibling seed corpus (default
+`seed_corpus.cpp` — canonical algorithms in C++; override with the
+`BENCH_N_SEED` env var pointing at any text file). Code (rather than
 prose) is the default so that MoE expert routing matches what would
 happen on a real coding workload — for dense models the choice of seed
-doesn't matter, but for MoE the same `N` tokens of prose vs code can fire
-substantially different expert sets and produce different throughput
-numbers. The chat template wraps the content on the wire, so the actual
-`prompt_n` in each JSONL row is a few tokens larger than `N`; both are
-preserved (`n_prompt_target` and `seed_corpus` in row metadata vs
-`prompt_n` in row body). Without `--n-prompt`, a built-in
-technical-writer prompt is used.
+doesn't matter, but for MoE the same number of tokens of prose vs code
+can fire substantially different expert sets and produce different
+throughput numbers.
+
+`--n-prompt N` length-normalizes the prompt: POST the seed text to
+`/tokenize`, repeat the resulting token list to reach `N` tokens,
+truncate, and POST back through `/detokenize`. The chat template wraps
+the content on the wire, so the actual `prompt_n` in each JSONL row is a
+few tokens larger than `N`; both `n_prompt_target` and `prompt_n` are
+preserved (the former in row metadata, the latter in the row body).
+Without `--n-prompt`, the seed file is sent as-is and `prompt_n` is
+whatever the chat template produces.
 
 `--jsonl PATH` accepts any position. It appends one row per individual
 request (no in-process median collapse), so shell-driven reps preserve
 the full sample for variance work.
 
-Every row carries server metadata from `/props` (`model`, `model_path`,
-`build_info`, `total_slots`) plus a `ts` epoch timestamp, so concatenated
-runs across builds/models stay self-describing. `build_info` is the
-llama.cpp `b<number>-<commit>` string (set in
-`common/build-info.cpp.in`).
-
-The `device` field records the compute device. llama.cpp's HTTP API does
-not expose this (no `/devices` endpoint; `ggml_backend_dev_*` is internal
-only), so the value comes from the `BENCH_N_DEVICE` env var — set it to
-whatever short label disambiguates this run (`"M2 Ultra"`, `"RTX 4090"`,
-`"Threadripper 7970X"`, etc.). Defaults to `"unknown"` when unset.
+Every row carries server metadata from `/props` (`model`, `build_info`,
+`total_slots`) plus a `ts` epoch timestamp, so concatenated runs across
+builds/models stay self-describing. `build_info` is the llama.cpp
+`b<number>-<commit>` string (set in `common/build-info.cpp.in`).
 
 ## Caveat — `/metrics prompt_tokens_total` is misleading for n>1
 

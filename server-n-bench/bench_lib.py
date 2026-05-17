@@ -72,23 +72,15 @@ def parse_common_args(argv):
     return out, jsonl_path, n_prompt, base
 
 
-def detect_device():
-    # llama.cpp does not expose runtime device info via its HTTP API
-    # (no /devices route; ggml_backend_dev_* is internal only). Per
-    # manual choice this reads the BENCH_N_DEVICE env var. Multi-device
-    # cases (RPC, CPU+GPU offload) are left to the user to encode --
-    # e.g. "M2 Ultra" or "RTX 4090 + 7950X".
-    return os.environ.get("BENCH_N_DEVICE", "unknown")
-
-
-def make_default_prompt():
-    body = ("The llama.cpp server schedules requests onto a fixed pool of slots. "
-            "Each slot owns a slice of the KV cache and holds one sequence. "
-            "When a request arrives the scheduler picks the slot whose cached "
-            "prompt shares the longest common prefix with the incoming prompt. ")
-    return ("You are a careful technical writer.\n\n"
-            + body * 12
-            + "\n\nTask: write a detailed explanation of how request batching works.")
+def _read_seed():
+    try:
+        with open(SEED_PATH) as f:
+            text = f.read()
+    except OSError as e:
+        sys.exit(f"Could not read seed corpus at {SEED_PATH}: {e}")
+    if not text:
+        sys.exit(f"Seed corpus at {SEED_PATH} is empty")
+    return text
 
 
 def tokenize(base, text):
@@ -110,19 +102,13 @@ def detokenize(base, tokens):
 
 
 def build_prompt_to(base, n_prompt):
-    """Build a prompt that tokenizes to ~n_prompt tokens.
+    """Build a prompt that tokenizes to ~n_prompt tokens via /tokenize on
+    the seed corpus, repeat-and-truncate, then /detokenize back to text.
 
     The chat template adds a few wrapper tokens on the wire; the actual
     count shows up as `prompt_n` in jsonl rows.
     """
-    try:
-        with open(SEED_PATH) as f:
-            seed_text = f.read()
-    except OSError as e:
-        sys.exit(f"Could not read seed corpus at {SEED_PATH}: {e}")
-    if not seed_text:
-        sys.exit(f"Seed corpus at {SEED_PATH} is empty")
-    toks = tokenize(base, seed_text)
+    toks = tokenize(base, _read_seed())
     if not toks:
         sys.exit("/tokenize returned no tokens for the seed corpus -- server tokenizer issue?")
     if len(toks) < n_prompt:
@@ -233,21 +219,19 @@ def setup(argv):
     meta = {
         "base_url":    base,
         "model":       props.get("model_alias") or os.path.basename(props.get("model_path", "")),
-        "model_path":  props.get("model_path", ""),
         "build_info":  props.get("build_info", ""),
         "total_slots": slots,
-        "device":      detect_device(),
     }
     if n_prompt is not None:
         prompt = build_prompt_to(base, n_prompt)
         meta["n_prompt_target"] = n_prompt
-        meta["seed_corpus"]     = os.path.basename(SEED_PATH)
     else:
-        prompt = make_default_prompt()
+        prompt = _read_seed()
     print(f"server: base={base}  model={meta['model']!r}  build={meta['build_info']!r}  "
-          f"total_slots={slots}  device={meta['device']!r}")
+          f"total_slots={slots}")
     if n_prompt is not None:
-        print(f"prompt: --n-prompt={n_prompt}  seed={os.path.basename(SEED_PATH)!r}  "
-              f"(chat template adds a few wrapper tokens on the wire; actual "
-              f"prompt_n shows up in each row)")
+        print(f"prompt: --n-prompt={n_prompt}  (chat template adds a few wrapper "
+              f"tokens; actual prompt_n shows up in each row)")
+    else:
+        print(f"prompt: seed file used as-is (no --n-prompt)")
     return BenchContext(base, jsonl_path, meta, prompt), remaining
