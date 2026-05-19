@@ -120,6 +120,20 @@ One row per choice in the `n=N` response. Top-level fields:
 | `usage`, `timings` | full request-level token counts and llama.cpp prompt/cache/predict breakdown — recorded only on the row with `completion_idx=0` to avoid N-fold double-counting in downstream sums |
 | `note` | optional free-form tag from `--note` (e.g. machine name, experiment label) |
 
+## Tracked datasets
+
+`results/*.jsonl` files in this repo are check-in-quality runs kept for
+reference. Today there's one:
+
+- `results/res.jsonl` — first smoke run, 28 rows = 7 × `n=4` against
+  Qwen3.6-27B-UD-Q8_K_XL on llama-server `b9048-5207d120e` (M2 Ultra,
+  64 slots). All rows at server-default sampling
+  (`max_tokens=65536, n=4`, no temperature/top_p/etc. overrides). The
+  variance signal is already loud at this size: among the 13 rows that
+  compiled, MCC spans `0.21 – 0.68` and `passed` spans `444 – 583` out
+  of 678; the remaining 15 rows hit `compile_error` before even
+  reaching the test corpus.
+
 ## Adding a task
 
 The same (spec, env) decomposition validation-bench uses applies here.

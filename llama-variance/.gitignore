@@ -1,3 +1,8 @@
 __pycache__/
 *.pyc
-results/
+
+# Tracked JSONL datasets under results/ are checked in (see README). Anything
+# else is ad-hoc / per-run noise — logs, plots, scratch files — and stays
+# local to the working tree.
+results/*
+!results/*.jsonl
