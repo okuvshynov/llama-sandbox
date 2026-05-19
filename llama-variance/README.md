@@ -1,0 +1,134 @@
+# llama-variance
+
+Single-shot variance study for local OpenAI-compatible chat servers.
+
+This isn't really a benchmark — there's no leaderboard, no model ranking.
+The question it tries to answer is *"how much of a local model's apparent
+score on a coding-style task is signal vs. sampling noise?"*. Each run
+makes one HTTP request with `n=N` completions, scores each completion
+independently against the same test corpus, and appends one JSONL row
+per completion. Sweep that across (temperature, top_p, top_k, seed, …)
+and you have a distribution to look at.
+
+## Project lineage
+
+llama-variance copies pieces from two sibling projects but keeps zero
+runtime dependencies on either — they're allowed to drift.
+
+- From [validation-bench](../validation-bench/): the task structure
+  (`data/specs/<spec>/`, `data/envs/<env>/`, `data/tasks/<spec>-<env>/`),
+  the docker sandbox flags, the strict `valid`/`invalid` scoring contract,
+  and the `submit` tool shape.
+- From [server-n-bench](../server-n-bench/): the OpenAI-style `n=N`
+  parameter idea — one HTTP request that fans out to N parallel slots,
+  so all N draws share identical sampling-param treatment and prompt
+  processing happens once.
+
+The differences from validation-bench are deliberate:
+
+- **One turn only.** No compile-feedback loop, no resubmission. The
+  preamble tells the model that explicitly — first `submit` call is the
+  measurement, full stop.
+- **N completions in one request** instead of N attempts. Lets us study
+  the per-sampling-param distribution at the cost of one HTTP round trip.
+- **Just one task today**: `toml-1.0-cpp17` (write a TOML v1.0 validator
+  in C++17). Adding another (spec, env) cell is a matter of dropping
+  files into `data/`.
+
+## Setup
+
+```bash
+docker build -t vb-sandbox-cpp17 data/envs/cpp17/
+```
+
+The image is the same one validation-bench uses (`vb-sandbox-cpp17`) —
+the Dockerfile is duplicated here so the projects are independent, but
+either project can use the prebuilt image.
+
+The test corpus is already checked in under `data/specs/toml-1.0/tests/`
+(copied from validation-bench's `.cache/toml-test/tests/`, pinned at
+upstream commit `0ee318a`). `tests.jsonl` is the manifest the scorer reads.
+
+The TOML specification text (`data/specs/toml-1.0/spec_body.md`) and the
+test corpus are both MIT-licensed upstream content vendored verbatim;
+see `data/specs/toml-1.0/THIRD-PARTY-NOTICE` for the per-source license
+and provenance pins.
+
+## Server setup
+
+llama-server must be started with `-np >= N` so it has enough slots to
+serve `n=N` completions in parallel. The standard `n=N` perf advice from
+server-n-bench applies — `--flash-attn`, `--kv-unified`, etc. as desired.
+
+```bash
+llama-server -m model.gguf -np 16 --jinja
+```
+
+`--jinja` is what enables tool-call support in the OpenAI-compatible
+chat endpoint (the model needs a chat template that emits the
+function-call tags).
+
+## Run
+
+```bash
+python run.py --model qwen3-coder --n 16 --temperature 0.7 \
+    --jsonl results/sweep.jsonl
+```
+
+Each invocation issues one `n=N` request, then scores each choice
+sequentially through one Sandbox (with `begin_submission` restarting
+the container between scorings, same as validation-bench). The headline
+output is the JSONL — one row per completion, carrying its own
+confusion matrix + sampling params + server meta.
+
+Sweep example — shell-driven so each row is a fresh request:
+
+```bash
+for t in 0.0 0.3 0.5 0.7 1.0 1.3; do
+  for r in 1 2 3; do
+    python run.py --model qwen3-coder --n 16 --temperature $t \
+        --jsonl results/sweep.jsonl
+  done
+done
+```
+
+Targeting a remote llama-server (e.g. a runpod tunnel; HTTPS works as-is):
+
+```bash
+python run.py --base-url https://abc-8080.proxy.runpod.net/ \
+    --model qwen3-coder --n 16 --temperature 0.7 \
+    --jsonl results/sweep.jsonl
+```
+
+## JSONL row shape
+
+One row per choice in the `n=N` response. Top-level fields:
+
+| field | notes |
+|-------|-------|
+| `ts` | epoch seconds at the time of the request |
+| `task`, `spec`, `env` | identifies the (spec, env) cell |
+| `base_url`, `model`, `build_info`, `total_slots` | server provenance from `/props` |
+| `completion_idx`, `n_total` | which of the N choices this row is |
+| `sampling_params` | the full sampling dict (`max_tokens`, `n`, plus any of `temperature`, `top_p`, `top_k`, `min_p`, `repeat_penalty`, `seed`) |
+| `finish_reason` | `"tool_calls"` on a clean submit; `"length"` if `max_tokens` ran out before submit |
+| `model_seconds` | wall time of the one HTTP request (same value on every row from the same call) |
+| `compiled` | bool |
+| `tp`, `fn`, `fp`, `tn`, `passed`, `total`, `mcc` | confusion matrix; absent when `compiled=false` |
+| `error` | set when the choice didn't yield a compilable submission (`no_tool_call`, `wrong_tool:X`, `bad_args_json`, `no_source_code`, `compile_error`, `compile_timeout`) |
+| `prepare_seconds`, `tests_seconds`, `score_wall` | per-completion scoring breakdown |
+| `usage`, `timings` | full request-level token counts and llama.cpp prompt/cache/predict breakdown — recorded only on the row with `completion_idx=0` to avoid N-fold double-counting in downstream sums |
+| `note` | optional free-form tag from `--note` (e.g. machine name, experiment label) |
+
+## Adding a task
+
+The same (spec, env) decomposition validation-bench uses applies here.
+To add e.g. `yaml-1.2` C++17 support:
+
+1. Copy `data/specs/yaml-1.2/` from validation-bench (or wherever — this
+   project doesn't run `setup.sh`; whatever ends up under
+   `data/specs/<name>/tests/` plus a matching `tests.jsonl` is enough).
+2. Create `data/tasks/yaml-1.2-cpp17/{task.json, preamble.md}` —
+   `task.json` is `{"spec": "yaml-1.2", "env": "cpp17"}`, `preamble.md`
+   inherits the single-shot wording from `toml-1.0-cpp17`.
+3. Run with `--task yaml-1.2-cpp17`.

@@ -1,0 +1,21 @@
+You are an expert C++ programmer. Implement the solution described below.
+Submit your complete C++ source code using the `submit` tool.
+
+You have exactly one shot — there will be no compilation feedback, no test
+results, and no chance to resubmit. Whatever source code you pass to
+`submit` on this turn is the final answer.
+
+## Specification
+
+Implement a validator for TOML files in C++17 using only the standard library.
+Compiler command: `{compile_cmd}`
+
+Your validator must read a TOML file from stdin and print to stdout
+exactly `valid` (e.g. `std::cout << "valid"`) if it is a valid TOML
+document, or exactly `invalid` otherwise. Surrounding whitespace is
+allowed; anything else (debug output, mixed casing, multiple lines)
+counts as a test failure. The process must also exit cleanly with status 0 — a correct
+verdict followed by a crash, timeout, or non-zero exit is still a
+failure.
+
+The input is a TOML v1.0.0 document. The full specification follows.

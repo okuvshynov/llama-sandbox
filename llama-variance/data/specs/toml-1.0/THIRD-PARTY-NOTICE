@@ -1,0 +1,71 @@
+This spec embeds two pieces of upstream content; both are vendored
+verbatim from their canonical repositories.
+
+================================================================================
+1. Specification text — data/specs/toml-1.0/spec_body.md
+================================================================================
+
+Source:  https://github.com/toml-lang/toml
+File:    toml.md (v1.0.0, vendored verbatim)
+
+The MIT License (MIT)
+
+Copyright (c) 2013 Tom Preston-Werner
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+================================================================================
+2. Test corpus — data/specs/toml-1.0/tests/
+================================================================================
+
+Source:  https://github.com/toml-lang/toml-test
+Pin:     0ee318a (same commit validation-bench's setup.sh pins for toml-1.0)
+
+The MIT License (MIT)
+
+Copyright (c) 2018 TOML authors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+================================================================================
+Notes on label derivation
+================================================================================
+
+`tests.jsonl` is the index validation-bench's setup.sh generates from
+toml-test's `files-toml-1.0.0` manifest: every line names one
+`tests/{valid,invalid}/...` file and its expected `valid`/`invalid` verdict.
+The corpus directories and tests.jsonl were copied into llama-variance from
+validation-bench/data/specs/toml-1.0/ rather than re-fetched, so the pin
+matches whatever validation-bench had at copy time (0ee318a).
