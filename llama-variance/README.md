@@ -125,14 +125,17 @@ One row per choice in the `n=N` response. Top-level fields:
 `results/*.jsonl` files in this repo are check-in-quality runs kept for
 reference. Today there's one:
 
-- `results/res.jsonl` — first smoke run, 28 rows = 7 × `n=4` against
+- `results/res.jsonl` — first smoke runs, 52 rows against
   Qwen3.6-27B-UD-Q8_K_XL on llama-server `b9048-5207d120e` (M2 Ultra,
-  64 slots). All rows at server-default sampling
-  (`max_tokens=65536, n=4`, no temperature/top_p/etc. overrides). The
-  variance signal is already loud at this size: among the 13 rows that
-  compiled, MCC spans `0.21 – 0.68` and `passed` spans `444 – 583` out
-  of 678; the remaining 15 rows hit `compile_error` before even
-  reaching the test corpus.
+  64 slots), all at server-default sampling (`max_tokens=65536`, no
+  temperature/top_p/etc. overrides): 28 rows from 7 × `n=4` plus 24
+  rows from 3 × `n=8`. The variance signal is already loud at this
+  size: 23/52 rows hit `compile_error` before reaching the corpus; of
+  the 29 that compiled, MCC spans `-0.80 – 0.68` and `passed` spans
+  `63 – 583` out of 678. The bottom tail includes a near-inverted
+  validator (MCC `-0.80`, 63/678) — same prompt, same sampling params
+  as the `0.68` row. Each request's rows share a `ts` field, so dedupe
+  on `ts` if you ever suspect a double-append.
 
 ## Adding a task
 
