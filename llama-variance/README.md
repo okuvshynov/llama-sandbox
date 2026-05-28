@@ -113,11 +113,13 @@ One row per choice in the `n=N` response. Top-level fields:
 | `sampling_params` | the full sampling dict (`max_tokens`, `n`, plus any of `temperature`, `top_p`, `top_k`, `min_p`, `repeat_penalty`, `seed`) |
 | `finish_reason` | `"tool_calls"` on a clean submit; `"length"` if `max_tokens` ran out before submit |
 | `model_seconds` | wall time of the one HTTP request (same value on every row from the same call) |
+| `tokens_predicted` | per-choice predicted token count, via the server's `/tokenize` endpoint applied to `content + reasoning_content + tool_call.arguments`. Tends to slightly undercount vs request-level `completion_tokens` because chat-template envelope tokens around tool-calls / reasoning blocks aren't part of the text bodies we re-tokenize; small (~1%) drift is expected. |
+| `tokens_content`, `tokens_reasoning`, `tokens_tool_args` | the three-way split that sums to `tokens_predicted`. Useful for thinking-mode studies (where the bulk usually lives in `tokens_reasoning`). |
 | `compiled` | bool |
 | `tp`, `fn`, `fp`, `tn`, `passed`, `total`, `mcc` | confusion matrix; absent when `compiled=false` |
 | `error` | set when the choice didn't yield a compilable submission (`no_tool_call`, `wrong_tool:X`, `bad_args_json`, `no_source_code`, `compile_error`, `compile_timeout`) |
 | `prepare_seconds`, `tests_seconds`, `score_wall` | per-completion scoring breakdown |
-| `usage`, `timings` | full request-level token counts and llama.cpp prompt/cache/predict breakdown — recorded only on the row with `completion_idx=0` to avoid N-fold double-counting in downstream sums |
+| `usage`, `timings` | recorded only on the row with `completion_idx=0`. **Gotcha**: at `n>1`, llama.cpp's OAI chat handler returns slot-0's `usage`/`timings` unchanged (see `tools/server/server-context.cpp` ~line 3260 — it appends the other slots' choices into arr[0] but never touches its usage block). So `usage.completion_tokens` and `timings.predicted_n` are the **single-slot** counts, not the sum across N. For true per-choice tokens use the `tokens_predicted` field below. |
 | `note` | optional free-form tag from `--note` (e.g. machine name, experiment label) |
 
 ## Tracked datasets

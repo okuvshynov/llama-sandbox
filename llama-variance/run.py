@@ -82,6 +82,19 @@ def post_chat_completions(base_url: str, payload: dict,
                  body=payload, timeout=timeout)
 
 
+def tokenize_count(base_url: str, text: str, timeout: float = 30) -> int:
+    """Token count of `text` via the server's /tokenize endpoint. Returns 0
+    on empty input. `add_special=False` so we count only the body, not BOS
+    markers — the server-side `completion_tokens` we're approximating is
+    also the per-slot predicted count, not pre/post envelope."""
+    if not text:
+        return 0
+    resp = _http("POST", base_url, "/tokenize",
+                 body={"content": text, "add_special": False},
+                 timeout=timeout)
+    return len(resp.get("tokens") or [])
+
+
 def parse_choice(choice: dict) -> tuple[str | None, str | None, str | None]:
     """Return (source_code, finish_reason, error). On a clean submit tool_call,
     error is None. On any deviation (no tool_call, wrong tool name, bad JSON
@@ -210,9 +223,26 @@ def main():
     sandbox.start()
 
     ts = int(time.time())
+    per_choice_token_sum = 0
     try:
         for i, choice in enumerate(choices):
             source_code, finish_reason, parse_err = parse_choice(choice)
+
+            # Per-choice token counts via /tokenize. The OpenAI envelope sums
+            # completion_tokens across all N choices, so this is how we
+            # recover a per-completion number. Three pieces because the
+            # split (reasoning vs visible content vs tool args) is itself
+            # informative for thinking-mode studies.
+            msg = choice.get("message") or {}
+            tc_args = ""
+            tcs = msg.get("tool_calls") or []
+            if tcs:
+                tc_args = (tcs[0].get("function") or {}).get("arguments") or ""
+            tok_content = tokenize_count(args.base_url, msg.get("content") or "")
+            tok_reasoning = tokenize_count(args.base_url, msg.get("reasoning_content") or "")
+            tok_tool_args = tokenize_count(args.base_url, tc_args)
+            tok_total = tok_content + tok_reasoning + tok_tool_args
+            per_choice_token_sum += tok_total
 
             row: dict = {
                 "ts": ts,
@@ -228,6 +258,10 @@ def main():
                 "sampling_params": sampling,
                 "finish_reason": finish_reason,
                 "model_seconds": round(model_seconds, 3),
+                "tokens_predicted": tok_total,
+                "tokens_content": tok_content,
+                "tokens_reasoning": tok_reasoning,
+                "tokens_tool_args": tok_tool_args,
             }
             if args.note is not None:
                 row["note"] = args.note
@@ -279,6 +313,19 @@ def main():
                     f.write(json.dumps(row) + "\n")
     finally:
         sandbox.stop()
+
+    # Sanity check: per-choice /tokenize sum vs server-reported tokens.
+    # llama.cpp's OAI chat path with n>1 returns slot-0's `usage` blob
+    # unchanged — `completion_tokens` reflects only one slot, NOT the sum
+    # across all N choices (see server-context.cpp ~line 3260, which appends
+    # the other slots' choices into arr[0] but never touches its usage).
+    # So we don't expect equality at n>1; we just log both for transparency.
+    # At n=1 they should match to ~1% (envelope tokens around tool-calls
+    # aren't part of the text bodies we tokenize).
+    req_slot0 = (usage or {}).get("completion_tokens")
+    if req_slot0 is not None:
+        print(f"  per-choice tok : sum={per_choice_token_sum} across {len(choices)} choices  "
+              f"(server usage.completion_tokens={req_slot0}, slot-0 only at n>1)")
 
     print()
 
