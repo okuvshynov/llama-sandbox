@@ -125,19 +125,36 @@ One row per choice in the `n=N` response. Top-level fields:
 ## Tracked datasets
 
 `results/*.jsonl` files in this repo are check-in-quality runs kept for
-reference. Today there's one:
+reference. All current datasets target Qwen3.6-27B-UD-Q8_K_XL on
+llama-server `b9048-5207d120e` (M2 Ultra, 64 slots) at server-default
+sampling (`max_tokens=65536`, no temperature/top_p/etc. overrides).
 
-- `results/res.jsonl` — first smoke runs, 52 rows against
-  Qwen3.6-27B-UD-Q8_K_XL on llama-server `b9048-5207d120e` (M2 Ultra,
-  64 slots), all at server-default sampling (`max_tokens=65536`, no
-  temperature/top_p/etc. overrides): 28 rows from 7 × `n=4` plus 24
-  rows from 3 × `n=8`. The variance signal is already loud at this
-  size: 23/52 rows hit `compile_error` before reaching the corpus; of
-  the 29 that compiled, MCC spans `-0.80 – 0.68` and `passed` spans
+- `results/res.jsonl` — first smoke runs, 52 rows: 28 rows from 7 × `n=4`
+  plus 24 rows from 3 × `n=8`. The variance signal is already loud at
+  this size: 23/52 rows hit `compile_error` before reaching the corpus;
+  of the 29 that compiled, MCC spans `-0.80 – 0.68` and `passed` spans
   `63 – 583` out of 678. The bottom tail includes a near-inverted
   validator (MCC `-0.80`, 63/678) — same prompt, same sampling params
   as the `0.68` row. Each request's rows share a `ts` field, so dedupe
-  on `ts` if you ever suspect a double-append.
+  on `ts` if you ever suspect a double-append. No `tokens_*` fields
+  (collected before the tokenize-based per-choice counting landed).
+
+- `results/res_reasoning_on.jsonl` — 76 rows from 12 requests
+  (11 × `n=4`, 1 × `n=32`) collected after the `/tokenize` per-choice
+  counting landed, so every row carries `tokens_predicted` plus the
+  `content` / `reasoning` / `tool_args` split. Reasoning tokens are
+  ~76% of total tokens per choice on average — confirms the bulk of
+  thinking-mode emission lives in `reasoning_content`. 39/76 rows
+  compiled (51%); MCC spans `-1.00 – +0.64`, median `+0.33`. Mean MCC
+  is lower than `res.jsonl`'s n=4 subset by ~0.10–0.18 with marginal
+  statistical significance (Mann-Whitney p ≈ 0.03), but the new data is
+  a tight 28-hour collection block while `res.jsonl` is spread across
+  ~4 days — so time-correlated environmental noise (server uptime,
+  RNG continuation, thermals) is a plausible confound. Don't read the
+  gap as a model-quality change from the build that introduced
+  tokenize-counting; `/tokenize` runs after the chat response and
+  cannot affect generation. Includes one MCC=-1.0 row (the new
+  near-inverted floor, beneath res.jsonl's -0.80).
 
 ## Adding a task
 
