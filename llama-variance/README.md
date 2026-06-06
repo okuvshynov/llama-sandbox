@@ -125,9 +125,12 @@ One row per choice in the `n=N` response. Top-level fields:
 ## Tracked datasets
 
 `results/*.jsonl` files in this repo are check-in-quality runs kept for
-reference. All current datasets target Qwen3.6-27B-UD-Q8_K_XL on
-llama-server `b9048-5207d120e` (M2 Ultra, 64 slots) at server-default
-sampling (`max_tokens=65536`, no temperature/top_p/etc. overrides).
+reference. All current datasets target Qwen3.6-27B with the UD-`{Q8,Q6,Q5}`_K_XL
+quant family (per-dataset blurb says which) on llama-server `b9048-5207d120e`
+(M2 Ultra, 64 slots) at server-default sampling (`max_tokens=65536`, no
+temperature/top_p/etc. overrides). PNGs and other ad-hoc artifacts under
+`results/` are gitignored (see `.gitignore`) — only the `.jsonl` datasets
+are checked in.
 
 - `results/res.jsonl` — first smoke runs, 52 rows: 28 rows from 7 × `n=4`
   plus 24 rows from 3 × `n=8`. The variance signal is already loud at
@@ -155,6 +158,32 @@ sampling (`max_tokens=65536`, no temperature/top_p/etc. overrides).
   tokenize-counting; `/tokenize` runs after the chat response and
   cannot affect generation. Includes one MCC=-1.0 row (the new
   near-inverted floor, beneath res.jsonl's -0.80).
+
+- `results/res_reasoning_off.jsonl` — 300 rows, first quant-cross-section
+  with reasoning disabled (Qwen3 nothink path: `tokens_reasoning == 0` on
+  every row, all output goes to `tokens_tool_args`). 100 rows per quant at
+  `Q8_K_XL` / `Q6_K_XL` / `Q5_K_XL`, mixed `n=4` and `n=32` requests, same
+  build/sampling as the other datasets. Compile-error mass climbs
+  monotonically as precision drops: Q8 78%, Q6 84%, Q5 87% of completions
+  hit `compile_error` before reaching the corpus. Conditional on compiling,
+  the upper MCC tail tops out around `+0.65` across all three quants —
+  the differences between quants in `[0, 0.65]` are noisy at n=100. Useful
+  as the reasoning-off counterpart to `res_reasoning_on.jsonl` (which is
+  Q8 only) and as the first dataset where multiple quants live in one
+  file. See `plot_mcc_cdf.py` for the per-quant ECDF view.
+
+## Plots
+
+Ad-hoc analysis scripts live next to `run.py` and write PNGs into
+`results/` (gitignored). Currently:
+
+- `plot_mcc_cdf.py` — per-quant ECDF of MCC for one results JSONL,
+  treating compile-error rows as MCC = -1 so compile rate and corpus
+  quality summarize on a single curve. Defaults to
+  `results/res_reasoning_off.jsonl` → `results/mcc_cdf.png`; override via
+  `--input`/`--output`/`--title`. Pools rows on the `model` field, so
+  new rows of an existing quant fold into the same curve on rerun
+  without code changes.
 
 ## Adding a task
 
