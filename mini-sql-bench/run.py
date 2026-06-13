@@ -58,6 +58,31 @@ def normalize(text: str) -> str:
     return lines[-1] if lines else ""
 
 
+def sum_tokens(messages: list[dict]) -> dict:
+    """Sum litellm usage across all model calls. Provider-independent (Anthropic, OpenAI,
+    and local llama-server all populate response.usage), so this is reported alongside cost
+    -- cost depends on provider pricing that can change, token counts don't.
+
+    prompt_tokens is cumulative-by-turn (each turn re-sends the growing context), so the
+    sum is the total input processed across the run, not the unique prompt size.
+    """
+    totals = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    have_any = False
+    for m in messages:
+        if m.get("role") != "assistant":
+            continue
+        usage = (m.get("extra", {}) or {}).get("response", {}) or {}
+        usage = usage.get("usage") if isinstance(usage, dict) else None
+        if not isinstance(usage, dict):
+            continue
+        have_any = True
+        for k in totals:
+            v = usage.get(k)
+            if isinstance(v, (int, float)):
+                totals[k] += int(v)
+    return totals if have_any else {}
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--model", required=True, help="LiteLLM model name, e.g. anthropic/claude-sonnet-4-6 or openai/<served-name>")
@@ -148,16 +173,22 @@ def main() -> int:
         "expected": normalize(expected),
         "correct": correct,
         "cost": round(agent.cost, 6),
+        "tokens": sum_tokens(agent.messages),
         "n_calls": agent.n_calls,
         "trajectory": traj_path.name,
     }
     result_path = out_dir / f"{ts}.result.json"
     result_path.write_text(json.dumps(result, indent=2))
 
+    tok = result["tokens"]
+    tok_str = (
+        f"tokens={tok['total_tokens']} (in={tok['prompt_tokens']} out={tok['completion_tokens']})"
+        if tok else "tokens=n/a"
+    )
     print(
         f"[done] correct={str(correct).lower()} exit={exit_status} "
         f"answer={got!r} expected={normalize(expected)!r} "
-        f"cost=${agent.cost:.4f} calls={agent.n_calls}",
+        f"cost=${agent.cost:.4f} {tok_str} calls={agent.n_calls}",
         flush=True,
     )
     print(f"[done] result: {result_path}", flush=True)

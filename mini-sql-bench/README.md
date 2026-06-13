@@ -92,7 +92,12 @@ Useful flags: `--no-build` (reuse an existing image), `--step-limit`, `--cost-li
 Each run writes two files under `results/` (gitignored):
 
 - `<ts>.result.json` — `{model, base_url, exit_status, submission, answer, expected,
-  correct, cost, n_calls, ...}`
+  correct, cost, tokens, n_calls, ...}`. `tokens` sums litellm usage across all model
+  calls (`{prompt_tokens, completion_tokens, total_tokens}`) and is populated for every
+  provider including the local server; it's recorded alongside `cost` because token counts
+  are provider-pricing-independent (`prompt_tokens` is cumulative-by-turn, so it's the
+  total input processed, not the unique prompt size). `cost` may be `0.0` for a local
+  model with no litellm price.
 - `<ts>.traj.json` — the full mini-swe-agent trajectory (inspect with `mini-extra inspector`)
 
 `run.py` exits 0 when `correct` is true, 1 otherwise. The console prints a one-line summary.
