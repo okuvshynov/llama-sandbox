@@ -1,0 +1,90 @@
+# mini-sql-bench config. Three mini-swe-agent sections (agent / environment / model)
+# plus a `task` block consumed by run.py. The agent/environment/model keys mirror
+# mini-swe-agent's benchmarks/programbench.yaml but trimmed to laptop scale.
+
+agent:
+  step_limit: 30
+  cost_limit: 0.50          # dollars; bounds a runaway cloud run. 0 = no limit.
+  system_template: |
+    You are a careful assistant that solves a task by interacting with a Linux sandbox.
+
+    You operate in a loop:
+    1. You issue exactly ONE command via the `bash` tool.
+    2. The system runs it and shows you the output.
+    3. You issue the next command.
+
+    Notes:
+    - Each command runs in a fresh subshell; `cd` and shell-variable changes do not
+      persist. Chain steps in one command (e.g. `cd /workspace && sqlite3 ...`) or use
+      absolute paths.
+    - `sqlite3` is available. `python` is available as `python3`.
+    - You have no internet access; everything you need is already in the sandbox.
+
+    When you are done, submit by running exactly this, on its own, as a single command:
+        echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT && cat /workspace/answer.txt
+    After that command you cannot continue working on the task.
+  instance_template: |
+    {{task}}
+
+environment:
+  environment_class: docker
+  cwd: /workspace
+  timeout: 60               # per-command seconds
+  container_timeout: "1h"   # how long the container is kept alive
+  executable: docker
+  run_args:
+    - "--rm"
+    - "--network"
+    - "none"
+    - "--cpus"
+    - "2"
+    - "--memory"
+    - "2g"
+    - "--memory-swap"
+    - "2g"
+    - "--user"
+    - "agent"
+    - "--cap-drop"
+    - "SYS_PTRACE"
+  env:
+    PAGER: cat
+    MANPAGER: cat
+    PIP_PROGRESS_BAR: "off"
+
+model:
+  model_class: litellm
+  # Local / unknown-cost models have no price in litellm's registry; without this the
+  # cost calculator raises. Cloud models still report real cost.
+  cost_tracking: ignore_errors
+  observation_template: |
+    {% if output.exception_info -%}
+    <exception>{{output.exception_info}}</exception>
+    {% endif -%}
+    <returncode>{{output.returncode}}</returncode>
+    {% if output.output | length < 10000 -%}
+    <output>
+    {{ output.output -}}
+    </output>
+    {%- else -%}
+    <warning>The output was too long; showing head and tail only.</warning>
+    <output_head>
+    {{ output.output[:5000] }}
+    </output_head>
+    <output_tail>
+    {{ output.output[-5000:] }}
+    </output_tail>
+    {%- endif -%}
+
+task:
+  db_path: /workspace/company.db
+  question: |
+    A SQLite database is at /workspace/company.db. It has a `departments` table
+    (id, name) and an `employees` table (id, name, dept_id, salary), where
+    employees.dept_id references departments.id.
+
+    Question: What is the total salary of all employees in the Engineering department?
+
+    Inspect the schema and data with the sqlite3 CLI, then write ONLY the final answer
+    as a single integer (no commas, no currency symbol, no extra text) to
+    /workspace/answer.txt, and submit.
+  expected: "405000"

@@ -12,3 +12,4 @@ A collection of experiments related to LLM inference.
 * [validation-bench](validation-bench/) - AI coding benchmark harness evaluating models on code generation tasks via tool calling
 * [server-n-bench](server-n-bench/) - performance testing for llama.cpp server for multiple completions of the same prompt
 * [llama-variance](llama-variance/) - single-shot variance study: n=N completions per request, scored independently against a fixed task, to study how much of a local model's score is sample noise
+* [mini-sql-bench](mini-sql-bench/) - one-task smoke harness on mini-swe-agent: drives a Docker-isolated SQLite query task to verify the agent loop works against any model provider
