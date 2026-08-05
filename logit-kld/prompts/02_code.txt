@@ -1,0 +1,13 @@
+def merge_intervals(intervals):
+    """Merge overlapping intervals.
+
+    Takes a list of (start, end) tuples and returns a new list where all
+    overlapping or touching intervals have been merged. The input does not
+    need to be sorted.
+
+    >>> merge_intervals([(1, 3), (2, 6), (8, 10), (15, 18)])
+    [(1, 6), (8, 10), (15, 18)]
+    """
+    if not intervals:
+        return []
+    intervals = sorted(intervals)

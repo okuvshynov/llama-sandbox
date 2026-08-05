@@ -113,6 +113,18 @@ A/A comparison between *different* shapes (e.g. default rescore vs collect) is
 therefore the measurement noise floor for that model — real model-vs-model KLs
 should be read against it.
 
+## A/B quant comparison
+
+`ab_compare.sh` runs the whole workflow for two quants of the same model over
+the prompt corpus in `prompts/` (5 diverse continuation-style prompts: prose,
+code, math, history, French): per prompt, `collect` on the ground-truth quant →
+`rescore --sim-gen` on the test quant → `compare.py`. Defaults compare
+GLM-5.2 `UD-Q6_K_XL` (larger, dynamic per-layer bits — ground truth) against
+`UD-Q6_K`; override via `TRUTH_MODEL` / `TEST_MODEL` / `PROMPTS_DIR` / `OUT` /
+`N_PREDICT` / `TOP_K` env vars. Each phase loops one model back-to-back so the
+~0.5TB weights stay in the page cache across runs. All outputs (bins, logs,
+generated text, `compare.txt`) land in `$OUT` under `results/`.
+
 ## Comparing two files
 
 ```bash

@@ -1,0 +1,3 @@
+Claim: the sum of the first n odd numbers equals n squared.
+
+Proof by induction. Base case: for n = 1, the sum of the first odd number is 1, and 1 = 1^2, so the claim holds. Inductive step: assume the claim holds for some n = k, that is, 1 + 3 + 5 + ... + (2k - 1) = k^2. We must show it holds for n = k + 1. Adding the next odd number, (2k + 1), to both sides gives
