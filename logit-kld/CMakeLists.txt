@@ -15,24 +15,31 @@ set(LLAMA_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
 
+# CPU-only on purpose: this is measurement tooling, and on machines with a
+# barely-supported GPU (e.g. AMD via Metal on Intel Macs) the default op
+# offload at batch sizes >= 32 silently produces NaN logits with ngl=0.
+set(GGML_METAL OFF CACHE BOOL "" FORCE)
+
 add_subdirectory(${LLAMA_CPP_DIR} ${CMAKE_CURRENT_BINARY_DIR}/llama.cpp)
 
 find_package(Threads REQUIRED)
 
-add_executable(collect
-    src/collect.cpp
-    src/logits_file.cpp
-)
+foreach(tool collect rescore)
+    add_executable(${tool}
+        src/${tool}.cpp
+        src/logits_file.cpp
+    )
 
-target_include_directories(collect PRIVATE
-    ${LLAMA_CPP_DIR}/include
-    ${LLAMA_CPP_DIR}/common
-)
+    target_include_directories(${tool} PRIVATE
+        ${LLAMA_CPP_DIR}/include
+        ${LLAMA_CPP_DIR}/common
+    )
 
-target_link_libraries(collect PRIVATE
-    llama-common
-    llama
-    ${CMAKE_THREAD_LIBS_INIT}
-)
+    target_link_libraries(${tool} PRIVATE
+        llama-common
+        llama
+        ${CMAKE_THREAD_LIBS_INIT}
+    )
 
-target_compile_features(collect PRIVATE cxx_std_17)
+    target_compile_features(${tool} PRIVATE cxx_std_17)
+endforeach()

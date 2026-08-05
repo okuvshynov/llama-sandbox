@@ -9,12 +9,12 @@ contaminate the model comparison:
 1. **`collect`** (this project, llama.cpp-based): greedy continuation of a prompt,
    recording the token id sequence plus per-position top-K logits and a full-vocab
    log-sum-exp normalizer.
-2. **Rescoring utilities** (future, one per inference framework): consume the *raw
-   token ids* from a collect file, score the same sequence under a second
-   model/framework, and emit the same file format. The KL comparison then pairs two
-   files position by position. At that step we evaluate the model itself — the
-   token sequence is fixed, so tokenizer or template bugs in either framework
-   don't change what's being compared.
+2. **Rescoring utilities** (one per inference framework; `rescore` is the
+   llama.cpp one): consume the *raw token ids* from a collect file, score the same
+   sequence under a second model/framework, and emit the same file format. The KL
+   comparison then pairs two files position by position. At that step we evaluate
+   the model itself — the token sequence is fixed, so tokenizer or template bugs
+   in either framework don't change what's being compared.
 
 ## Why top-K + normalizer
 
@@ -56,7 +56,15 @@ cmake --build build -j
 
 Flags: `-o` output (default `logits.bin`), `-n` tokens to generate (256), `-k`
 top-K stored (128), `-c` context size (4096, auto-raised to fit), `-b` decode
-chunk size (512), `-ngl` GPU layers (0), `-t` threads (all cores).
+chunk size (512), `-t` threads (all cores).
+
+**The build is CPU-only on purpose** (`GGML_METAL` is forced OFF in
+CMakeLists.txt, and there is no `-ngl` flag). This is measurement tooling, and on
+machines with a barely-supported GPU — e.g. an AMD card via Metal on an Intel
+Mac — llama.cpp's default op offload kicks in at decode batches ≥ 32 tokens even
+with zero layers offloaded and silently produces NaN logits for some models
+(observed with GLM-5.2 Q6_K; small-batch decodes on the same setup were fine,
+which is why the bug only surfaced when rescoring a whole sequence in one chunk).
 
 Generation is greedy only — the next token is by construction the stored top-1 of
 the previous position, which `inspect.py` verifies end to end. The completion text
@@ -73,6 +81,50 @@ Memory note: llama.cpp allocates an output buffer of `chunk × n_vocab` floats p
 decode call — at a 150k vocab the default `-b 512` costs ~300MB; raising `-b`
 raises this linearly.
 
+## Rescoring (llama.cpp)
+
+```bash
+./build/rescore -m other-model.gguf -i run.bin -o run.rescored.bin
+```
+
+Scores the input file's token ids under another model — no tokenization, no chat
+template, no generation; every position's logits are captured. Output is the same
+file format (tokens copied verbatim, `model_desc` set to the rescoring model).
+Flags match `collect` minus the prompt/generation ones; `-k` defaults to the
+input file's K. Token ids out of range for the rescoring model's vocab are a hard
+error; a differing `n_vocab` is only a warning (the ids, not the vocab, are the
+interface).
+
+Inference platforms can have entirely separate kernels (or, in disaggregated
+setups, separate hardware) for prompt processing vs token generation, so rescore
+supports three batching shapes to exercise either path:
+
+- default: the whole sequence in `-b`-sized chunks — the prefill path;
+- `--sim-gen`: prompt positions prefilled in `-b` chunks, then completion
+  positions decoded strictly one token per batch — "predict tokens one by one
+  even though they're known". This mirrors `collect`'s execution shape exactly,
+  so a same-model `--sim-gen` rescore reproduces the collect file bit-for-bit
+  (deterministic CPU) — the strongest A/A check;
+- `-b 1`: everything token-by-token — the pure decode-path stress.
+
+Batch shape matters for numerics: different batch splits shift CPU/BLAS
+numerics slightly, and for MoE models they can flip expert routing outright. An
+A/A comparison between *different* shapes (e.g. default rescore vs collect) is
+therefore the measurement noise floor for that model — real model-vs-model KLs
+should be read against it.
+
+## Comparing two files
+
+```bash
+python compare.py a.bin b.bin
+```
+
+Requires identical token sequences (the rescore contract). Reports per sequence:
+top-1 agreement, truncated KL(A||B) over the shared top-K support (exact
+probabilities via the stored normalizers, no renormalization), and the A-mass
+outside the shared support — the quantity that bounds what the truncated KL can
+miss. A refined KL tool with explicit error bounds can build on this later.
+
 ## Inspecting output
 
 ```bash
@@ -84,7 +136,9 @@ python inspect.py run.bin --dump-tokens
 utilities should parse files the way its `read_file()` does. Checks: structural
 consistency, `max_logit == top logit`, descending sort, `lse_rest` range, top-K
 mass ≤ 1, and greedy self-consistency (`ids[0]` at position i equals token i+1
-over the generated range).
+over the generated range). The greedy check must hold for `collect` output and
+same-model rescores; pass `--no-greedy-check` for files rescored under a
+*different* model, where top-1 mismatches are data, not corruption.
 
 ## File format (`lkldtopk` v1)
 

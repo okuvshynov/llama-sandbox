@@ -23,7 +23,6 @@ struct collect_params {
     int32_t     top_k       = 128;
     int32_t     n_ctx       = 4096;
     int32_t     n_batch     = 512;
-    int32_t     n_gpu_layers = 0;
     int32_t     n_threads   = (int32_t)std::thread::hardware_concurrency();
 };
 
@@ -46,8 +45,6 @@ static bool parse_args(int argc, char ** argv, collect_params & params) {
             params.n_ctx = atoi(argv[++i]);
         } else if (strcmp(arg, "-b") == 0 && i + 1 < argc) {
             params.n_batch = atoi(argv[++i]);
-        } else if (strcmp(arg, "-ngl") == 0 && i + 1 < argc) {
-            params.n_gpu_layers = atoi(argv[++i]);
         } else if (strcmp(arg, "-t") == 0 && i + 1 < argc) {
             params.n_threads = atoi(argv[++i]);
         } else {
@@ -63,7 +60,6 @@ static bool parse_args(int argc, char ** argv, collect_params & params) {
                         "  -k <int>    top-K logits stored per position (default: 128)\n"
                         "  -c <int>    context size, auto-raised to fit (default: 4096)\n"
                         "  -b <int>    decode chunk size (default: 512)\n"
-                        "  -ngl <int>  GPU layers (default: 0)\n"
                         "  -t <int>    threads (default: all cores)\n"
                         "The prompt is tokenized raw — no chat template is ever applied.\n");
         return false;
@@ -102,8 +98,9 @@ int main(int argc, char ** argv) {
 
     ggml_backend_load_all();
 
+    // CPU-only build (GGML_METAL forced OFF in CMakeLists) — no offload params
     llama_model_params model_params = llama_model_default_params();
-    model_params.n_gpu_layers = params.n_gpu_layers;
+    model_params.n_gpu_layers = 0;
 
     llama_model * model = llama_model_load_from_file(params.model_path.c_str(), model_params);
     if (!model) {

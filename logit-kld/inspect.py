@@ -5,7 +5,12 @@ This is the format's reference implementation: any rescoring utility (for any
 inference framework) should read token sequences the way read_file() does.
 Stdlib only.
 
-Usage: python inspect.py file.bin [--dump-tokens]
+Usage: python inspect.py file.bin [--dump-tokens] [--no-greedy-check]
+
+--no-greedy-check: skip the greedy self-consistency check (stored top-1 at
+position i == token i+1). It must hold for collect output and same-model
+rescores, but a rescore under a DIFFERENT model legitimately violates it —
+there the mismatch rate is data (top-1 disagreement), not corruption.
 """
 
 import math
@@ -86,7 +91,7 @@ def tail_mass(pos):
     return 1.0 - sum(math.exp(lp) for lp in logprobs(pos))
 
 
-def check(f):
+def check(f, greedy_check=True):
     ok = True
     for seq in f["seqs"]:
         n_prompt, n_total = seq["n_prompt"], seq["n_total"]
@@ -119,10 +124,14 @@ def check(f):
             i for i in range(n_prompt - 1, n_total - 1)
             if positions[i]["ids"][0] != seq["tokens"][i + 1]
         ]
-        if mismatches:
+        if mismatches and greedy_check:
             print(f"FAIL [{seq['label']}] greedy mismatch at positions {mismatches[:10]}"
                   f"{'...' if len(mismatches) > 10 else ''}")
             ok = False
+        elif mismatches:
+            n_gen = n_total - n_prompt
+            print(f"note [{seq['label']}] top-1 vs next token: "
+                  f"{n_gen - len(mismatches)}/{n_gen} match (greedy check skipped)")
 
         tails.sort()
         n = len(tails)
@@ -142,7 +151,7 @@ def main():
     if "--dump-tokens" in sys.argv:
         for seq in f["seqs"]:
             print(f"[{seq['label']}] tokens: {seq['tokens']}")
-    ok = check(f)
+    ok = check(f, greedy_check="--no-greedy-check" not in sys.argv)
     print("all checks passed" if ok else "CHECKS FAILED")
     return 0 if ok else 1
 

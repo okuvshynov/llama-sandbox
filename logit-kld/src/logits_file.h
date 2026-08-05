@@ -36,3 +36,6 @@ struct lkld_file {
 
 // Write a v1 .bin file. Returns true on success.
 bool lkld_write(const std::string & path, const lkld_file & f);
+
+// Read a v1 .bin file. Returns true on success.
+bool lkld_read(const std::string & path, lkld_file & f);
