@@ -125,6 +125,14 @@ GLM-5.2 `UD-Q6_K_XL` (larger, dynamic per-layer bits — ground truth) against
 ~0.5TB weights stay in the page cache across runs. All outputs (bins, logs,
 generated text, `compare.txt`) land in `$OUT` under `results/`.
 
+K-sensitivity (measured on this GLM Q6_K_XL vs Q6_K study, 1863 positions):
+rerunning identically with `TOP_K=512` moved pooled mean KL by only +2.5%
+(+0–7% per prompt) and changed no domain ranking, while uncovered A-mass halved
+(fat tails: the worst positions stay 30–70% uncovered even at K=512 — only the
+normalizer's bound makes those honest). Greedy sequences and the top-128 record
+prefixes were bit-identical across the two runs — K affects storage only, never
+the measurement. Default K=128 is adequate for corpus-level statements.
+
 ## Comparing two files
 
 ```bash
