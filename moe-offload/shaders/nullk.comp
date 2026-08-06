@@ -1,0 +1,12 @@
+#version 450
+// Does as little as a dispatch can while still being real work the driver
+// cannot elide. Measures the submit + queue round-trip floor: everything the
+// per-layer cost cannot go below, whatever the expert kernels do.
+
+layout(local_size_x = 64) in;
+
+layout(std430, binding = 0) buffer B { uint b[]; };
+
+void main() {
+    if (gl_GlobalInvocationID.x == 0u) b[0] = b[0] + 1u;
+}

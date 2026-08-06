@@ -1,0 +1,62 @@
+#version 450
+//
+// y[row] = scale[row] * dot(int8 W[row, :], x[:])
+//
+// One workgroup per output row, lanes striding along the row and reducing in
+// shared memory. vk-test measured this shape at ~230 GB/s on these Vega dies
+// against ~4 GB/s for a row-per-thread kernel — the difference is coalescing,
+// so keep consecutive lanes reading consecutive uints.
+//
+// Weights are int8 packed 4-per-uint (no 8-bit storage extension on this
+// driver). Offsets are in elements of the respective buffer so one buffer can
+// hold many experts back to back and stay under the 2 GiB allocation cap.
+
+layout(local_size_x = 64) in;   // AMD wave64
+
+layout(std430, binding = 0) readonly  buffer W { uint  w[]; };      // [experts][O][K] int8
+layout(std430, binding = 1) readonly  buffer S { float scale[]; };  // [experts][O]
+layout(std430, binding = 2) readonly  buffer X { float x[]; };      // [K] (or slot-offset)
+layout(std430, binding = 3) writeonly buffer Y { float y[]; };      // [O] (or slot-offset)
+
+layout(push_constant) uniform PC {
+    uint K;        // input dim (multiple of 4)
+    uint w_off;    // offset into w[] in uints, start of this expert's matrix
+    uint s_off;    // offset into scale[] in floats
+    uint x_off;    // offset into x[] in floats
+    uint y_off;    // offset into y[] in floats
+} pc;
+
+shared float partial[64];
+
+void main() {
+    uint row  = gl_WorkGroupID.x;
+    uint lane = gl_LocalInvocationID.x;
+
+    uint kq      = pc.K >> 2;                 // uints per row
+    uint rowBase = pc.w_off + row * kq;
+
+    float acc = 0.0;
+    for (uint i = lane; i < kq; i += 64u) {
+        uint packed = w[rowBase + i];
+        uint xb     = pc.x_off + (i << 2);
+        // sign-extend each byte: (v ^ 0x80) - 0x80
+        for (uint b = 0u; b < 4u; ++b) {
+            int v = int((packed >> (8u * b)) & 0xFFu);
+            v = (v ^ 0x80) - 0x80;
+            acc += float(v) * x[xb + b];
+        }
+    }
+
+    partial[lane] = acc;
+    barrier();
+    // Tree reduction. Every lane reaches every barrier: the workgroup count is
+    // dispatched exactly, so there is no out-of-range early return here.
+    for (uint s = 32u; s > 0u; s >>= 1) {
+        if (lane < s) partial[lane] += partial[lane + s];
+        barrier();
+    }
+
+    if (lane == 0u) {
+        y[pc.y_off + row] = partial[0] * scale[pc.s_off + row];
+    }
+}

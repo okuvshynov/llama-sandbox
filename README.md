@@ -15,3 +15,4 @@ A collection of experiments related to LLM inference.
 * [mini-sql-bench](mini-sql-bench/) - one-task smoke harness on mini-swe-agent: drives a Docker-isolated SQLite query task to verify the agent loop works against any model provider
 * [logit-kld](logit-kld/) - logit collection for cross-model KL divergence: greedy continuation with per-position top-K logits + log-sum-exp normalizer, raw token ids as the interface to framework-agnostic rescoring
 * [nano-glm](nano-glm/) - minimal CPU-only GLM-5.2 inference on bare ggml: single-file engine (loader, KV cache, glm-dsa graph, greedy loop) with no llama.cpp framework layer, verified bit-identical against logit-kld baselines
+* [moe-offload](moe-offload/) - cross-platform (Vulkan) measurement of what a GPU charges to run MoE routed experts while the trunk stays on CPU: per-phase dispatch/transfer/fence costs, macOS MoltenVK vs Windows AMD driver
