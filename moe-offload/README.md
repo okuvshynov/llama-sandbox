@@ -121,17 +121,54 @@ What the split says:
 ### Workgroup width
 
 MoltenVK reports subgroup 32 for silicon the AMD driver calls 64, so the
-kernel's reduction width is a suspect for the 4.2x fence gap. `--wg` sweeps it.
-On Windows the knob is worth ~20%, not 4x (wait fence p50, `--iters 20`):
+kernel's reduction width was the obvious suspect for the fence gap. `--wg`
+sweeps it. It is not the cause (wait fence p50, `--iters 20`, all verify OK):
 
-| `--wg`     |    32 |    64 |   128 |   256 |
-|------------|------:|------:|------:|------:|
-| Windows us | 873.5 | 753.8 | **717.4** | 874.4 |
+| `--wg`     |    32 |    64 |   128 |   256 | spread |
+|------------|------:|------:|------:|------:|-------:|
+| Windows us | 873.5 | 753.8 | **717.4** | 874.4 |   22% |
+| macOS us   | 3412.6 | **3182.4** | 3364.2 | 3210.1 |    7% |
+| ratio      |  3.9x |  4.2x |  4.7x |  3.7x |        |
 
-The same sweep on macOS is the open question: if the gap is the reduction
-width it should move a lot there, and if it does not, the difference is
-MoltenVK's MSL translation of this kernel (or the Metal compute path itself)
-rather than a tuning mistake.
+macOS is essentially flat — it barely responds to the knob — while Windows
+leads by ~4x at every width. So the gap is not a tuning mistake in this
+kernel's reduction; it is MoltenVK's MSL translation or the Metal compute path
+itself. Windows also happens to be fastest at a width (128) that is neither
+driver's reported subgroup size, so "match the subgroup size" is not a
+reliable default either.
+
+What this does not yet separate: whether Metal is slow at *streaming memory*
+generally, or specifically at this kernel's constructs (byte unpack from
+`uint[]`, threadgroup memory, barriers). A trivial read-and-sum kernel with no
+reduction and no unpacking would tell them apart, and is the natural next
+probe if anyone wants Metal to be fast rather than just wants to know it is
+not.
+
+## Which OS, then?
+
+The GPU answer and the CPU answer point in opposite directions, so the choice
+depends on whether GPUs matter for the phase being run:
+
+| | macOS | Windows |
+|---|---|---|
+| CPU decode (llama-bench tg32 @32t) | **2.23 t/s** | 1.84 t/s |
+| CPU timing stability | **+/- 0.01** | mmap swings 1.04-1.84 |
+| GPU expert execution (this harness) | 3182 us | **755 us** |
+| max single allocation | **3.50 GiB** | 2.00 GiB |
+| Vulkan correctness | OK | OK |
+
+**Phases 0-3 of PLAN.md are CPU and network only**, and there macOS is ~20%
+faster with far more reproducible timings — which matters more than it sounds,
+since those phases are judged by A/B comparisons of dispatch policies.
+**Phase 4 is where Windows' 4x GPU lead would matter**, and it is explicitly
+off the critical path.
+
+Two things keep the GPU question secondary regardless of the 4x: expert
+residency is the binding constraint (563 GiB of routed experts against 128 GiB
+of VRAM per machine, so the GPU can only ever hold hot subsets), and a mixed
+cluster is not an option — a Windows/MSVC and a macOS/clang build of the same
+llama.cpp commit differ by 8.85e-3 mean KL, so the KL == 0 gates in phases 0-2
+cannot pass across two different OSes.
 
 ## Caveats that limit what this can conclude
 
