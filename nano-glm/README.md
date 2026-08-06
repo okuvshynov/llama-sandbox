@@ -46,6 +46,17 @@ cmake --build build -j
 Only `${LLAMA_CPP_DIR}/ggml` is used; ggml stays unmodified, so upstream
 kernel improvements keep flowing.
 
+On Windows (MSVC), `build.ps1` wraps the same two commands — it locates
+`vcvars64.bat` and VS's bundled ninja, which CMake cannot find on its own:
+
+```powershell
+.\build.ps1                       # nano-glm
+.\build.ps1 -Project logit-kld    # the verification tools, same toolchain
+```
+
+Executables land in `build\bin\` next to the ggml DLLs so Windows resolves
+them without PATH juggling.
+
 ## Run
 
 ```bash
@@ -80,6 +91,30 @@ The graph replicates llama.cpp's execution shape for the collect workload
 logit-kld A/A study showed is the regime where CPU llama.cpp is bit-exact
 across runs. Divergence beyond the `model_desc` header bytes means a port
 bug, and per-position KL points at where.
+
+**Bit-exactness is per-platform and per-thread-count.** The baseline must come
+from a llama.cpp built with the *same toolchain* and run at the *same* `-t`:
+
+- toolchain — llama.cpp disagrees with itself across macOS/Apple clang and
+  Windows/MSVC by 8.85e-3 mean KL on identical hardware and the same commit
+  (compiler FMA contraction, not ISA). A cross-platform comparison measures the
+  compiler, not the port.
+- threads — ggml partitions matmul work by thread count, so `-t 16` and `-t 32`
+  give different logits; runs at a fixed count are bit-identical regardless of
+  page-cache warmth. Default is physical cores, ignoring SMT siblings.
+
+The portable way to produce a matching reference on any platform is to rescore
+nano-glm's *own* output, which sidesteps greedy divergence entirely:
+
+```bash
+../logit-kld/build/bin/rescore -m <model> -i nano.bin --sim-gen -o ref.bin
+python ../logit-kld/compare.py nano.bin ref.bin          # expect KL == 0 exactly
+```
+
+Verified on Windows (MSVC, 16 threads, GLM-5.2 UD-Q6_K): 270/270 top-1, KL
+exactly 0.0, all 278,640 payload bytes identical — the same bar the macOS build
+met. See ../logit-kld/README.md "What must match for a comparison to mean
+anything".
 
 ## Scope notes
 

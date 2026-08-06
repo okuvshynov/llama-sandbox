@@ -94,9 +94,18 @@ order — free latency hiding, no threads).
 The whole point of nano-glm is a bit-exact baseline; distribution must not
 lose it prematurely:
 
-- Both machines are Mac Pro 7,1 (same ISA) running the same binary → slot
-  rows computed remotely are **bit-identical** to local ones. The
-  bit-exact bar survives crossing the network.
+- Both machines are Mac Pro 7,1 running the same binary → slot rows computed
+  remotely are **bit-identical** to local ones. The bit-exact bar survives
+  crossing the network. Same ISA is necessary but **not sufficient**: the
+  Windows port (2026-08-06) measured llama.cpp disagreeing with *itself* by
+  8.85e-3 mean KL between Apple-clang and MSVC builds on the same Xeon W-3245
+  at the same AVX-512 level (compiler FMA contraction), and ggml's matmul
+  partitioning makes the logits depend on **thread count** too. So the run
+  configuration must be pinned across the cluster: same ISA, same toolchain,
+  same `-t`. All three are free here (identical machines, one binary, one
+  launch config) — but a KL==0 gate below will fail on a mismatch of any of
+  them, for reasons having nothing to do with the sharding math. Check the run
+  configuration first when a gate fails.
 - Bit-exactness holds as long as (a) per-slot rows travel unsummed and
   (b) the combine runs client-side in baseline op order.
 - When we deliberately trade exactness for speed (partial sums, f16 wire),

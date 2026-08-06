@@ -15,11 +15,24 @@ endif()
 # the logit-kld / llama.cpp build exactly — BLAS (Accelerate) and llamafile
 # sgemm are numerics-relevant, and the whole point of nano-glm is bit-identical
 # logits vs the llama.cpp baseline.
-set(GGML_METAL       OFF     CACHE BOOL   "" FORCE)
-set(GGML_BLAS        ON      CACHE BOOL   "" FORCE)
-set(GGML_BLAS_VENDOR "Apple" CACHE STRING "" FORCE)
-set(GGML_ACCELERATE  ON      CACHE BOOL   "" FORCE)
-set(GGML_LLAMAFILE   ON      CACHE BOOL   "" FORCE)
+set(GGML_METAL     OFF CACHE BOOL "" FORCE)
+set(GGML_LLAMAFILE ON  CACHE BOOL "" FORCE)
+
+# BLAS is what the macOS baselines ran with (Accelerate, engaged at batch >= 32
+# via ggml_backend_sched op offload), so it stays ON there. Off-Apple there is
+# no equivalent to match bit-for-bit: a different BLAS is a different set of
+# numerics, so the honest default is no BLAS at all — every op runs in ggml's
+# own CPU kernels. Consequence: batches >= 32 (i.e. prompt prefill) are NOT
+# expected to reproduce the macOS baseline bit-for-bit; the decode path, which
+# never crosses the threshold, still is. Override with -DGGML_BLAS=ON to
+# experiment.
+if(APPLE)
+    set(GGML_BLAS        ON      CACHE BOOL   "" FORCE)
+    set(GGML_BLAS_VENDOR "Apple" CACHE STRING "" FORCE)
+    set(GGML_ACCELERATE  ON      CACHE BOOL   "" FORCE)
+else()
+    set(GGML_BLAS        OFF CACHE BOOL "" FORCE)
+endif()
 
 add_subdirectory(${LLAMA_CPP_DIR}/ggml ${CMAKE_CURRENT_BINARY_DIR}/ggml)
 
@@ -36,3 +49,10 @@ target_include_directories(nano-glm PRIVATE
 
 target_link_libraries(nano-glm PRIVATE ggml)
 target_compile_features(nano-glm PRIVATE cxx_std_17)
+
+if(WIN32)
+    # ggml builds DLLs into ${CMAKE_BINARY_DIR}/bin; Windows resolves them from
+    # the exe's own directory, so put the exe there too rather than making every
+    # invocation prepend build/bin to PATH.
+    set_target_properties(nano-glm PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+endif()

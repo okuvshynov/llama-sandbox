@@ -15,6 +15,7 @@
 // Input is raw token ids (no tokenizer here — the ids are the interface,
 // same policy as logit-kld). Output is an lkldtopk v1 file for compare.py.
 
+#include "cpu_topology.h"
 #include "logits_file.h"
 #include "topk_utils.h"
 
@@ -24,11 +25,16 @@
 #include "ggml-cpu.h"
 #include "gguf.h"
 
-#include <fcntl.h>
-#include <sys/mman.h>
-#include <sys/stat.h>
-#include <unistd.h>
+// windows.h (with NOMINMAX, so the min/max macros don't eat std::min/std::max)
+// comes in via cpu_topology.h; only the POSIX mmap headers are needed here.
+#if !defined(_WIN32)
+#   include <fcntl.h>
+#   include <sys/mman.h>
+#   include <sys/stat.h>
+#   include <unistd.h>
+#endif
 
+#include <chrono>
 #include <cinttypes>
 #include <cmath>
 #include <cstdio>
@@ -53,7 +59,7 @@ struct nano_params {
     int32_t     top_k       = 128;
     int32_t     n_ctx       = 4096;
     int32_t     n_batch     = 512;
-    int32_t     n_threads   = (int32_t) std::thread::hardware_concurrency();
+    int32_t     n_threads   = (int32_t) physical_core_count();
 };
 
 static bool parse_args(int argc, char ** argv, nano_params & p) {
@@ -84,7 +90,7 @@ static bool parse_args(int argc, char ** argv, nano_params & p) {
             "  -k <int>    top-K logits stored per position (default: 128)\n"
             "  -c <int>    context size, auto-raised to fit (default: 4096)\n"
             "  -b <int>    prompt chunk size (default: 512)\n"
-            "  -t <int>    threads (default: all cores)\n");
+            "  -t <int>    threads (default: physical cores, ignoring SMT siblings)\n");
         return false;
     }
     return true;
@@ -316,13 +322,26 @@ struct nano_model {
     std::vector<nano_layer> layers;
 };
 
-static void load_shard(nano_model & M, const std::string & path, const gguf_context ** meta_out) {
-    ggml_context * ctx_meta = nullptr;
-    gguf_init_params gp = { /*no_alloc =*/ true, /*ctx =*/ &ctx_meta };
-    gguf_context * g = gguf_init_from_file(path.c_str(), gp);
-    if (!g) NANO_ABORT("failed to read GGUF '%s'", path.c_str());
-    M.meta_ctxs.push_back(ctx_meta);
-
+// Read-only whole-file mapping. Weights are used straight from the mapping
+// (ggml_backend_cpu_buffer_from_ptr), so it must outlive the model; nothing
+// unmaps — the process exits and the OS reclaims.
+static void * map_file_ro(const std::string & path, size_t * size_out) {
+#if defined(_WIN32)
+    HANDLE fh = CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (fh == INVALID_HANDLE_VALUE) NANO_ABORT("cannot open '%s' (err %lu)", path.c_str(), GetLastError());
+    LARGE_INTEGER sz;
+    if (!GetFileSizeEx(fh, &sz)) NANO_ABORT("cannot size '%s' (err %lu)", path.c_str(), GetLastError());
+    HANDLE mh = CreateFileMappingA(fh, nullptr, PAGE_READONLY, 0, 0, nullptr);
+    if (!mh) NANO_ABORT("CreateFileMapping failed for '%s' (err %lu)", path.c_str(), GetLastError());
+    void * addr = MapViewOfFile(mh, FILE_MAP_READ, 0, 0, 0);
+    // the view keeps the file and section alive on its own
+    CloseHandle(mh);
+    CloseHandle(fh);
+    if (!addr) NANO_ABORT("MapViewOfFile failed for '%s' (err %lu)", path.c_str(), GetLastError());
+    *size_out = (size_t) sz.QuadPart;
+    return addr;
+#else
     int fd = open(path.c_str(), O_RDONLY);
     if (fd < 0) NANO_ABORT("cannot open '%s'", path.c_str());
     struct stat st;
@@ -330,9 +349,23 @@ static void load_shard(nano_model & M, const std::string & path, const gguf_cont
     void * addr = mmap(nullptr, st.st_size, PROT_READ, MAP_SHARED, fd, 0);
     close(fd);
     if (addr == MAP_FAILED) NANO_ABORT("mmap failed for '%s'", path.c_str());
+    *size_out = (size_t) st.st_size;
+    return addr;
+#endif
+}
+
+static void load_shard(nano_model & M, const std::string & path, const gguf_context ** meta_out) {
+    ggml_context * ctx_meta = nullptr;
+    gguf_init_params gp = { /*no_alloc =*/ true, /*ctx =*/ &ctx_meta };
+    gguf_context * g = gguf_init_from_file(path.c_str(), gp);
+    if (!g) NANO_ABORT("failed to read GGUF '%s'", path.c_str());
+    M.meta_ctxs.push_back(ctx_meta);
+
+    size_t file_size = 0;
+    void * addr = map_file_ro(path, &file_size);
 
     const size_t data_off = gguf_get_data_offset(g);
-    ggml_backend_buffer_t buf = ggml_backend_cpu_buffer_from_ptr((char *) addr + data_off, st.st_size - data_off);
+    ggml_backend_buffer_t buf = ggml_backend_cpu_buffer_from_ptr((char *) addr + data_off, file_size - data_off);
     M.map_bufs.push_back(buf);
 
     for (int64_t i = 0; i < gguf_get_n_tensors(g); i++) {
@@ -1040,9 +1073,10 @@ int main(int argc, char ** argv) {
     init_state(S, M, kv_size, params.n_threads);
     const auto t_load_end = std::chrono::steady_clock::now();
 
-    fprintf(stderr, "nano-glm: %s | n_vocab=%u n_layer=%u n_embd=%u | n_prompt=%d n_predict=%d top_k=%d kv=%u threads=%d\n",
+    fprintf(stderr, "nano-glm: %s | n_vocab=%u n_layer=%u n_embd=%u | n_prompt=%d n_predict=%d top_k=%d kv=%u threads=%d (%d physical / %d logical cores)\n",
             M.desc.c_str(), h.n_vocab, h.n_layer, h.n_embd,
-            n_prompt, params.n_predict, params.top_k, kv_size, params.n_threads);
+            n_prompt, params.n_predict, params.top_k, kv_size, params.n_threads,
+            physical_core_count(), (int) std::thread::hardware_concurrency());
     fprintf(stderr, "nano-glm: load+init %.1fs (mmap is lazy; first eval pages weights in)\n",
             std::chrono::duration<double>(t_load_end - t_load_start).count());
 

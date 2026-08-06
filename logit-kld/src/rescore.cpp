@@ -1,3 +1,4 @@
+#include "cpu_topology.h"
 #include "logits_file.h"
 #include "topk_utils.h"
 
@@ -21,7 +22,7 @@ struct rescore_params {
     int32_t     top_k       = 0;    // 0 = same as input file
     int32_t     n_ctx       = 4096;
     int32_t     n_batch     = 512;
-    int32_t     n_threads   = (int32_t)std::thread::hardware_concurrency();
+    int32_t     n_threads   = (int32_t)physical_core_count();
     bool        sim_gen     = false;
 };
 
@@ -56,7 +57,7 @@ static bool parse_args(int argc, char ** argv, rescore_params & params) {
                         "  -k <int>    top-K logits stored (default: same as input)\n"
                         "  -c <int>    context size, auto-raised to fit (default: 4096)\n"
                         "  -b <int>    decode chunk size (default: 512)\n"
-                        "  -t <int>    threads (default: all cores)\n"
+                        "  -t <int>    threads (default: physical cores, ignoring SMT siblings)\n"
                         "  --sim-gen   simulate generation batching: prefill prompt\n"
                         "              positions in -b chunks, then decode completion\n"
                         "              positions one token at a time (tests the decode\n"

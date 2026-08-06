@@ -1,3 +1,4 @@
+#include "cpu_topology.h"
 #include "logits_file.h"
 #include "topk_utils.h"
 
@@ -23,7 +24,7 @@ struct collect_params {
     int32_t     top_k       = 128;
     int32_t     n_ctx       = 4096;
     int32_t     n_batch     = 512;
-    int32_t     n_threads   = (int32_t)std::thread::hardware_concurrency();
+    int32_t     n_threads   = (int32_t)physical_core_count();
 };
 
 static bool parse_args(int argc, char ** argv, collect_params & params) {
@@ -60,7 +61,7 @@ static bool parse_args(int argc, char ** argv, collect_params & params) {
                         "  -k <int>    top-K logits stored per position (default: 128)\n"
                         "  -c <int>    context size, auto-raised to fit (default: 4096)\n"
                         "  -b <int>    decode chunk size (default: 512)\n"
-                        "  -t <int>    threads (default: all cores)\n"
+                        "  -t <int>    threads (default: physical cores, ignoring SMT siblings)\n"
                         "The prompt is tokenized raw — no chat template is ever applied.\n");
         return false;
     }

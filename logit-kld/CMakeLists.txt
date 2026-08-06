@@ -42,4 +42,10 @@ foreach(tool collect rescore)
     )
 
     target_compile_features(${tool} PRIVATE cxx_std_17)
+
+    if(WIN32)
+        # llama/ggml build DLLs into ${CMAKE_BINARY_DIR}/bin; Windows resolves
+        # them from the exe's own directory, so put the exes there too.
+        set_target_properties(${tool} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+    endif()
 endforeach()

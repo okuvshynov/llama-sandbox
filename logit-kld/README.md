@@ -45,6 +45,38 @@ cmake -B build -DLLAMA_CPP_DIR=$HOME/projects/llama.cpp
 cmake --build build -j
 ```
 
+On Windows (MSVC), `../nano-glm/build.ps1 -Project logit-kld` wraps the same two
+commands — it locates `vcvars64.bat` and VS's bundled ninja, neither of which
+CMake finds on its own, and puts the exes in `build\bin\` beside the DLLs.
+
+## What must match for a comparison to mean anything
+
+A file is only comparable to another file produced under the *same run
+configuration*. Three knobs change the logits bit-for-bit, and only the first
+was obvious:
+
+1. **Batch shape** — the original finding: matching shapes (`--sim-gen`) give
+   bit-identical A/A, mismatched shapes cost ~1e-2 mean KL on this MoE. See
+   "Rescoring" below.
+2. **Thread count** — ggml partitions matmul work by thread count, so `-t`
+   changes the summation structure. Verified on GLM-5.2: `-t 16` and `-t 32`
+   produce different logits, while repeated runs at a fixed count are
+   bit-identical (page-cache state, cold vs warm, does not matter). `-t` is part
+   of the numerical contract, not a performance knob. The default is physical
+   cores (see `src/cpu_topology.h`, shared with ../nano-glm so every tool in the
+   toolchain agrees); it changed from `hardware_concurrency()` on 2026-08-06, so
+   **files collected before that date were produced at logical-core count** — on
+   the 16-core/32-thread Xeon W-3245, pass `-t 32` to compare against them.
+3. **Toolchain** — bit-exactness is per-platform. llama.cpp disagrees with
+   *itself* across macOS (Apple clang) and Windows (MSVC) by 8.85e-3 mean KL /
+   96.67% top-1 on identical hardware, the same commit, and the same token ids —
+   the same order as the batch-shape noise floor and as the Q6_K_XL→Q6_K quant
+   gap this harness was built to measure. Cause is compiler codegen (Apple clang
+   contracts `a*b+c` into FMA by default; MSVC at `/fp:precise` does not), not
+   ISA: same Xeon W-3245, same AVX-512 level, same CPU_REPACK fallback on both.
+   **Each platform needs its own reference files**; never read a cross-platform
+   KL as a model difference.
+
 ## Usage
 
 ```bash
