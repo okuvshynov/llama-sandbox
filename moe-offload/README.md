@@ -74,34 +74,64 @@ depending on where the time lands:
   between `submit()` and `waitFence()`, i.e. the `moe_send`/`moe_recv` trick in
   PLAN.md phase 3.
 
-### Measured: Windows, AMD proprietary driver 21.30.44.22, one Vega II die
+### Measured: both OSes, same Mac Pro 7,1, one Vega II die
 
-`--experts 32 --topk 8 --iters 30`, api 1.2.196, subgroup 64, maxAlloc 2.00 GiB:
+`--experts 32 --topk 8 --iters 30`. Windows: AMD proprietary driver
+21.30.44.22, api 1.2.196, subgroup 64, maxAlloc 2.00 GiB. macOS: MoltenVK,
+api 1.2.357, subgroup **32**, maxAlloc **3.50 GiB**.
 
-| phase | p50 (us) |
-|-------|---------:|
-| null dispatch      |  189.8 |
-| upload x (24 KiB)  |   76.8 |
-| download 192 KiB   |  261.0 |
-| record cmdbuf      |    9.7 |
-| submit             |   13.4 |
-| wait fence         |  755.4 |
-| **layer total**    | **1109.9** |
+| phase (p50, us)    | Windows (AMD) | macOS (MoltenVK) |
+|--------------------|--------------:|-----------------:|
+| null dispatch      |         189.8 |            151.5 |
+| upload x (24 KiB)  |          76.8 |             83.4 |
+| download 192 KiB   |         261.0 |         **99.1** |
+| record cmdbuf      |           9.7 |          **3.7** |
+| submit             |          13.4 |             36.2 |
+| wait fence         |     **755.4** |           3187.0 |
+| **layer total**    |  **1109.9**   |           3482.7 |
+| per token (x78)    |   86.6 ms     |         271.7 ms |
 
-Extrapolated to 78 MoE layers: **86.6 ms/token** of GPU-path work, against a
-**14.8 ms/token** driver floor from one submit per layer.
+Both platforms pass the CPU cross-check with the *same* error
+(`max|gpu-cpu| = 6.914e-06`, no non-finite values). **Vulkan-on-Metal computes
+correctly on hardware where native Metal silently NaNs** — see the repo
+`CLAUDE.md` AMD-Metal entry. That is a real result for PLAN.md phase 4.
 
-What that says:
+What the split says:
 
-- Recording and submitting are nearly free (23 us combined). Command-buffer
-  construction is not where the cost is on this driver.
-- A null dispatch costs more than a 24 KiB upload round trip, so ~110 us of the
-  190 us floor is kernel launch rather than queue round trip.
-- The 192 KiB readback takes 261 us — about 0.7 GB/s, round-trip-bound rather
-  than bandwidth-bound. This is the quantitative case for PLAN.md's partial-sum
-  mode: returning one combined row instead of K per-slot rows.
+- **Windows is 3.1x faster overall, and all of it is inside the fence** —
+  actual GPU execution, 755 us vs 3187 us. Over the 302 MB each layer reads
+  that is ~400 GB/s versus ~95 GB/s on identical silicon.
+- macOS is *better* at the things that were expected to hurt it: readback
+  2.6x faster, command-buffer encoding 2.6x faster, dispatch floor slightly
+  lower. Only `submit` is worse (36 vs 13 us).
+- Recording and submitting are nearly free on both (23 us / 40 us combined),
+  so command-buffer construction is not the cost anywhere.
+- A null dispatch costs more than a 24 KiB upload round trip on Windows, so
+  ~110 us of the 190 us floor is kernel launch rather than queue round trip.
+- The 192 KiB readback is round-trip-bound rather than bandwidth-bound on both
+  (0.7 GB/s Windows, 1.9 GB/s macOS). This is the quantitative case for
+  PLAN.md's partial-sum mode: return one combined row instead of K per-slot
+  rows.
 - Overlap hides the fence wait but not the transfers, which sit outside the
   submit/wait window.
+- macOS allowing a **3.50 GiB** single allocation where Windows caps at 2.00
+  inverts the stock-llama.cpp finding: a whole layer's `ffn_*_exps` (2.46 GiB
+  at Q6_K) can be `-ot`-offloaded on macOS but not on Windows.
+
+### Workgroup width
+
+MoltenVK reports subgroup 32 for silicon the AMD driver calls 64, so the
+kernel's reduction width is a suspect for the 4.2x fence gap. `--wg` sweeps it.
+On Windows the knob is worth ~20%, not 4x (wait fence p50, `--iters 20`):
+
+| `--wg`     |    32 |    64 |   128 |   256 |
+|------------|------:|------:|------:|------:|
+| Windows us | 873.5 | 753.8 | **717.4** | 874.4 |
+
+The same sweep on macOS is the open question: if the gap is the reduction
+width it should move a lot there, and if it does not, the difference is
+MoltenVK's MSL translation of this kernel (or the Metal compute path itself)
+rather than a tuning mistake.
 
 ## Caveats that limit what this can conclude
 

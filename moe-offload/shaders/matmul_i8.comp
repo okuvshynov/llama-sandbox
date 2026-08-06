@@ -11,7 +11,12 @@
 // driver). Offsets are in elements of the respective buffer so one buffer can
 // hold many experts back to back and stay under the 2 GiB allocation cap.
 
-layout(local_size_x = 64) in;   // AMD wave64
+// Workgroup size is a specialization constant so one binary can sweep it. The
+// right value is not obvious across drivers: the AMD driver on Windows reports
+// subgroupSize 64 (wave64), while MoltenVK reports 32 for the *same* silicon,
+// and a reduction written for the wrong width costs bandwidth without being
+// incorrect.
+layout(local_size_x_id = 0) in;
 
 layout(std430, binding = 0) readonly  buffer W { uint  w[]; };      // [experts][O][K] int8
 layout(std430, binding = 1) readonly  buffer S { float scale[]; };  // [experts][O]
@@ -26,17 +31,18 @@ layout(push_constant) uniform PC {
     uint y_off;    // offset into y[] in floats
 } pc;
 
-shared float partial[64];
+shared float partial[gl_WorkGroupSize.x];
 
 void main() {
     uint row  = gl_WorkGroupID.x;
     uint lane = gl_LocalInvocationID.x;
+    uint wg   = gl_WorkGroupSize.x;
 
     uint kq      = pc.K >> 2;                 // uints per row
     uint rowBase = pc.w_off + row * kq;
 
     float acc = 0.0;
-    for (uint i = lane; i < kq; i += 64u) {
+    for (uint i = lane; i < kq; i += wg) {
         uint packed = w[rowBase + i];
         uint xb     = pc.x_off + (i << 2);
         // sign-extend each byte: (v ^ 0x80) - 0x80
@@ -49,9 +55,10 @@ void main() {
 
     partial[lane] = acc;
     barrier();
-    // Tree reduction. Every lane reaches every barrier: the workgroup count is
-    // dispatched exactly, so there is no out-of-range early return here.
-    for (uint s = 32u; s > 0u; s >>= 1) {
+    // Tree reduction over the whole workgroup, whatever its width. Every lane
+    // reaches every barrier: the workgroup count is dispatched exactly, so
+    // there is no out-of-range early return here.
+    for (uint s = wg >> 1; s > 0u; s >>= 1) {
         if (lane < s) partial[lane] += partial[lane + s];
         barrier();
     }

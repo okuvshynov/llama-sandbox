@@ -59,6 +59,7 @@ struct Config {
     uint32_t n_layers = 78;     // for the per-token extrapolation only
     uint32_t iters    = 50;
     uint32_t threads  = 0;      // CPU shared expert; 0 = hardware_concurrency
+    uint32_t wg       = 0;      // matmul workgroup width; 0 = device subgroup size
     bool     list     = false;
     bool     verify   = true;
 };
@@ -75,6 +76,7 @@ static void usage() {
         "  --layers N      MoE layers, for per-token extrapolation (default 78)\n"
         "  --iters N       timed iterations per mode (default 50)\n"
         "  --threads N     CPU threads for the shared expert (default: all)\n"
+        "  --wg N          matmul workgroup width (default: device subgroup size)\n"
         "  --no-verify     skip the CPU cross-check of GPU expert output\n");
 }
 
@@ -133,6 +135,7 @@ int main(int argc, char ** argv) {
         else if (a == "--layers"  && i + 1 < argc) cfg.n_layers = val();
         else if (a == "--iters"   && i + 1 < argc) cfg.iters    = val();
         else if (a == "--threads" && i + 1 < argc) cfg.threads  = val();
+        else if (a == "--wg"      && i + 1 < argc) cfg.wg       = val();
         else if (a == "--list")       cfg.list   = true;
         else if (a == "--no-verify")  cfg.verify = false;
         else { usage(); return a == "--help" ? 0 : 1; }
@@ -224,9 +227,14 @@ int main(int argc, char ** argv) {
     // binding, so up/gate/down get their own bound weight buffer and the
     // expert is selected by push-constant offset.
     struct MatmulPC { uint32_t K, w_off, s_off, x_off, y_off; };
-    vkc::ComputeJob job_up   = vkc::ComputeJob::create(ctx, spv + "/matmul_i8.spv", 4, sizeof(MatmulPC));
-    vkc::ComputeJob job_gate = vkc::ComputeJob::create(ctx, spv + "/matmul_i8.spv", 4, sizeof(MatmulPC));
-    vkc::ComputeJob job_down = vkc::ComputeJob::create(ctx, spv + "/matmul_i8.spv", 4, sizeof(MatmulPC));
+    // Default to whatever the driver calls a subgroup: 64 on the AMD/Windows
+    // driver, 32 from MoltenVK on the same silicon. --wg overrides so the two
+    // can be compared at a matched width.
+    const uint32_t WG = cfg.wg ? cfg.wg : (ctx.info.subgroupSize ? ctx.info.subgroupSize : 64);
+    std::printf("matmul workgroup width: %u\n", WG);
+    vkc::ComputeJob job_up   = vkc::ComputeJob::create(ctx, spv + "/matmul_i8.spv", 4, sizeof(MatmulPC), WG);
+    vkc::ComputeJob job_gate = vkc::ComputeJob::create(ctx, spv + "/matmul_i8.spv", 4, sizeof(MatmulPC), WG);
+    vkc::ComputeJob job_down = vkc::ComputeJob::create(ctx, spv + "/matmul_i8.spv", 4, sizeof(MatmulPC), WG);
     vkc::ComputeJob job_silu = vkc::ComputeJob::create(ctx, spv + "/silu_mul.spv", 3, sizeof(uint32_t));
     vkc::ComputeJob job_null = vkc::ComputeJob::create(ctx, spv + "/nullk.spv", 1, 0);
 

@@ -353,8 +353,12 @@ struct ComputeJob {
     VkDescriptorSet       dset   = VK_NULL_HANDLE;
     uint32_t              pcSize = 0;
 
+    // specConst0: when non-zero, bound to specialization constant id 0 — the
+    // shaders use it for local_size_x, so workgroup width is a runtime sweep
+    // rather than a recompile.
     static ComputeJob create(const Context & c, const std::string & spvPath,
-                             uint32_t numBindings, uint32_t pushConstBytes) {
+                             uint32_t numBindings, uint32_t pushConstBytes,
+                             uint32_t specConst0 = 0) {
         ComputeJob j;
         j.ctx    = &c;
         j.pcSize = pushConstBytes;
@@ -386,11 +390,15 @@ struct ComputeJob {
         plci.pPushConstantRanges    = pushConstBytes ? &pcr : nullptr;
         VK_CHECK(vkCreatePipelineLayout(c.dev, &plci, nullptr, &j.layout));
 
+        VkSpecializationMapEntry sme{0, 0, sizeof(uint32_t)};
+        VkSpecializationInfo     spec{1, &sme, sizeof(uint32_t), &specConst0};
+
         VkComputePipelineCreateInfo cpci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
         cpci.stage.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
         cpci.stage.stage  = VK_SHADER_STAGE_COMPUTE_BIT;
         cpci.stage.module = j.shader;
         cpci.stage.pName  = "main";
+        cpci.stage.pSpecializationInfo = specConst0 ? &spec : nullptr;
         cpci.layout       = j.layout;
         VK_CHECK(vkCreateComputePipelines(c.dev, VK_NULL_HANDLE, 1, &cpci, nullptr, &j.pipe));
 
