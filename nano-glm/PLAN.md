@@ -233,14 +233,22 @@ durations, `network + queueing = RTT − server_total` by subtraction).
   reads across machines → ceiling ≈ 2× minus network: GLM 2 → ~3.5 tok/s
   is success. K3 on CPUs lands in low single digits tok/s; 10+ needs the
   GPU phase.
-- **Baseline depends on the OS, so fix it before quoting speedups.** The
-  2 tok/s above is macOS. On Windows (same machine, MSVC build) stock
-  `llama-bench` measures tg32 at 1.58 t/s (16 threads) / 1.84 (32) — i.e.
-  ~1.84 warmed, and ~1.3 in harness-style runs that page the 583 GiB in
-  during the measured window. nano-glm tracks stock llama.cpp on either
-  platform (Windows: 1.27/1.34 vs rescore's 1.2/1.3 on the identical
-  270-decode workload), so a `2×` claim must be stated against the
-  same-OS single-machine number, not across platforms.
+- **Baseline depends on the OS, so fix it before quoting speedups.** Stock
+  `llama-bench` tg32 on the *same* Mac Pro 7,1 (build `6a32c29a7`, 5 reps):
+  macOS 2.00 t/s @16 threads / 2.23 @32; Windows/MSVC 1.58 / 1.84. Harness
+  runs that page 583 GiB in during measurement read ~1.3 on either. nano-glm
+  tracks stock llama.cpp on both platforms, so a `2×` EP claim must be quoted
+  against the same-OS single-machine number.
+- **Do not assume mmap residency is free — measure it.** Phase 1 has the
+  shard server mmap the GGUF and touch only its expert ranges. On Windows
+  that is not a stable footing: identical `llama-bench` invocations returned
+  1.04 ± 0.29 and 1.84 ± 0.02 t/s depending on standby-list state, while
+  `--load-mode none` (weights read into ordinary RAM) gave a steady
+  1.90 ± 0.08. macOS mmap shows no such spread (± 0.01). Since a shard server
+  holds 282-563 GiB resident and the whole point is per-token expert reads,
+  give it an explicit non-mmap load path and report which one a run used —
+  otherwise a dispatch-policy A/B can be swamped by paging noise larger than
+  the effect being measured.
 
 ## References (searchable anchors, not line numbers)
 

@@ -128,16 +128,30 @@ same workload (270 one-token decodes with growing context, GLM-5.2 UD-Q6_K,
 | 16      | 1.27 t/s | 1.2 t/s                       |
 | 32      | 1.34 t/s | 1.3 t/s                       |
 
-For a warmed steady-state reference free of page-in cost, stock `llama-bench`
-on the same machine (5 reps): tg32 1.58 t/s @16 / 1.84 @32, pp128 6.24 @16 /
-7.26 @32. Harness-style runs measure lower than `llama-bench` because they page
-583 GiB in during the measured window; on macOS the equivalent harness runs
-were ~2.0 t/s, and that cross-platform gap applies to llama.cpp equally, so it
-is a platform property rather than a port regression.
+Warmed steady-state reference, stock `llama-bench`, both OSes on the *same*
+Mac Pro 7,1 (build `6a32c29a7`, 5 reps, mmap):
 
-Doubling threads buys ~16% in both regimes, which is why the default is
-physical cores — see `../logit-kld/src/cpu_topology.h`, and note that changing
-`-t` changes the logits.
+| test  | macOS (clang, Accelerate) | Windows (MSVC, no BLAS) |
+|-------|---------------------------|-------------------------|
+| tg32  | 2.00 @16 · **2.23** @32   | 1.58 @16 · 1.84 @32     |
+| pp128 | **7.13** @16 · 6.43 @32   | 6.24 @16 · **7.26** @32 |
+
+Reading these:
+
+- Harness-style runs (the table above this one) measure below `llama-bench`
+  because they page 583 GiB in *during* the measured window.
+- macOS decode leads by ~15-20%, and the cause is not mmap alone: Windows
+  `--load-mode none` (weights read into ordinary RAM) reaches 1.90 t/s vs
+  1.84 for warm mmap. What mmap costs on Windows is *stability*, not average
+  throughput — repeated identical invocations returned 1.04 ± 0.29 and
+  1.84 ± 0.02, where macOS holds ± 0.01. Treat any single Windows mmap
+  timing as suspect; re-run it.
+- SMT helps decode a little on both (+11% / +16%) but its prefill sign is
+  platform-dependent (macOS −10%, Windows +16%), so physical cores is the
+  *fastest* prefill setting on macOS.
+
+The default is physical cores — see `../logit-kld/src/cpu_topology.h`, and
+note that changing `-t` changes the logits.
 
 ## Scope notes
 
