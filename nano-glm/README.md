@@ -32,6 +32,10 @@ file or pass a comma list), chat templates, samplers (greedy = stored top-1),
 batching across sequences, KV shifting/defrag, the NextN/MTP draft head, and
 every non-glm-dsa architecture.
 
+Where this is heading: [PLAN.md](PLAN.md) — distributed MoE evaluation
+(expert parallelism) across two Mac Pros, with GLM-5.2 as the testbed and
+Kimi-K3-scale models as the goal.
+
 ## Build
 
 ```bash
