@@ -116,6 +116,29 @@ exactly 0.0, all 278,640 payload bytes identical — the same bar the macOS buil
 met. See ../logit-kld/README.md "What must match for a comparison to mean
 anything".
 
+## Performance
+
+nano-glm tracks stock llama.cpp rather than beating it — the point is a minimal
+engine with a bit-exact baseline, and the kernels are ggml's either way. On the
+same workload (270 one-token decodes with growing context, GLM-5.2 UD-Q6_K,
+582.87 GiB, Xeon W-3245 / 16C32T, Windows MSVC build):
+
+| threads | nano-glm | llama.cpp `rescore --sim-gen` |
+|--------:|---------:|------------------------------:|
+| 16      | 1.27 t/s | 1.2 t/s                       |
+| 32      | 1.34 t/s | 1.3 t/s                       |
+
+For a warmed steady-state reference free of page-in cost, stock `llama-bench`
+on the same machine (5 reps): tg32 1.58 t/s @16 / 1.84 @32, pp128 6.24 @16 /
+7.26 @32. Harness-style runs measure lower than `llama-bench` because they page
+583 GiB in during the measured window; on macOS the equivalent harness runs
+were ~2.0 t/s, and that cross-platform gap applies to llama.cpp equally, so it
+is a platform property rather than a port regression.
+
+Doubling threads buys ~16% in both regimes, which is why the default is
+physical cores — see `../logit-kld/src/cpu_topology.h`, and note that changing
+`-t` changes the logits.
+
 ## Scope notes
 
 - hparams are read from GGUF metadata but structural assumptions are

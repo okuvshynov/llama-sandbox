@@ -13,7 +13,11 @@ individually cannot hold them:
 
 Strategy: expert parallelism. The routed-expert FFN is ~95%+ of the weights
 in DeepSeek-lineage MoE models and is architecturally the *simple* part
-(the per-model differences live in attention/trunk). We build a dedicated
+(the per-model differences live in attention/trunk). Measured on the GLM-5.2
+UD-Q6_K shards (582.87 GiB total, from the GGUF tensor offsets): routed
+experts `*_exps` **563.27 GiB / 96.6%**, shared expert 2.84 GiB / 0.5%,
+everything else (attention, norms, router, embeddings, output) 16.76 GiB /
+2.9%. Distributing the routed experts is therefore the whole problem. We build a dedicated
 **expert-shard evaluation service** that only knows how to run routed
 expert FFNs over a set of expert weights it holds; the client (nano-glm)
 keeps the trunk: attention, router, shared expert, combine.
@@ -143,10 +147,12 @@ the parts where a bug is a silently wrong answer.
 ### Phase 2 — second machine
 
 7. Direct-attach 10GbE (TCP_NODELAY, jumbo frames). Two run modes:
-   - **static shard**: experts split ~50/50 (~225GB/machine for GLM);
-   - **replicated + dynamic dispatch**: full expert copy on both machines
-     (~450GB each, + ~30GB trunk on A — fits in 768GB), dispatcher
-     assigns slots at runtime for perfect balance.
+   - **static shard**: routed experts split ~50/50, ~282 GiB/machine;
+   - **replicated + dynamic dispatch**: full routed-expert copy on both
+     machines (563 GiB each; machine A additionally holds the 17 GiB trunk
+     and the 3 GiB shared expert = 583 GiB there, leaving ~185 GiB of the
+     768 GiB for KV/compute buffers/page cache), dispatcher assigns slots at
+     runtime for perfect balance.
 8. Gate: bit-identity still (same ISA/binary), plus the first real
    experiment: static vs dynamic on identical prompts — tok/s + balance
    histograms from the logs.
@@ -227,6 +233,14 @@ durations, `network + queueing = RTT − server_total` by subtraction).
   reads across machines → ceiling ≈ 2× minus network: GLM 2 → ~3.5 tok/s
   is success. K3 on CPUs lands in low single digits tok/s; 10+ needs the
   GPU phase.
+- **Baseline depends on the OS, so fix it before quoting speedups.** The
+  2 tok/s above is macOS. On Windows (same machine, MSVC build) stock
+  `llama-bench` measures tg32 at 1.58 t/s (16 threads) / 1.84 (32) — i.e.
+  ~1.84 warmed, and ~1.3 in harness-style runs that page the 583 GiB in
+  during the measured window. nano-glm tracks stock llama.cpp on either
+  platform (Windows: 1.27/1.34 vs rescore's 1.2/1.3 on the identical
+  270-decode workload), so a `2×` claim must be stated against the
+  same-OS single-machine number, not across platforms.
 
 ## References (searchable anchors, not line numbers)
 

@@ -4,11 +4,15 @@
 // siblings: 32 on the 16-core Xeon W-3245 this repo runs on). Two reasons this
 // matters, and the second is the load-bearing one:
 //
-//  - Decode is weight-bandwidth-bound, so hyperthread siblings sharing one
-//    core's load/store path add scheduling contention and barrier jitter rather
-//    than throughput (../vk-test/CLAUDE.md records the same for its CPU
-//    baselines; measured here: 1.27 tok/s at 16 threads vs 1.34 at 32, i.e. a
-//    wash once run order and page-cache warmth are accounted for).
+//  - SMT buys little for this workload, in either regime. Stock llama-bench on
+//    GLM-5.2 UD-Q6_K, same machine, 5 reps: generation (tg32) 1.58 t/s at 16
+//    threads vs 1.84 at 32, and prefill (pp128) 6.24 vs 7.26 — about +16% for
+//    twice the threads, decode being weight-bandwidth-bound and prefill not
+//    scaling much past the physical cores either. This harness's own runs agree
+//    (nano-glm 270 decodes: 1.27 vs 1.34). Short prefills are too noisy to read
+//    anything into (pp64 at 16 threads: 3.56 ± 0.95 over 5 reps; an earlier
+//    2-rep sample suggested a 2x SMT gain that 5 reps did not support).
+//    So the default costs ~16% at most — speed is not why it is pinned.
 //  - ggml partitions matmul work by thread count, so the number of threads
 //    CHANGES THE NUMERICS: verified on GLM-5.2, -t 16 and -t 32 produce
 //    different logits, while repeated runs at a fixed count are bit-identical.
