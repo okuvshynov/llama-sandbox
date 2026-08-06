@@ -188,6 +188,34 @@ the parts where a bug is a silently wrong answer.
     expert subsets; 8×32GB granularity makes full expert residency
     awkward. Strictly off the critical path.
 
+### Optional variant — a third machine for the trunk (not committed)
+
+Worth revisiting once phases 0-2 exist. Since the wire cost of TCP is already
+accepted, the trunk could move to a *separate* machine with a modern GPU
+(attention + KV cache + output head), leaving both Mac Pros as pure
+expert-evaluation nodes.
+
+The motivation is an Amdahl problem this plan currently understates. Routed
+experts are 96.6% of the *weights*, but per *token* only 8 of 256 are read
+while the whole trunk is: ~17 GB of trunk against ~22 GB of experts, i.e. the
+trunk is ~45% of the bytes that actually move. So expert parallelism alone
+caps at roughly 1.8x however many expert machines are added. Rough sketch:
+2 Macs with the trunk on A ~= 3.8 tok/s; trunk on a modern GPU (~17 GB fits in
+24-32 GB VRAM) ~= 6.7; plus a GPU-resident expert subset on the Macs ~= 12.
+
+Two consequences to weigh if this is ever taken up:
+
+- **The KL == 0 gates would have to be redefined.** They work today because
+  everything is CPU under one toolchain. A CUDA trunk is different numerics by
+  construction, so the bar becomes bit-exact *within the expert path* plus a
+  KL bound end to end.
+- **Expert placement must be static, not LRU.** PCIe (~13 GB/s) is ~5.7x
+  slower than DRAM (~74 GB/s measured), so streaming a missed expert to a GPU
+  costs ~2.4 ms against ~0.42 ms to just compute it on the CPU — and the DMA
+  consumes the same DRAM bandwidth anyway. Whatever fits in VRAM should stay
+  there permanently; misses go to the CPU and nothing is swapped. This applies
+  to the two-machine design too.
+
 ## Protocol v1 (design requirements, not final wire format)
 
 Absorb from day one (cheap now, painful to retrofit):
