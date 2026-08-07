@@ -51,10 +51,16 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <map>
 #include <string>
 #include <thread>
 #include <vector>
+
+// Shards the routed experts are partitioned across. No effect on results —
+// the same expert is evaluated either way — but it exercises the shard
+// bookkeeping that phase 1 turns into "which server holds this expert".
+#define NANO_MOE_N_SHARD 4
 
 #define NANO_ABORT(...) do { fprintf(stderr, "nano-glm: " __VA_ARGS__); fprintf(stderr, "\n"); exit(1); } while (0)
 
@@ -607,11 +613,138 @@ struct graph_io {
     ggml_tensor * logits;      // f32 [n_vocab, n_tokens] (output)
 };
 
+// ---------------------------------------------------------------------------
+// routed experts through an explicit host-side dispatch (PLAN.md phase 0)
+//
+// The baseline routed block is three ggml_mul_mat_id calls. Those hide the one
+// thing the distributed design has to get right: deciding which shard owns each
+// (token, slot, expert) triple, and putting the resulting row back where the
+// combine expects it. Here that arithmetic runs in a ggml custom op whose
+// callback does the dispatch on the host — the shape the expert-shard server
+// takes in phase 1, minus the network.
+//
+// Bit-exactness is the gate, so the math has to be ggml's own rather than a
+// reimplementation. mul_mat_id quantizes the activation column with
+// from_float(vec_dot_type), then calls vec_dot(..., nrc = 1) once per output
+// element (ggml-cpu.c, ggml_compute_forward_mul_mat_id_one_chunk); the tiling
+// around that loop is cache blocking and does not affect values. Doing exactly
+// the same here reproduces it byte for byte.
+//
+// swiglu deliberately stays a ggml op between the projections: ggml's
+// vectorised SiLU evaluates exp with a polynomial approximation, which a
+// scalar expf() here would not match.
+
+struct moe_op_ctx {
+    const ggml_tensor * w;           // expert weights [n_in, n_out, n_expert]
+    uint32_t            n_shard;     // shards to partition the expert dim across
+    bool                x_per_slot;  // activation indexed by (slot, token) vs token
+};
+
+// Stable storage for the callbacks' userdata: the graph is built once and then
+// reused across tokens, so these must outlive build_graph. A deque keeps
+// element addresses valid across growth. Cleared whenever the graph is rebuilt.
+static std::deque<moe_op_ctx> g_moe_ctxs;
+
+static void moe_proj_cb(ggml_tensor * dst, int ith, int nth, void * userdata) {
+    const moe_op_ctx *  c   = (const moe_op_ctx *) userdata;
+    const ggml_tensor * x   = dst->src[0];   // activations
+    const ggml_tensor * ids = dst->src[1];   // [n_slots, n_tokens] i32
+
+    const int64_t n_out    = dst->ne[0];
+    const int64_t n_slots  = dst->ne[1];
+    const int64_t n_tokens = dst->ne[2];
+    const int64_t n_in     = c->w->ne[0];
+    const int64_t n_expert = c->w->ne[2];
+
+    const ggml_type_traits_cpu * tr_w  = ggml_get_type_traits_cpu(c->w->type);
+    const ggml_type_traits_cpu * tr_vd = ggml_get_type_traits_cpu(tr_w->vec_dot_type);
+    const size_t qrow = ggml_row_size(tr_w->vec_dot_type, n_in);
+
+    // scratch for the quantized activation column, one buffer per worker
+    static thread_local std::vector<char> qbuf;
+    if (qbuf.size() < qrow) qbuf.resize(qrow);
+
+    const int64_t per_shard = (n_expert + c->n_shard - 1) / c->n_shard;
+    const int64_t n_items   = n_slots * n_tokens;
+
+    // With enough work items, give each thread whole items — one quantization
+    // per item, as mul_mat_id does. Below that (decode: 8 items, 16 threads)
+    // every thread takes a slice of each item's output rows and quantizes
+    // redundantly. Redundant quantization is bit-safe: same input, same
+    // from_float, same bytes.
+    const bool item_parallel = n_items >= nth;
+
+    for (int64_t item = 0; item < n_items; item++) {
+        if (item_parallel && (item % nth) != ith) continue;
+
+        const int64_t t = item / n_slots;
+        const int64_t s = item - t * n_slots;
+
+        const int32_t e = *(const int32_t *) ((const char *) ids->data + t*ids->nb[1] + s*ids->nb[0]);
+        if (e < 0 || e >= n_expert) {
+            NANO_ABORT("routed expert id %d out of range [0,%" PRId64 ") at slot %" PRId64 " token %" PRId64,
+                       e, n_expert, s, t);
+        }
+
+        // The dispatch decision. Phase 1 replaces the base-pointer arithmetic
+        // with "which server holds this expert", and the row copy below with a
+        // response payload — the ids and the slot index travel unchanged.
+        const int64_t shard   = e / per_shard;
+        const int64_t e_local = e - shard * per_shard;
+        const char *  w_shard = (const char *) c->w->data + shard * per_shard * c->w->nb[2];
+        const char *  w_exp   = w_shard + e_local * c->w->nb[2];
+
+        // Ownership: per_shard partitions [0, n_expert) into n_shard contiguous
+        // ranges, and shard s owns exactly [s*per_shard, (s+1)*per_shard). None
+        // of these can fire today — every shard is a pointer offset in the same
+        // process, so the arithmetic is self-consistent by construction. They
+        // are here because each pins an invariant that phase 1 makes breakable
+        // once a shard is a remote server with only part of the weights, and
+        // because every one of them fails as a plausible wrong answer rather
+        // than as a crash: the model would still emit fluent text computed with
+        // the wrong experts. Cost is a few integer compares per work item,
+        // against n_out vec_dot calls.
+        if (shard < 0 || shard >= (int64_t) c->n_shard) {
+            NANO_ABORT("expert %d maps to shard %" PRId64 ", outside [0,%u)", e, shard, c->n_shard);
+        }
+        if (e_local < 0 || e_local >= per_shard || shard*per_shard + e_local != (int64_t) e) {
+            NANO_ABORT("expert %d does not round-trip via shard %" PRId64 " local %" PRId64 " (per_shard %" PRId64 ")",
+                       e, shard, e_local, per_shard);
+        }
+        if (w_exp != (const char *) c->w->data + (int64_t) e * c->w->nb[2]) {
+            NANO_ABORT("shard %" PRId64 " slice resolves to the wrong weights for expert %d", shard, e);
+        }
+
+        int64_t r0 = 0, r1 = n_out;
+        if (!item_parallel) {
+            const int64_t chunk = (n_out + nth - 1) / nth;
+            r0 = (int64_t) ith * chunk;
+            r1 = std::min(r0 + chunk, n_out);
+            if (r0 >= r1) continue;
+        }
+
+        const float * xcol = (const float *) ((const char *) x->data
+                                              + t * (c->x_per_slot ? x->nb[2] : x->nb[1])
+                                              + (c->x_per_slot ? s * x->nb[1] : 0));
+        tr_vd->from_float(xcol, qbuf.data(), n_in);
+
+        float * out = (float *) ((char *) dst->data + t*dst->nb[2] + s*dst->nb[1]);
+        for (int64_t r = r0; r < r1; r++) {
+            tr_w->vec_dot((int) n_in, &out[r], 0, w_exp + r*c->w->nb[1], 0, qbuf.data(), 0, 1);
+        }
+    }
+}
+
 static graph_io build_graph(ggml_context * ctx0, ggml_cgraph * gf,
                             const nano_model & M, const nano_state & S,
                             int32_t n_tokens, int32_t n_kv) {
     const nano_hparams & h = M.h;
     graph_io io = {};
+
+    // The graph is rebuilt whenever the topology changes (n_tokens or padded
+    // n_kv), and the previous graph is discarded with it, so the callback
+    // userdata from that build can go too.
+    g_moe_ctxs.clear();
 
     const int64_t n_embd_head_k       = h.n_embd_head_k_mla;                // 256
     const int64_t n_embd_head_qk_rope = h.n_rot;                            // 64
@@ -889,13 +1022,29 @@ static graph_io build_graph(ggml_context * ctx0, ggml_cgraph * gf,
 
             ggml_build_forward_expand(gf, weights);
 
-            ggml_tensor * moe_cur = ggml_reshape_3d(ctx0, cur, h.n_embd, 1, n_tokens);
+            // routed experts: host-side dispatch instead of ggml_mul_mat_id.
+            // Same math, same order (see moe_proj_cb); swiglu stays a ggml op.
+            g_moe_ctxs.push_back({ L.ffn_up_exps,   NANO_MOE_N_SHARD, /*x_per_slot =*/ false });
+            moe_op_ctx * ud_up = &g_moe_ctxs.back();
+            g_moe_ctxs.push_back({ L.ffn_gate_exps, NANO_MOE_N_SHARD, /*x_per_slot =*/ false });
+            moe_op_ctx * ud_gate = &g_moe_ctxs.back();
+            g_moe_ctxs.push_back({ L.ffn_down_exps, NANO_MOE_N_SHARD, /*x_per_slot =*/ true  });
+            moe_op_ctx * ud_down = &g_moe_ctxs.back();
 
-            ggml_tensor * up   = ggml_mul_mat_id(ctx0, L.ffn_up_exps,   moe_cur, selected_experts);
-            ggml_tensor * gate = ggml_mul_mat_id(ctx0, L.ffn_gate_exps, moe_cur, selected_experts);
+            ggml_tensor * args_ug[2] = { cur, selected_experts };
+            ggml_tensor * up   = ggml_custom_4d(ctx0, GGML_TYPE_F32,
+                                                h.n_ff_exp, h.n_expert_used, n_tokens, 1,
+                                                args_ug, 2, moe_proj_cb, GGML_N_TASKS_MAX, ud_up);
+            ggml_tensor * gate = ggml_custom_4d(ctx0, GGML_TYPE_F32,
+                                                h.n_ff_exp, h.n_expert_used, n_tokens, 1,
+                                                args_ug, 2, moe_proj_cb, GGML_N_TASKS_MAX, ud_gate);
+
             ggml_tensor * act  = ggml_swiglu_split(ctx0, gate, up);
 
-            ggml_tensor * experts = ggml_mul_mat_id(ctx0, L.ffn_down_exps, act, selected_experts);
+            ggml_tensor * args_dn[2] = { act, selected_experts };
+            ggml_tensor * experts = ggml_custom_4d(ctx0, GGML_TYPE_F32,
+                                                   h.n_embd, h.n_expert_used, n_tokens, 1,
+                                                   args_dn, 2, moe_proj_cb, GGML_N_TASKS_MAX, ud_down);
             experts = ggml_mul(ctx0, experts, weights);
 
             ggml_build_forward_expand(gf, experts);
