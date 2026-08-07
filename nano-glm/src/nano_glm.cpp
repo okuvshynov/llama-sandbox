@@ -25,15 +25,26 @@
 #include "ggml-cpu.h"
 #include "gguf.h"
 
-// windows.h (with NOMINMAX, so the min/max macros don't eat std::min/std::max)
-// comes in via cpu_topology.h; only the POSIX mmap headers are needed here.
-#if !defined(_WIN32)
+// File mapping for the weight shards (map_file_ro below). Guarded because
+// cpu_topology.h may have pulled windows.h in already; NOMINMAX has to be set
+// before the first include of it either way, or the min/max macros eat the
+// std::min / std::max calls further down.
+#if defined(_WIN32)
+#   ifndef WIN32_LEAN_AND_MEAN
+#       define WIN32_LEAN_AND_MEAN
+#   endif
+#   ifndef NOMINMAX
+#       define NOMINMAX
+#   endif
+#   include <windows.h>
+#else
 #   include <fcntl.h>
 #   include <sys/mman.h>
 #   include <sys/stat.h>
 #   include <unistd.h>
 #endif
 
+#include <algorithm>
 #include <chrono>
 #include <cinttypes>
 #include <cmath>

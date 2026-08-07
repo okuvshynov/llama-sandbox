@@ -40,8 +40,14 @@ if ($Clean -and (Test-Path $build)) { Remove-Item -Recurse -Force $build }
 
 # cmake and cl must see the same environment, so both steps run under vcvars in
 # one cmd invocation. The redirect silences vcvars' banner without hiding errors.
+# CMAKE_EXPORT_COMPILE_COMMANDS must be a CACHE variable, not just any value:
+# llama.cpp sets it as a normal variable inside ggml's directory scope, which
+# exports ggml's own sources but not this project's. Passing -D here makes it
+# global, so build/compile_commands.json covers our targets too and VS Code's
+# C/C++ extension can resolve the ggml includes (see ../.vscode/).
 $cfg = "cmake -S `"$src`" -B `"$build`" -G Ninja -DCMAKE_BUILD_TYPE=Release " +
-       "-DCMAKE_MAKE_PROGRAM=`"$ninja`" -DLLAMA_CPP_DIR=`"$LlamaCppDir`""
+       "-DCMAKE_MAKE_PROGRAM=`"$ninja`" -DLLAMA_CPP_DIR=`"$LlamaCppDir`" " +
+       "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"
 # The inner 2>&1 is cmd's, not PowerShell's: llama.cpp's CMakeLists writes
 # informational lines to stderr, and under $ErrorActionPreference = "Stop" any
 # stderr from a native command becomes a terminating error even on exit 0.

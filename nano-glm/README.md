@@ -57,6 +57,13 @@ On Windows (MSVC), `build.ps1` wraps the same two commands — it locates
 Executables land in `build\bin\` next to the ggml DLLs so Windows resolves
 them without PATH juggling.
 
+The script also passes `-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`, which has to be a
+*cache* variable: llama.cpp sets it as a plain variable inside ggml's directory
+scope, so without this `build/compile_commands.json` lists ggml's sources but
+none of ours. Point an editor at that file (VS Code: a `.vscode/
+c_cpp_properties.json` with `compileCommands` listing each subproject's copy —
+gitignored, since the paths are absolute) and includes resolve.
+
 ## Run
 
 ```bash
