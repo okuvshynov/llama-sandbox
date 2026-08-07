@@ -1,0 +1,14 @@
+good : D:\llms\GLM-5.2-UD-Q6_K-00006-of-00014.gguf
+bad  : D:\llms\UD-Q6_K\GLM-5.2-UD-Q6_K-00006-of-00014.gguf
+size : 48957391744 bytes compared
+diff : 680 bytes, 2662 bits, in 3 run(s)
+
+run 0: offset 22869438816 (0x5531ff160)  len 232  bits 908  unaligned (start%512=352)
+   good: 3b b2 9a 6e 92 ec 02 f2 45 0e a4 24 7a 76 4e 2c
+   bad : f1 04 bf e2 07 00 40 00 f1 04 df e2 07 00 40 00
+run 1: offset 23004712960 (0x55b301000)  len 216  bits 856  4096-aligned
+   good: e9 78 19 f2 20 5e a6 43 e0 5c 9a dd 31 29 e7 15
+   bad : f1 04 d8 e8 07 00 40 00 f1 04 f8 e8 07 00 40 00
+run 2: offset 23219601760 (0x567ff0160)  len 232  bits 898  unaligned (start%512=352)
+   good: 7c f3 fd 35 7f 3f f6 a7 e8 1f 9c 21 e6 40 d1 0d
+   bad : f1 04 b9 ec 07 00 40 00 f1 04 d9 ec 07 00 40 00

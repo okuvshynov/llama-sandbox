@@ -7,7 +7,12 @@ a *single-model* engine gets if the compute layer is kept and the framework
 is dropped: it links only `ggml` (kernels, GGUF reader, backend scheduler)
 and reimplements the thin slice of llama.cpp that GLM-5.2 on CPU actually
 needs — shard loader, single-sequence KV cache, forward graph, greedy loop —
-in one source file.
+in about a thousand lines.
+
+Three files, split along the boundary the distributed plan needs: `nano_glm.cpp`
+is the trunk engine, `nano_model.h` the hparams and GGUF loader, `moe_block.h`
+the routed-expert block. The last two are shared with the MoE backend so both
+sides read the model and build that block from one definition.
 
 Correctness bar: **bit-identical logits** vs the llama.cpp-based `collect`
 baseline from `../logit-kld`, verified over the same prompts with

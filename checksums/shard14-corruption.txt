@@ -1,0 +1,45 @@
+good : D:\llms\GLM-5.2-UD-Q6_K-00014-of-00014.gguf
+bad  : D:\llms\UD-Q6_K\GLM-5.2-UD-Q6_K-00014-of-00014.gguf
+size : 37725290112 bytes compared
+diff : 1217 bytes, 4746 bits, in 13 run(s)
+
+run 0: offset 18446950752 (0x44b862160)  len 86  bits 344  unaligned (start%512=352)
+   good: f2 1c 33 46 22 ce ba cc a4 41 d6 3d 9c 04 a5 51
+   bad : f1 04 0d eb 07 00 40 00 f1 04 2d eb 07 00 40 00
+run 1: offset 18446950839 (0x44b8621b7)  len 145  bits 558  unaligned (start%512=439)
+   good: 1b 6b 91 c8 f2 a5 9f d6 e2 12 24 aa 54 57 c1 58
+   bad : 00 f1 04 6d ec 07 00 40 00 f1 04 8d ec 07 00 40
+run 2: offset 18452770816 (0x44bdef000)  len 6  bits 22  4096-aligned
+   good: 76 6a 19 76 6d 89
+   bad : f1 04 3b e5 07 00
+run 3: offset 18452770823 (0x44bdef007)  len 72  bits 257  unaligned (start%512=7)
+   good: 62 90 59 79 41 b1 2a 64 7a 99 73 aa 9c 16 d9 99
+   bad : 00 f1 04 5b e5 07 00 40 00 f1 04 7b e5 07 00 40
+run 4: offset 18452770896 (0x44bdef050)  len 136  bits 525  unaligned (start%512=80)
+   good: 02 c3 c1 71 96 c8 df 18 23 7f e3 da 86 a6 70 55
+   bad : f1 04 7b e6 07 00 40 00 f1 04 9b e6 07 00 40 00
+run 5: offset 18537972064 (0x450f30160)  len 105  bits 433  unaligned (start%512=352)
+   good: 18 b8 ec b0 d1 51 29 24 2b 03 92 5f 35 06 68 37
+   bad : f1 04 f7 e4 07 00 40 00 f1 04 17 e5 07 00 40 00
+run 6: offset 18537972170 (0x450f301ca)  len 126  bits 473  unaligned (start%512=458)
+   good: d2 51 0a c5 98 42 60 5c 64 97 eb 91 39 8b bb 4b
+   bad : 97 e6 07 00 40 00 f1 04 b7 e6 07 00 40 00 f1 04
+run 7: offset 18538135904 (0x450f58160)  len 1  bits 4  unaligned (start%512=352)
+   good: 83
+   bad : f1
+   xor : 0x72  (single byte, 4 bit(s) flipped)
+run 8: offset 18538135906 (0x450f58162)  len 230  bits 892  unaligned (start%512=354)
+   good: 6b 7d f9 c0 8b 59 3d 5c 00 64 52 c7 7d dc 48 53
+   bad : 97 e8 07 00 40 00 f1 04 b7 e8 07 00 40 00 f1 04
+run 9: offset 18633977856 (0x456abf000)  len 117  bits 467  4096-aligned
+   good: 29 09 fe 61 04 2a 26 fa 0e 3a 97 56 e0 38 ee 6e
+   bad : f1 04 3c e5 07 00 40 00 f1 04 5c e5 07 00 40 00
+run 10: offset 18633977974 (0x456abf076)  len 98  bits 382  unaligned (start%512=118)
+   good: 37 06 14 b4 57 74 7b f9 50 eb 74 75 59 81 a0 84
+   bad : 40 00 f1 04 1c e7 07 00 40 00 f1 04 3c e7 07 00
+run 11: offset 18699300864 (0x45a90b000)  len 90  bits 373  4096-aligned
+   good: da ad 40 e7 49 5a 08 84 f6 a2 00 e1 1e 25 9d 0a
+   bad : f1 04 49 ee 07 00 40 00 f1 04 69 ee 07 00 40 00
+run 12: offset 18699300955 (0x45a90b05b)  len 5  bits 16  unaligned (start%512=91)
+   good: 25 49 15 21 44
+   bad : ef 07 00 40 00
