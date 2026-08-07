@@ -1,305 +1,287 @@
-# Plan: distributed MoE evaluation (expert parallelism)
+# Plan: remote MoE evaluation
 
 ## Goal
 
-Run truly massive MoE models — target: Kimi-K3 (~1.5TB of weights,
-https://huggingface.co/moonshotai/Kimi-K3) — across two machines that
-individually cannot hold them:
+Run MoE models whose experts do not fit next to the compute that wants them,
+by putting the routed experts behind a **network service** and keeping the
+trunk on whatever machine is best at trunk work.
 
-- 2× Mac Pro 2019 (Intel Xeon, same ISA), 768GB DDR4 each (1536GB total);
-- 2× Vega II Duo per machine (4 GPU dies × 32GB HBM = 128GB per machine,
-  256GB total) — **later phase only**, see "GPUs" below;
-- dual built-in 10GbE between the machines; TCP for activations.
-
-Strategy: expert parallelism. The routed-expert FFN is ~95%+ of the weights
-in DeepSeek-lineage MoE models and is architecturally the *simple* part
-(the per-model differences live in attention/trunk). Measured on the GLM-5.2
-UD-Q6_K shards (582.87 GiB total, from the GGUF tensor offsets): routed
-experts `*_exps` **563.27 GiB / 96.6%**, shared expert 2.84 GiB / 0.5%,
-everything else (attention, norms, router, embeddings, output) 16.76 GiB /
-2.9%. Distributing the routed experts is therefore the whole problem. We build a dedicated
-**expert-shard evaluation service** that only knows how to run routed
-expert FFNs over a set of expert weights it holds; the client (nano-glm)
-keeps the trunk: attention, router, shared expert, combine.
-
-All experimentation happens on GLM-5.2 first (smaller, already ported,
-bit-exact baseline exists via ../logit-kld). Kimi-K3 is DeepSeek-lineage:
-same routed swiglu experts + shared expert, so the server carries over;
-only the client trunk is new work.
-
-Development style, per repo conventions: manual/explicit version first,
-promote to a proper ggml backend only if the data says so; orchestration
-(launching servers, shard configs, analysis) in external scripts, C++ kept
-minimal.
-
-## Why not the ggml scheduler / meta backend (for now)
-
-- `ggml_backend_sched` (ggml-backend.cpp) does placement and partitioning,
-  not parallel execution: splits run sequentially in submission order
-  (`ggml_backend_sched_compute_splits`); the `parallel` flag only enables
-  pipeline parallelism across *successive graph evaluations* via input
-  copies + events (`n_copies`, `GGML_SCHED_MAX_COPIES`) — useless for
-  single-stream decode and for synchronous backends.
-- Upstream's answer to multi-GPU is the **meta backend**
-  (ggml-backend-meta.cpp, `GGML_BACKEND_DEVICE_TYPE_META`): one virtual
-  backend wrapping N devices, split-axis propagation per op
-  (`ggml_backend_meta_get_split_state`, `handle_mul_mat`), concurrent
-  per-device subgraphs, allreduce via `ggml_backend_comm_allreduce_tensor`
-  (NCCL on CUDA, generic fallback). Policy is an application callback
-  (`llama_meta_device_get_split_state` in llama-model.cpp — per-tensor-name
-  regexes choosing split axes). It validates the "looks sequential from
-  the scheduler, hides parallelism inside" design.
-- But the meta backend today treats `GGML_OP_MUL_MAT_ID` like `MUL_MAT`
-  (tensor-parallel splits of every expert); true expert parallelism
-  (split along the expert dim, `ne[2]`) is not implemented, and the meta
-  backend has no cross-machine story. For a 2-node CPU cluster, a manual
-  client/server design is less work and fully observable. If this ever
-  moves upstream, EP maps onto the meta backend's existing
-  `GGML_BACKEND_SPLIT_AXIS_2` + `PARTIAL` + allreduce machinery.
-
-## Architecture
+Target topology:
 
 ```
-machine A                                machine B
-┌──────────────────────────────┐         ┌────────────────────┐
-│ nano-glm client              │   TCP   │ expert-shard server│
-│  trunk: attn, router, shexp, │◄───────►│  (expert weights)  │
-│  combine, KV cache, sampling │         └────────────────────┘
-│  dispatcher (slot → server)  │
-│ expert-shard server (local)  │
-└──────────────────────────────┘
+  trunk host                              MoE backend
+  ┌────────────────────────────┐   TCP    ┌──────────────────────────┐
+  │ modern GPU (RTX 6000 Pro   │  x  ──►  │ Mac Pro 2019             │
+  │ Blackwell class): attention│  75 req  │ 768GB DDR4: ALL routed   │
+  │ + KV cache + shared expert │  /token  │ experts (563 GiB)        │
+  │ ~17 GB of trunk weights    │  ◄── y   │ router, experts, combine │
+  └────────────────────────────┘          │ 4x Vega II: hot subset   │
+                                          └──────────────────────────┘
 ```
 
-**Server contract** (deliberately narrow): holds a declared set of expert
-tensors per layer (`ffn_{up,gate,down}_exps` slices or full copies);
-evaluates `(layer, expert_id, x) → down-projection row` for an explicit
-list of (token, slot, expert_id) work items. Stateless (no KV), config is
-`(layer → expert set)`. All gating/model-specific logic stays client-side,
-so the server is model-agnostic across GLM/Kimi-style MoE.
+Two **roles**, not two peers. GLM-5.2 is the testbed (bit-exact baseline via
+../logit-kld); Kimi-K3 (~1.5TB, https://huggingface.co/moonshotai/Kimi-K3) is
+the reason the experts have to live somewhere else.
 
-**Dispatcher** (client-side policy, the load-balancing brain): decides per
-token/layer which server evaluates which selected slot. Because slot rows
-are assembled client-side into the baseline combine order, *any* partition
-of slots is numerically valid — static sharding, balanced dispatch over
-replicas, and hybrids are all dispatch policies against one protocol.
+**The router lives on the backend.** The request is one activation and the
+response is one combined row — "activation in, layer output out" — so expert
+ids and routing weights never cross the wire, routing histograms are collected
+where the experts are, and the backend is free to use its own routing
+knowledge (see the speculative-prefetch note at the end). The cost is that the
+backend stops being model-agnostic: sigmoid gating, the selection bias, weight
+normalisation and the x2.5 scale all become its business. That was an explicit
+non-goal in the sharded draft ("the server carries over to Kimi unchanged"),
+and it is a real loss — mitigated only by Kimi-K3 being DeepSeek-lineage and
+sharing that gating structure. Revisit if a target model's gating diverges.
 
-**Client integration**: the routed-expert block in nano_glm.cpp (search
-`ffn_up_exps` / the `ggml_mul_mat_id` calls in `build_graph`) is replaced
-by custom-op nodes (`ggml_map_custom3`): callback sends work items to all
-servers, waits, assembles the `experts` tensor; the pairwise-add combine
-(search `cur_experts`) stays byte-for-byte as today. Graph topology stays
-constant across tokens, so graph reuse keeps working. Later, a `moe_send`
-node placed before the shared-expert branch and a `moe_recv` node after it
-overlap the RPC with shexp compute (the CPU backend executes nodes in
-order — free latency hiding, no threads).
+## Why remote-MoE rather than sharding
+
+Earlier drafts of this plan split experts across two peer machines and spent
+most of their complexity on the *dispatcher*: static shard vs replicated,
+balanced slot assignment, asymmetric split ratios. That was solving the wrong
+problem for GLM-sized models. One Mac Pro holds **all 563 GiB** of routed
+experts in RAM, so there is nothing to shard on the client side. What is left
+is a much narrower question:
+
+> how fast can the trunk get answers out of a remote MoE backend?
+
+Sharding does not disappear; it becomes an *internal* concern of the backend
+(which experts sit in the 4 GPUs vs in DRAM), invisible to the protocol. If a
+model ever exceeds one machine's RAM, a second backend is an addition to the
+service, not a change to the client.
+
+The other half of the reframing: per *token* the trunk is ~45% of the bytes
+read (~17 GB against ~21.7 GB of experts), even though experts are 96.6% of
+the weights. Expert offload alone therefore caps the achievable speedup —
+moving the trunk onto fast silicon is what removes the ceiling, and a modern
+card holds the whole 17 GB trivially.
+
+## The budget
+
+Measured on GLM-5.2 UD-Q6_K (582.87 GiB, from the GGUF tensor offsets):
+routed experts 563.27 GiB / 96.6%, shared expert 2.84 GiB, trunk 16.76 GiB.
+nano-glm runs 78 blocks, the first 3 dense, so **75 MoE layers**.
+
+Per token, at the 74 GB/s this Mac Pro sustains (derived from llama.cpp's
+measured 1.84 tok/s):
+
+| quantity | value |
+|---|---|
+| one Q6_K expert | 31.09 MB |
+| routed expert reads | 18.65 GB |
+| shared expert | 3.01 GB |
+| **MoE total** | **21.66 GB → 293 ms → 3.42 tok/s ceiling** |
+| trunk on a Blackwell-class card (~1.8 TB/s) | ~10 ms — negligible |
+
+So the system is **entirely MoE-bound**, and the figure of merit is the
+backend's sustained request rate:
+
+- **75 requests per token, strictly sequential** — layer *i+1* cannot start
+  until layer *i*'s experts return. There is no batching across layers.
+- **3.90 ms per request** of compute budget at the CPU ceiling → **256 req/s**.
+- RPC overhead is pure addition to that. At 200 us/round trip the cost is ~5%;
+  it only becomes structural if the backend gets much faster than DRAM.
+
+Wire, per request: 24 KiB out (n_embd f32), 24 KiB back (the combined row).
+With the router on the backend, that is the whole protocol payload — 3.7 MB
+per token, ~2.9 ms on 10GbE, ~1% of the budget.
+
+Returning the 8 per-slot rows instead would cost 192 KiB back, 16.6 MB per
+token, 13.3 ms — worth keeping as a debug mode (it is what lets the client
+reproduce the combine independently) but not the default.
+
+**The combined return can be bit-exact**, which the earlier plan assumed it
+could not: the backend applies the routing weights and pairwise-adds the slots
+in index order, exactly as the baseline combine does. Byte-identity then
+survives the 8x traffic reduction rather than trading against it. Verify it,
+do not assume it.
 
 ## Verification methodology
 
-The whole point of nano-glm is a bit-exact baseline; distribution must not
-lose it prematurely:
+The KL == 0 gate survives, but it has to be scoped per component, because the
+end state deliberately puts the trunk on different silicon:
 
-- Both machines are Mac Pro 7,1 running the same binary → slot rows computed
-  remotely are **bit-identical** to local ones. The bit-exact bar survives
-  crossing the network. Same ISA is necessary but **not sufficient**: the
-  Windows port (2026-08-06) measured llama.cpp disagreeing with *itself* by
-  8.85e-3 mean KL between Apple-clang and MSVC builds on the same Xeon W-3245
-  at the same AVX-512 level (compiler FMA contraction), and ggml's matmul
-  partitioning makes the logits depend on **thread count** too. So the run
-  configuration must be pinned across the cluster: same ISA, same toolchain,
-  same `-t`. All three are free here (identical machines, one binary, one
-  launch config) — but a KL==0 gate below will fail on a mismatch of any of
-  them, for reasons having nothing to do with the sharding math. Check the run
-  configuration first when a gate fails.
-- Bit-exactness holds as long as (a) per-slot rows travel unsummed and
-  (b) the combine runs client-side in baseline op order.
-- When we deliberately trade exactness for speed (partial sums, f16 wire),
-  the regression is *measured*, not assumed: ../logit-kld `compare.py`
-  against the bit-exact run, read against the documented batch-shape noise
-  floors. Every phase below ends with a logit-kld gate on the 5-prompt
-  corpus.
+- **Phases 1-2 are all-CPU, one toolchain: end-to-end bit-exactness applies.**
+  A remote backend on a second machine must run the *same OS and compiler* or
+  the gate fails for reasons unrelated to the RPC — a Windows/MSVC and a
+  macOS/clang build of the same llama.cpp commit differ by 8.85e-3 mean KL on
+  identical hardware (see repo CLAUDE.md).
+- **Phase 3 (Vulkan experts) and phase 4 (GPU trunk) cannot be bit-exact.**
+  There the bar becomes: bit-exact within the CPU path, and a *measured* KL
+  bound end to end, read against the documented noise floors in
+  ../logit-kld/README.md.
+- Every deliberate trade — f16 on the wire, GPU experts, server-side combine —
+  is measured with compare.py against the bit-exact run, never assumed.
+
+Run configuration is part of the contract: thread count, batch shape and
+toolchain all move logits. Pin them on both ends before blaming the code.
 
 ## Phases
 
-### Phase 0 — shard decomposition in-graph (one process, no network)
+### Phase 0 — host-side dispatch, in-process (DONE, branch `phase0-moe-dispatch`)
 
-Validate the sharding math with zero distribution complexity.
+The routed block's three `ggml_mul_mat_id` calls became three
+`ggml_custom_4d` ops whose callback reads the expert ids on the host, resolves
+each (token, slot, expert) triple, evaluates it, and writes the row back to
+its slot. This is the client shape with the network removed, and it is the
+seam everything below plugs into.
 
-1. Rewrite the routed block as S=4 shard branches: `ggml_view_3d` slices
-   of the expert tensors along `ne[2]` (contiguous at stride `nb[2]`, no
-   repacking of mmap'd weights), id remap/mask to local range, per-shard
-   `ggml_mul_mat_id`, slot rows reassembled into the full `experts`
-   layout; combine unchanged.
-2. Gate: 5-prompt corpus, KL == 0, output bit-identical to baseline.
+Gate passed: 903 positions across the 5-prompt corpus, KL exactly 0.0, all
+931,896 payload bytes identical to llama.cpp; both threading branches
+(item-parallel on prefill, row-split on decode) exercised.
 
-This nails id remapping, non-local-slot masking, and slot reassembly —
-the parts where a bug is a silently wrong answer.
+Two findings worth carrying:
 
-### Phase 1 — process split, localhost TCP
+- Bit-exactness through a callback requires **reusing ggml's kernels**, not
+  reimplementing them: `ggml_get_type_traits_cpu()` gives `from_float` and
+  `vec_dot`, and `mul_mat_id` calls `vec_dot(..., nrc = 1)` once per output
+  element. swiglu stays a ggml op — its vectorised SiLU uses a polynomial exp
+  a scalar `expf()` will not match.
+- The in-graph alternative (per-shard `ggml_mul_mat_id` over `ggml_view_3d`
+  slices) would have cost **4x the expert compute**: a reused graph has fixed
+  topology, so every shard must evaluate all 8 slots and discard most.
 
-3. Extract the expert-shard server binary (reuses nano-glm's loader; mmaps
-   the same GGUF, touches only its expert ranges — partial page-cache
-   residency is free).
-4. Protocol v1 (below), lkldtopk discipline: versioned, length-prefixed,
-   explicit dims, loud errors.
-5. Client custom-op integration; dispatcher with static-shard policy.
-6. Gate: 2 local server processes, bit-identity again.
+### Phase 1 — RPC proof of concept, local, CPU-only
 
-### Phase 2 — second machine
+Split the phase 0 callback into client and server across loopback TCP.
 
-7. Direct-attach 10GbE (TCP_NODELAY, jumbo frames). Two run modes:
-   - **static shard**: routed experts split ~50/50, ~282 GiB/machine;
-   - **replicated + dynamic dispatch**: full routed-expert copy on both
-     machines (563 GiB each; machine A additionally holds the 17 GiB trunk
-     and the 3 GiB shared expert = 583 GiB there, leaving ~185 GiB of the
-     768 GiB for KV/compute buffers/page cache), dispatcher assigns slots at
-     runtime for perfect balance.
-8. Gate: bit-identity still (same ISA/binary), plus the first real
-   experiment: static vs dynamic on identical prompts — tok/s + balance
-   histograms from the logs.
+1. Server: holds the router and the expert tensors. Takes `(layer, x)`, runs
+   the router, evaluates the selected experts, combines, returns one row —
+   all on the same ggml kernels. Stateless: no KV, no history between calls.
+2. Client: the custom-op callback serialises the request, blocks, and drops
+   the returned row where the combine used to land.
+3. Protocol v1 (below): versioned, length-prefixed, explicit dims, loud
+   errors.
+4. **Gate: KL == 0 over the 5-prompt corpus**, same machine, same binary.
+5. Measure the floor: round-trip latency, serialise/deserialise cost, and the
+   per-request overhead that phase 2 will pay again over a real link.
 
-### Phase 3 — performance mode (each step logit-kld-quantified)
+Two things to settle here, where they are cheap: that the server-side combine
+is byte-identical to the client-side one, and that moving the router across
+the boundary changes nothing (it is the same matmul on the same activation —
+if this is not bit-exact, something is wrong with the transport, not the
+router).
 
-9. Partial-sum responses (server pre-reduces its slots): ~8× less return
-   traffic; costs bit-exactness → measure KL.
-10. `moe_send`/`moe_recv` split to overlap RPC with shared-expert compute;
-    logs report overlap efficiency.
-11. f16/bf16 activations on the wire → measure KL.
-12. Batched prefill requests + bin-packing dispatch (keep each selected
-    expert's tokens on one machine; balance total (token, slot) pairs).
-13. Tune the asymmetric split ratio (machine A also runs trunk/shexp, so
-    optimum may be 3/5 not 4/4) — driven by the latency logs.
+### Phase 2 — the backend on another machine
 
-### Phase 4 — Kimi-K3 and GPUs
+6. Direct-attach 10GbE, TCP_NODELAY, jumbo frames. Same OS and toolchain on
+   both ends (see Verification).
+7. **Gate: KL == 0 still** — the RPC must not perturb a single bit.
+8. Measure what actually matters: sustained req/s, per-request RTT
+   distribution, and tok/s end to end. Compare against the 256 req/s the CPU
+   ceiling allows; the gap is the RPC tax.
+9. Latency hiding: issue the request, run the shared expert on the client
+   while it is in flight, then collect. The CPU backend executes graph nodes
+   in order, so a `moe_send` / `moe_recv` split around the shared-expert
+   branch gets this for free.
 
-14. K3 fit: ~1.4TB of experts does NOT split 50/50 into 768GB alongside
-    the trunk → asymmetric static split (A holds fewer experts) and/or
-    one quant step down; partial replication (static halves + a
-    replicated overlap set for dispatch smoothing) only if the GLM
-    routing histograms show it has headroom (DeepSeek-lineage models are
-    trained load-balanced; per-expert marginals may be too flat).
-15. K3 client trunk port (DeepSeek-V3-style MLA; much of nano-glm's GLM
-    code is adjacent). Server unchanged.
-16. GPUs — **Vulkan on the Vega IIs**, not Metal (Metal on this hardware
-    silently NaNs large batches; see repo CLAUDE.md "AMD-Metal" entry).
-    Vulkan is a different kernel stack, so the Metal history doesn't
-    transfer — but trust is earned the same way: A/A gate (same shard on
-    Vulkan vs CPU: NaN scan, then KL vs the bit-exact baseline) before
-    any result is believed. Candidate roles: hosting the trunk, or hot
-    expert subsets; 8×32GB granularity makes full expert residency
-    awkward. Strictly off the critical path.
+### Phase 3 — Vulkan experts inside the backend
 
-### Optional variant — a third machine for the trunk (not committed)
+10. Hold a resident expert subset in the 4 Vega dies and serve hits from
+    there, misses from DRAM. **23% of the 563 GiB fits** in 128 GiB of VRAM,
+    so the CPU still does the bulk; this is worth roughly the resident
+    fraction, no more.
+11. Placement is **static, not LRU**: PCIe (~13 GB/s) is ~5.7x slower than
+    DRAM (~74 GB/s), so streaming a missed expert to a GPU costs ~2.4 ms
+    against ~0.42 ms to compute it on the CPU — and the DMA consumes the same
+    DRAM bandwidth it is trying to save. Cache *refill* never pays.
+12. Trust is earned the same way as everywhere else: A/A NaN scan, then a
+    measured KL bound against the bit-exact run. MoltenVK and the AMD Vulkan
+    driver both compute correctly here (../moe-offload), unlike native Metal.
+13. Lower-bit experts are the other lever, and they compose: Q4_K (~4.5 bpw)
+    cuts DRAM traffic ~32% *and* raises the resident fraction to ~33%. Cost
+    in KL is exactly what logit-kld measures.
 
-Worth revisiting once phases 0-2 exist. Since the wire cost of TCP is already
-accepted, the trunk could move to a *separate* machine with a modern GPU
-(attention + KV cache + output head), leaving both Mac Pros as pure
-expert-evaluation nodes.
+### Phase 4 — trunk on a modern GPU
 
-The motivation is an Amdahl problem this plan currently understates. Routed
-experts are 96.6% of the *weights*, but per *token* only 8 of 256 are read
-while the whole trunk is: ~17 GB of trunk against ~22 GB of experts, i.e. the
-trunk is ~45% of the bytes that actually move. So expert parallelism alone
-caps at roughly 1.8x however many expert machines are added. Rough sketch:
-2 Macs with the trunk on A ~= 3.8 tok/s; trunk on a modern GPU (~17 GB fits in
-24-32 GB VRAM) ~= 6.7; plus a GPU-resident expert subset on the Macs ~= 12.
-
-Two consequences to weigh if this is ever taken up:
-
-- **The KL == 0 gates would have to be redefined.** They work today because
-  everything is CPU under one toolchain. A CUDA trunk is different numerics by
-  construction, so the bar becomes bit-exact *within the expert path* plus a
-  KL bound end to end.
-- **Expert placement must be static, not LRU.** PCIe (~13 GB/s) is ~5.7x
-  slower than DRAM (~74 GB/s measured), so streaming a missed expert to a GPU
-  costs ~2.4 ms against ~0.42 ms to just compute it on the CPU — and the DMA
-  consumes the same DRAM bandwidth anyway. Whatever fits in VRAM should stay
-  there permanently; misses go to the CPU and nothing is swapped. This applies
-  to the two-machine design too.
+14. Move attention + KV cache + shared expert onto the trunk host — the router
+    and the combine already live on the backend. ~17 GB fits any
+    Blackwell-class card with room for KV.
+15. nano-glm needs a GPU backend for this; today it aborts if one is present.
+16. End-to-end bit-exactness ends here by construction — switch to the
+    KL-bounded gate and keep the CPU path as the reference.
+17. Only now does RPC overhead become a large fraction of the token budget,
+    because the trunk stops costing 226 ms. Re-measure before optimising.
 
 ## Protocol v1 (design requirements, not final wire format)
 
-Absorb from day one (cheap now, painful to retrofit):
+Much smaller than the sharded design needed, because there is one backend, it
+routes for itself, and the client chooses nothing:
 
-- Request: `{layer, work items: [(token_idx, slot_idx, expert_id)], x:
-  f32[n_embd × n_tokens]}` — explicit slot assignment (dispatcher decides,
-  server obeys), global expert ids (server maps through its own table; no
-  remap coupling between client and shard layout).
-- Response: rows per work item + **server-side durations in the header**
-  (parse, compute, serialize — measured on the server's steady clock).
-- Server config declares held experts per layer (range or "all").
+- Request: `{version, layer, x: f32[n_embd x n_tokens], return_mode}`.
+- Response: one combined row per token, or the `n_used` per-slot rows plus the
+  expert ids under `return_mode = per_slot` (debug: lets the client reproduce
+  the combine independently). Either way the header carries **server-side
+  durations** — parse, route, compute, serialise, on the server's own clock.
+- Batched requests for prefill: `n_tokens > 1` in one call.
 - Version field; dims explicit; hard errors on mismatch.
+
+Expert ids stay **global** wherever they do appear, so a future backend that
+shards internally maps them itself and the client never learns about it.
 
 ## Latency & routing logging
 
-Durations only — never absolute cross-machine timestamps (no clock sync
-needed: client measures RTT on its clock, server reports its internal
-durations, `network + queueing = RTT − server_total` by subtraction).
+Durations only — never absolute cross-machine timestamps, so no clock sync is
+needed: the client measures RTT on its own clock, the server reports its
+internal durations, and `network + queueing = RTT − server_total`.
 
-- Per-RPC record: `(token_idx, layer, server_id, n_slots, bytes_out,
-  bytes_in, rtt_us, t_serialize_us, t_deserialize_us, srv_parse_us,
-  srv_compute_us, srv_serialize_us)`.
-- Per-token record: trunk compute, MoE wait, overlap efficiency.
-- Routing record: the selected expert ids per (layer, token) — feeds the
-  imbalance analysis, the per-expert frequency histogram (K3 partial
-  replication question), and static-vs-dynamic comparisons.
-- Mechanics: in-memory append in the hot path, JSONL flush at run end
-  into the run's results dir; aggregation/percentiles/plots in an
-  external Python script.
+- Per-RPC: `(token_idx, layer, n_slots, bytes_out, bytes_in, rtt_us,
+  t_serialize_us, t_deserialize_us, srv_parse_us, srv_route_us,
+  srv_compute_us, srv_serialize_us, srv_gpu_hits, srv_cpu_misses)`.
+- Per-token: trunk compute, MoE wait, overlap efficiency.
+- Routing: selected expert ids per (layer, token), logged **on the backend**
+  now that it routes — drives the residency question in phase 3 (are the
+  marginals flat enough that a static subset is as good as anything smarter?).
+- In-memory append on the hot path, JSONL at run end, analysis in Python.
 
-## Performance expectations (GLM-5.2, decode batch 1)
+## Backend implementation notes
 
-- Wire per token per MoE layer: ~28KB out (n_embd f32 + ids), ~224KB back
-  in per-slot mode (8 × n_embd f32); ~78 layers → ~20MB/token ≈ 16ms on
-  10GbE + ~78 RTTs ≈ ~10-15ms direct-attach. Against a ~500ms/token
-  compute budget: ~5% overhead. Partial-sum mode: ~4.4MB/token.
-- Static 128/128 sharding pays E[max(k, 8−k)] ≈ 5.1 of 8 expert-reads per
-  layer (Binomial(8, ½), each layer is a barrier) → ~25-30% slower than
-  balanced dispatch's 4/4, before any routing skew. This is the case for
-  replicated + dynamic dispatch.
-- Ceiling: decode is weight-bandwidth-bound (~66GB/s effective per
-  machine, from the observed 2 tok/s × ~33GB active). EP splits expert
-  reads across machines → ceiling ≈ 2× minus network: GLM 2 → ~3.5 tok/s
-  is success. K3 on CPUs lands in low single digits tok/s; 10+ needs the
-  GPU phase.
-- **Baseline depends on the OS, so fix it before quoting speedups.** Stock
-  `llama-bench` tg32 on the *same* Mac Pro 7,1 (build `6a32c29a7`, 5 reps):
-  macOS 2.00 t/s @16 threads / 2.23 @32; Windows/MSVC 1.58 / 1.84. Harness
-  runs that page 583 GiB in during measurement read ~1.3 on either. nano-glm
-  tracks stock llama.cpp on both platforms, so a `2×` EP claim must be quoted
-  against the same-OS single-machine number.
-- **Do not assume mmap residency is free — measure it.** Phase 1 has the
-  shard server mmap the GGUF and touch only its expert ranges. On Windows
-  that is not a stable footing: identical `llama-bench` invocations returned
-  1.04 ± 0.29 and 1.84 ± 0.02 t/s depending on standby-list state, while
-  `--load-mode none` (weights read into ordinary RAM) gave a steady
-  1.90 ± 0.08. macOS mmap shows no such spread (± 0.01). Since a shard server
-  holds 282-563 GiB resident and the whole point is per-token expert reads,
-  give it an explicit non-mmap load path and report which one a run used —
-  otherwise a dispatch-policy A/B can be swamped by paging noise larger than
-  the effect being measured.
+- **Do not rely on mmap for the expert store.** On Windows, identical
+  `llama-bench` invocations returned 1.04 ± 0.29 and 1.84 ± 0.02 t/s purely
+  from standby-list state, while `--load-mode none` gave a steady
+  1.90 ± 0.08; macOS shows no such spread. A backend holding 563 GiB resident
+  and measured on throughput needs an explicit non-mmap load path, and each
+  run should record which mode it used.
+- Huge pages are worth testing: 31 MB per expert against a 1536-entry L2 TLB
+  means every expert access thrashes it.
+- The expert FFN is ~95%+ memory movement, not arithmetic — 31 MB streamed
+  against ~6-125 us of actual MAC work. Optimise bytes, not flops.
+- **Speculative routing (idea, unproven).** With the router on the backend, it
+  can run layer N+1's router on layer N's activation while otherwise idle, and
+  prefetch the experts it expects. Activations drift slowly between layers, so
+  the prediction may be good — measurable cheaply by logging the overlap
+  between the speculative top-k and the real one. Two caveats: it buys nothing
+  while experts are in DRAM (the workload is bandwidth-bound and prefetch does
+  not add bandwidth), and the idle window it relies on shrinks to almost
+  nothing once the trunk is on a fast GPU. Its real home is Kimi-K3, where
+  experts exceed RAM and prefetch targets storage rather than cache.
+
+## Parked (revisit only if a model outgrows one backend)
+
+Client-side expert sharding, static-vs-replicated dispatch policies, balanced
+slot assignment across peers, and asymmetric split-ratio tuning. All of it
+assumed experts spread over machines the client had to choose between; with
+one backend holding everything, none of it applies. The protocol keeps global
+expert ids specifically so this can come back as a backend-side concern
+without a client change.
 
 ## References (searchable anchors, not line numbers)
 
-- ggml scheduler: `ggml/src/ggml-backend.cpp` —
-  `ggml_backend_sched_split_graph` (placement passes, op_offload),
-  `ggml_backend_sched_compute_splits` (sequential split loop, MoE
-  used-expert copy optimization), `GGML_SCHED_MAX_COPIES` / `n_copies`
-  (what `parallel=true` actually does), `GGML_SCHED_DEBUG` env var
-  (dump split assignments).
-- meta backend (upstream TP): `ggml/src/ggml-backend-meta.cpp` —
-  `ggml_backend_meta_get_split_state`, `handle_mul_mat`,
-  `GGML_BACKEND_SPLIT_AXIS_*` / `MIRRORED` / `PARTIAL`,
-  `ggml_backend_comm_allreduce_tensor`; policy callback
-  `llama_meta_device_get_split_state` in `src/llama-model.cpp`.
-- custom ops: `ggml/include/ggml.h` — `ggml_map_custom3`,
-  `GGML_OP_CUSTOM` (callback receives `ith`/`nth`; do IO on `ith == 0`).
-- CPU execution model: `ggml/src/ggml-cpu/ggml-cpu.c` —
-  `ggml_graph_compute_thread`, `ggml_barrier` (all threads cooperate on
-  one node at a time; nodes strictly in order — what makes the
-  send/recv-split overlap trick work).
-- nano-glm seam: `src/nano_glm.cpp` — routed-expert block (search
-  `ffn_up_exps`, `ggml_mul_mat_id`), baseline combine (search
-  `cur_experts`), shared expert (search `ffn_up_shexp`).
-- verification harness: `../logit-kld` — `compare.py`, the batch-shape
-  noise-floor discussion in its README, the 5-prompt corpus in
-  `prompts/`.
+- client seam: `src/nano_glm.cpp` — `moe_proj_cb`, the combine at
+  `cur_experts`, shared expert at `ffn_up_shexp` (branch
+  `phase0-moe-dispatch`).
+- kernel contract for bit-exactness: `ggml/src/ggml-cpu/ggml-cpu.c`
+  `ggml_compute_forward_mul_mat_id_one_chunk`; public traits in
+  `ggml/include/ggml-cpu.h` (`ggml_get_type_traits_cpu`).
+- custom ops: `ggml/include/ggml.h` — `ggml_custom_4d`, `GGML_OP_CUSTOM`
+  (callback gets `ith`/`nth`; inputs via `dst->src[i]`).
+- CPU execution order: `ggml/src/ggml-cpu/ggml-cpu.c`
+  `ggml_graph_compute_thread`, `ggml_barrier` — nodes run strictly in order,
+  which is what makes the send/recv overlap trick work.
+- verification: `../logit-kld` — `compare.py`, `rescore --sim-gen`, the
+  5-prompt corpus in `prompts/`, noise floors in its README.
+- GPU cost model for phase 3: `../moe-offload` — per-phase dispatch/transfer
+  costs on both platforms, and the 2 GiB max-allocation limit on the AMD
+  driver that forces expert tensors to be split per projection.
+- run-configuration rules (toolchain, thread count, batch shape all move
+  logits): repo `CLAUDE.md`.

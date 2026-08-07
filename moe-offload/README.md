@@ -14,10 +14,15 @@ software stack, which is the thing being chosen.
 
 ## What it emulates
 
-One MoE layer of GLM-5.2 at decode (batch 1), split the way the plan splits it:
+One MoE layer of GLM-5.2 at decode (batch 1):
 
 - **CPU**: router (top-K of E), shared expert, combine.
 - **GPU**: the K selected routed experts — `up`, `gate`, swiglu, `down`.
+
+That was the plan's split when this was written. PLAN.md has since moved the
+shared expert to the trunk host, so the CPU side here is a *stand-in* for
+whatever work overlaps the GPU rather than a model of the backend; the
+dispatch, transfer and fence numbers are unaffected.
 
 Shapes default to the real model: `d_embd=6144`, `d_ffn=2048`, `top_k=8`.
 Weights are int8 with a per-row scale — 8 bpw against the real Q6_K's 6.64, so
@@ -72,7 +77,7 @@ depending on where the time lands:
   (24 KiB up, `K x d_embd` floats back).
 - **LAYER w/ cpu overlap** — the same layer with the CPU shared expert running
   between `submit()` and `waitFence()`, i.e. the `moe_send`/`moe_recv` trick in
-  PLAN.md phase 3.
+  PLAN.md phase 2.
 
 ### Measured: both OSes, same Mac Pro 7,1, one Vega II die
 
@@ -94,7 +99,7 @@ api 1.2.357, subgroup **32**, maxAlloc **3.50 GiB**.
 Both platforms pass the CPU cross-check with the *same* error
 (`max|gpu-cpu| = 6.914e-06`, no non-finite values). **Vulkan-on-Metal computes
 correctly on hardware where native Metal silently NaNs** — see the repo
-`CLAUDE.md` AMD-Metal entry. That is a real result for PLAN.md phase 4.
+`CLAUDE.md` AMD-Metal entry. That is a real result for PLAN.md phase 3.
 
 What the split says:
 
@@ -110,8 +115,7 @@ What the split says:
   ~110 us of the 190 us floor is kernel launch rather than queue round trip.
 - The 192 KiB readback is round-trip-bound rather than bandwidth-bound on both
   (0.7 GB/s Windows, 1.9 GB/s macOS). This is the quantitative case for
-  PLAN.md's partial-sum mode: return one combined row instead of K per-slot
-  rows.
+  PLAN.md's combined return mode: one combined row instead of K per-slot rows.
 - Overlap hides the fence wait but not the transfers, which sit outside the
   submit/wait window.
 - macOS allowing a **3.50 GiB** single allocation where Windows caps at 2.00
@@ -157,11 +161,12 @@ depends on whether GPUs matter for the phase being run:
 | max single allocation | **3.50 GiB** | 2.00 GiB |
 | Vulkan correctness | OK | OK |
 
-**Phases 0-3 of PLAN.md are CPU and network only**, and there macOS is ~20%
+**Phases 0-2 of PLAN.md are CPU and network only**, and there macOS is ~20%
 faster with far more reproducible timings — which matters more than it sounds,
-since those phases are judged by A/B comparisons of dispatch policies.
-**Phase 4 is where Windows' 4x GPU lead would matter**, and it is explicitly
-off the critical path.
+since those phases are judged by latency and throughput measurements that the
+Windows mmap swing (1.04-1.84 t/s on identical configs) would swamp.
+**Phase 3 is where Windows' 4x GPU lead would matter** — that is where a
+resident expert subset moves onto the Vega dies inside the MoE backend.
 
 Two things keep the GPU question secondary regardless of the 4x: expert
 residency is the binding constraint (563 GiB of routed experts against 128 GiB
