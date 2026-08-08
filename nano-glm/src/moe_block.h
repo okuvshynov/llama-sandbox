@@ -46,6 +46,15 @@ static ggml_tensor * build_moe_block(ggml_context * ctx0, ggml_cgraph * gf,
     if (h.expert_norm) {
         weights = ggml_reshape_2d(ctx0, weights, h.n_expert_used, n_tokens);
         ggml_tensor * weights_sum = ggml_sum_rows(ctx0, weights);
+        // 6.103515625e-5 is exactly 2^-14, the smallest positive *normal* fp16.
+        // It floors the sum of the top-k routing weights before the division
+        // below: the weights are sigmoid outputs, so a token whose selected
+        // experts all score far negative sums to ~0 and would divide to inf.
+        // Copied verbatim from llama.cpp's build_moe_ffn (llama-graph.cpp,
+        // "clamp to smallest number representable by F16") and load-bearing for
+        // bit-exactness — the clamp is part of the op sequence, not a tunable.
+        // Note fp16 does go lower via subnormals (2^-24); the bound is the
+        // smallest normal, which is the conservative choice, not an error.
         weights_sum = ggml_clamp(ctx0, weights_sum, 6.103515625e-5, INFINITY);
         weights = ggml_div(ctx0, weights, weights_sum);
         weights = ggml_reshape_3d(ctx0, weights, 1, h.n_expert_used, n_tokens);
