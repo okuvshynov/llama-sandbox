@@ -49,6 +49,9 @@ target_include_directories(nano-glm PRIVATE
 
 target_link_libraries(nano-glm PRIVATE ggml)
 target_compile_features(nano-glm PRIVATE cxx_std_17)
+if(WIN32)
+    target_link_libraries(nano-glm PRIVATE ws2_32)   # --moe-addr client
+endif()
 
 # The MoE backend: same model definition and same routed-expert graph
 # (nano_model.h / moe_block.h), reached over TCP instead of a function call.

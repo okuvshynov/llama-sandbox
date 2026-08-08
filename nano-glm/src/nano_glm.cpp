@@ -14,6 +14,10 @@
 //
 // Input is raw token ids (no tokenizer here — the ids are the interface,
 // same policy as logit-kld). Output is an lkldtopk v1 file for compare.py.
+// moe_proto.h first: winsock2.h must precede windows.h, which
+// cpu_topology.h and nano_model.h both pull in.
+#include "moe_proto.h"
+
 #include "cpu_topology.h"
 #include "logits_file.h"
 #include "moe_block.h"
@@ -32,6 +36,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <map>
 #include <string>
 #include <thread>
@@ -50,6 +55,8 @@ struct nano_params {
     int32_t     n_ctx       = 4096;
     int32_t     n_batch     = 512;
     int32_t     n_threads   = (int32_t) physical_core_count();
+    std::string moe_addr;        // host:port — routed experts go to moe-server
+    std::string moe_log;         // JSONL of per-RPC timings
 };
 
 static bool parse_args(int argc, char ** argv, nano_params & p) {
@@ -64,6 +71,8 @@ static bool parse_args(int argc, char ** argv, nano_params & p) {
         else if (!strcmp(a, "-c") && i + 1 < argc) { p.n_ctx       = atoi(argv[++i]); }
         else if (!strcmp(a, "-b") && i + 1 < argc) { p.n_batch     = atoi(argv[++i]); }
         else if (!strcmp(a, "-t") && i + 1 < argc) { p.n_threads   = atoi(argv[++i]); }
+        else if (!strcmp(a, "--moe-addr") && i + 1 < argc) { p.moe_addr = argv[++i]; }
+        else if (!strcmp(a, "--moe-log")  && i + 1 < argc) { p.moe_log  = argv[++i]; }
         else {
             fprintf(stderr, "nano-glm: unknown argument '%s'\n", a);
             p.model_path.clear();
@@ -80,10 +89,145 @@ static bool parse_args(int argc, char ** argv, nano_params & p) {
             "  -k <int>    top-K logits stored per position (default: 128)\n"
             "  -c <int>    context size, auto-raised to fit (default: 4096)\n"
             "  -b <int>    prompt chunk size (default: 512)\n"
-            "  -t <int>    threads (default: physical cores, ignoring SMT siblings)\n");
+            "  -t <int>    threads (default: physical cores, ignoring SMT siblings)\n"
+            "  --moe-addr <host:port>  evaluate routed experts on a remote moe-server\n"
+            "              instead of locally (see ../PLAN.md step 1)\n"
+            "  --moe-log <path>  write per-RPC timings as JSONL\n");
         return false;
     }
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// routed experts over RPC (PLAN.md step 1)
+//
+// With --moe-addr, the routed-expert block leaves the process: the callback
+// ships the post-norm activation to moe-server, which routes, evaluates the
+// selected experts and combines, and ships one row per token back. The shared
+// expert stays here on the trunk, so the graph below the callback is
+// unchanged. Without the flag, build_moe_block() runs locally exactly as
+// before — keeping both paths in one binary is what makes local-vs-remote a
+// direct A/B rather than a comparison across builds.
+//
+// n_tasks is 1 for the custom op: one socket, one thread. The other workers
+// idle at the barrier while the request is in flight, which is the overlap
+// opportunity PLAN.md step 2 picks up (moe_send/moe_recv around the shared
+// expert).
+
+struct moe_rpc_record {
+    uint32_t layer, n_tokens;
+    uint32_t bytes_out, bytes_in;
+    uint32_t rtt_us;
+    uint32_t srv_parse_us, srv_route_us, srv_compute_us, srv_ser_us;
+};
+
+// Always-on counters. A few adds per RPC against milliseconds of expert
+// compute, so they cost nothing and are never conditional — a number you only
+// collect when you remember to ask for it is a number you do not have when
+// something looks wrong.
+struct moe_stats {
+    uint64_t n_calls   = 0;
+    uint64_t bytes_out = 0;   // header + activation, per request
+    uint64_t bytes_in  = 0;   // header + combined rows, per response
+    uint64_t rtt_us    = 0;   // summed client-side round trip
+    uint64_t srv_us    = 0;   // summed server-reported total
+    // rtt - srv is network + queueing, by the subtraction PLAN.md relies on
+};
+
+struct moe_client {
+    moe_socket sock = MOE_INVALID_SOCKET;
+    moe_stats  st;
+
+    // Kept always: 4 bytes per call, and percentiles need the distribution,
+    // not just the sum. ~76 KB for a 256-token run.
+    std::vector<uint32_t> rtt_us;
+
+    // Kept only for --moe-log: 36 bytes per call, and a long run makes tens of
+    // thousands of them.
+    bool want_log = false;
+    std::vector<moe_rpc_record> log;
+
+    bool active() const { return sock != MOE_INVALID_SOCKET; }
+};
+
+static moe_client g_moe;
+
+// One per RPC node in the graph. Stable addresses (deque) because the graph is
+// built once and reused; cleared whenever it is rebuilt.
+struct moe_rpc_ctx { uint32_t layer; };
+static std::deque<moe_rpc_ctx> g_rpc_ctxs;
+
+static uint32_t elapsed_us(std::chrono::steady_clock::time_point t0) {
+    const auto d = std::chrono::duration_cast<std::chrono::microseconds>(
+                       std::chrono::steady_clock::now() - t0).count();
+    return (uint32_t) (d < 0 ? 0 : d);
+}
+
+static void moe_rpc_cb(ggml_tensor * dst, int ith, int /*nth*/, void * userdata) {
+    if (ith != 0) return;   // n_tasks == 1; explicit because a socket has one owner
+
+    const moe_rpc_ctx * c = (const moe_rpc_ctx *) userdata;
+    const ggml_tensor * x = dst->src[0];
+
+    if (!ggml_is_contiguous(x) || !ggml_is_contiguous(dst)) {
+        NANO_ABORT("moe rpc: layer %u tensors must be contiguous", c->layer);
+    }
+
+    const uint32_t n_embd   = (uint32_t) dst->ne[0];
+    const uint32_t n_tokens = (uint32_t) dst->ne[1];
+    const size_t   bytes    = (size_t) n_embd * n_tokens * sizeof(float);
+
+    moe_request_header rq = {};
+    rq.magic         = MOE_MAGIC;
+    rq.version       = MOE_VERSION;
+    rq.msg_type      = MOE_MSG_REQUEST;
+    rq.layer         = c->layer;
+    rq.n_embd        = n_embd;
+    rq.n_tokens      = n_tokens;
+    rq.return_mode   = MOE_RET_COMBINED;
+    rq.payload_bytes = bytes;
+
+    const auto t0 = std::chrono::steady_clock::now();
+
+    if (!moe_send_all(g_moe.sock, &rq, sizeof(rq)) ||
+        !moe_send_all(g_moe.sock, x->data, bytes)) {
+        NANO_ABORT("moe rpc: send failed on layer %u (%s)", c->layer, moe_net_error().c_str());
+    }
+
+    moe_response_header rh;
+    if (!moe_recv_all(g_moe.sock, &rh, sizeof(rh))) {
+        NANO_ABORT("moe rpc: no response for layer %u (%s)", c->layer, moe_net_error().c_str());
+    }
+    if (rh.magic != MOE_MAGIC || rh.msg_type != MOE_MSG_RESPONSE) {
+        NANO_ABORT("moe rpc: malformed response header on layer %u", c->layer);
+    }
+    if (rh.status != MOE_OK) {
+        std::string msg(rh.payload_bytes, '\0');
+        if (rh.payload_bytes) moe_recv_all(g_moe.sock, &msg[0], (size_t) rh.payload_bytes);
+        NANO_ABORT("moe rpc: server error %u on layer %u: %s", rh.status, c->layer, msg.c_str());
+    }
+    if (rh.n_embd != n_embd || rh.n_tokens != n_tokens || rh.payload_bytes != bytes) {
+        NANO_ABORT("moe rpc: response dims mismatch on layer %u", c->layer);
+    }
+    if (!moe_recv_all(g_moe.sock, dst->data, bytes)) {
+        NANO_ABORT("moe rpc: short response payload on layer %u", c->layer);
+    }
+
+    const uint32_t rtt = elapsed_us(t0);
+    const uint32_t srv = rh.t_parse_us + rh.t_route_us + rh.t_compute_us + rh.t_serialize_us;
+
+    g_moe.st.n_calls   += 1;
+    g_moe.st.bytes_out += sizeof(rq) + bytes;
+    g_moe.st.bytes_in  += sizeof(rh) + bytes;
+    g_moe.st.rtt_us    += rtt;
+    g_moe.st.srv_us    += srv;
+    g_moe.rtt_us.push_back(rtt);
+
+    if (g_moe.want_log) {
+        g_moe.log.push_back({ c->layer, n_tokens,
+                              (uint32_t) (sizeof(rq) + bytes), (uint32_t) (sizeof(rh) + bytes),
+                              rtt, rh.t_parse_us, rh.t_route_us, rh.t_compute_us, rh.t_serialize_us });
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -215,6 +359,9 @@ static graph_io build_graph(ggml_context * ctx0, ggml_cgraph * gf,
                             int32_t n_tokens, int32_t n_kv) {
     const nano_hparams & h = M.h;
     graph_io io = {};
+
+    // the previous graph is discarded on rebuild, and its RPC nodes with it
+    g_rpc_ctxs.clear();
 
     const int64_t n_embd_head_k       = h.n_embd_head_k_mla;                // 256
     const int64_t n_embd_head_qk_rope = h.n_rot;                            // 64
@@ -465,7 +612,16 @@ static graph_io build_graph(ggml_context * ctx0, ggml_cgraph * gf,
             cur = ggml_swiglu_split(ctx0, gate, up);
             cur = ggml_mul_mat(ctx0, L.ffn_down, cur);
         } else {
-            ggml_tensor * moe_out = build_moe_block(ctx0, gf, h, L, cur, n_tokens);
+            ggml_tensor * moe_out;
+            if (g_moe.active()) {
+                g_rpc_ctxs.push_back({ (uint32_t) il });
+                ggml_tensor * args[1] = { cur };
+                moe_out = ggml_custom_4d(ctx0, GGML_TYPE_F32, h.n_embd, n_tokens, 1, 1,
+                                         args, 1, moe_rpc_cb, 1, &g_rpc_ctxs.back());
+                ggml_build_forward_expand(gf, moe_out);
+            } else {
+                moe_out = build_moe_block(ctx0, gf, h, L, cur, n_tokens);
+            }
 
             // shared expert (build_ffn: SILU, PAR)
             {
@@ -630,6 +786,23 @@ int main(int argc, char ** argv) {
         if (t < 0 || (uint32_t) t >= h.n_vocab) NANO_ABORT("prompt token %d out of vocab range [0, %u)", t, h.n_vocab);
     }
 
+    // Connect before the graph is built: build_graph checks g_moe.active() to
+    // decide whether the routed block is a local subgraph or an RPC node.
+    if (!params.moe_addr.empty()) {
+        const size_t colon = params.moe_addr.rfind(':');
+        if (colon == std::string::npos) NANO_ABORT("--moe-addr must be host:port");
+        const std::string host = params.moe_addr.substr(0, colon);
+        const int         port = atoi(params.moe_addr.c_str() + colon + 1);
+        if (!moe_net_init()) NANO_ABORT("socket init failed");
+        g_moe.sock = moe_connect(host, (uint16_t) port);
+        if (!g_moe.active()) {
+            NANO_ABORT("cannot reach moe-server at %s (%s)", params.moe_addr.c_str(),
+                       moe_net_error().c_str());
+        }
+        g_moe.want_log = !params.moe_log.empty();
+        fprintf(stderr, "nano-glm: routed experts via moe-server at %s\n", params.moe_addr.c_str());
+    }
+
     const uint32_t kv_size = std::max((uint32_t) params.n_ctx, (uint32_t) (n_prompt + params.n_predict));
     nano_state S;
     init_state(S, M, kv_size, params.n_threads);
@@ -707,6 +880,40 @@ int main(int argc, char ** argv) {
     fprintf(stderr, "nano-glm: top-%d tail mass: mean=%.3e max=%.3e\n", out.top_k, tail_mean, tail_max);
     fprintf(stderr, "nano-glm: wrote %s (%d positions)\n", params.output_path.c_str(),
             (int32_t) out.seqs[0].positions.size());
+
+    if (g_moe.active()) {
+        const moe_stats & st = g_moe.st;
+        std::vector<uint32_t> rtt = g_moe.rtt_us;
+        std::sort(rtt.begin(), rtt.end());
+        const size_t n = rtt.size();
+        if (n) {
+            const size_t i90 = (size_t)(n * 0.9) < n ? (size_t)(n * 0.9) : n - 1;
+            fprintf(stderr,
+                    "nano-glm: MoE RPC: %" PRIu64 " calls, rtt p50 %u us p90 %u us max %u us\n",
+                    st.n_calls, rtt[n / 2], rtt[i90], rtt[n - 1]);
+            fprintf(stderr,
+                    "nano-glm: MoE RPC: %.1fs total = %.1fs server + %.1fs network+queueing "
+                    "(%.1f%%), %.1f MB out / %.1f MB in\n",
+                    st.rtt_us / 1e6, st.srv_us / 1e6, (double)(st.rtt_us - st.srv_us) / 1e6,
+                    st.rtt_us ? 100.0 * (double)(st.rtt_us - st.srv_us) / (double) st.rtt_us : 0.0,
+                    st.bytes_out / 1e6, st.bytes_in / 1e6);
+        }
+        if (!params.moe_log.empty()) {
+            FILE * f = fopen(params.moe_log.c_str(), "w");
+            if (!f) NANO_ABORT("cannot write %s", params.moe_log.c_str());
+            for (const moe_rpc_record & r : g_moe.log) {
+                fprintf(f,
+                        "{\"layer\":%u,\"n_tokens\":%u,\"bytes_out\":%u,\"bytes_in\":%u,"
+                        "\"rtt_us\":%u,\"srv_parse_us\":%u,\"srv_route_us\":%u,"
+                        "\"srv_compute_us\":%u,\"srv_serialize_us\":%u}\n",
+                        r.layer, r.n_tokens, r.bytes_out, r.bytes_in, r.rtt_us,
+                        r.srv_parse_us, r.srv_route_us, r.srv_compute_us, r.srv_ser_us);
+            }
+            fclose(f);
+            fprintf(stderr, "nano-glm: wrote %s (%zu RPC records)\n", params.moe_log.c_str(), n);
+        }
+        moe_close(g_moe.sock);
+    }
 
     return 0;
 }

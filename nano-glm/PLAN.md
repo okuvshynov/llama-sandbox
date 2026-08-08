@@ -60,11 +60,22 @@ GLM-5.2 UD-Q6_K, 75 MoE layers, at the 74 GB/s this Mac Pro sustains:
 | trunk on a Blackwell-class card | ~10 ms — negligible |
 | **requests / token** | **75, strictly sequential** |
 | **compute budget / request** | **3.90 ms → 256 req/s** |
-| wire / request | 24 KiB out, 24 KiB back → 3.7 MB/token, ~2.9 ms on 10GbE |
+| wire / request, **decode** | 24 KiB each way → 3.7 MB/token, ~2.9 ms on 10GbE |
+| wire / request, **prefill** | n_tokens x 24 KiB — ~2.8 MB at 114 tokens (measured) |
+
+Measured in step 1, superseding the estimates above where they differ:
+
+| quantity | measured |
+|---|---|
+| backend, warm | **3.07 ms/layer, 80.6 GB/s** -> 4.16 tok/s MoE-only |
+| backend, cold | 52 ms/layer — 16x, all page-in |
+| RPC overhead, loopback warm | **114 us, 3.6%** of a layer |
+| network+queueing over a corpus prompt | flat 0.7s while compute fell 108s -> 30s |
 
 The system is entirely MoE-bound, so the figure of merit is the backend's
-sustained request rate. RPC overhead is pure addition: ~5% at 200 us/round
-trip, structural only once the backend outruns DRAM.
+sustained request rate. RPC overhead is pure addition, and its *share* grows
+as the backend gets faster — the 0.7s above was 0.7% of the first corpus
+prompt and 2.5% of the fifth, for identical work.
 
 Weight split (from the GGUF tensor offsets): routed experts 563.27 GiB /
 96.6%, shared expert 2.84 GiB, trunk 16.76 GiB. Per *token*, though, the trunk
@@ -85,62 +96,48 @@ Branch `phase0-moe-dispatch` (2aeceef) — see that commit for the kernel
 contract that makes a callback bit-exact, and why the in-graph alternative
 would have cost 4x the expert compute.
 
-### 1. RPC proof of concept, local, CPU-only — **Next up**
+### 1. RPC proof of concept, local, CPU-only — **Done**
 
-Split the phase 0 callback into client and server across loopback TCP. The
-branch above needs rebasing onto main first, and its callback has to absorb
-the router and the combine rather than just the three projections.
+The routed block runs in a separate process over TCP: `moe-server` holds the
+router and every expert, takes `(layer, x)`, routes, evaluates, combines, and
+returns one row per token. The client is a `ggml_custom_4d` node at
+`n_tasks = 1` in place of the local block, so both paths live in one binary
+and local-vs-remote is a direct A/B. Gate passed: 743 corpus positions,
+12,375 RPCs, KL exactly 0.0, 766,776 bytes identical to llama.cpp.
 
-**Server**: holds the router and the expert tensors. Takes `(layer, x)`,
-routes, evaluates the selected experts, combines, returns one row — same ggml
-kernels throughout. Stateless: no KV, no history between calls.
+`src/moe_proto.h`, `src/moe_server.cpp` (deferred optimisations documented
+there), `--moe-addr` / `--moe-log` in `src/nano_glm.cpp`. Timings in the
+budget above.
 
-**Client**: the custom-op callback serialises, blocks, and drops the returned
-row where the combine used to land.
+### 2. Backend on another machine — **Next up**
 
-**Protocol v1** (requirements, not a wire format):
+Direct-attach 10GbE, TCP_NODELAY, jumbo frames. Same OS and toolchain on both
+ends, or the KL == 0 gate fails for reasons unrelated to the RPC.
 
-- Request `{version, layer, x: f32[n_embd x n_tokens], return_mode}`.
-- Response: one combined row per token, or `n_used` per-slot rows plus expert
-  ids under `return_mode = per_slot` — a debug mode that lets the client
-  reproduce the combine independently.
-- Header carries **server-side durations**: parse, route, compute, serialise,
-  on the server's own clock.
-- `n_tokens > 1` in one call for prefill. Version field, explicit dims, hard
-  errors on mismatch. Expert ids stay **global** wherever they appear, so a
-  backend that later shards internally maps them itself.
+1. Bring the second Mac Pro up on the same build, verify the model there
+   against `checksums/GLM-5.2-UD-Q6_K.sha256` **from disk** before trusting
+   any result from it.
+2. Point `--moe-addr` at it. **Gate: KL == 0 over the corpus, still** — the
+   network must not perturb a bit. Same-ISA, same-toolchain makes this
+   achievable; if it fails, suspect the run configuration before the code.
+3. Measure what loopback could not: per-request RTT distribution over a real
+   link, sustained req/s against the 256 the CPU ceiling allows, and
+   end-to-end tok/s. The gap between RTT and `server_total` is now genuine
+   network time rather than ~114 us of loopback.
+4. **Expect prefill to hurt.** ~2.8 MB per request at 114 tokens is ~2.2 ms of
+   10GbE transfer on top of compute, where decode's 24 KiB is ~20 us. If that
+   dominates, the fixes in order of cheapness: f16 on the wire (measure the
+   KL), chunking the prefill into smaller batches, or overlapping transfer
+   with compute.
+5. **Latency hiding**: issue the request, run the shared expert on the client
+   while it is in flight, collect after. A `moe_send`/`moe_recv` split around
+   the shared-expert branch gets this for free, since the CPU backend executes
+   graph nodes in order. Worth ~0.5 ms/layer at decode; more once the link is
+   slower than loopback.
 
-**Logging** (durations only — no cross-machine clock sync; `network + queueing
-= RTT − server_total`): per-RPC `(token_idx, layer, bytes_out, bytes_in,
-rtt_us, t_serialize_us, t_deserialize_us, srv_parse_us, srv_route_us,
-srv_compute_us, srv_serialize_us)`; per-token trunk/wait/overlap; routing ids
-per (layer, token), logged on the backend. In-memory on the hot path, JSONL at
-run end, analysis in Python.
-
-**Gate**: KL == 0 over the 5-prompt corpus, same machine, same binary.
-
-Two questions to settle here, where they are cheap:
-
-- Is the server-side combine byte-identical to the client-side one? It should
-  be if the backend applies routing weights and pairwise-adds slots in index
-  order, exactly as the baseline does — that makes the 8x traffic reduction
-  free rather than a trade. Verify, do not assume.
-- Does moving the router across the boundary change anything? It is the same
-  matmul on the same activation, so a failure here indicts the transport, not
-  the routing.
-
-**Measure**: round-trip latency, serialise/deserialise cost, and the
-per-request overhead phase 2 will pay again over a real link.
-
-### 2. Backend on another machine — **Planned**
-
-Direct-attach 10GbE, TCP_NODELAY, jumbo frames; same OS and toolchain both
-ends. Gate: KL == 0 still. Measure sustained req/s, RTT distribution, and
-end-to-end tok/s against the 256 req/s the CPU ceiling allows — the gap is the
-RPC tax. Then latency hiding: issue the request, run the shared expert on the
-client while it is in flight, collect after. A `moe_send`/`moe_recv` split
-around the shared-expert branch gets this for free, since the CPU backend
-executes graph nodes in order.
+Open from step 1, cheap to fold in here: rename the server's `t_route` field
+(it times graph construction, not routing), and implement `per_slot` return if
+the debug path is wanted.
 
 ### 3. Vulkan experts inside the backend — **Planned**
 
