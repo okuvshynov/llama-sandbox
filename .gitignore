@@ -7,6 +7,10 @@ tags
 
 # runtime logs
 *.log
+
+# routing traces (nano-glm --expert-log): megabytes of raw expert ids;
+# the derived statistics are what gets committed
+*.trace
 .DS_Store
 
 # python

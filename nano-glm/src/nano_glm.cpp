@@ -19,6 +19,7 @@
 #include "moe_proto.h"
 
 #include "cpu_topology.h"
+#include "expert_trace.h"
 #include "logits_file.h"
 #include "moe_block.h"
 #include "nano_model.h"
@@ -57,6 +58,7 @@ struct nano_params {
     int32_t     n_threads   = (int32_t) physical_core_count();
     std::string moe_addr;        // host:port — routed experts go to moe-server
     std::string moe_log;         // JSONL of per-RPC timings
+    std::string expert_log;      // per-position, per-layer selected expert ids
 };
 
 static bool parse_args(int argc, char ** argv, nano_params & p) {
@@ -73,6 +75,7 @@ static bool parse_args(int argc, char ** argv, nano_params & p) {
         else if (!strcmp(a, "-t") && i + 1 < argc) { p.n_threads   = atoi(argv[++i]); }
         else if (!strcmp(a, "--moe-addr") && i + 1 < argc) { p.moe_addr = argv[++i]; }
         else if (!strcmp(a, "--moe-log")  && i + 1 < argc) { p.moe_log  = argv[++i]; }
+        else if (!strcmp(a, "--expert-log") && i + 1 < argc) { p.expert_log = argv[++i]; }
         else {
             fprintf(stderr, "nano-glm: unknown argument '%s'\n", a);
             p.model_path.clear();
@@ -92,7 +95,10 @@ static bool parse_args(int argc, char ** argv, nano_params & p) {
             "  -t <int>    threads (default: physical cores, ignoring SMT siblings)\n"
             "  --moe-addr <host:port>  evaluate routed experts on a remote moe-server\n"
             "              instead of locally (see ../PLAN.md step 1)\n"
-            "  --moe-log <path>  write per-RPC timings as JSONL\n");
+            "  --moe-log <path>  write per-RPC timings as JSONL\n"
+            "  --expert-log <path>  write the routing trace (selected expert ids per\n"
+            "              position per layer); requires a -DNANO_EXPERT_TRACE build\n"
+            "              and the local MoE path (see src/expert_trace.h)\n");
         return false;
     }
     return true;
@@ -362,6 +368,7 @@ static graph_io build_graph(ggml_context * ctx0, ggml_cgraph * gf,
 
     // the previous graph is discarded on rebuild, and its RPC nodes with it
     g_rpc_ctxs.clear();
+    expert_trace_reset();
 
     const int64_t n_embd_head_k       = h.n_embd_head_k_mla;                // 256
     const int64_t n_embd_head_qk_rope = h.n_rot;                            // 64
@@ -620,7 +627,7 @@ static graph_io build_graph(ggml_context * ctx0, ggml_cgraph * gf,
                                          args, 1, moe_rpc_cb, 1, &g_rpc_ctxs.back());
                 ggml_build_forward_expand(gf, moe_out);
             } else {
-                moe_out = build_moe_block(ctx0, gf, h, L, cur, n_tokens);
+                moe_out = build_moe_block(ctx0, gf, h, il, L, cur, n_tokens);
             }
 
             // shared expert (build_ffn: SILU, PAR)
@@ -738,6 +745,9 @@ static void eval_chunk(const nano_model & M, nano_state & S, eval_ctx & E,
 
     E.logits.resize((size_t) h.n_vocab * n_tokens);
     ggml_backend_tensor_get(io.logits, E.logits.data(), 0, E.logits.size() * sizeof(float));
+
+    // routing trace, if this is a -DNANO_EXPERT_TRACE build with --expert-log
+    expert_trace_flush(n_past, n_tokens, tokens);
 }
 
 // ---------------------------------------------------------------------------
@@ -801,6 +811,22 @@ int main(int argc, char ** argv) {
         }
         g_moe.want_log = !params.moe_log.empty();
         fprintf(stderr, "nano-glm: routed experts via moe-server at %s\n", params.moe_addr.c_str());
+    }
+
+    // Before the first eval: the trace hooks itself into the graph as it is built.
+    if (!params.expert_log.empty()) {
+        if (!expert_trace_built()) {
+            NANO_ABORT("--expert-log needs a routing-trace build: .\\build.ps1 -Trace "
+                       "(cmake -DNANO_EXPERT_TRACE=ON), then run build-trace\\bin\\nano-glm");
+        }
+        if (g_moe.active()) {
+            // The router runs on the backend in that mode, so there is nothing
+            // to observe here. moe-server would have to trace it, which needs
+            // sequence positions the protocol does not carry.
+            NANO_ABORT("--expert-log requires the local MoE path (drop --moe-addr)");
+        }
+        expert_trace_open(params.expert_log, h, M.desc, n_prompt);
+        fprintf(stderr, "nano-glm: routing trace -> %s\n", params.expert_log.c_str());
     }
 
     const uint32_t kv_size = std::max((uint32_t) params.n_ctx, (uint32_t) (n_prompt + params.n_predict));
@@ -880,6 +906,12 @@ int main(int argc, char ** argv) {
     fprintf(stderr, "nano-glm: top-%d tail mass: mean=%.3e max=%.3e\n", out.top_k, tail_mean, tail_max);
     fprintf(stderr, "nano-glm: wrote %s (%d positions)\n", params.output_path.c_str(),
             (int32_t) out.seqs[0].positions.size());
+
+    if (!params.expert_log.empty()) {
+        expert_trace_close();
+        fprintf(stderr, "nano-glm: wrote %s (%" PRIu64 " positions x %u MoE layers)\n",
+                params.expert_log.c_str(), expert_trace_n_pos(), h.n_layer - h.n_dense_lead);
+    }
 
     if (g_moe.active()) {
         const moe_stats & st = g_moe.st;

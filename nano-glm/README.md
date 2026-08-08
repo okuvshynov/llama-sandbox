@@ -90,6 +90,46 @@ Output is an `lkldtopk` v1 file (writer shared with logit-kld), so the whole
 logit-kld toolchain applies: `inspect.py` for sanity, `compare.py` against
 any collect/rescore file over the same token sequence.
 
+## Routing trace
+
+Which experts the router picks is not observable from timings, and it decides
+whether a GPU-resident expert subset or a prefetcher can pay (PLAN.md steps 3-4).
+A separate build records it:
+
+```powershell
+.\build.ps1 -Trace     # -> build-trace\bin, cmake -DNANO_EXPERT_TRACE=ON
+.\build-trace\bin\nano-glm.exe -m <model> -i <prompt.bin> -n 1024 \
+    -o run.bin --expert-log run.trace
+python expert_stats.py run.trace
+```
+
+Separate build tree, not a runtime flag: tracing keeps an intermediate tensor
+alive so it survives to be read after `ggml_backend_graph_compute`, which
+changes how the graph is allocated. That is a change the default build — the
+one the bit-exactness gate runs against — should not carry. The two binaries
+sit side by side so the claim can be checked rather than assumed; on Windows /
+MSVC / 16 threads a traced and an untraced run of the same prompt are byte-
+identical.
+
+The trace is a text file, position-major, ~2.4 KB per position:
+
+```
+# n_layer=78 n_dense_lead=3 n_expert=256 n_expert_used=8 n_prompt=114
+p 0 785                              <- position, token id
+l 3 250,194,214,140,171,63,161,205   <- layer, expert ids in router rank order
+```
+
+`expert_stats.py` reports per-layer and aggregate skew (entropy, how many
+experts carry 50%/90% of selections), static-residency hit rates measured
+*out of sample*, and locality (consecutive-token overlap, distinct experts per
+sliding window) — each against what independent uniform routing would give,
+since a locality number means nothing without that baseline. `--null` re-runs
+every metric on uniform draws of the same shape, which is how you tell a
+finding from a sample-size artifact.
+
+First results — routing is far from uniform, and a 23% resident expert subset
+catches 58% of selections rather than 23%: [ROUTING.md](ROUTING.md).
+
 ## Verification
 
 ```bash

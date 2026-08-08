@@ -34,6 +34,14 @@ else()
     set(GGML_BLAS        OFF CACHE BOOL "" FORCE)
 endif()
 
+# Routing trace (src/expert_trace.h): per-position, per-layer selected expert
+# ids. OFF by default and compiled out entirely — it keeps an intermediate
+# tensor alive, which changes graph allocation, and the default build is the
+# one the bit-exactness gate runs against. Configure a *separate* build tree
+# for it (build.ps1 -Trace) so both binaries exist side by side and can be
+# byte-compared.
+option(NANO_EXPERT_TRACE "collect per-token expert routing traces" OFF)
+
 add_subdirectory(${LLAMA_CPP_DIR}/ggml ${CMAKE_CURRENT_BINARY_DIR}/ggml)
 
 # logits_file.{h,cpp} is logit-kld's lkldtopk writer/reader, reused so nano-glm
@@ -63,6 +71,13 @@ target_link_libraries(moe-server PRIVATE ggml)
 target_compile_features(moe-server PRIVATE cxx_std_17)
 if(WIN32)
     target_link_libraries(moe-server PRIVATE ws2_32)
+endif()
+
+# moe_block.h is shared, so both binaries must agree on whether it traces.
+if(NANO_EXPERT_TRACE)
+    target_compile_definitions(nano-glm   PRIVATE NANO_EXPERT_TRACE)
+    target_compile_definitions(moe-server PRIVATE NANO_EXPERT_TRACE)
+    message(STATUS "nano-glm: expert routing trace ENABLED (--expert-log)")
 endif()
 
 if(WIN32)

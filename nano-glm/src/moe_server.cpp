@@ -144,7 +144,7 @@ static bool eval_layer(moe_backend & B, uint32_t layer, int32_t n_tokens,
     ggml_set_input(inp);
 
     const auto t_route0 = clk::now();
-    ggml_tensor * moe_out = build_moe_block(ctx, gf, h, B.M.layers[layer], inp, n_tokens);
+    ggml_tensor * moe_out = build_moe_block(ctx, gf, h, layer, B.M.layers[layer], inp, n_tokens);
     ggml_set_output(moe_out);
     ggml_build_forward_expand(gf, moe_out);
     t_route_us = us_since(t_route0);   // graph construction, incl. the router nodes

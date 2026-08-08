@@ -16,6 +16,7 @@
 // Op order is load-bearing: it mirrors llama.cpp's build_moe_ffn, including
 // the seemingly redundant reshapes and the pairwise combine. Do not tidy it.
 
+#include "expert_trace.h"
 #include "nano_model.h"
 
 #include "ggml.h"
@@ -24,10 +25,12 @@
 #include <vector>
 
 // x: [n_embd, n_tokens] post-ffn_norm activation.
+// il is the model layer index — carried only so a routing trace can be
+// labelled; the graph does not otherwise depend on it.
 // returns moe_out: [n_embd, n_tokens] — routed experts only, weighted and
 // summed. The shared expert is NOT included: it stays on the trunk host.
 static ggml_tensor * build_moe_block(ggml_context * ctx0, ggml_cgraph * gf,
-                                     const nano_hparams & h, const nano_layer & L,
+                                     const nano_hparams & h, uint32_t il, const nano_layer & L,
                                      ggml_tensor * x, int32_t n_tokens) {
     // ---- build_moe_ffn: sigmoid gating + selection bias, no groups ----
     ggml_tensor * logits = ggml_mul_mat(ctx0, L.ffn_gate_inp, x); // [n_expert, n_tokens]
@@ -39,6 +42,9 @@ static ggml_tensor * build_moe_block(ggml_context * ctx0, ggml_cgraph * gf,
     }
 
     ggml_tensor * selected_experts = ggml_argsort_top_k(ctx0, selection_probs, h.n_expert_used);
+
+    // No-op unless built with -DNANO_EXPERT_TRACE (expert_trace.h)
+    expert_trace_node_add(il, selected_experts);
 
     probs = ggml_reshape_3d(ctx0, probs, 1, h.n_expert, n_tokens);
     ggml_tensor * weights = ggml_get_rows(ctx0, probs, selected_experts); // [1, n_expert_used, n_tokens]

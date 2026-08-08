@@ -77,6 +77,25 @@ sustained request rate. RPC overhead is pure addition, and its *share* grows
 as the backend gets faster — the 0.7s above was 0.7% of the first corpus
 prompt and 2.5% of the fifth, for identical work.
 
+### What the router does
+
+Measured, not assumed — 1138 positions x 75 layers x 8 of 256 experts, one
+prose continuation, out of sample against a same-shape uniform null
+(full study: `ROUTING.md`):
+
+| quantity | measured | uniform routing |
+|---|---|---|
+| entropy per layer | 6.98 bits | 8.00 |
+| experts carrying half the selections | **36** of 256 | 128 |
+| hit rate of a 23% resident subset | **58.4%** | 23.1% |
+| consecutive-token expert overlap | **35.2%** | 3.1% |
+| distinct experts per 32-token window | 92 | 163 |
+
+Routing is strongly concentrated and strongly autocorrelated, except in the
+first five MoE layers (3-7), which are near-uniform on every metric. Spending
+a VRAM budget globally rather than per layer exploits that and is worth
+nothing (58.4% either way), so placement can stay uniform per layer.
+
 Weight split (from the GGUF tensor offsets): routed experts 563.27 GiB /
 96.6%, shared expert 2.84 GiB, trunk 16.76 GiB. Per *token*, though, the trunk
 is ~45% of bytes read — which is why moving it to fast silicon removes the
@@ -142,11 +161,18 @@ the debug path is wanted.
 ### 3. Vulkan experts inside the backend — **Planned**
 
 Hold a resident expert subset on the 4 Vega dies, serve misses from DRAM. 23%
-of 563 GiB fits in 128 GiB of VRAM, so this is worth roughly the resident
-fraction and no more. Placement is **static, not LRU** — PCIe is ~5.7x slower
-than DRAM, so cache refill never pays. Q4_K experts are the composing lever
-(~32% less DRAM traffic, ~33% resident). Cost model and per-phase dispatch
-numbers: ../moe-offload.
+of 563 GiB fits in 128 GiB of VRAM, and the routing study above says that
+catches **58% of selections, not 23%** — DRAM traffic falls 21.66 -> 9.01
+GB/token, moving the MoE-bound ceiling from 3.42 to ~8 tok/s before dispatch
+cost is subtracted. That is what makes this step worth doing rather than
+marginal, so the number is load-bearing: before building anything, re-measure
+it **across prompts** (rank on prose, score on code), since a static placement
+is chosen once and must serve every workload. Half an hour of tracing.
+
+Placement is **static, not LRU** — PCIe is ~5.7x slower than DRAM, so cache
+refill never pays; and uniform per layer, since a global budget measured the
+same. Q4_K experts are the composing lever (~32% less DRAM traffic, ~33%
+resident). Cost model and per-phase dispatch numbers: ../moe-offload.
 
 ### 4. Trunk on a modern GPU — **Planned**
 
@@ -161,7 +187,10 @@ ends here by construction.
   Buys nothing while experts are in DRAM (bandwidth-bound; prefetch adds no
   bandwidth), and the idle window it needs shrinks to ~3% once the trunk is
   fast. Its home is K3, where experts exceed RAM and prefetch targets storage.
-  Cheap to test: log the overlap between speculative and real top-k.
+  The routing study puts a floor under the *predictor* half of this: simply
+  keeping the previous token's experts warm already hits 35% against a 3% base
+  rate, free and with no speculative router at all. A speculative router has to
+  beat that, not uniform.
 - **Huge pages** for the expert store — 31 MB per expert against a 1536-entry
   L2 TLB. Only reachable via the non-mmap load path: neither Windows nor macOS
   offers huge pages for file-backed mappings.
@@ -190,6 +219,8 @@ lets this return as a backend-side concern without a client change.
   `ggml_graph_compute_thread`, `ggml_barrier`
 - verification: ../logit-kld — `compare.py`, `rescore --sim-gen`, corpus in
   `prompts/`, noise floors in its README
+- routing study: `ROUTING.md`; trace `src/expert_trace.h` (`build.ps1 -Trace`,
+  `--expert-log`), analysis `expert_stats.py`
 - GPU cost model: ../moe-offload/README.md
 - platform traps (AMD-Metal NaN, mmap variance, core counts, run config):
   repo `CLAUDE.md`

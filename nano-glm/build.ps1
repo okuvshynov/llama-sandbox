@@ -6,14 +6,20 @@
 #   .\build.ps1                          # build nano-glm
 #   .\build.ps1 -Project logit-kld       # build collect + rescore
 #   .\build.ps1 -Clean                   # reconfigure from scratch
+#   .\build.ps1 -Trace                   # routing-trace variant, into build-trace\
 #
 # Executables and the ggml/llama DLLs both land in <project>\build\bin\.
+#
+# -Trace is a separate build *tree* on purpose: NANO_EXPERT_TRACE changes how
+# the graph is allocated (src/expert_trace.h), so the untraced binary has to
+# stay around to byte-compare against.
 
 [CmdletBinding()]
 param(
     [string] $Project     = "nano-glm",
     [string] $LlamaCppDir = "C:\Users\oleksandr\Desktop\llama.cpp",
-    [switch] $Clean
+    [switch] $Clean,
+    [switch] $Trace
 )
 
 $ErrorActionPreference = "Stop"
@@ -35,7 +41,7 @@ $ninja = Get-Command ninja -ErrorAction SilentlyContinue | Select-Object -Expand
 if (-not $ninja) { $ninja = Join-Path $vsPath "Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja\ninja.exe" }
 if (-not (Test-Path $ninja)) { throw "ninja not found (looked for $ninja)" }
 
-$build = Join-Path $src "build"
+$build = Join-Path $src ($(if ($Trace) { "build-trace" } else { "build" }))
 if ($Clean -and (Test-Path $build)) { Remove-Item -Recurse -Force $build }
 
 # cmake and cl must see the same environment, so both steps run under vcvars in
@@ -48,6 +54,7 @@ if ($Clean -and (Test-Path $build)) { Remove-Item -Recurse -Force $build }
 $cfg = "cmake -S `"$src`" -B `"$build`" -G Ninja -DCMAKE_BUILD_TYPE=Release " +
        "-DCMAKE_MAKE_PROGRAM=`"$ninja`" -DLLAMA_CPP_DIR=`"$LlamaCppDir`" " +
        "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"
+if ($Trace) { $cfg += " -DNANO_EXPERT_TRACE=ON" }
 # The inner 2>&1 is cmd's, not PowerShell's: llama.cpp's CMakeLists writes
 # informational lines to stderr, and under $ErrorActionPreference = "Stop" any
 # stderr from a native command becomes a terminating error even on exit 0.
