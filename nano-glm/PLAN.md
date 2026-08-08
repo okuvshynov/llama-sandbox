@@ -166,7 +166,13 @@ ends here by construction.
   fast. Its home is K3, where experts exceed RAM and prefetch targets storage.
   Cheap to test: log the overlap between speculative and real top-k.
 - **Huge pages** for the expert store — 31 MB per expert against a 1536-entry
-  L2 TLB.
+  L2 TLB. Only reachable via the non-mmap load path: neither Windows nor macOS
+  offers huge pages for file-backed mappings.
+- **Backend micro-optimisations** — graph caching, zero-copy request/response,
+  fusing up+gate. All noise against today's 3072 us/layer; each is recorded in
+  `src/moe_server.cpp` with the condition that would make it matter, since the
+  backend gets faster in later phases and a 1% cost becomes 10% when compute
+  drops 10x.
 
 ## Parked
 

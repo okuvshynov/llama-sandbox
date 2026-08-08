@@ -50,9 +50,22 @@ target_include_directories(nano-glm PRIVATE
 target_link_libraries(nano-glm PRIVATE ggml)
 target_compile_features(nano-glm PRIVATE cxx_std_17)
 
+# The MoE backend: same model definition and same routed-expert graph
+# (nano_model.h / moe_block.h), reached over TCP instead of a function call.
+add_executable(moe-server src/moe_server.cpp)
+target_include_directories(moe-server PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../logit-kld/src
+)
+target_link_libraries(moe-server PRIVATE ggml)
+target_compile_features(moe-server PRIVATE cxx_std_17)
+if(WIN32)
+    target_link_libraries(moe-server PRIVATE ws2_32)
+endif()
+
 if(WIN32)
     # ggml builds DLLs into ${CMAKE_BINARY_DIR}/bin; Windows resolves them from
-    # the exe's own directory, so put the exe there too rather than making every
+    # the exe's own directory, so put the exes there too rather than making every
     # invocation prepend build/bin to PATH.
-    set_target_properties(nano-glm PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+    set_target_properties(nano-glm moe-server PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 endif()
