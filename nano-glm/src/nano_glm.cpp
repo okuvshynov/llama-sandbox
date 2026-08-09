@@ -115,10 +115,10 @@ static bool parse_args(int argc, char ** argv, nano_params & p) {
 // before — keeping both paths in one binary is what makes local-vs-remote a
 // direct A/B rather than a comparison across builds.
 //
-// n_tasks is 1 for the custom op: one socket, one thread. The other workers
-// idle at the barrier while the request is in flight, which is the overlap
-// opportunity PLAN.md step 2 picks up (moe_send/moe_recv around the shared
-// expert).
+// One socket, one thread: the callback returns immediately on every worker but
+// ith == 0 (see moe_rpc_cb). The rest then wait out the round trip at the next
+// barrier, which is the overlap opportunity PLAN.md step 2 picks up
+// (moe_send/moe_recv around the shared expert).
 
 struct moe_rpc_record {
     uint32_t layer, n_tokens;
@@ -146,10 +146,12 @@ struct moe_client {
 
     // Kept always: 4 bytes per call, and percentiles need the distribution,
     // not just the sum. ~76 KB for a 256-token run.
+    // TODO: needs to be bounded. Ok to keep as is for now.
     std::vector<uint32_t> rtt_us;
 
     // Kept only for --moe-log: 36 bytes per call, and a long run makes tens of
     // thousands of them.
+    // TODO: eventually limit, rotate and/or flush somewhere.
     bool want_log = false;
     std::vector<moe_rpc_record> log;
 
@@ -163,14 +165,39 @@ static moe_client g_moe;
 struct moe_rpc_ctx { uint32_t layer; };
 static std::deque<moe_rpc_ctx> g_rpc_ctxs;
 
+// TODO: shall this be uint64_t? uint32_t is just a few hours in microseconds.
 static uint32_t elapsed_us(std::chrono::steady_clock::time_point t0) {
     const auto d = std::chrono::duration_cast<std::chrono::microseconds>(
                        std::chrono::steady_clock::now() - t0).count();
     return (uint32_t) (d < 0 ? 0 : d);
 }
 
+// ggml's custom-op callback signature (ggml_custom_op_t). What each argument
+// is *here*:
+//
+//   dst      the node built by ggml_custom_4d above — f32 [n_embd, n_tokens],
+//            the combined routed-expert output. Writing dst->data is the whole
+//            job; whatever this leaves there is what the shared expert gets
+//            added to. Its one input is dst->src[0]: the post-ffn_norm
+//            activation `cur`, same shape, which is what goes on the wire.
+//            ggml has already allocated both; the callback owns neither.
+//   ith/nth  this worker's index and the size of the thread pool. NOT the
+//            n_tasks=1 passed to ggml_custom_4d — that number only reaches
+//            ggml_graph_plan's work-buffer sizing. ggml_compute_forward_custom
+//            calls this function from *every* thread with nth = the pool size
+//            (16 here), so the early return below is load-bearing, not a
+//            formality: without it sixteen threads would race on one socket.
+//   userdata the moe_rpc_ctx pushed when this node was built — just the layer
+//            index. It has to be a stable address (hence the deque), because
+//            ggml stores the pointer in op_params at build time and hands it
+//            back at compute time, one graph rebuild later.
+//
+// Called mid-graph with ggml's barriers on either side: every node before this
+// one has finished, none after has started. That ordering is what lets a
+// blocking send/recv sit here at all, and it is also why the other fifteen
+// threads simply wait out the round trip — the overlap PLAN.md step 2 reclaims.
 static void moe_rpc_cb(ggml_tensor * dst, int ith, int /*nth*/, void * userdata) {
-    if (ith != 0) return;   // n_tasks == 1; explicit because a socket has one owner
+    if (ith != 0) return;   // one socket, one owner — see nth above
 
     const moe_rpc_ctx * c = (const moe_rpc_ctx *) userdata;
     const ggml_tensor * x = dst->src[0];
@@ -253,8 +280,20 @@ struct nano_state {
     int n_threads;
 };
 
-// same construction as llama.cpp's ggml_gen_hadamard (llama-kv-cache.cpp)
+// same construction as llama.cpp's ggml_gen_hadamard (llama-kv-cache.cpp):
+// Sylvester's recursion H_2m = [[H_m, H_m], [H_m, -H_m]] done in place, with
+// the 1/sqrt(n) normalization seeded into the one starting cell instead of
+// applied as a final pass. Every other entry is then a bitwise copy or sign
+// flip of that cell, so the whole matrix has exactly one rounding in it — and
+// a 1-ulp difference there would move every indexer score in every
+// full-indexer layer. Do not "simplify" this into a ±1 fill plus a scale.
 static void fill_hadamard(std::vector<float> & data, int n) {
+    // Power of two or the recursion never reaches n: the doubling loop would
+    // leave part of the matrix at its zero fill and the scores would be
+    // quietly wrong rather than loudly absent. llama.cpp asserts the same.
+    if (n <= 0 || (n & (n - 1)) != 0) {
+        NANO_ABORT("hadamard order %d is not a power of two (indexer.key_length)", n);
+    }
     data.assign((size_t) n * n, 0.0f);
     data[0] = 1.0f / sqrtf((float) n);
     for (int s = 1; s < n; s *= 2) {
@@ -281,6 +320,7 @@ static void init_state(nano_state & S, const nano_model & M, uint32_t kv_size, i
         ggml_backend_dev_t dev = ggml_backend_dev_get(i);
         const auto type = ggml_backend_dev_type(dev);
         if (type == GGML_BACKEND_DEVICE_TYPE_GPU || type == GGML_BACKEND_DEVICE_TYPE_IGPU) {
+            // TODO: this is for easy correctness testing. Eventually trunk might run on GPU, and we'll update it
             NANO_ABORT("GPU backend '%s' present — this build must be CPU-only", ggml_backend_dev_name(dev));
         }
         if (type != GGML_BACKEND_DEVICE_TYPE_ACCEL) {

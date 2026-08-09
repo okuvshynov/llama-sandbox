@@ -210,7 +210,8 @@ note that changing `-t` changes the logits.
 
 - hparams are read from GGUF metadata but structural assumptions are
   asserted loudly (arch == glm-dsa, sigmoid expert gating, the degenerate
-  freq_scale==1 rope case). Anything else aborts rather than mis-computes.
+  freq_scale==1 rope case, power-of-two indexer key length). Anything else
+  aborts rather than mis-computes.
 - The indexer-types layout (which layers run a full lightning indexer vs
   reuse the previous top-k) comes from GGUF metadata, with the GLM-5.2
   default pattern as fallback — same BC rule as llama.cpp.
