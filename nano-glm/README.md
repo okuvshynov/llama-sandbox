@@ -9,10 +9,27 @@ and reimplements the thin slice of llama.cpp that GLM-5.2 on CPU actually
 needs — shard loader, single-sequence KV cache, forward graph, greedy loop —
 in about a thousand lines.
 
-Three files, split along the boundary the distributed plan needs: `nano_glm.cpp`
-is the trunk engine, `nano_model.h` the hparams and GGUF loader, `moe_block.h`
-the routed-expert block. The last two are shared with the MoE backend so both
-sides read the model and build that block from one definition.
+Laid out as a library and the apps that drive it:
+
+```
+lib/     the engine — model loader, trunk graph, routed-expert block,
+         wire protocol, remote-MoE client, build fingerprint, routing trace
+apps/    nano-glm     the validation harness: token ids in, lkldtopk out
+         moe-server   the MoE backend: one activation in, one combined row out
+```
+
+The split is along the line the bit-exactness contract draws. `lib/` is
+mechanism; `apps/` is policy — what to read, what to emit, when to stop. Both
+apps build the routed block from one definition, so client and backend cannot
+drift apart.
+
+`lib/` is not uniformly GLM-specific: the fingerprint, wire protocol, RPC
+client and routing trace know nothing about the model, `moe_block.h` is
+DeepSeek-lineage rather than glm-dsa, and everything that is genuinely
+one-model lives in `nano_model.h` and `nano_graph.h`.
+[lib/README.md](lib/README.md) has the file-by-file map, what a second model
+(`models/kimi_k3/`) would have to reimplement — the graph and the metadata,
+about 500 lines — and the constraint to respect before adding an app.
 
 Correctness bar: **bit-identical logits** vs the llama.cpp-based `collect`
 baseline from `../logit-kld`, verified over the same prompts with

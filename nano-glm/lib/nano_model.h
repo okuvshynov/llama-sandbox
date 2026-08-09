@@ -5,7 +5,7 @@
 // touch only the tensors their role needs, so the page cache is shared and
 // neither pays for the other's weights.
 //
-// Extracted from nano_glm.cpp when the MoE block moved behind a network
+// Extracted from the trunk app when the MoE block moved behind a network
 // service; the hparams asserts and tensor names must stay in one place or the
 // two binaries can disagree about the model while both appearing to work.
 

@@ -11,7 +11,7 @@
 # Executables and the ggml/llama DLLs both land in <project>\build\bin\.
 #
 # -Trace is a separate build *tree* on purpose: NANO_EXPERT_TRACE changes how
-# the graph is allocated (src/expert_trace.h), so the untraced binary has to
+# the graph is allocated (lib/expert_trace.h), so the untraced binary has to
 # stay around to byte-compare against.
 
 [CmdletBinding()]

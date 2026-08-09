@@ -34,7 +34,7 @@ else()
     set(GGML_BLAS        OFF CACHE BOOL "" FORCE)
 endif()
 
-# Routing trace (src/expert_trace.h): per-position, per-layer selected expert
+# Routing trace (lib/expert_trace.h): per-position, per-layer selected expert
 # ids. OFF by default and compiled out entirely — it keeps an intermediate
 # tensor alive, which changes graph allocation, and the default build is the
 # one the bit-exactness gate runs against. Configure a *separate* build tree
@@ -42,7 +42,7 @@ endif()
 # byte-compared.
 option(NANO_EXPERT_TRACE "collect per-token expert routing traces" OFF)
 
-# Build fingerprint (src/build_info.h): the facts that decide whether two runs
+# Build fingerprint (lib/build_info.h): the facts that decide whether two runs
 # can be expected to agree bit for bit. Printed by --version, recorded in the
 # gate's provenance sidecar, and sent over the wire in the protocol handshake.
 #
@@ -65,7 +65,8 @@ if(GIT_FOUND)
     endif()
     execute_process(
         COMMAND ${GIT_EXECUTABLE} status --porcelain --
-                ${CMAKE_CURRENT_SOURCE_DIR}/src
+                ${CMAKE_CURRENT_SOURCE_DIR}/lib
+                ${CMAKE_CURRENT_SOURCE_DIR}/apps
                 ${CMAKE_CURRENT_SOURCE_DIR}/../logit-kld/src
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
         OUTPUT_VARIABLE NANO_GIT_DIRTY
@@ -78,34 +79,39 @@ endif()
 
 add_subdirectory(${LLAMA_CPP_DIR}/ggml ${CMAKE_CURRENT_BINARY_DIR}/ggml)
 
-# logits_file.{h,cpp} is logit-kld's lkldtopk writer/reader, reused so nano-glm
-# output can be compare.py'd directly against the llama.cpp collect baselines.
+# lib/ is the engine every app shares: model definition and loader, the routed
+# expert block, the wire protocol, the build fingerprint, the routing trace.
+# An INTERFACE target rather than a compiled one because it is header-only
+# today; when an app grows past a single translation unit, the headers with
+# mutable state have to become a real static library first (see lib/README.md).
+#
+# logit-kld/src comes along because logits_file.{h,cpp} is the lkldtopk
+# writer/reader — reused so nano-glm output can be compare.py'd straight
+# against the llama.cpp collect baselines — as are cpu_topology.h and
+# topk_utils.h.
+add_library(nano-lib INTERFACE)
+target_include_directories(nano-lib INTERFACE
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib
+    ${CMAKE_CURRENT_SOURCE_DIR}/../logit-kld/src
+)
+target_link_libraries(nano-lib INTERFACE ggml)
+target_compile_features(nano-lib INTERFACE cxx_std_17)
+if(WIN32)
+    target_link_libraries(nano-lib INTERFACE ws2_32)   # moe_proto.h speaks sockets
+endif()
+
+# The validation harness: raw token ids in, an lkldtopk file out. Frozen
+# interface on purpose — see PLAN.md step 7 and TESTING.md.
 add_executable(nano-glm
-    src/nano_glm.cpp
+    apps/nano-glm/main.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../logit-kld/src/logits_file.cpp
 )
+target_link_libraries(nano-glm PRIVATE nano-lib)
 
-target_include_directories(nano-glm PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/../logit-kld/src
-)
-
-target_link_libraries(nano-glm PRIVATE ggml)
-target_compile_features(nano-glm PRIVATE cxx_std_17)
-if(WIN32)
-    target_link_libraries(nano-glm PRIVATE ws2_32)   # --moe-addr client
-endif()
-
-# The MoE backend: same model definition and same routed-expert graph
-# (nano_model.h / moe_block.h), reached over TCP instead of a function call.
-add_executable(moe-server src/moe_server.cpp)
-target_include_directories(moe-server PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/../logit-kld/src
-)
-target_link_libraries(moe-server PRIVATE ggml)
-target_compile_features(moe-server PRIVATE cxx_std_17)
-if(WIN32)
-    target_link_libraries(moe-server PRIVATE ws2_32)
-endif()
+# The MoE backend: same model definition and same routed-expert graph as the
+# client, reached over TCP instead of a function call.
+add_executable(moe-server apps/moe-server/main.cpp)
+target_link_libraries(moe-server PRIVATE nano-lib)
 
 # moe_block.h is shared, so both binaries must agree on whether it traces.
 if(NANO_EXPERT_TRACE)

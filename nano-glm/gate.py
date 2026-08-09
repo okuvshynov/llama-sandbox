@@ -138,7 +138,7 @@ def run(cmd, log_path):
 def binary_fingerprint(exe):
     r = subprocess.run([exe, "--version"], capture_output=True, text=True)
     if r.returncode != 0:
-        raise Fail("%s --version failed; is this a build with src/build_info.h?" % exe)
+        raise Fail("%s --version failed; is this a build with lib/build_info.h?" % exe)
     fp = {}
     for line in r.stdout.splitlines():
         if "=" in line:

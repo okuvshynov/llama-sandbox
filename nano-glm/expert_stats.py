@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Statistics over a nano-glm routing trace (--expert-log, see src/expert_trace.h).
+"""Statistics over a nano-glm routing trace (--expert-log, see lib/expert_trace.h).
 
 The trace records, for every position and every MoE layer, which experts the
 router selected. This script turns that into the numbers PLAN.md needs before

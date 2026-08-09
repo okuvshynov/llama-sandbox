@@ -130,7 +130,7 @@ contract that makes a callback bit-exact.
 `moe-server` holds the router and every expert, takes `(layer, x)`, returns one
 combined row per token; the client is a `ggml_custom_4d` node at `n_tasks = 1`
 in its place, so both paths live in one binary. Gate: 743 positions,
-12,375 RPCs, KL 0.0. `src/moe_proto.h`, `src/moe_server.cpp` (deferred
+12,375 RPCs, KL 0.0. `lib/moe_proto.h`, `apps/moe-server/main.cpp` (deferred
 optimisations documented there), `--moe-addr` / `--moe-log`.
 
 ### 5. Test harness and golden set — **Done**
@@ -153,7 +153,7 @@ build-time, because it touches nothing numeric — so the gate exercises the
 shipping binary. Verified in both directions: `--strict` refuses a thread-count
 mismatch, the lenient default warns and proceeds.
 
-`src/build_info.h`, `gate.py`, `TESTING.md`, `testdata/`. Two things naming the
+`lib/build_info.h`, `gate.py`, `TESTING.md`, `testdata/`. Two things naming the
 tests bought: `rpc` exists at all (the numbered scheme had no slot for the
 local-vs-backend edge, half of what step 1 built), and `gate.py rpc
 --moe-addr <host>` *is* step 2's correctness argument, already written.
@@ -169,22 +169,24 @@ Five corpus prompts at `-n 256` with `--expert-log`, then compare rankings
 across the five `counts.csv` files. Half an hour of tracing, and it is the
 cheapest decision-relevant measurement left in the plan.
 
-### 7. Core library, and an app that completes prompts — **Next**
+### 7. Core library, and an app that completes prompts — **In progress**
 
-Greedy generation and rescoring are the same forward pass; only the source of
-the next token and the shape of the output differ. Three layers:
+**Done: the split.** `lib/` is the engine — model loader, trunk graph, routed
+block, wire protocol, remote-MoE client, fingerprint, trace — and `apps/` the
+programs that drive it (`nano-glm`, `moe-server`), joined by a `nano-lib`
+INTERFACE target. `lib/README.md` maps the files and records the one
+constraint: the headers hold `static` state, so the first app needing a second
+translation unit must convert `nano-lib` to a real static library rather than
+reaching for `inline`. Gated at each stage — move, then extract — against the
+step 5 golden set.
 
-- **core** — load, KV cache, graph, `eval_chunk`. No I/O policy. Exists
-  already, inline in `main()`; needs lifting out.
-- **`nano-glm`** — the measurement tool. Contract frozen: ids in, lkldtopk out,
-  greedy = stored top-1, no tokenizer, no sampler, deterministic.
-- **`nano-chat`** — the PoC. Tokenizer, chat template, sampling, streaming text.
-
-The rule that forces the split: **the bit-exactness contract is defined over a
-fixed token sequence, so anything that can change that sequence lives outside
-the tool that produces reference numbers.** A sampler with RNG, a template
-tweak, a tokenizer version bump — each silently invalidates every stored
-reference if it hides behind a flag in one binary.
+**Next: `nano-chat`** — tokenizer, chat template, sampling, streaming text.
+`nano-glm`'s contract stays frozen: ids in, lkldtopk out, greedy = stored
+top-1, no sampler. The rule that forces that split is **the bit-exactness
+contract is defined over a fixed token sequence, so anything able to change
+that sequence lives outside the tool that produces reference numbers** — a
+sampler with RNG, a template tweak, a tokenizer version bump each silently
+invalidate every stored reference if they hide behind a flag in one binary.
 
 Two bridges: `nano-chat --dump-ids` turns any interesting behaviour into a
 reproducible logits test, and a detokenizer for lkldtopk files makes corpus
@@ -194,9 +196,6 @@ The tokenizer brings its own correctness question — do our ids match
 llama.cpp's for the same text? Vocab only, no model, seconds, and deliberately
 *not* part of the logits gate, so a tokenizer bug cannot present as a numerics
 failure.
-
-Sequenced after 5 because it is the largest refactor in the plan and the golden
-set is what makes it safe.
 
 ### 3. Vulkan experts inside the backend — **Planned**
 
@@ -248,7 +247,7 @@ every other invocation.
 
 Sequenced after 7 because unit tests need units, and that is exactly what the
 core-library extraction produces — today `fill_hadamard` is a `static` function
-inside `nano_glm.cpp` and nothing else can reach it. A few pieces are testable
+inside `lib/nano_graph.h` and nothing else can reach it. A few pieces are testable
 sooner (`moe_proto.h` is already a standalone header, `expert_stats.py` needs
 no C++ at all) if the rest slips.
 
@@ -313,7 +312,7 @@ oracle, which is why the golden set has to be frozen with full provenance
   not uniform.
 - **Backend micro-optimisations** — graph caching, zero-copy request/response,
   fusing up+gate. All noise against today's 3072 us/layer; each is recorded in
-  `src/moe_server.cpp` with the condition that would make it matter, since the
+  `apps/moe-server/main.cpp` with the condition that would make it matter, since the
   backend gets faster in later phases and a 1% cost becomes 10% when compute
   drops 10x.
 
@@ -327,7 +326,7 @@ lets this return as a backend-side concern without a client change.
 
 ## Links
 
-- client seam: `src/nano_glm.cpp` — `moe_rpc_cb` (its comment documents the
+- client seam: `apps/nano-glm/main.cpp` — `moe_rpc_cb` (its comment documents the
   ggml custom-op contract), combine at `cur_experts`, shared expert at
   `ffn_up_shexp`
 - bit-exact kernel contract: `ggml/src/ggml-cpu/ggml-cpu.c`
@@ -337,11 +336,11 @@ lets this return as a backend-side concern without a client change.
   `ggml/src/ggml-cpu/ops.cpp` `ggml_compute_forward_custom`
 - tests: `TESTING.md` — what each named test establishes, which to run after
   which change, what a provenance refusal means; `gate.py`, `testdata/`
-- build fingerprint: `src/build_info.h` — one definition behind `--version`,
+- build fingerprint: `lib/build_info.h` — one definition behind `--version`,
   the provenance sidecar and the wire handshake
 - verification: ../logit-kld — `compare.py`, `rescore --sim-gen`, corpus in
   `prompts/`, noise floors in its README
-- routing study: `ROUTING.md`; trace `src/expert_trace.h` (`build.ps1 -Trace`,
+- routing study: `ROUTING.md`; trace `lib/expert_trace.h` (`build.ps1 -Trace`,
   `--expert-log`), analysis `expert_stats.py`
 - GPU cost model: ../moe-offload/README.md
 - platform traps (AMD-Metal NaN, mmap variance, core counts, run config):
