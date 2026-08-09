@@ -1,0 +1,140 @@
+{
+ "created": "2026-08-09T10:45:30",
+ "host": "DESKTOP-N3V6DBC",
+ "platform": "Windows-10-10.0.19045-SP0",
+ "git_rev_live": "76015f8",
+ "n_threads": 16,
+ "binary": {
+  "git_rev": "76015f8-dirty",
+  "compiler": "MSVC 19.50.35723.0",
+  "ggml_version": "0.18.1",
+  "ggml_commit": "6a32c29a7",
+  "blas": "0",
+  "llamafile": "1",
+  "trace": "0",
+  "n_threads": "16",
+  "cores_phys": "16",
+  "cores_log": "32"
+ },
+ "model": {
+  "dir": "D:\\llms\\UD-Q6_K",
+  "first": "GLM-5.2-UD-Q6_K-00001-of-00014.gguf",
+  "shards": [
+   {
+    "name": "GLM-5.2-UD-Q6_K-00001-of-00014.gguf",
+    "size": 9423744,
+    "mtime": 1786028163
+   },
+   {
+    "name": "GLM-5.2-UD-Q6_K-00002-of-00014.gguf",
+    "size": 49592946368,
+    "mtime": 1786028872
+   },
+   {
+    "name": "GLM-5.2-UD-Q6_K-00003-of-00014.gguf",
+    "size": 48957391712,
+    "mtime": 1786026561
+   },
+   {
+    "name": "GLM-5.2-UD-Q6_K-00004-of-00014.gguf",
+    "size": 48957391744,
+    "mtime": 1786027457
+   },
+   {
+    "name": "GLM-5.2-UD-Q6_K-00005-of-00014.gguf",
+    "size": 48957391744,
+    "mtime": 1786028163
+   },
+   {
+    "name": "GLM-5.2-UD-Q6_K-00006-of-00014.gguf",
+    "size": 48957391744,
+    "mtime": 1786121576
+   },
+   {
+    "name": "GLM-5.2-UD-Q6_K-00007-of-00014.gguf",
+    "size": 48957391744,
+    "mtime": 1786027220
+   },
+   {
+    "name": "GLM-5.2-UD-Q6_K-00008-of-00014.gguf",
+    "size": 48957391744,
+    "mtime": 1786029106
+   },
+   {
+    "name": "GLM-5.2-UD-Q6_K-00009-of-00014.gguf",
+    "size": 48957391744,
+    "mtime": 1786026321
+   },
+   {
+    "name": "GLM-5.2-UD-Q6_K-00010-of-00014.gguf",
+    "size": 48957391744,
+    "mtime": 1786026985
+   },
+   {
+    "name": "GLM-5.2-UD-Q6_K-00011-of-00014.gguf",
+    "size": 48957391744,
+    "mtime": 1786028634
+   },
+   {
+    "name": "GLM-5.2-UD-Q6_K-00012-of-00014.gguf",
+    "size": 48957391744,
+    "mtime": 1786027927
+   },
+   {
+    "name": "GLM-5.2-UD-Q6_K-00013-of-00014.gguf",
+    "size": 48957391744,
+    "mtime": 1786027690
+   },
+   {
+    "name": "GLM-5.2-UD-Q6_K-00014-of-00014.gguf",
+    "size": 37725290112,
+    "mtime": 1786121784
+   }
+  ]
+ },
+ "runs": {
+  "smoke": {
+   "n_prompt": 14,
+   "n_predict": 4,
+   "bytes": 18772,
+   "sha256": "bb857bd11f99b1bc3fc129b98477a6a01656bf56e4c73882607105f9129c2fdb",
+   "independent": "llama.cpp rescore --sim-gen, KL == 0"
+  },
+  "01_prose": {
+   "n_prompt": 114,
+   "n_predict": 32,
+   "bytes": 151380,
+   "sha256": "74c43c714033460e6bb8ab2b7ad4567ad72a769057e01b60b62e4638a7e3463a",
+   "independent": "llama.cpp rescore --sim-gen, KL == 0"
+  },
+  "02_code": {
+   "n_prompt": 115,
+   "n_predict": 32,
+   "bytes": 152416,
+   "sha256": "4842294abc9939708b7e92683876311937fa7facbb9df5dd799f73417012a2f0",
+   "independent": "llama.cpp rescore --sim-gen, KL == 0"
+  },
+  "03_math": {
+   "n_prompt": 123,
+   "n_predict": 32,
+   "bytes": 160704,
+   "sha256": "a1cdcd99ef563517cd5620ec27b2972f3727cda878d85de5c8187d606f0aabbc",
+   "independent": "llama.cpp rescore --sim-gen, KL == 0"
+  },
+  "04_history": {
+   "n_prompt": 119,
+   "n_predict": 32,
+   "bytes": 156560,
+   "sha256": "5406aafc59422bbcb5de971cf77177ab1a359a42822822f25b47d40d926d8b70",
+   "independent": "llama.cpp rescore --sim-gen, KL == 0"
+  },
+  "05_french": {
+   "n_prompt": 112,
+   "n_predict": 32,
+   "bytes": 149308,
+   "sha256": "7fbf64a749f657286374a7fd6158a5c6208b7d23a0e2187289743b9f4fe3c6ae",
+   "independent": "llama.cpp rescore --sim-gen, KL == 0"
+  }
+ },
+ "note": "Golden set: nano-glm local output, every position verified against llama.cpp rescore --sim-gen at KL == 0. Regenerate with `python gate.py --update-golden`."
+}

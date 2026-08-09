@@ -43,11 +43,12 @@
 #include <string>
 
 static constexpr uint32_t MOE_MAGIC   = 0x454F4D4Eu;  // "NMOE" little-endian
-static constexpr uint32_t MOE_VERSION = 1;
+static constexpr uint32_t MOE_VERSION = 2;            // v2 added the hello handshake
 
 enum moe_msg_type : uint32_t {
     MOE_MSG_REQUEST  = 1,
     MOE_MSG_RESPONSE = 2,
+    MOE_MSG_HELLO    = 3,   // client -> server on connect, server replies in kind
 };
 
 enum moe_return_mode : uint32_t {
@@ -63,6 +64,61 @@ enum moe_status : uint32_t {
     MOE_ERR_MODE       = 4,
     MOE_ERR_INTERNAL   = 5,
 };
+
+// ---------------------------------------------------------------------------
+// hello: who is on the other end of this socket
+//
+// The trunk and the backend each hold half of one model and neither can see
+// the other's half. Per-request validation catches only n_embd and the layer
+// range, which two entirely different models can share — so without this,
+// pointing --moe-addr at the wrong server produces fluent, confident, wrong
+// output, which is the worst failure mode this project has.
+//
+// A mismatch means three different things, and the split is the point:
+//
+//   structural (below, binary)  the client's graph *assumes* these. Always
+//                               fatal; no flag permits continuing.
+//   reproducibility (in the     valid to run, but bit-exactness is void.
+//   text payload)               Fatal only under --strict, because Q4_K
+//                               experts against a Q6_K trunk is a planned
+//                               configuration (PLAN.md step 3), not an error.
+//   informational               printed, never enforced.
+//
+// Enforcement is client-side only: the server logs what connected and serves,
+// since it cannot know what the operator intended.
+//
+// Structural fields are binary rather than text so they cannot be misparsed
+// into agreement. Everything else is `key=value` lines from build_info.h,
+// which keeps adding a field from being another protocol version.
+
+struct moe_hello_request {
+    uint32_t magic;
+    uint32_t version;
+    uint32_t msg_type;      // MOE_MSG_HELLO
+    uint32_t reserved;
+    uint64_t payload_bytes; // client fingerprint, key=value lines
+};
+
+struct moe_hello_response {
+    uint32_t magic;
+    uint32_t version;
+    uint32_t msg_type;      // MOE_MSG_HELLO
+    uint32_t status;
+    char     arch[16];      // "glm-dsa"
+    uint32_t n_embd;
+    uint32_t n_layer;
+    uint32_t n_dense_lead;
+    uint32_t n_expert;
+    uint32_t n_expert_used;
+    uint32_t n_ff_exp;
+    float    expert_scale;
+    uint32_t expert_norm;
+    uint32_t reserved[2];
+    uint64_t payload_bytes; // server fingerprint, key=value lines
+};
+
+static_assert(sizeof(moe_hello_request)  == 24, "hello request layout changed");
+static_assert(sizeof(moe_hello_response) == 80, "hello response layout changed");
 
 // Both headers are fixed-size and fully explicit; payload_bytes is what
 // follows immediately after.

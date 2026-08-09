@@ -2,6 +2,11 @@ _build/
 build*/
 *.bin
 *.gguf
+
+# ...except the gate's golden set: small (~1.5 MB), and the point of it is to
+# be the committed thing a change is compared against. nano-glm/gate.py
+# regenerates it with --update-golden.
+!nano-glm/testdata/*.bin
 .vscode/
 tags
 

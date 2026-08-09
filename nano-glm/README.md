@@ -133,6 +133,29 @@ catches 58% of selections rather than 23%: [ROUTING.md](ROUTING.md).
 ## Verification
 
 ```bash
+python gate.py                  # smoke: one prompt, 18 positions, ~2 min
+python gate.py aa               # the whole prompt set, bytes, ~15 min
+python gate.py rpc              # the set through moe-server, ~20 min
+python gate.py llamacpp         # re-derived by llama.cpp at KL == 0, ~40 min
+```
+
+Four named tests, a golden set in `testdata/`, and a provenance record the gate
+checks *before* it compares bytes — so a mismatched compiler, thread count or
+model is a refusal rather than a difference that looks like yours.
+**[TESTING.md](TESTING.md)** has the full picture: which test to run after
+which change, what a refusal means, how to re-baseline, and how to point the
+same test at another machine.
+
+Current status: 6 prompts, 761 positions, KL == 0 against llama.cpp, and the
+RPC path byte-identical to the local one.
+
+### Comparing by hand
+
+`gate.py` automates all of this; the manual form is here because it is what a
+one-off investigation looks like, and because the reasons behind it are what
+the gate's refusals are enforcing.
+
+```bash
 # A/A vs the llama.cpp baseline: same prompt ids, same batch shapes
 ./build/nano-glm -m <model> -i <baseline.bin> -n 256 -o nano.bin
 python ../logit-kld/compare.py <baseline.bin> nano.bin   # expect KL ~ 0

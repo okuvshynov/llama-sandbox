@@ -113,9 +113,10 @@ ceiling that expert offload alone cannot.
 messages point at "step 1", "step 3"; renumbering would falsify them. The
 order below is the execution order.
 
-Step 2 moved to the back because nothing depends on it: 3, 5, 7 and 8 all run
-on this one machine, so machine B is needed by exactly one item, and that item
-is the least informative one left.
+Step 2 moved to the back because nothing depends on it: 3, 6, 7, 8, 9 and 10
+all run on this one machine, so machine B is needed by exactly one item, and
+that item is the least informative one left. Step 5 has since made its
+correctness half a one-line invocation.
 
 ### 0. Host-side dispatch, in-process — **Done**
 
@@ -132,42 +133,30 @@ in its place, so both paths live in one binary. Gate: 743 positions,
 12,375 RPCs, KL 0.0. `src/moe_proto.h`, `src/moe_server.cpp` (deferred
 optimisations documented there), `--moe-addr` / `--moe-log`.
 
-### 5. Test harness and golden set — **Now**
+### 5. Test harness and golden set — **Done**
 
-Every gate so far has been hand-assembled PowerShell against whatever
-reference was lying around. That is what cost `results/corpus/`, and it gets
-more expensive as the setups multiply. An hour of work; a prerequisite for
-everything below, especially 7.
+`gate.py` with four named tests — `smoke`, `aa`, `rpc`, `llamacpp` — over a
+committed golden set in `testdata/` (1.6 MB: 6 prompts as raw token ids, the
+nano-glm outputs, the llama.cpp references, and `provenance.json`). The gate
+checks provenance *before* it compares bytes and refuses on a mismatch, so a
+different compiler or thread count is an explicit refusal rather than a
+difference that looks like yours. Rules, costs and re-baselining: `TESTING.md`.
 
-Separate the two questions that are currently one procedure:
+Passed: 6 prompts, 761 positions, KL == 0 against llama.cpp `rescore
+--sim-gen`; the RPC path byte-identical to the local one. All three setups
+agree, established with two edges rather than three.
 
-- **"Did my change alter the output?"** — fixed reference, byte comparison, and
-  a failure means *I* did something. Re-baselined on legitimate change.
-- **"Is nano-glm still correct?"** — independent implementation over the same
-  ids, and a failure means the port is wrong. Never re-baselined.
+Protocol **v2** adds a fingerprint handshake, sorting a mismatch into
+always-fatal (structural — the client's graph assumes those hparams),
+fatal-under-`--strict` (reproducibility), and informational. Runtime flag, not
+build-time, because it touches nothing numeric — so the gate exercises the
+shipping binary. Verified in both directions: `--strict` refuses a thread-count
+mismatch, the lenient default warns and proceeds.
 
-| tier | cost | what | when |
-|---|---|---|---|
-| 0 | seconds, no model | `H·H = I` and entries ±1/√n; protocol static_asserts; `expert_stats.py` on synthetic traces | every build |
-| 1 | ~2 min | 18-position smoke vs golden, bytes | every build touching `src/` |
-| 2 | ~15 min | 5-prompt corpus vs golden, bytes | before committing `src/` changes |
-| 3 | ~40 min | re-derive the golden: nano → `rescore --sim-gen` → KL == 0 | ggml bump, toolchain, new machine, graph change |
-
-Tier 3 *creates* the golden; 1 and 2 only defend it.
-
-Which setups to compare is a triangle — **A** llama.cpp, **B** nano-glm local,
-**C** nano-glm + moe-server — and byte equality is transitive, so two edges
-always suffice. Make B the hub (cheapest to reproduce, touched by both edges):
-trunk-graph changes need A↔B; protocol/server changes need B↔C only; a
-toolchain or machine change invalidates the golden and needs tier 3 first.
-
-Deliverables: golden set under `testdata/` (tracked, `!` past the `*.bin`
-ignore, ~750 KB), a provenance sidecar per reference, a committed gate script
-that writes that sidecar automatically, and **a fingerprint handshake in
-protocol v2** — server reports ggml commit, compiler, `n_threads` and model
-hash on connect; client refuses on mismatch. That last one is a piece of step 2
-pulled forward: it is useful the moment client and server are built
-differently on one machine, and it removes most of what step 2 has to verify.
+`src/build_info.h`, `gate.py`, `TESTING.md`, `testdata/`. Two things naming the
+tests bought: `rpc` exists at all (the numbered scheme had no slot for the
+local-vs-backend edge, half of what step 1 built), and `gate.py rpc
+--moe-addr <host>` *is* step 2's correctness argument, already written.
 
 ### 6. Cross-prompt residency — **Now**
 
@@ -245,6 +234,24 @@ Prerequisite is the non-mmap load path the invariants already require: neither
 Windows nor macOS offers huge pages for file-backed mappings. That path is
 worth having anyway — it is what makes Windows timings reproducible.
 
+### 10. C++ unit tests — **Planned**
+
+The gate above is all end-to-end: every check costs a model load and answers
+in minutes. Unit-level invariants deserve a real test target instead — the
+Hadamard matrix being orthonormal, symmetric and made of exact ±1/√n entries;
+wire-header layout; hparam parsing against a synthetic GGUF; the routing
+statistics in `expert_stats.py` against traces with known structure.
+
+Not a `--selftest` flag on the shipping binary: tests belong outside the
+artifact under test, and a flag that only ever runs in CI is dead weight in
+every other invocation.
+
+Sequenced after 7 because unit tests need units, and that is exactly what the
+core-library extraction produces — today `fill_hadamard` is a `static` function
+inside `nano_glm.cpp` and nothing else can reach it. A few pieces are testable
+sooner (`moe_proto.h` is already a standalone header, `expert_stats.py` needs
+no C++ at all) if the rest slips.
+
 ### 9. Latency hiding around the shared expert — **Planned, independent**
 
 Issue the MoE request, run the shared expert on the client while it is in
@@ -258,18 +265,23 @@ optimisation, not information. Must not change a bit: same corpus gate.
 
 ### 2. Backend on another machine — **Deferred**
 
-Direct-attach 10GbE, TCP_NODELAY, jumbo frames; verify machine B's model from
-disk against `checksums/GLM-5.2-UD-Q6_K.sha256` first; same corpus gate; then
-RTT distribution, sustained req/s against the 256 the CPU ceiling allows, and
-end-to-end tok/s.
+Direct-attach 10GbE, TCP_NODELAY, jumbo frames. Verify machine B's model from
+disk against `checksums/GLM-5.2-UD-Q6_K.sha256`, bring it up on the same
+build, then
+
+    python gate.py rpc --moe-addr <host>:5711
+
+— the correctness half is already written and needs no new code. What remains
+is measurement: RTT distribution, sustained req/s against the 256 the CPU
+ceiling allows, end-to-end tok/s.
 
 Deferred because most of it is arithmetic — decode adds ~20 us of transfer,
 prefill ~2.2 ms at 114 tokens, and the only real unknown is whether 24 KiB to
 2.8 MB messages reach line rate on these NICs. Its KL == 0 gate also tests a
 configuration we do not intend to ship: once the trunk is on a GPU (step 4),
 end-to-end byte identity is gone by construction. What it *uniquely* de-risks
-is cross-machine identity, and the step 5 handshake answers that without a
-10GbE run.
+is cross-machine identity, and the step 5 handshake answers that on connect,
+without a 10GbE run.
 
 **Trigger**: when the throughput number is wanted for a writeup, or when the
 trunk actually moves off this machine.
@@ -323,6 +335,10 @@ lets this return as a backend-side concern without a client change.
   `ggml/include/ggml-cpu.h` (`ggml_get_type_traits_cpu`)
 - custom ops: `ggml/include/ggml.h` — `ggml_custom_4d`; dispatch:
   `ggml/src/ggml-cpu/ops.cpp` `ggml_compute_forward_custom`
+- tests: `TESTING.md` — what each named test establishes, which to run after
+  which change, what a provenance refusal means; `gate.py`, `testdata/`
+- build fingerprint: `src/build_info.h` — one definition behind `--version`,
+  the provenance sidecar and the wire handshake
 - verification: ../logit-kld — `compare.py`, `rescore --sim-gen`, corpus in
   `prompts/`, noise floors in its README
 - routing study: `ROUTING.md`; trace `src/expert_trace.h` (`build.ps1 -Trace`,

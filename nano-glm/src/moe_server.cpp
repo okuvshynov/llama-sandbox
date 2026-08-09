@@ -51,6 +51,7 @@
 
 #include "moe_proto.h"
 
+#include "build_info.h"
 #include "moe_block.h"
 #include "nano_model.h"
 #include "cpu_topology.h"
@@ -181,6 +182,63 @@ static void send_error(moe_socket c, uint32_t status, const char * msg) {
     moe_send_all(c, msg, (size_t) rh.payload_bytes);
 }
 
+// The v2 handshake, exchanged once before any request. The server answers and
+// serves whatever connects: it cannot know whether a client built differently
+// is a mistake or the operator deliberately pairing a Q4_K expert store with a
+// Q6_K trunk. Enforcement lives on the client, which owns the correctness
+// claim; the server's job is to make the pairing visible in its log.
+static bool serve_hello(moe_backend & B, moe_socket c, const std::string & model_path) {
+    moe_hello_request rq;
+    if (!moe_recv_all(c, &rq, sizeof(rq))) return false;
+
+    if (rq.magic != MOE_MAGIC || rq.msg_type != MOE_MSG_HELLO) {
+        fprintf(stderr, "moe-server: first message was not a hello (magic %08x, type %u) — "
+                        "a v1 client cannot talk to this server\n", rq.magic, rq.msg_type);
+        send_error(c, MOE_ERR_VERSION, "expected MOE_MSG_HELLO as the first message");
+        return false;
+    }
+    if (rq.version != MOE_VERSION) {
+        fprintf(stderr, "moe-server: client speaks protocol v%u, this is v%u\n",
+                rq.version, MOE_VERSION);
+        send_error(c, MOE_ERR_VERSION, "protocol version mismatch");
+        return false;
+    }
+
+    std::string peer(rq.payload_bytes, '\0');
+    if (rq.payload_bytes && !moe_recv_all(c, &peer[0], (size_t) rq.payload_bytes)) return false;
+    for (const std::string & line : { peer }) {
+        size_t pos = 0;
+        while (pos < line.size()) {
+            size_t nl = line.find('\n', pos);
+            if (nl == std::string::npos) nl = line.size();
+            if (nl > pos) fprintf(stderr, "moe-server:   client %s\n", line.substr(pos, nl - pos).c_str());
+            pos = nl + 1;
+        }
+    }
+
+    const nano_hparams & h = B.M.h;
+    const std::string me = nano_build_info() + nano_run_info(B.n_threads)
+                         + nano_model_info(model_path, B.M.bytes_mapped, B.M.n_shards);
+
+    moe_hello_response rh = {};
+    rh.magic         = MOE_MAGIC;
+    rh.version       = MOE_VERSION;
+    rh.msg_type      = MOE_MSG_HELLO;
+    rh.status        = MOE_OK;
+    snprintf(rh.arch, sizeof(rh.arch), "%s", h.arch.c_str());
+    rh.n_embd        = h.n_embd;
+    rh.n_layer       = h.n_layer;
+    rh.n_dense_lead  = h.n_dense_lead;
+    rh.n_expert      = h.n_expert;
+    rh.n_expert_used = h.n_expert_used;
+    rh.n_ff_exp      = h.n_ff_exp;
+    rh.expert_scale  = h.expert_scale;
+    rh.expert_norm   = h.expert_norm ? 1u : 0u;
+    rh.payload_bytes = me.size();
+
+    return moe_send_all(c, &rh, sizeof(rh)) && moe_send_all(c, me.data(), me.size());
+}
+
 // Returns false when the peer disconnects or the stream desyncs.
 static bool serve_one(moe_backend & B, moe_socket c, bool verbose) {
     // Deliberately NOT timed: this blocks until the client sends, so it is the
@@ -265,6 +323,16 @@ static bool serve_one(moe_backend & B, moe_socket c, bool verbose) {
 }
 
 int main(int argc, char ** argv) {
+    // Works without a model: the gate reads it, and it is the quickest way to
+    // answer "which build is that server?" without touching the socket.
+    for (int i = 1; i < argc; i++) {
+        if (!strcmp(argv[i], "--version")) {
+            fputs(nano_build_info().c_str(), stdout);
+            fputs(nano_run_info((int) physical_core_count()).c_str(), stdout);
+            return 0;
+        }
+    }
+
     server_params p;
     if (!parse_args(argc, argv, p)) return 1;
 
@@ -287,6 +355,7 @@ int main(int argc, char ** argv) {
     B.meta.resize(ggml_tensor_overhead() * 64 + ggml_graph_overhead());
 
     const nano_hparams & h = B.M.h;
+    fprintf(stderr, "moe-server: %s\n", nano_build_line().c_str());
     fprintf(stderr, "moe-server: %s | n_layer=%u (dense lead %u) n_embd=%u n_expert=%u used=%u\n",
             B.M.desc.c_str(), h.n_layer, h.n_dense_lead, h.n_embd, h.n_expert, h.n_expert_used);
     fprintf(stderr, "moe-server: load+init %.1fs, threads %d (%d physical / %d logical)\n",
@@ -311,7 +380,9 @@ int main(int argc, char ** argv) {
 
         uint64_t n_req = 0;
         const auto t_conn0 = clk::now();
-        while (serve_one(B, c, p.verbose)) n_req++;
+        if (serve_hello(B, c, p.model_path)) {
+            while (serve_one(B, c, p.verbose)) n_req++;
+        }
 
         const double secs = std::chrono::duration<double>(clk::now() - t_conn0).count();
         fprintf(stderr, "moe-server: client gone after %" PRIu64 " requests (%.1fs, %.0f req/s)\n",

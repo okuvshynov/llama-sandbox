@@ -42,6 +42,40 @@ endif()
 # byte-compared.
 option(NANO_EXPERT_TRACE "collect per-token expert routing traces" OFF)
 
+# Build fingerprint (src/build_info.h): the facts that decide whether two runs
+# can be expected to agree bit for bit. Printed by --version, recorded in the
+# gate's provenance sidecar, and sent over the wire in the protocol handshake.
+#
+# Captured at *configure* time, so it goes stale if you commit and rebuild
+# without reconfiguring — see build_info.h for why that is the deliberate
+# choice and what cross-checks it. The dirty flag is scoped to the sources that
+# actually go into these binaries, so an edit to some other subproject's README
+# does not mark the build dirty and drain the field of meaning.
+set(NANO_GIT_REV "unknown")
+find_package(Git QUIET)
+if(GIT_FOUND)
+    execute_process(
+        COMMAND ${GIT_EXECUTABLE} rev-parse --short HEAD
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        OUTPUT_VARIABLE NANO_GIT_REV
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET)
+    if(NOT NANO_GIT_REV)
+        set(NANO_GIT_REV "unknown")
+    endif()
+    execute_process(
+        COMMAND ${GIT_EXECUTABLE} status --porcelain --
+                ${CMAKE_CURRENT_SOURCE_DIR}/src
+                ${CMAKE_CURRENT_SOURCE_DIR}/../logit-kld/src
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        OUTPUT_VARIABLE NANO_GIT_DIRTY
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET)
+    if(NANO_GIT_DIRTY)
+        set(NANO_GIT_REV "${NANO_GIT_REV}-dirty")
+    endif()
+endif()
+
 add_subdirectory(${LLAMA_CPP_DIR}/ggml ${CMAKE_CURRENT_BINARY_DIR}/ggml)
 
 # logits_file.{h,cpp} is logit-kld's lkldtopk writer/reader, reused so nano-glm
@@ -79,6 +113,20 @@ if(NANO_EXPERT_TRACE)
     target_compile_definitions(moe-server PRIVATE NANO_EXPERT_TRACE)
     message(STATUS "nano-glm: expert routing trace ENABLED (--expert-log)")
 endif()
+
+# Compiler id and version go in as two defines rather than one joined string:
+# neither contains a space, which sidesteps quoting a -D value through cmake,
+# ninja and cl. build_info.h joins them.
+foreach(tgt nano-glm moe-server)
+    target_compile_definitions(${tgt} PRIVATE
+        NANO_GIT_REV="${NANO_GIT_REV}"
+        NANO_COMPILER_ID="${CMAKE_CXX_COMPILER_ID}"
+        NANO_COMPILER_VERSION="${CMAKE_CXX_COMPILER_VERSION}"
+        NANO_BUILD_BLAS=$<IF:$<BOOL:${GGML_BLAS}>,1,0>
+        NANO_BUILD_LLAMAFILE=$<IF:$<BOOL:${GGML_LLAMAFILE}>,1,0>
+    )
+endforeach()
+message(STATUS "nano-glm: build ${NANO_GIT_REV} / ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")
 
 if(WIN32)
     # ggml builds DLLs into ${CMAKE_BINARY_DIR}/bin; Windows resolves them from

@@ -92,6 +92,8 @@ static std::string kv_str_opt(const gguf_context * g, const char * key, const st
 // hparams (GLM-5.2 / glm-dsa; values asserted where the graph hardcodes structure)
 
 struct nano_hparams {
+    std::string arch;             // asserted "glm-dsa"; kept so the handshake
+                                  // reports what was loaded, not a literal
     uint32_t n_vocab;
     uint32_t n_embd;
     uint32_t n_layer;             // trunk layers (block_count - nextn)
@@ -145,6 +147,7 @@ static nano_hparams load_hparams(const gguf_context * g) {
     if (arch != "glm-dsa") NANO_ABORT("expected arch glm-dsa, got '%s'", arch.c_str());
 
     nano_hparams h = {};
+    h.arch         = arch;
     h.n_embd       = kv_u32(g, "glm-dsa.embedding_length");
     h.n_layer_all  = kv_u32(g, "glm-dsa.block_count");
     const uint32_t nextn = kv_u32_opt(g, "glm-dsa.nextn_predict_layers", 0);
@@ -259,6 +262,11 @@ struct nano_model {
     nano_hparams h;
     std::string  desc;
 
+    // Summed as shards are mapped, so the handshake can report which model is
+    // loaded without stat'ing the directory a second time.
+    uint64_t bytes_mapped = 0;
+    uint32_t n_shards     = 0;
+
     std::vector<ggml_context *>        meta_ctxs;   // own the tensor structs
     std::vector<ggml_backend_buffer_t> map_bufs;    // wrap the mmap'd data regions
     std::map<std::string, ggml_tensor *> tensors;
@@ -310,6 +318,8 @@ static void load_shard(nano_model & M, const std::string & path, const gguf_cont
 
     size_t file_size = 0;
     void * addr = map_file_ro(path, &file_size);
+    M.bytes_mapped += file_size;
+    M.n_shards     += 1;
 
     const size_t data_off = gguf_get_data_offset(g);
     ggml_backend_buffer_t buf = ggml_backend_cpu_buffer_from_ptr((char *) addr + data_off, file_size - data_off);

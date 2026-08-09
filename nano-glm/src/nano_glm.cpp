@@ -18,6 +18,7 @@
 // cpu_topology.h and nano_model.h both pull in.
 #include "moe_proto.h"
 
+#include "build_info.h"
 #include "cpu_topology.h"
 #include "expert_trace.h"
 #include "logits_file.h"
@@ -59,6 +60,7 @@ struct nano_params {
     std::string moe_addr;        // host:port — routed experts go to moe-server
     std::string moe_log;         // JSONL of per-RPC timings
     std::string expert_log;      // per-position, per-layer selected expert ids
+    bool        moe_strict = false;  // handshake: reproducibility drift is fatal
 };
 
 static bool parse_args(int argc, char ** argv, nano_params & p) {
@@ -76,6 +78,7 @@ static bool parse_args(int argc, char ** argv, nano_params & p) {
         else if (!strcmp(a, "--moe-addr") && i + 1 < argc) { p.moe_addr = argv[++i]; }
         else if (!strcmp(a, "--moe-log")  && i + 1 < argc) { p.moe_log  = argv[++i]; }
         else if (!strcmp(a, "--expert-log") && i + 1 < argc) { p.expert_log = argv[++i]; }
+        else if (!strcmp(a, "--strict"))                     { p.moe_strict = true; }
         else {
             fprintf(stderr, "nano-glm: unknown argument '%s'\n", a);
             p.model_path.clear();
@@ -96,6 +99,10 @@ static bool parse_args(int argc, char ** argv, nano_params & p) {
             "  --moe-addr <host:port>  evaluate routed experts on a remote moe-server\n"
             "              instead of locally (see ../PLAN.md step 1)\n"
             "  --moe-log <path>  write per-RPC timings as JSONL\n"
+            "  --strict    with --moe-addr, refuse a backend whose build differs in any\n"
+            "              way that voids bit-exactness (compiler, ggml, threads, model).\n"
+            "              A structurally different model is always refused; this covers\n"
+            "              the reproducibility fields the gate depends on.\n"
             "  --expert-log <path>  write the routing trace (selected expert ids per\n"
             "              position per layer); requires a -DNANO_EXPERT_TRACE build\n"
             "              and the local MoE path (see src/expert_trace.h)\n");
@@ -166,6 +173,102 @@ struct moe_rpc_ctx { uint32_t layer; };
 static std::deque<moe_rpc_ctx> g_rpc_ctxs;
 
 // TODO: shall this be uint64_t? uint32_t is just a few hours in microseconds.
+// The v2 handshake, client side. Three tiers, and the split is the whole point
+// (see moe_proto.h): structural disagreement is always fatal because the graph
+// assumes those values; reproducibility disagreement is fatal only under
+// --strict, because a Q4_K expert store behind a Q6_K trunk is a planned
+// configuration and not an error; everything else is printed.
+//
+// Printed either way, strict or not. The durable half of this is
+// observability: a run whose log records what it was actually talking to can
+// be diagnosed later, whereas a refusal only helps someone who is watching.
+static void moe_hello(const nano_model & M, const std::string & addr, bool strict,
+                      const std::string & model_path, int n_threads) {
+    const nano_hparams & h = M.h;
+    const std::string me = nano_build_info() + nano_run_info(n_threads)
+                         + nano_model_info(model_path, M.bytes_mapped, M.n_shards);
+
+    moe_hello_request rq = {};
+    rq.magic         = MOE_MAGIC;
+    rq.version       = MOE_VERSION;
+    rq.msg_type      = MOE_MSG_HELLO;
+    rq.payload_bytes = me.size();
+    if (!moe_send_all(g_moe.sock, &rq, sizeof(rq)) || !moe_send_all(g_moe.sock, me.data(), me.size())) {
+        NANO_ABORT("moe hello: send failed (%s)", moe_net_error().c_str());
+    }
+
+    moe_hello_response rh;
+    if (!moe_recv_all(g_moe.sock, &rh, sizeof(rh))) {
+        NANO_ABORT("moe hello: no reply from %s — a v1 moe-server cannot answer this "
+                   "(%s)", addr.c_str(), moe_net_error().c_str());
+    }
+    if (rh.magic != MOE_MAGIC || rh.msg_type != MOE_MSG_HELLO) {
+        NANO_ABORT("moe hello: malformed reply from %s", addr.c_str());
+    }
+    if (rh.version != MOE_VERSION) {
+        NANO_ABORT("moe hello: server speaks protocol v%u, this client is v%u",
+                   rh.version, MOE_VERSION);
+    }
+    std::string peer(rh.payload_bytes, '\0');
+    if (rh.payload_bytes && !moe_recv_all(g_moe.sock, &peer[0], (size_t) rh.payload_bytes)) {
+        NANO_ABORT("moe hello: short fingerprint from %s", addr.c_str());
+    }
+
+    // ---- structural: the client's graph is built around these ----
+    std::string bad;
+    auto want = [&](const char * name, uint64_t mine, uint64_t theirs) {
+        if (mine != theirs) {
+            bad += "\n  " + std::string(name) + ": client " + std::to_string(mine)
+                 + ", server " + std::to_string(theirs);
+        }
+    };
+    rh.arch[sizeof(rh.arch) - 1] = '\0';
+    if (h.arch != rh.arch) bad += "\n  arch: client " + h.arch + ", server " + rh.arch;
+    want("n_embd",        h.n_embd,        rh.n_embd);
+    want("n_layer",       h.n_layer,       rh.n_layer);
+    want("n_dense_lead",  h.n_dense_lead,  rh.n_dense_lead);
+    want("n_expert",      h.n_expert,      rh.n_expert);
+    want("n_expert_used", h.n_expert_used, rh.n_expert_used);
+    want("n_ff_exp",      h.n_ff_exp,      rh.n_ff_exp);
+    want("expert_norm",   h.expert_norm ? 1u : 0u, rh.expert_norm);
+    if (h.expert_scale != rh.expert_scale) {
+        bad += "\n  expert_scale: client " + std::to_string(h.expert_scale)
+             + ", server " + std::to_string(rh.expert_scale);
+    }
+    if (!bad.empty()) {
+        // No flag permits this: the two halves are of different models, and
+        // the output would be fluent and wrong rather than obviously broken.
+        NANO_ABORT("moe hello: %s holds a structurally different model:%s", addr.c_str(), bad.c_str());
+    }
+
+    // ---- reproducibility: bit-exactness only ----
+    const auto theirs = nano_kv_parse(peer);
+    const auto mine   = nano_kv_parse(me);
+    std::vector<std::string> drift;
+    for (const char * k : NANO_REPRO_KEYS) {
+        auto a = mine.find(k), b = theirs.find(k);
+        const std::string va = a == mine.end()   ? "?" : a->second;
+        const std::string vb = b == theirs.end() ? "?" : b->second;
+        if (va != vb) drift.push_back(std::string(k) + ": client " + va + ", server " + vb);
+    }
+
+    fprintf(stderr, "nano-glm: moe-server %s | %s\n", addr.c_str(),
+            theirs.count("git_rev") ? theirs.at("git_rev").c_str() : "?");
+    for (const char * k : { "compiler", "ggml_commit", "n_threads", "model_first", "model_bytes" }) {
+        if (theirs.count(k)) fprintf(stderr, "nano-glm:   server %s=%s\n", k, theirs.at(k).c_str());
+    }
+    for (const std::string & d : drift) {
+        fprintf(stderr, "nano-glm:   DIFFERS %s\n", d.c_str());
+    }
+    if (!drift.empty() && strict) {
+        NANO_ABORT("moe hello: --strict and the backend differs in %zu reproducibility "
+                   "field(s) above; bit-exactness against a reference is void", drift.size());
+    }
+    if (!drift.empty()) {
+        fprintf(stderr, "nano-glm:   (run with --strict to make this fatal)\n");
+    }
+}
+
 static uint32_t elapsed_us(std::chrono::steady_clock::time_point t0) {
     const auto d = std::chrono::duration_cast<std::chrono::microseconds>(
                        std::chrono::steady_clock::now() - t0).count();
@@ -820,6 +923,16 @@ static std::vector<int32_t> load_prompt_tokens(const nano_params & p, std::strin
 }
 
 int main(int argc, char ** argv) {
+    // Before anything else, and without a model: the gate script reads this to
+    // fill the provenance sidecar, so it must work on a bare binary.
+    for (int i = 1; i < argc; i++) {
+        if (!strcmp(argv[i], "--version")) {
+            fputs(nano_build_info().c_str(), stdout);
+            fputs(nano_run_info((int) physical_core_count()).c_str(), stdout);
+            return 0;
+        }
+    }
+
     nano_params params;
     if (!parse_args(argc, argv, params)) return 1;
 
@@ -851,6 +964,7 @@ int main(int argc, char ** argv) {
         }
         g_moe.want_log = !params.moe_log.empty();
         fprintf(stderr, "nano-glm: routed experts via moe-server at %s\n", params.moe_addr.c_str());
+        moe_hello(M, params.moe_addr, params.moe_strict, params.model_path, params.n_threads);
     }
 
     // Before the first eval: the trace hooks itself into the graph as it is built.
@@ -874,6 +988,7 @@ int main(int argc, char ** argv) {
     init_state(S, M, kv_size, params.n_threads);
     const auto t_load_end = std::chrono::steady_clock::now();
 
+    fprintf(stderr, "nano-glm: %s\n", nano_build_line().c_str());
     fprintf(stderr, "nano-glm: %s | n_vocab=%u n_layer=%u n_embd=%u | n_prompt=%d n_predict=%d top_k=%d kv=%u threads=%d (%d physical / %d logical cores)\n",
             M.desc.c_str(), h.n_vocab, h.n_layer, h.n_embd,
             n_prompt, params.n_predict, params.top_k, kv_size, params.n_threads,
