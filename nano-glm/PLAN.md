@@ -33,9 +33,15 @@ gating diverges.
 
 Constraints that hold across every step:
 
-- **KL == 0 while everything is CPU.** Phases 1-2 must not perturb a single
-  bit against the ../logit-kld baseline. Once GPUs enter (3-4) the bar becomes
-  bit-exact within the CPU path plus a *measured* KL bound.
+- **KL == 0 wherever the whole path is CPU.** Steps 0-2, and the CPU path
+  inside 3, must not perturb a single bit against the ../logit-kld baseline.
+  Once GPUs carry real work the bar becomes bit-exact within the CPU path plus
+  a *measured* KL bound against that same build's CPU run.
+- **A reference without provenance is not a reference.** Every stored baseline
+  carries model hashes, llama.cpp commit, compiler, thread count, batch size,
+  OS and host; the comparison refuses to run on a mismatch rather than
+  reporting a difference. `results/corpus/` had to be discarded for exactly
+  this — the files predate the shard repair and nothing in them says so.
 - **Same OS and toolchain on both ends** for any bit-exact claim: a
   Windows/MSVC and a macOS/clang build of one llama.cpp commit differ by
   8.85e-3 mean KL on identical hardware.
@@ -103,82 +109,184 @@ ceiling that expert offload alone cannot.
 
 ## Steps
 
+**Numbers are stable identifiers, not an ordering.** Code comments and commit
+messages point at "step 1", "step 3"; renumbering would falsify them. The
+order below is the execution order.
+
+Step 2 moved to the back because nothing depends on it: 3, 5, 7 and 8 all run
+on this one machine, so machine B is needed by exactly one item, and that item
+is the least informative one left.
+
 ### 0. Host-side dispatch, in-process — **Done**
 
-The routed block's `ggml_mul_mat_id` calls became `ggml_custom_4d` ops whose
-callback resolves each (token, slot, expert) triple on the host. This is the
-client shape with the network removed, and the seam everything below plugs
-into. Gate passed: 903 corpus positions, KL exactly 0.0, 931,896 bytes
-identical to llama.cpp.
-
-Branch `phase0-moe-dispatch` (2aeceef) — see that commit for the kernel
-contract that makes a callback bit-exact, and why the in-graph alternative
-would have cost 4x the expert compute.
+`ggml_mul_mat_id` became `ggml_custom_4d` ops resolving each (token, slot,
+expert) triple on the host — the client shape with the network removed. Gate:
+903 positions, KL 0.0. Branch `phase0-moe-dispatch` (2aeceef) has the kernel
+contract that makes a callback bit-exact.
 
 ### 1. RPC proof of concept, local, CPU-only — **Done**
 
-The routed block runs in a separate process over TCP: `moe-server` holds the
-router and every expert, takes `(layer, x)`, routes, evaluates, combines, and
-returns one row per token. The client is a `ggml_custom_4d` node at
-`n_tasks = 1` in place of the local block, so both paths live in one binary
-and local-vs-remote is a direct A/B. Gate passed: 743 corpus positions,
-12,375 RPCs, KL exactly 0.0, 766,776 bytes identical to llama.cpp.
+`moe-server` holds the router and every expert, takes `(layer, x)`, returns one
+combined row per token; the client is a `ggml_custom_4d` node at `n_tasks = 1`
+in its place, so both paths live in one binary. Gate: 743 positions,
+12,375 RPCs, KL 0.0. `src/moe_proto.h`, `src/moe_server.cpp` (deferred
+optimisations documented there), `--moe-addr` / `--moe-log`.
 
-`src/moe_proto.h`, `src/moe_server.cpp` (deferred optimisations documented
-there), `--moe-addr` / `--moe-log` in `src/nano_glm.cpp`. Timings in the
-budget above.
+### 5. Test harness and golden set — **Now**
 
-### 2. Backend on another machine — **Next up**
+Every gate so far has been hand-assembled PowerShell against whatever
+reference was lying around. That is what cost `results/corpus/`, and it gets
+more expensive as the setups multiply. An hour of work; a prerequisite for
+everything below, especially 7.
 
-Direct-attach 10GbE, TCP_NODELAY, jumbo frames. Same OS and toolchain on both
-ends, or the KL == 0 gate fails for reasons unrelated to the RPC.
+Separate the two questions that are currently one procedure:
 
-1. Bring the second Mac Pro up on the same build, verify the model there
-   against `checksums/GLM-5.2-UD-Q6_K.sha256` **from disk** before trusting
-   any result from it.
-2. Point `--moe-addr` at it. **Gate: KL == 0 over the corpus, still** — the
-   network must not perturb a bit. Same-ISA, same-toolchain makes this
-   achievable; if it fails, suspect the run configuration before the code.
-3. Measure what loopback could not: per-request RTT distribution over a real
-   link, sustained req/s against the 256 the CPU ceiling allows, and
-   end-to-end tok/s. The gap between RTT and `server_total` is now genuine
-   network time rather than ~114 us of loopback.
-4. **Expect prefill to hurt.** ~2.8 MB per request at 114 tokens is ~2.2 ms of
-   10GbE transfer on top of compute, where decode's 24 KiB is ~20 us. If that
-   dominates, the fixes in order of cheapness: f16 on the wire (measure the
-   KL), chunking the prefill into smaller batches, or overlapping transfer
-   with compute.
-5. **Latency hiding**: issue the request, run the shared expert on the client
-   while it is in flight, collect after. A `moe_send`/`moe_recv` split around
-   the shared-expert branch gets this for free, since the CPU backend executes
-   graph nodes in order. Worth ~0.5 ms/layer at decode; more once the link is
-   slower than loopback.
+- **"Did my change alter the output?"** — fixed reference, byte comparison, and
+  a failure means *I* did something. Re-baselined on legitimate change.
+- **"Is nano-glm still correct?"** — independent implementation over the same
+  ids, and a failure means the port is wrong. Never re-baselined.
 
-Open from step 1, cheap to fold in here: rename the server's `t_route` field
-(it times graph construction, not routing), and implement `per_slot` return if
-the debug path is wanted.
+| tier | cost | what | when |
+|---|---|---|---|
+| 0 | seconds, no model | `H·H = I` and entries ±1/√n; protocol static_asserts; `expert_stats.py` on synthetic traces | every build |
+| 1 | ~2 min | 18-position smoke vs golden, bytes | every build touching `src/` |
+| 2 | ~15 min | 5-prompt corpus vs golden, bytes | before committing `src/` changes |
+| 3 | ~40 min | re-derive the golden: nano → `rescore --sim-gen` → KL == 0 | ggml bump, toolchain, new machine, graph change |
+
+Tier 3 *creates* the golden; 1 and 2 only defend it.
+
+Which setups to compare is a triangle — **A** llama.cpp, **B** nano-glm local,
+**C** nano-glm + moe-server — and byte equality is transitive, so two edges
+always suffice. Make B the hub (cheapest to reproduce, touched by both edges):
+trunk-graph changes need A↔B; protocol/server changes need B↔C only; a
+toolchain or machine change invalidates the golden and needs tier 3 first.
+
+Deliverables: golden set under `testdata/` (tracked, `!` past the `*.bin`
+ignore, ~750 KB), a provenance sidecar per reference, a committed gate script
+that writes that sidecar automatically, and **a fingerprint handshake in
+protocol v2** — server reports ggml commit, compiler, `n_threads` and model
+hash on connect; client refuses on mismatch. That last one is a piece of step 2
+pulled forward: it is useful the moment client and server are built
+differently on one machine, and it removes most of what step 2 has to verify.
+
+### 6. Cross-prompt residency — **Now**
+
+`ROUTING.md`'s 58.4% is measured *within* one continuation — same topic, same
+register, the easy case. A static VRAM placement is chosen once and serves
+every workload, so the number that decides step 3 is rank-on-prose /
+score-on-code. Until it exists, treat 58.4% as an upper bound.
+
+Five corpus prompts at `-n 256` with `--expert-log`, then compare rankings
+across the five `counts.csv` files. Half an hour of tracing, and it is the
+cheapest decision-relevant measurement left in the plan.
+
+### 7. Core library, and an app that completes prompts — **Next**
+
+Greedy generation and rescoring are the same forward pass; only the source of
+the next token and the shape of the output differ. Three layers:
+
+- **core** — load, KV cache, graph, `eval_chunk`. No I/O policy. Exists
+  already, inline in `main()`; needs lifting out.
+- **`nano-glm`** — the measurement tool. Contract frozen: ids in, lkldtopk out,
+  greedy = stored top-1, no tokenizer, no sampler, deterministic.
+- **`nano-chat`** — the PoC. Tokenizer, chat template, sampling, streaming text.
+
+The rule that forces the split: **the bit-exactness contract is defined over a
+fixed token sequence, so anything that can change that sequence lives outside
+the tool that produces reference numbers.** A sampler with RNG, a template
+tweak, a tokenizer version bump — each silently invalidates every stored
+reference if it hides behind a flag in one binary.
+
+Two bridges: `nano-chat --dump-ids` turns any interesting behaviour into a
+reproducible logits test, and a detokenizer for lkldtopk files makes corpus
+output readable (the routing study wanted this and had to read raw ids).
+
+The tokenizer brings its own correctness question — do our ids match
+llama.cpp's for the same text? Vocab only, no model, seconds, and deliberately
+*not* part of the logits gate, so a tokenizer bug cannot present as a numerics
+failure.
+
+Sequenced after 5 because it is the largest refactor in the plan and the golden
+set is what makes it safe.
 
 ### 3. Vulkan experts inside the backend — **Planned**
 
 Hold a resident expert subset on the 4 Vega dies, serve misses from DRAM. 23%
-of 563 GiB fits in 128 GiB of VRAM, and the routing study above says that
-catches **58% of selections, not 23%** — DRAM traffic falls 21.66 -> 9.01
-GB/token, moving the MoE-bound ceiling from 3.42 to ~8 tok/s before dispatch
-cost is subtracted. That is what makes this step worth doing rather than
-marginal, so the number is load-bearing: before building anything, re-measure
-it **across prompts** (rank on prose, score on code), since a static placement
-is chosen once and must serve every workload. Half an hour of tracing.
+of 563 GiB fits in 128 GiB of VRAM, and the routing study says that catches
+**58% of selections, not 23%** — DRAM traffic falls 21.66 -> 9.01 GB/token,
+moving the MoE-bound ceiling from 3.42 to ~8 tok/s before dispatch cost. That
+is what makes this step worth doing rather than marginal, so the number is
+load-bearing and step 6 has to land first.
+
+Runs entirely on this machine: backend-side, client on loopback. No dependency
+on step 2.
 
 Placement is **static, not LRU** — PCIe is ~5.7x slower than DRAM, so cache
 refill never pays; and uniform per layer, since a global budget measured the
 same. Q4_K experts are the composing lever (~32% less DRAM traffic, ~33%
 resident). Cost model and per-phase dispatch numbers: ../moe-offload.
 
+Byte identity ends here for the expert path, so the gate changes shape:
+compare against **the same build's CPU run over the same ids**, never a
+historical file; measure the GPU path's own reproducibility floor first
+(GPU-vs-GPU across batch shapes and workgroup sizes) or its KL against CPU
+means nothing; gate on per-position max, not mean, since one mis-routed token
+vanishes in an average over 743 positions. The RPC boundary is the useful
+diagnostic: a server compare-mode evaluating a request on both CPU and GPU
+localizes divergence to a layer instead of smearing it across the forward pass.
+
+### 8. Huge pages for the expert store — **Planned**
+
+31 MB per expert against a 1536-entry L2 TLB, and 4 KiB pages break the L2
+streamer about once per output row. Self-contained, backend-side, independent
+of everything else.
+
+Prerequisite is the non-mmap load path the invariants already require: neither
+Windows nor macOS offers huge pages for file-backed mappings. That path is
+worth having anyway — it is what makes Windows timings reproducible.
+
+### 9. Latency hiding around the shared expert — **Planned, independent**
+
+Issue the MoE request, run the shared expert on the client while it is in
+flight, collect after. A `moe_send`/`moe_recv` split around the shared-expert
+branch gets it for free, because the CPU backend executes graph nodes in order
+and the other fifteen workers are already waiting out the round trip.
+
+Worth ~0.5 ms against a 3.2 ms request — **16% on loopback today**, more once
+the link is slower. Depends on nothing; it is listed late because it is an
+optimisation, not information. Must not change a bit: same corpus gate.
+
+### 2. Backend on another machine — **Deferred**
+
+Direct-attach 10GbE, TCP_NODELAY, jumbo frames; verify machine B's model from
+disk against `checksums/GLM-5.2-UD-Q6_K.sha256` first; same corpus gate; then
+RTT distribution, sustained req/s against the 256 the CPU ceiling allows, and
+end-to-end tok/s.
+
+Deferred because most of it is arithmetic — decode adds ~20 us of transfer,
+prefill ~2.2 ms at 114 tokens, and the only real unknown is whether 24 KiB to
+2.8 MB messages reach line rate on these NICs. Its KL == 0 gate also tests a
+configuration we do not intend to ship: once the trunk is on a GPU (step 4),
+end-to-end byte identity is gone by construction. What it *uniquely* de-risks
+is cross-machine identity, and the step 5 handshake answers that without a
+10GbE run.
+
+**Trigger**: when the throughput number is wanted for a writeup, or when the
+trunk actually moves off this machine.
+
+Cheap cleanups to fold in whenever it happens: rename the server's `t_route`
+(it times graph construction, not routing); `per_slot` return if the debug path
+is wanted; the unbounded `moe_client::rtt_us` / `::log` growth and the
+`uint32_t` wrap in `elapsed_us`.
+
 ### 4. Trunk on a modern GPU — **Planned**
 
 Attention + KV + shared expert onto a Blackwell-class card; nano-glm needs a
-GPU backend (it currently aborts if one is present). End-to-end bit-exactness
-ends here by construction.
+GPU backend (it currently aborts if one is present — the abort is a
+correctness-testing guard, not a position). End-to-end bit-exactness ends here
+by construction, and llama.cpp CPU becomes the only remaining independent
+oracle, which is why the golden set has to be frozen with full provenance
+*before* the dependency is dropped.
 
 ## Ideas, unproven
 
@@ -187,13 +295,10 @@ ends here by construction.
   Buys nothing while experts are in DRAM (bandwidth-bound; prefetch adds no
   bandwidth), and the idle window it needs shrinks to ~3% once the trunk is
   fast. Its home is K3, where experts exceed RAM and prefetch targets storage.
-  The routing study puts a floor under the *predictor* half of this: simply
-  keeping the previous token's experts warm already hits 35% against a 3% base
-  rate, free and with no speculative router at all. A speculative router has to
-  beat that, not uniform.
-- **Huge pages** for the expert store — 31 MB per expert against a 1536-entry
-  L2 TLB. Only reachable via the non-mmap load path: neither Windows nor macOS
-  offers huge pages for file-backed mappings.
+  The routing study puts a floor under the *predictor* half: keeping the
+  previous token's experts warm already hits 35% against a 3% base rate, free
+  and with no speculative router at all. A speculative router has to beat that,
+  not uniform.
 - **Backend micro-optimisations** — graph caching, zero-copy request/response,
   fusing up+gate. All noise against today's 3072 us/layer; each is recorded in
   `src/moe_server.cpp` with the condition that would make it matter, since the
@@ -210,13 +315,14 @@ lets this return as a backend-side concern without a client change.
 
 ## Links
 
-- client seam: `src/nano_glm.cpp` — `moe_proj_cb`, combine at `cur_experts`,
-  shared expert at `ffn_up_shexp` (branch `phase0-moe-dispatch`)
+- client seam: `src/nano_glm.cpp` — `moe_rpc_cb` (its comment documents the
+  ggml custom-op contract), combine at `cur_experts`, shared expert at
+  `ffn_up_shexp`
 - bit-exact kernel contract: `ggml/src/ggml-cpu/ggml-cpu.c`
   `ggml_compute_forward_mul_mat_id_one_chunk`; public traits in
   `ggml/include/ggml-cpu.h` (`ggml_get_type_traits_cpu`)
-- custom ops: `ggml/include/ggml.h` — `ggml_custom_4d`; execution order:
-  `ggml_graph_compute_thread`, `ggml_barrier`
+- custom ops: `ggml/include/ggml.h` — `ggml_custom_4d`; dispatch:
+  `ggml/src/ggml-cpu/ops.cpp` `ggml_compute_forward_custom`
 - verification: ../logit-kld — `compare.py`, `rescore --sim-gen`, corpus in
   `prompts/`, noise floors in its README
 - routing study: `ROUTING.md`; trace `src/expert_trace.h` (`build.ps1 -Trace`,
