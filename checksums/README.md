@@ -103,9 +103,15 @@ Diffing the corrupt files against good copies before overwriting them
 
 Conclusion: a Windows **writeback-DMA bug** transferred a descriptor structure
 instead of the pages it described. Correct bytes in cache, wrong bytes on
-disk — which is precisely why the cache masked it. ECC, WHEA, the storage
-error log and `chkdsk` were all clean throughout, because nothing failed: the
-wrong source address was handed down and faithfully written.
+disk — which is precisely why the cache masked it. The storage error log and
+`chkdsk` were clean throughout, because nothing failed: the wrong source
+address was handed down and faithfully written.
+
+**Correction (2026-08-10).** This section previously also claimed WHEA was
+clean. It was not — see "The memory subsystem is degrading" below. That does
+not change the conclusion above (corrected errors deliver correct data, and a
+descriptor table is not a bit flip), but "the hardware logs are clean" was
+never checked properly and should not have been offered as support.
 
 Fresh copies of both shards verified first time, so the write path is not
 reproducibly broken. Re-running the gate with repaired weights reproduced the
@@ -116,3 +122,40 @@ The damage *shape* is what distinguishes a driver bug from failing hardware —
 isolated bit flips would have meant the opposite conclusion. So diff a corrupt
 file against a good copy **before** overwriting it; that evidence is
 unrecoverable afterwards.
+
+## The memory subsystem is degrading
+
+Checked properly on 2026-08-10, after the second incident. The System log holds
+nine `Microsoft-Windows-WHEA-Logger` id 47 warnings — "a corrected hardware
+error has occurred", Component: Memory:
+
+| when | physical address |
+|---|---|
+| 2026-08-02 00:12, 00:47 | `0x29A02B4E80` (166.5 GiB) |
+| 2026-08-03 12:46, 12:50 ×2, 15:03, 23:55, 23:57 | `0x29A02B4E80` |
+| 2026-08-07 21:25 | `0x395BE62140` (229.4 GiB) |
+
+Eight hits on one address is a single sticky cell, not scattered noise. The
+memory controller did not decode a DIMM — `Card`, `Module`, `Bank`, `Row`,
+`Column` all report `0x0` — so the physical address is the only locator, and
+mapping it to one of the twelve 64 GB Samsung RDIMMs would need the platform's
+address-interleave map.
+
+```powershell
+Get-WinEvent -FilterHashtable @{LogName='System'; ProviderName='Microsoft-Windows-WHEA-Logger'}
+```
+
+**Read this carefully, because it is easy to over-conclude.** These errors were
+*corrected*: ECC caught those bits and the consumer received the right data.
+They are not the mechanism behind either splice, and the damage shape says so
+independently — bit rot flips scattered bits, while both incidents wrote a
+structured descriptor table with an exact 2 MiB stride, which is a wrong source
+address reaching a copy engine.
+
+So there are two separate things here: a failing DRAM cell that ECC is
+currently containing, and an address/DMA fault that ECC cannot see because
+nothing about it registers as an error. The WHEA log does not explain the
+corruption; what it does is remove "the hardware logs are clean" as a reason
+for comfort, and raise the prior that the second fault is hardware rather than
+a driver bug. Worth re-checking after any further incident: a corrected-error
+rate that climbs, or a *second* sticky address, would change the picture.

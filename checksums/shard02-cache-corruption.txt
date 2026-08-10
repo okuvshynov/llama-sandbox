@@ -80,3 +80,17 @@ this machine without the file ever changing, and:
 5. `scan_splice.py` on the failing shard, and on a good one as a control.
 6. `hash_nocache.ps1` on the failing shard. Disk == manifest means reboot;
    disk != manifest means restore from the other machine.
+
+## Outcome
+
+Rebooted. `gate.py smoke` passed byte-identical at 309dea5 (MSVC 19.50.35723.0,
+ggml 6a32c29a7, 16 threads), confirming the diagnosis end to end: nothing was
+restored, and the file was never touched.
+
+## Hardware, checked afterwards
+
+Nine WHEA corrected-memory-error warnings 2026-08-02..07, eight at the same
+physical address — details and the caveats in `README.md`, "The memory
+subsystem is degrading". They do not explain this incident (corrected means the
+data delivered was right, and a descriptor table is not a bit flip), but the
+earlier claim that WHEA was clean was wrong and is now corrected there.
