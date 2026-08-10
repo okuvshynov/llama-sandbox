@@ -81,7 +81,15 @@ On Windows (MSVC), `build.ps1` wraps the same two commands — it locates
 ```powershell
 .\build.ps1                       # nano-glm
 .\build.ps1 -Project logit-kld    # the verification tools, same toolchain
+.\build.ps1 -Vk                   # Vulkan moe-server only, into build-vk\
 ```
+
+`-Vk` is a separate tree because a Vulkan-enabled build registers the GPUs, and
+every trunk binary aborts when a GPU device is present (`lib/nano_graph.h`).
+Only `moe-server` can hold one, so that tree builds only `moe-server` and it is
+paired with `build\bin\nano-glm.exe` as the client — the client then keeps
+exactly the numerics the golden set was made with. `moe-server --devices` lists
+what a build can see, without loading a model.
 
 Executables land in `build\bin\` next to the ggml DLLs so Windows resolves
 them without PATH juggling.

@@ -110,7 +110,9 @@ static bool parse_args(int argc, char ** argv, server_params & p) {
             "  --host <ip>   bind address (default 127.0.0.1)\n"
             "  --port <n>    port (default 5711)\n"
             "  -t <int>      threads (default: physical cores, ignoring SMT siblings)\n"
-            "  -v            log every request\n");
+            "  -v            log every request\n"
+            "  --devices     list the ggml devices this build can see, and exit\n"
+            "  --version     print the build fingerprint, and exit\n");
         return false;
     }
     return true;
@@ -467,13 +469,44 @@ static bool serve_one(moe_backend & B, moe_socket c, bool verbose) {
     return true;
 }
 
+// What ggml can actually see. Needs no model, which is the point: a 583 GiB
+// load is a poor way to find out whether the Vulkan backend registered, and
+// choosing which experts a device can hold needs its VRAM figure first.
+static void list_devices() {
+    ggml_backend_load_all();
+    const size_t n = ggml_backend_dev_count();
+    printf("%zu ggml device(s)\n", n);
+    for (size_t i = 0; i < n; i++) {
+        ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+        size_t dev_free = 0, dev_total = 0;
+        ggml_backend_dev_memory(dev, &dev_free, &dev_total);
+
+        const char * kind = "?";
+        switch (ggml_backend_dev_type(dev)) {
+            case GGML_BACKEND_DEVICE_TYPE_CPU:   kind = "CPU";   break;
+            case GGML_BACKEND_DEVICE_TYPE_GPU:   kind = "GPU";   break;
+            case GGML_BACKEND_DEVICE_TYPE_IGPU:  kind = "IGPU";  break;
+            case GGML_BACKEND_DEVICE_TYPE_ACCEL: kind = "ACCEL"; break;
+        }
+        printf("  %zu  %-5s %-16s %6.1f / %6.1f GiB free  %s\n",
+               i, kind, ggml_backend_dev_name(dev),
+               dev_free / 1073741824.0, dev_total / 1073741824.0,
+               ggml_backend_dev_description(dev));
+    }
+}
+
 int main(int argc, char ** argv) {
-    // Works without a model: the gate reads it, and it is the quickest way to
-    // answer "which build is that server?" without touching the socket.
+    // Both work without a model: the gate reads --version, and it is the
+    // quickest way to answer "which build is that server?" without touching
+    // the socket.
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--version")) {
             fputs(nano_build_info().c_str(), stdout);
             fputs(nano_run_info((int) physical_core_count()).c_str(), stdout);
+            return 0;
+        }
+        if (!strcmp(argv[i], "--devices")) {
+            list_devices();
             return 0;
         }
     }

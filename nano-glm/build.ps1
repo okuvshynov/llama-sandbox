@@ -7,20 +7,29 @@
 #   .\build.ps1 -Project logit-kld       # build collect + rescore
 #   .\build.ps1 -Clean                   # reconfigure from scratch
 #   .\build.ps1 -Trace                   # routing-trace variant, into build-trace\
+#   .\build.ps1 -Vk                      # Vulkan moe-server only, into build-vk\
 #
 # Executables and the ggml/llama DLLs both land in <project>\build\bin\.
 #
 # -Trace is a separate build *tree* on purpose: NANO_EXPERT_TRACE changes how
 # the graph is allocated (lib/expert_trace.h), so the untraced binary has to
 # stay around to byte-compare against.
+#
+# -Vk is separate for a stronger reason: a Vulkan-enabled build registers the
+# Vega dies, and every trunk binary aborts when a GPU device is present
+# (lib/nano_graph.h). That tree therefore builds moe-server alone, and it is
+# paired with build\bin\nano-glm.exe as the client — see NANO_VULKAN in
+# CMakeLists.txt.
 
 [CmdletBinding()]
 param(
     [string] $Project     = "nano-glm",
     [string] $LlamaCppDir = "C:\Users\oleksandr\Desktop\llama.cpp",
     [switch] $Clean,
-    [switch] $Trace
+    [switch] $Trace,
+    [switch] $Vk
 )
+if ($Trace -and $Vk) { throw "-Trace and -Vk are separate build trees; pick one" }
 
 $ErrorActionPreference = "Stop"
 $repo = Split-Path $PSScriptRoot -Parent
@@ -41,7 +50,7 @@ $ninja = Get-Command ninja -ErrorAction SilentlyContinue | Select-Object -Expand
 if (-not $ninja) { $ninja = Join-Path $vsPath "Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja\ninja.exe" }
 if (-not (Test-Path $ninja)) { throw "ninja not found (looked for $ninja)" }
 
-$build = Join-Path $src ($(if ($Trace) { "build-trace" } else { "build" }))
+$build = Join-Path $src ($(if ($Trace) { "build-trace" } elseif ($Vk) { "build-vk" } else { "build" }))
 if ($Clean -and (Test-Path $build)) { Remove-Item -Recurse -Force $build }
 
 # cmake and cl must see the same environment, so both steps run under vcvars in
@@ -55,6 +64,7 @@ $cfg = "cmake -S `"$src`" -B `"$build`" -G Ninja -DCMAKE_BUILD_TYPE=Release " +
        "-DCMAKE_MAKE_PROGRAM=`"$ninja`" -DLLAMA_CPP_DIR=`"$LlamaCppDir`" " +
        "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"
 if ($Trace) { $cfg += " -DNANO_EXPERT_TRACE=ON" }
+if ($Vk)    { $cfg += " -DNANO_VULKAN=ON" }
 # The inner 2>&1 is cmd's, not PowerShell's: llama.cpp's CMakeLists writes
 # informational lines to stderr, and under $ErrorActionPreference = "Stop" any
 # stderr from a native command becomes a terminating error even on exit 0.

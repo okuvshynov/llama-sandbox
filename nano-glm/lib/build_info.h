@@ -55,6 +55,9 @@
 #ifndef NANO_BUILD_LLAMAFILE
 #   define NANO_BUILD_LLAMAFILE 0
 #endif
+#ifndef NANO_BUILD_VULKAN
+#   define NANO_BUILD_VULKAN 0
+#endif
 #if defined(NANO_EXPERT_TRACE)
 #   define NANO_BUILD_TRACE 1
 #else
@@ -71,6 +74,7 @@ static std::string nano_build_info() {
     s += "ggml_commit=";  s += ggml_commit();    s += "\n";
     s += "blas=";      s += (NANO_BUILD_BLAS      ? "1" : "0"); s += "\n";
     s += "llamafile="; s += (NANO_BUILD_LLAMAFILE ? "1" : "0"); s += "\n";
+    s += "vulkan=";    s += (NANO_BUILD_VULKAN    ? "1" : "0"); s += "\n";
     s += "trace=";     s += (NANO_BUILD_TRACE     ? "1" : "0"); s += "\n";
     return s;
 }
@@ -84,6 +88,7 @@ static std::string nano_build_line() {
     s += " | ggml "; s += ggml_version(); s += " ("; s += ggml_commit(); s += ")";
     s += " | blas=";     s += (NANO_BUILD_BLAS      ? "1" : "0");
     s += " llamafile=";  s += (NANO_BUILD_LLAMAFILE ? "1" : "0");
+    s += " vulkan=";     s += (NANO_BUILD_VULKAN    ? "1" : "0");
     s += " trace=";      s += (NANO_BUILD_TRACE     ? "1" : "0");
     return s;
 }
@@ -122,8 +127,15 @@ static std::map<std::string, std::string> nano_kv_parse(const std::string & text
 // Deliberately absent: git_rev (running a different revision is the whole
 // point of a comparison) and trace (a -DNANO_EXPERT_TRACE build was measured
 // byte-identical to a plain one).
+// `vulkan` is here for a slightly different reason than the rest: it does not
+// change the *client's* numerics at all, since the client is always CPU-only.
+// It voids bit-exactness because a Vulkan-enabled backend evaluates experts in
+// different arithmetic, and a strict client should refuse that pairing rather
+// than silently byte-compare against a golden set it cannot match. Increment 2
+// deliberately turns `gate.py rpc --strict` into a refusal, which is the signal
+// to use the KL gate instead.
 static const char * const NANO_REPRO_KEYS[] = {
-    "compiler", "ggml_commit", "blas", "llamafile", "n_threads",
+    "compiler", "ggml_commit", "blas", "llamafile", "vulkan", "n_threads",
     "model_first", "model_bytes", "model_shards",
 };
 

@@ -269,6 +269,41 @@ changes shape (below).
    exist before.
 2. **One Vulkan device holding a subset**, misses falling through to the CPU
    device. Gate becomes the KL bound below.
+
+   *Build tree done.* `build.ps1 -Vk` -> `build-vk\`, `NANO_VULKAN=ON` ->
+   `GGML_VULKAN=ON`, and that tree builds **moe-server alone**: a Vulkan build
+   registers the GPUs and every trunk binary aborts when a GPU device is
+   present (`lib/nano_graph.h`), so the server is the only binary that can hold
+   one. It pairs with `build\bin\nano-glm.exe` as client, which keeps the
+   client on exactly the numerics the golden set was made with. `vulkan` is now
+   in the build fingerprint and in `NANO_REPRO_KEYS`, so a strict client
+   *refuses* a Vulkan backend — deliberately, since that pairing cannot be
+   byte-compared and the refusal is the signal to use the KL gate.
+
+   `moe-server --devices` (no model load) reports what a build sees:
+
+       4x GPU  Vulkan0-3   31.2 / 32.0 GiB free   AMD Radeon Pro Vega II Duo
+       1x CPU  CPU        743.9 / 767.9 GiB free   Xeon W-3245
+       fp16 1 | bf16 0 | int dot 1 | matrix cores none | warp 64
+
+   **Sizing, and it is sobering.** At 31.5 MB per expert (`OPTIMIZATION.md`),
+   31.2 GiB of VRAM holds ~1060 experts against 75 layers x 256 = 19200, i.e.
+   **~5.5% on one die**, ~22% across all four. So increment 2 exercises
+   correctness and the fallthrough path thoroughly, and will be *slower* than
+   CPU-only, because the GPU does a twentieth of the work while adding a
+   transfer and a sync. That is expected and is not a reason to stop; the
+   speed question belongs to increment 3 and to placement in `OPTIMIZATION.md`.
+
+   **Design decision: real compaction, not weight-zeroing.** Residency is per
+   *expert*, slots are per *token*, so a device's share is a set of
+   (token, slot) pairs that varies across the batch. The cheap alternative —
+   keep the full 8 slots on every device and zero the weights of the ones it
+   does not own — is correct but makes each device do the whole layer's work,
+   so the GPU would be pure overhead and the CPU would save nothing. Instead
+   each device gets a compacted `x`, `ids` and `weights` covering only its
+   pairs, and the host scatter-adds the returned rows. Increment 3 needs the
+   same machinery for expert parallelism within a layer, so the cheap version
+   would be built to be thrown away.
 3. **N devices, one thread each**, trivial expert assignment (`e % n_devices`).
    Measure whether four dies beat one; expert parallelism within a layer is the
    thing being tested. Also where the per-layer router sync can be overlapped:

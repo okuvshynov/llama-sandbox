@@ -18,6 +18,25 @@ endif()
 set(GGML_METAL     OFF CACHE BOOL "" FORCE)
 set(GGML_LLAMAFILE ON  CACHE BOOL "" FORCE)
 
+# Vulkan experts in the backend (PLAN.md step 3, increment 2). OFF by default
+# and built in a *separate tree* (build.ps1 -Vk -> build-vk/), for a reason that
+# is structural rather than tidiness:
+#
+# `init_state` aborts when any GPU device is registered (lib/nano_graph.h) —
+# the guard that exists because of the AMD-Metal NaN incident. Every trunk
+# binary calls ggml_backend_load_all(), so in a Vulkan-enabled build they would
+# all see the Vega dies and abort on startup. moe-server does not include
+# nano_graph.h and is therefore the only binary that can hold a GPU.
+#
+# So this tree builds *only* moe-server, and it is paired with the CPU tree's
+# client: `gate.py rpc --external-server` against a manually started
+# build-vk\bin\moe-server.exe. The client keeps exactly the numerics the golden
+# set was made with, which is what makes the comparison mean anything.
+option(NANO_VULKAN "build moe-server with the ggml Vulkan backend (separate tree)" OFF)
+if(NANO_VULKAN)
+    set(GGML_VULKAN ON CACHE BOOL "" FORCE)
+endif()
+
 # BLAS is what the macOS baselines ran with (Accelerate, engaged at batch >= 32
 # via ggml_backend_sched op offload), so it stays ON there. Off-Apple there is
 # no equivalent to match bit-for-bit: a different BLAS is a different set of
@@ -100,61 +119,70 @@ if(WIN32)
     target_link_libraries(nano-lib INTERFACE ws2_32)   # moe_proto.h speaks sockets
 endif()
 
-# The validation harness: raw token ids in, an lkldtopk file out. Frozen
-# interface on purpose — see PLAN.md step 7 and TESTING.md.
-add_executable(nano-glm
-    apps/nano-glm/main.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../logit-kld/src/logits_file.cpp
-)
-target_link_libraries(nano-glm PRIVATE nano-lib)
-
 # The MoE backend: same model definition and same routed-expert graph as the
-# client, reached over TCP instead of a function call.
+# client, reached over TCP instead of a function call. The only target built in
+# the Vulkan tree, per the comment on NANO_VULKAN above.
 add_executable(moe-server apps/moe-server/main.cpp)
 target_link_libraries(moe-server PRIVATE nano-lib)
+set(NANO_TARGETS moe-server)
 
-# Throughput in a named residency regime (PLAN.md step 11). Links
-# logits_file.cpp for prompt_source.h, which reads prompts out of lkldtopk
-# files so a bench run and a gate run can be given the identical token ids.
-add_executable(nano-bench
-    apps/nano-bench/main.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../logit-kld/src/logits_file.cpp
-)
-target_link_libraries(nano-bench PRIVATE nano-lib)
+if(NOT NANO_VULKAN)
+    # The validation harness: raw token ids in, an lkldtopk file out. Frozen
+    # interface on purpose — see PLAN.md step 7 and TESTING.md.
+    add_executable(nano-glm
+        apps/nano-glm/main.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../logit-kld/src/logits_file.cpp
+    )
+    target_link_libraries(nano-glm PRIVATE nano-lib)
 
-# Single-turn chat: tokenizer, chat template, streaming text. Everything that
-# can change a token sequence lives here rather than in nano-glm, so that
-# adding a sampler cannot invalidate the golden set.
-add_executable(nano-chat apps/nano-chat/main.cpp)
-target_link_libraries(nano-chat PRIVATE nano-lib)
+    # Throughput in a named residency regime (PLAN.md step 11). Links
+    # logits_file.cpp for prompt_source.h, which reads prompts out of lkldtopk
+    # files so a bench run and a gate run can be given the identical token ids.
+    add_executable(nano-bench
+        apps/nano-bench/main.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../logit-kld/src/logits_file.cpp
+    )
+    target_link_libraries(nano-bench PRIVATE nano-lib)
+
+    # Single-turn chat: tokenizer, chat template, streaming text. Everything
+    # that can change a token sequence lives here rather than in nano-glm, so
+    # that adding a sampler cannot invalidate the golden set.
+    add_executable(nano-chat apps/nano-chat/main.cpp)
+    target_link_libraries(nano-chat PRIVATE nano-lib)
+
+    list(APPEND NANO_TARGETS nano-glm nano-bench nano-chat)
+endif()
 
 # moe_block.h is shared, so both binaries must agree on whether it traces.
 if(NANO_EXPERT_TRACE)
-    target_compile_definitions(nano-glm   PRIVATE NANO_EXPERT_TRACE)
-    target_compile_definitions(moe-server PRIVATE NANO_EXPERT_TRACE)
-    target_compile_definitions(nano-chat  PRIVATE NANO_EXPERT_TRACE)
-    target_compile_definitions(nano-bench PRIVATE NANO_EXPERT_TRACE)
+    foreach(tgt ${NANO_TARGETS})
+        target_compile_definitions(${tgt} PRIVATE NANO_EXPERT_TRACE)
+    endforeach()
     message(STATUS "nano-glm: expert routing trace ENABLED (--expert-log)")
 endif()
 
 # Compiler id and version go in as two defines rather than one joined string:
 # neither contains a space, which sidesteps quoting a -D value through cmake,
 # ninja and cl. build_info.h joins them.
-foreach(tgt nano-glm moe-server nano-chat nano-bench)
+foreach(tgt ${NANO_TARGETS})
     target_compile_definitions(${tgt} PRIVATE
         NANO_GIT_REV="${NANO_GIT_REV}"
         NANO_COMPILER_ID="${CMAKE_CXX_COMPILER_ID}"
         NANO_COMPILER_VERSION="${CMAKE_CXX_COMPILER_VERSION}"
         NANO_BUILD_BLAS=$<IF:$<BOOL:${GGML_BLAS}>,1,0>
         NANO_BUILD_LLAMAFILE=$<IF:$<BOOL:${GGML_LLAMAFILE}>,1,0>
+        NANO_BUILD_VULKAN=$<IF:$<BOOL:${NANO_VULKAN}>,1,0>
     )
 endforeach()
 message(STATUS "nano-glm: build ${NANO_GIT_REV} / ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")
+if(NANO_VULKAN)
+    message(STATUS "nano-glm: VULKAN backend ENABLED — moe-server only")
+endif()
 
 if(WIN32)
     # ggml builds DLLs into ${CMAKE_BINARY_DIR}/bin; Windows resolves them from
     # the exe's own directory, so put the exes there too rather than making every
     # invocation prepend build/bin to PATH.
-    set_target_properties(nano-glm moe-server nano-chat nano-bench PROPERTIES
+    set_target_properties(${NANO_TARGETS} PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 endif()
