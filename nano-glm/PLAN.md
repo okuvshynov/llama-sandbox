@@ -170,7 +170,10 @@ that moved 40% between runs. It is done, and the baseline now holds to 0.4%.
 that, and a quarter of decode turning out not to be memory movement is a
 larger and better-located target than page size ever was.
 
-The dependency that matters is preserved: 6 still comes before 3.
+6 then ran and took step 3's justification with it: a placement chosen from a
+corpus retains 22% of what a within-prompt oracle gets, so 3 has dropped behind
+9 and sits next to the other parked memory work. 12 is what replaced both it
+and 8 as the live performance question.
 
 ### 0. Host-side dispatch, in-process — **Done**
 
@@ -278,6 +281,34 @@ pages' prerequisite (step 8), which is now the sole reason to build it.
 Also open: `--moe-addr` support, so the RPC path can be measured in the same
 regimes.
 
+### 6. Cross-prompt residency — **Done**
+
+Five corpus prompts at `-n 256`, `residency_study.py`. Hit rate with the top f%
+of experts per layer resident:
+
+| resident | best prompt | worst prompt | pooled | **unseen** | null |
+|---|---|---|---|---|---|
+| 10% | 39.6% | 16.4% | 20.6% | **13.4%** | 10.2% |
+| 23% | 59.4% | 32.3% | 37.9% | **28.2%** | 23.1% |
+| 50% | 82.8% | 60.9% | 65.1% | **55.8%** | 50.1% |
+
+`unseen` ranks on four prompts and scores the fifth — the only column that
+describes a placement meeting a workload it was not built from. `null` is the
+same machinery over uniform draws.
+
+**It does not transfer: `unseen` beats random by about 6 points at every
+size.** A static placement is worth holding *some* of the experts closer, not
+the *right* ones. Per-prompt figures vary widely (history 59.4% against prose
+32.3% at 23%) and track how concentrated each prompt's routing is, so residency
+is workload-dependent before transfer even enters.
+
+One exception: prose and history transfer well to each other (45.6%, set
+overlap 0.34 against 0.13 for independent choices) — both English prose about
+cities. Routing is domain-specific rather than universal, which leaves per-
+workload placement open even though a single static one is closed.
+
+Full table and detail: `ROUTING.md`, `results/residency/study.txt`.
+
 ### 10. C++ unit tests — **Now**
 
 The gate is all end-to-end: every check costs a model load and answers in
@@ -330,60 +361,6 @@ the lever is a kernel, a fusion, or nothing.
 Worth doing before step 3: a residency win is a *bytes* win, and if bytes are
 only 75% of the time then step 3's +40% is really +30%.
 
-### 6. Cross-prompt residency — **Planned**
-
-`ROUTING.md`'s 58.4% is measured *within* one continuation — same topic, same
-register, the easy case. A static VRAM placement is chosen once and serves
-every workload, so the number that decides step 3 is rank-on-prose /
-score-on-code. Until it exists, treat 58.4% as an upper bound.
-
-Five corpus prompts at `-n 256` with `--expert-log`, then compare rankings
-across the five `counts.csv` files. Half an hour of tracing, and it is the
-cheapest decision-relevant measurement left in the plan.
-
-### 3. Vulkan experts inside the backend — **Planned**
-
-Hold a resident expert subset on the 4 Vega dies, serve misses from DRAM. 23%
-of the routed 604.81 GB fits in 128 GiB of VRAM, and `ROUTING.md` says that
-catches **58% of selections, not 23%** — which is what makes this step worth
-doing rather than marginal, so that number is load-bearing and step 6 has to
-land first.
-
-What it is worth depends on which machine, and the plan used to quote only the
-larger figure without saying so. At the measured 75.4 GB/s and 38.93 GB/token:
-
-| | DRAM / token | tok/s |
-|---|---|---|
-| today | 38.93 GB | 1.94 |
-| **+ residency, trunk still local** | 27.89 GB | **2.71 (+40%)** |
-| + step 4, no residency | 21.95 GB | 3.44 |
-| + residency and step 4 | 10.91 GB | **6.92** |
-
-So this step is worth **+40% now** and roughly **2x after step 4** — both
-worth having, but they are not the same claim. (The 3.44 also lands on the
-budget's MoE-only ceiling, which is the same arithmetic from the other
-direction.) And because A and B tied, these follow from bytes alone:
-there is no additional gain from the resident set being the *hot* one.
-
-Runs entirely on this machine: backend-side, client on loopback. No dependency
-on step 2.
-
-Placement is **static, not LRU** — PCIe is far slower than DRAM, so cache
-refill never pays; and uniform per layer, since a global budget measured the
-same (`ROUTING.md`). Q4_K experts are the composing lever, roughly a third off
-both DRAM traffic and resident size. The PCIe ratio and the Q4_K figures are
-../moe-offload's, not measured here; nothing in this repo has yet run a byte
-over PCIe.
-
-Byte identity ends here for the expert path, so the gate changes shape:
-compare against **the same build's CPU run over the same ids**, never a
-historical file; measure the GPU path's own reproducibility floor first
-(GPU-vs-GPU across batch shapes and workgroup sizes) or its KL against CPU
-means nothing; gate on per-position max, not mean, since one mis-routed token
-vanishes in an average over 743 positions. The RPC boundary is the useful
-diagnostic: a server compare-mode evaluating a request on both CPU and GPU
-localizes divergence to a layer instead of smearing it across the forward pass.
-
 ### 9. Latency hiding around the shared expert — **Planned, independent**
 
 Issue the MoE request, run the shared expert on the client while it is in
@@ -397,6 +374,68 @@ order 15% on loopback. That is arithmetic from two measurements, not a measured
 speedup — `nano-bench` can settle it once it speaks `--moe-addr`. Depends on
 nothing; listed late because it is an optimisation, not information. Must not
 change a bit: same corpus gate.
+
+### 3. Vulkan experts inside the backend — **Planned, but the case has collapsed**
+
+Hold a resident expert subset on the 4 Vega dies, serve misses from DRAM. This
+step was the centre of the plan; three measurements have taken it apart.
+
+At the measured 75.4 GB/s, 38.93 GB/token, and the ~75% memory share from
+`nano-bench --pages`:
+
+| resident 23% chosen by | hit rate | DRAM/token | decode |
+|---|---|---|---|
+| a within-prompt oracle | 58.4% | 27.89 GB | 2.47 tok/s (+27%) |
+| **leave-one-out, i.e. deployable** | 28.2% | 33.60 GB | **2.16 tok/s (+12%)** |
+| **picking 23% at random** | 23.1% | 34.58 GB | **2.12 tok/s (+9%)** |
+
+**All the routing intelligence is worth three points over choosing at random**
+(step 6), the ceiling it moves is 25% smaller than assumed because a quarter of
+decode is not memory (step 11/12), and the +40% this plan carried for weeks was
+computed from a within-prompt hit rate that a static placement cannot reach.
+
+What survives: **+12%**, from holding 23% of the bytes closer — not from
+holding the right 23%. That is real but it is now comparable to step 9, which
+is worth ~15% for a fraction of the work, and it is a Vulkan backend, an expert
+placement scheme and a GPU/DRAM dispatch path to collect it.
+
+Reasons it could come back, in order of plausibility:
+
+- **Step 4 changes the arithmetic.** With the trunk elsewhere the MoE bytes are
+  the whole cost, and the same 28.2% is worth proportionally more.
+- **A bigger resident fraction.** 23% is what 128 GiB holds at Q6_K; Q4_K
+  experts would fit ~33% and cut DRAM traffic independently.
+- **Per-workload placement.** Routing is domain-specific rather than random
+  (prose ↔ history, Jaccard 0.34), so a server that knows its workload could
+  load a placement to match. That is a different product, not this step.
+
+Placement, if it happens, is **static, not LRU** — now measured rather than
+asserted (`cache_sim.py`). LRU wins the hit rate outright, 63.3% against 28.2%
+for the best deployable static placement at 23% residency, because recency
+beats any fixed ranking. It loses anyway: a static miss is a DRAM read, a cache
+miss is a DRAM read *and* a PCIe install, which at 13 GB/s against 75.4 makes
+each miss 6.8x dearer. Break-even would need an **89.4%** hit rate; LRU manages
+63.3% and comes out 3.5x slower than static. LFU is worse still and *decays*
+over a run, from 63% to 41%, as early-hot experts ossify.
+
+Worth carrying to K3 though: a cache pays when installing into the fast tier is
+cheap relative to the miss. Here the install crosses the very link that makes
+misses expensive. With experts on NVMe and DRAM as the cache the ratio inverts,
+and LRU's advantage would convert into time saved. The policy does not
+transfer between tiers; the bandwidth ratio decides.
+
+Placement is also uniform per layer, since a global budget measured the same
+(`ROUTING.md`). The PCIe and Q4_K figures are ../moe-offload's, not measured
+here; nothing in this repo has yet moved a byte over PCIe.
+
+Byte identity ends here for the expert path, so the gate changes shape: compare
+against **the same build's CPU run over the same ids**, never a historical
+file; measure the GPU path's own reproducibility floor first (GPU-vs-GPU across
+batch shapes and workgroup sizes) or its KL against CPU means nothing; gate on
+per-position max, not mean, since one mis-routed token vanishes in an average
+over 743 positions. The RPC boundary is the useful diagnostic: a server
+compare-mode evaluating a request on both CPU and GPU localizes divergence to a
+layer instead of smearing it across the forward pass.
 
 ### 8. Huge pages for the expert store — **Parked, probably dead**
 
@@ -479,6 +518,9 @@ oracle, which is why the golden set has to be frozen with full provenance
 
 - **Speculative routing.** With the router on the backend, run layer N+1's
   router on layer N's activation while idle and prefetch the likely experts.
+  Note what `cache_sim.py` implies: prefetching into VRAM has the same problem
+  as caching into it, since the install crosses PCIe either way. Its home is
+  the NVMe tier, where an install is a DRAM write.
   Buys nothing while experts are in DRAM (bandwidth-bound; prefetch adds no
   bandwidth), and the idle window it needs shrinks to ~3% once the trunk is
   fast. Its home is K3, where experts exceed RAM and prefetch targets storage.

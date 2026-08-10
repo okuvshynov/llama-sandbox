@@ -2,9 +2,15 @@
 
 PLAN.md step 3 rests on an assumption that had never been measured — that a
 GPU-resident subset of experts is "worth roughly the resident fraction and no
-more", i.e. that routing is close to uniform. It is not. A 23% resident subset
-catches **58.4%** of selections, and the token-to-token overlap of expert sets
-is **11x** what independent routing would give.
+more", i.e. that routing is close to uniform. Within one continuation it is
+not: a 23% resident subset catches **58.4%** of selections and token-to-token
+overlap is **11x** what independent routing would give.
+
+**Across prompts it collapses.** The cross-prompt section finds a placement
+built from other prompts catching **28.2%** where picking at random catches
+23.1%. Both readings are kept because the difference between them is the
+finding: routing is concentrated and *prompt-specific*, and only the first half
+of that helps a static placement.
 
 ## The run
 
@@ -65,8 +71,9 @@ VRAM, score the hit rate on the second half:
 | 33% | **69.1%** | 32.9% | 44.9 - 82.7 | 69.4% |
 | 50% | **82.3%** | 50.0% | 63.5 - 92.0 | 83.3% |
 
-**A resident subset is worth ~2.5x its size**, not 1x. What 128 GiB of VRAM
-buys is not 23% of expert traffic but 58% of it.
+**Within one continuation a resident subset is worth ~2.5x its size**, not 1x.
+Read on, though: across prompts it is worth 1.2x, and that is the number a
+static placement actually gets.
 
 The last column is a negative result worth keeping: spending one global budget
 across all layers — letting the skewed middle layers take capacity from the
@@ -75,13 +82,11 @@ near-uniform early ones — is worth **nothing** (58.4% vs 58.4%; +1.0 point at 
 their capacity costs about what it gains. Uniform per-layer placement is both
 simpler and equally good.
 
-What this does to the ceiling, as an upper bound: MoE reads fall from
-21.66 GB/token to 9.01 GB, i.e. 122 ms at the 74 GB/s this machine sustains, so
-the MoE-bound ceiling moves **3.42 -> ~8 tok/s**. The resident half is not the
-new bottleneck (12.65 GB/token across four Vega II dies at ~1 TB/s each is
-~3 ms), but this ignores dispatch cost entirely — see ../../../moe-offload for
-what a Vulkan round trip actually costs, which is what turns this bound into a
-prediction.
+That arithmetic used to continue "so the MoE-bound ceiling moves 3.42 -> ~8
+tok/s". Two later measurements retired it: `nano-bench` found decode bound by
+total bytes rather than MoE bytes and only ~75% memory anyway, and the
+cross-prompt section below found 58.4% unreachable by a static placement. The
+current numbers are in that section and in PLAN.md's budget.
 
 ## Locality
 
@@ -105,14 +110,131 @@ router runs. Note what it does *not* say — a hit rate is not a saving. Prefetc
 only pays where the fetch has somewhere slower to come from, which is Kimi-K3
 with experts on storage, not GLM-5.2 with experts in DRAM.
 
+## Cross-prompt: it does not transfer
+
+Same question as the table above, asked across five corpus prompts instead of
+one continuation (`-n 256` each, `residency_study.py`). Hit rate with the top
+f% of experts per layer resident:
+
+| resident | prose | code | math | history | french | pooled | **unseen** | null |
+|---|---|---|---|---|---|---|---|---|
+| 5% | 9.3 | 14.1 | 14.4 | 28.2 | 26.6 | 12.4 | **7.0** | 5.1 |
+| 10% | 16.4 | 23.6 | 23.8 | 39.6 | 38.3 | 20.6 | **13.4** | 10.2 |
+| 23% | 32.3 | 42.2 | 41.5 | 59.4 | 58.7 | 37.9 | **28.2** | 23.1 |
+| 33% | 42.8 | 53.5 | 52.0 | 69.8 | 69.4 | 48.6 | **38.5** | 32.9 |
+| 50% | 60.9 | 69.6 | 68.1 | 82.6 | 82.8 | 65.1 | **55.8** | 50.1 |
+
+The five named columns rank and score inside one prompt. **pooled** ranks on
+all five and scores each. **unseen** ranks on four and scores the fifth — the
+only column that describes a placement meeting a workload it was not built
+from. **null** is the same machinery over uniform draws, and lands on the
+resident fraction as it should.
+
+So, at 50% resident: **83%** if the placement is tuned for that exact prompt,
+**65%** if tuned for a corpus containing it, **56%** for a prompt it has never
+seen, against **50%** for picking experts at random.
+
+**The unseen column is the one that matters, and it is worth ~6 points over
+random at every size.** A static placement gets almost all of its value from
+holding *some* fraction of the experts closer, and almost none from holding the
+*right* ones.
+
+Two things the per-prompt columns show on the way past. Prompts differ a lot —
+history and French are twice as easy to serve as prose at 5% resident — and the
+ordering follows how concentrated each one's routing is (code spreads over 47
+experts per layer for half its mass, history over 31). And the gap between any
+named column and `unseen` is the whole finding: within a prompt the signal is
+large, between prompts it nearly vanishes.
+
+The one exception worth knowing: **prose and history** transfer to each other
+far better than any other pair (45.6% at 23% resident, resident-set overlap
+0.34 against 0.13 for independent choices). Both are English prose about
+cities. Routing is domain-specific rather than universal, so a placement
+specialised per workload is a real possibility even though a single static one
+is not.
+
+Transfer matrix, per-prompt diversity metrics, Jaccard overlaps and a
+by-depth breakdown: `results/residency/study.txt` (`--detail`).
+
+## Would a cache do better than a fixed placement?
+
+The traces are an access sequence, so this needs no new runs (`cache_sim.py`).
+Each layer gets its own cache of f% of 256 experts, cold-started with a random
+resident set. Hit rate, and what it costs:
+
+| resident | policy | hit rate | DRAM GB/tok | PCIe GB/tok | s/token |
+|---|---|---|---|---|---|
+| 23% | static (fixed, random) | 22.9% | 14.57 | 0 | 0.193 |
+| 23% | random eviction | 58.0% | 7.94 | 7.94 | 0.716 |
+| 23% | **LRU** | **63.3%** | 6.93 | 6.93 | 0.625 |
+| 23% | LFU | 48.1% | 9.81 | 9.81 | 0.885 |
+| 50% | static | 49.9% | 9.46 | 0 | 0.126 |
+| 50% | **LRU** | **83.6%** | 3.10 | 3.10 | 0.280 |
+
+For scale: reading all 18.90 GB of routed experts from DRAM, as today, is
+0.251 s/token, and a whole token is 0.516 s.
+
+**LRU wins the hit rate outright and loses the race anyway.** At 23% resident
+it hits 63.3% where the best *deployable* static placement manages 28.2% and
+even a within-prompt oracle only reaches 58.4% — recency beats any fixed
+ranking, which is what the 35% consecutive-token overlap predicted. But a
+static miss is a DRAM read, while a cache miss is a DRAM read **and** a PCIe
+install, and at 13 GB/s against 75.4 GB/s that install makes each miss **6.8x**
+more expensive.
+
+The break-even is not close. To beat the deployable static placement a cache
+would need a **89.4%** hit rate at 23% residency, or **93.5%** at 50%. LRU
+reaches 63.3% and 83.6%. In wall-clock terms it is 3.5x slower than static at
+23% and 2.5x at 50% — and worse than doing nothing at all.
+
+So PLAN.md's "static, not LRU" survives, now for a measured reason rather than
+an asserted one.
+
+Two smaller findings. **LFU is actively bad and gets worse**: 63% in the first
+tenth of the run decaying to 41% by the last, because early-hot experts
+accumulate counts that later evidence cannot overcome, and the cache ossifies.
+And **there is no warmup to speak of** — a 59-entry cache filling at 8 accesses
+per token is warm within about seven tokens, so LRU's first band already reads
+62% against a 61% steady state. The interesting curve was LFU's decay, not
+anyone's warmup.
+
+### When would a cache pay?
+
+When installing into the fast tier is cheap relative to the miss it saves.
+Here it is the opposite: the install crosses the very link that makes misses
+expensive. Invert the ratio — experts on NVMe at ~7 GB/s with DRAM as the cache,
+which is Kimi-K3's shape — and an install is a DRAM write at 75 GB/s against a
+miss that costs ten times more. There LRU's hit-rate advantage would convert
+directly into time saved. **The policy is not the thing that transfers between
+tiers; the bandwidth ratio is.**
+
+### What that costs step 3
+
+At the measured 75.4 GB/s, 38.93 GB/token, and the ~75% memory share
+`nano-bench --pages` established:
+
+| resident 23% chosen by | hit rate | DRAM/token | decode |
+|---|---|---|---|
+| a within-prompt oracle | 58.4% | 27.89 GB | 2.47 tok/s (+27%) |
+| **leave-one-out, deployable** | 28.2% | 33.60 GB | **2.16 tok/s (+12%)** |
+| **23% picked at random** | 23.1% | 34.58 GB | **2.12 tok/s (+9%)** |
+
+Residency still pays. It pays for holding 23% of the bytes closer, not for
+holding the right 23%.
+
 ## What this does not show
 
-- **One prompt.** The split-half test measures stability *within* a single
-  continuation, which is the easy case: same topic, same register. A static
-  VRAM placement is chosen once and must serve every workload, so the number
-  that decides step 3 is the cross-prompt one — rank on prose, score on code.
-  Treat 58.4% as an upper bound until that is run. It is cheap: five corpus
-  prompts at `-n 256` is about half an hour.
+- **Five prompts, one model, one language mix.** The corpus is prose, code,
+  math, history and French; a workload that stayed inside one domain would look
+  more like the prose/history pair than like the average.
+- **370 positions per prompt**, so 5.8 selections per (layer, expert) cell in
+  each half against 35.6 in the study above. That thins the ranking and pushes
+  every hit rate down, which is why the within-prompt diagonal reads 46.8% here
+  and 58.4% there. The null and the diagonal bracket it: signal-above-null is
+  the figure to carry forward, not the absolute.
+- The split falls at position 185, so the ranking half contains all the prompt
+  tokens and the scoring half is pure generation. Consistent across every cell,
+  but it makes the diagonal a slightly conservative ceiling.
 - **One decoding path.** Greedy. Sampling would spread the token distribution
   and could spread routing with it.
 - **Ids only.** The trace records which experts, not their routing weights, so

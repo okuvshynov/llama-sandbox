@@ -171,8 +171,19 @@ since a locality number means nothing without that baseline. `--null` re-runs
 every metric on uniform draws of the same shape, which is how you tell a
 finding from a sample-size artifact.
 
-First results — routing is far from uniform, and a 23% resident expert subset
-catches 58% of selections rather than 23%: [ROUTING.md](ROUTING.md).
+Two studies build on the same traces and need no further runs:
+
+```bash
+python residency_study.py results/residency/*.trace   # does a placement transfer?
+python cache_sim.py       results/residency/*.trace   # LRU/LFU instead of static?
+```
+
+Findings in [ROUTING.md](ROUTING.md), and they cut against each other in a
+useful way. Within one continuation routing is strongly concentrated — a 23%
+resident subset catches 58% of selections. Across prompts that collapses to
+28%, against 23% for picking at random. An LRU cache recovers it and more
+(63%), but each of its misses costs a PCIe install on top of the DRAM read, so
+it is 3.5x slower than a fixed placement despite hitting twice as often.
 
 ## Verification
 
