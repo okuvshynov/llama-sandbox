@@ -26,8 +26,38 @@ Get-ChildItem *.gguf | Sort-Object Name | ForEach-Object {
 **A hash immediately after a copy may only be verifying the page cache.** The
 copy writes through cache, so a read straight afterwards can return the bytes
 you intended while the platter holds something else — which is exactly how the
-incident below hid for a day. To check what actually landed, re-verify after a
-reboot, or bypass the cache.
+2026-08-07 incident hid for a day. To check what actually landed, re-verify
+after a reboot, or bypass the cache.
+
+**And the cache can be wrong in the other direction too.** On 2026-08-10 a
+buffered hash reported shard 02 BAD on a model whose disk copy was perfect: a
+descriptor table had been spliced into *cached pages* of a read-only mapping.
+The two failures look identical from a `Get-FileHash`, so when one disagrees
+with the manifest, settle it before doing anything drastic:
+
+```powershell
+.\hash_nocache.ps1 -Path D:\llms\UD-Q6_K\GLM-5.2-UD-Q6_K-00002-of-00014.gguf
+```
+
+- matches the manifest → the platter is fine, the cache is poisoned. **Reboot.**
+- differs → the file really is damaged. Restore it from the other machine, and
+  diff before overwriting (below).
+
+## Tools
+
+| file | what |
+|---|---|
+| `chunk_hash.py` | per-chunk hashes, to localize a difference between two copies |
+| `bindiff.py` | byte-level diff of a damaged file against a good one |
+| `scan_splice.py` | finds the descriptor-splice signature in one file, **no reference copy needed** |
+| `hash_nocache.ps1` | SHA-256 bypassing the Windows page cache (disk truth) |
+
+`scan_splice.py` exists because the damage here has twice been a page-descriptor
+list — 8-byte records `f1 04 XX XX 07 00 40 00` stepping 2 MiB per record —
+rather than random bit rot. That is specific enough to identify on sight, which
+means a suspect file can be diagnosed on its own, before the good copy is to
+hand and before overwriting destroys the evidence. Run it on a known-good shard
+too: a signature scanner that fires on healthy data is worthless.
 
 ## Why this exists
 

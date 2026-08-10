@@ -1,0 +1,82 @@
+2026-08-10 — shard 02, page cache corrupt, DISK INTACT
+
+The same descriptor-splice signature as the 2026-08-07 incident, but in the
+opposite place: this time the bytes on the platter are correct and the page
+cache is what is wrong.
+
+file  : D:\llms\UD-Q6_K\GLM-5.2-UD-Q6_K-00002-of-00014.gguf
+mtime : 2026-08-06 11:07 — unchanged; nothing wrote to this file
+size  : 49592946368 — unchanged
+
+  buffered   sha256 (Get-FileHash)     != manifest
+  unbuffered sha256 (hash_nocache.ps1) == manifest
+      dba9d61b3b0d09e47bc8b0fe15c507f3095b56b6320246965ddaf006d7eb0989
+
+All 13 other shards verified OK buffered, so exactly one file was affected.
+
+## The splice
+
+scan_splice.py found 2 runs; the same scan over shard 01 found none, so the
+signature is specific and not an artifact of weight data.
+
+run 0: offset 28320034816 (0x698017000)  len 224  4096-aligned
+run 1: offset 28321034240 (0x69810b000)  len 224  4096-aligned  +999424 (0.95 MiB)
+
+Bytes, read through the cache:
+
+  F1 04 A4 DC 07 00 40 00
+  F1 04 C4 DC 07 00 40 00
+  F1 04 E4 DC 07 00 40 00
+  F1 04 04 DD 07 00 40 00      run 0, first four records
+
+  F1 04 90 E1 07 00 40 00
+  F1 04 B0 E1 07 00 40 00
+  F1 04 D0 E1 07 00 40 00
+  F1 04 F0 E1 07 00 40 00      run 1, first four records
+
+As little-endian u64 the first is 0x00400007dca404f1 and each subsequent record
+is +0x200000 — a page-descriptor list with 2 MiB stride, the same structure as
+2026-08-07. Read unbuffered, the same offsets hold high-entropy data
+(2573A006E35859197AA2661A8E96A539..., 8561BC47EC8012A2F3452A8FECB16A0D...)
+consistent with Q6_K weights.
+
+Stable across three buffered reads, so not a transient fault at read time: one
+cached page is wrong and every read is served from it.
+
+## How it surfaced
+
+`gate.py smoke` failed after passing all day:
+
+  18 positions, top-1 agreement 18/18, KL mean 1.35e-04 max 2.00e-03
+  positions 0-12 byte-identical, position 13 differs
+
+Deterministic across repeated runs, and reproduced with the working-tree change
+stashed, which is what ruled out the code. The signature is the one the
+2026-08-07 entry describes: MoE routing makes weight damage position-dependent,
+so most positions stay bit-exact and only tokens routing through the damaged
+expert move. No token changed, and the divergence is below every documented
+noise floor — small enough to dismiss, if the gate compared anything looser
+than bytes.
+
+## Why it matters more than the first one
+
+The damage never reached disk, so this is not "a bad copy". Something wrote a
+descriptor table into cached pages of a **read-only mapping** — the model is
+mapped PAGE_READONLY / FILE_MAP_READ and those pages should never be writable.
+A fault that can do that can hand wrong weights to any long-running process on
+this machine without the file ever changing, and:
+
+- size and mtime are unchanged, so a provenance check cannot see it;
+- an ordinary `Get-FileHash` reads through the cache, so it *also* reports the
+  file as bad when the file is fine;
+- a reboot fixes it, where in August a reboot *revealed* the problem.
+
+## Diagnosis procedure that worked
+
+1. Gate fails with a small, deterministic, position-dependent divergence.
+2. Reproduce with local changes stashed — separates code from data.
+3. Run twice — separates deterministic from transient.
+4. `Get-FileHash` every shard against the manifest.
+5. `scan_splice.py` on the failing shard, and on a good one as a control.
+6. `hash_nocache.ps1` on the failing shard. Disk == manifest means reboot;
+   disk != manifest means restore from the other machine.
