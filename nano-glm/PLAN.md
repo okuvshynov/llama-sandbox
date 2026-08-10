@@ -64,7 +64,12 @@ Constraints that hold across every step:
   plan claims to be worth — 16x between cold and warm at the layer level.
   A tok/s figure that does not say which regime it came from is noise with
   a decimal point (step 11).
-- **Optimise bytes, not flops.** The expert FFN is ~95%+ memory movement.
+- **Optimise bytes, not flops — but it is not 95/5.** The expert FFN was
+  assumed to be ~95%+ memory movement. Measured (`nano-bench --pages`), a
+  null-compute stream of the same bytes in the same shape runs at ~100 GB/s
+  where the model sustains 75.4, so roughly **a quarter of decode time is not
+  memory** — dequantization, per-node barriers across 78 layers, attention.
+  Bytes still dominate; the tail is bigger than the slogan implied.
 
 ## The budget
 
@@ -157,6 +162,15 @@ correctness half a one-line invocation.
 Step 11 sat ahead of 3 and 8 for the same reason 5 sat ahead of 7: both are
 claims about memory behaviour, and neither could be judged against a baseline
 that moved 40% between runs. It is done, and the baseline now holds to 0.4%.
+
+10 and 8 then moved ahead of 6 and 3, both being self-contained and ready.
+8 did not survive contact: a 40 GB probe showed 4 KiB pages already reaching
+~100 GB/s in the model's own access shape, so it is parked at the back and
+**step 12 replaces it** — the same probe found the model running at 75% of
+that, and a quarter of decode turning out not to be memory movement is a
+larger and better-located target than page size ever was.
+
+The dependency that matters is preserved: 6 still comes before 3.
 
 ### 0. Host-side dispatch, in-process — **Done**
 
@@ -264,7 +278,59 @@ pages' prerequisite (step 8), which is now the sole reason to build it.
 Also open: `--moe-addr` support, so the RPC path can be measured in the same
 regimes.
 
-### 6. Cross-prompt residency — **Now**
+### 10. C++ unit tests — **Now**
+
+The gate is all end-to-end: every check costs a model load and answers in
+minutes, so anything it does not cover is untested in practice. `lib/` is
+eleven headers now, and the list of things worth asserting has grown with it:
+
+- **`fill_hadamard`** — orthonormal, symmetric, every entry exactly ±1/√n. The
+  power-of-two abort too, which is the one branch nothing has ever taken.
+- **`pretok_split`** — the GLM-4 alternation, especially the two rules that
+  need backtracking. `tokenizer_check.py` covers these against llama.cpp but
+  costs a minute and a model path; a unit test costs neither.
+- **`nano_kv_parse` and the handshake drift comparison** — the step 5 coverage
+  gap, stated at the time: `--strict` is exercised for `n_threads` only,
+  because forcing a compiler or model mismatch needs two builds or two model
+  copies. Tested directly, it needs neither, and no socket either.
+- **wire header layout**, **hparam parsing against a synthetic GGUF**, and the
+  statistics in `expert_stats.py` against traces with known structure.
+
+Not a `--selftest` flag on the shipping binary: tests belong outside the
+artifact under test, and a flag that only ever runs in CI is dead weight in
+every other invocation.
+
+Unblocked by 7 — the units exist, and a test target links `nano-lib` the same
+way `nano-chat` does. The remaining friction is that the pieces are `static`,
+which a test TU can include but not link against; the first real test is also
+the nudge to convert `nano-lib` into a compiled library (`lib/README.md` says
+to do that rather than reach for `inline`).
+
+### 12. Where the missing 25% goes — **Next**
+
+`nano-bench --pages` says the model's own access pattern sustains ~100 GB/s
+with ordinary 4 KiB pages, and `nano-bench --hot/--full` says the model
+sustains 75.4. So a quarter of decode is not memory movement, and nothing in
+the plan currently accounts for it. Candidates, roughly in order of how much
+they could be worth:
+
+- **Q6_K dequantization.** 210 bytes per 256 weights, unpacked on every read.
+  Real work, and the one thing a lower-bit quant would change for a second
+  reason beyond bytes.
+- **Per-node barriers.** 78 layers x tens of graph nodes, each with a thread
+  barrier; `ggml_barrier` at 16 threads is not free and does not scale with
+  bytes.
+- **Attention and the KV path**, which the byte budget excludes entirely.
+
+Cheap to attribute before optimising: time the graph node-by-node
+(`ggml_backend_sched` already knows the split), or run one MoE layer in
+isolation against a raw stream of the same bytes. The answer decides whether
+the lever is a kernel, a fusion, or nothing.
+
+Worth doing before step 3: a residency win is a *bytes* win, and if bytes are
+only 75% of the time then step 3's +40% is really +30%.
+
+### 6. Cross-prompt residency — **Planned**
 
 `ROUTING.md`'s 58.4% is measured *within* one continuation — same topic, same
 register, the easy case. A static VRAM placement is chosen once and serves
@@ -318,47 +384,6 @@ vanishes in an average over 743 positions. The RPC boundary is the useful
 diagnostic: a server compare-mode evaluating a request on both CPU and GPU
 localizes divergence to a layer instead of smearing it across the forward pass.
 
-### 8. Huge pages for the expert store — **Planned**
-
-31 MB per expert against a 1536-entry L2 TLB, and 4 KiB pages break the L2
-streamer about once per output row. Self-contained, backend-side, independent
-of everything else.
-
-Prerequisite is the non-mmap load path the invariants already require: neither
-Windows nor macOS offers huge pages for file-backed mappings. Step 11 did not
-build it — repetition turned out to be enough to guarantee residency — so huge
-pages is now the only thing that wants it, and the only reason to build it.
-
-**Step 11 did give it a measurable baseline**, which it did not have before:
-regime B holds 75.2 GB/s to within 0.4%, so a 10% effect is resolvable.
-
-It also narrowed the mechanism without settling it. Regimes A and B tied
-despite a 12x difference in working set, which rules out page-cache pressure
-and standby-list churn as limiters — but *not* TLB pressure, because both
-regimes thrash it equally: 39.7 GB is 9.7M 4 KiB pages and 466 GB is 114M,
-against 1536 L2 TLB entries either way. So the experiment that would separate
-them is still exactly this one, and it is still worth running. What has changed
-is that the honest prior is lower: decode sits at 75 GB/s regardless of
-footprint, which looks more like a DRAM wall than a translation cost.
-
-### 10. C++ unit tests — **Planned**
-
-The gate above is all end-to-end: every check costs a model load and answers
-in minutes. Unit-level invariants deserve a real test target instead — the
-Hadamard matrix being orthonormal, symmetric and made of exact ±1/√n entries;
-wire-header layout; hparam parsing against a synthetic GGUF; the routing
-statistics in `expert_stats.py` against traces with known structure.
-
-Not a `--selftest` flag on the shipping binary: tests belong outside the
-artifact under test, and a flag that only ever runs in CI is dead weight in
-every other invocation.
-
-Unblocked by 7: the units exist now. `lib/` is seven headers an app includes,
-so a test target links `nano-lib` the same way `nano-chat` does. The remaining
-friction is that the pieces are `static`, which a test TU can still include but
-not link against — the first real test is also the nudge to convert `nano-lib`
-into a compiled library (see `lib/README.md`).
-
 ### 9. Latency hiding around the shared expert — **Planned, independent**
 
 Issue the MoE request, run the shared expert on the client while it is in
@@ -372,6 +397,45 @@ order 15% on loopback. That is arithmetic from two measurements, not a measured
 speedup — `nano-bench` can settle it once it speaks `--moe-addr`. Depends on
 nothing; listed late because it is an optimisation, not information. Must not
 change a bit: same corpus gate.
+
+### 8. Huge pages for the expert store — **Parked, probably dead**
+
+The idea: 31.5 MB per expert against a 1536-entry L2 TLB, and Intel's L2
+streamer does not prefetch across a 4 KiB page boundary, so streaming one
+expert restarts it ~7,700 times at 4 KiB against ~15 at 2 MB. That mechanism
+would have explained a 75.4 GB/s model against 140.8 GB/s of theoretical
+DDR4-2933.
+
+**Probed before rewriting anything** — `nano-bench --pages`, 40 GB, no model,
+because the model-scale version costs a non-mmap loader, ~583 GiB read per run
+and 583 GiB locked non-pageable:
+
+| threads | sequential | expert-shaped blocks |
+|---|---|---|
+| 8 | 81.7 GB/s | 84.5 GB/s |
+| 16 | 100.6 | 98.9 |
+| 32 | 102.8 | 106.9 |
+
+**With 4 KiB pages.** Two things follow, and both cut against the step:
+
+- **The access pattern is free.** Shuffled expert-sized blocks match a flat
+  sequential sweep, so the scattered structure of `mul_mat_id` costs nothing to
+  begin with.
+- **4 KiB already reaches ~100 GB/s**, 73% of theoretical and inside the normal
+  75-85% band for six-channel Cascade Lake. The headroom the mechanism was
+  invoked to explain is not there, so large pages have at most a small ceiling
+  to raise — and the model is not reaching the current ceiling anyway.
+
+What the probe did find is a **different and larger gap**: the model sustains
+75.4 GB/s where its own access pattern allows ~100, so ~25% of decode is
+compute and per-node overhead rather than memory. That is now the more
+promising direction, and it is not this step.
+
+Remaining, if anyone wants to close it: the 2 MB arm needs
+`SeLockMemoryPrivilege`, which this account does not hold — grant "Lock pages
+in memory" in `secpol.msc` and log out and in, then `nano-bench --pages` runs
+both arms. Expect it to confirm the above rather than overturn it. The non-mmap
+load path is no longer blocked on anything; it just has no reason left.
 
 ### 2. Backend on another machine — **Deferred**
 

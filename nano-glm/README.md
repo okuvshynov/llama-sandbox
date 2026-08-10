@@ -238,10 +238,45 @@ anything".
 
 ## Performance
 
-nano-glm tracks stock llama.cpp rather than beating it — the point is a minimal
-engine with a bit-exact baseline, and the kernels are ggml's either way. On the
-same workload (270 one-token decodes with growing context, GLM-5.2 UD-Q6_K,
-582.87 GiB, Xeon W-3245 / 16C32T, Windows MSVC build):
+```bash
+./build/bin/nano-bench -m <model> -i testdata/01_prose.bin --hot  -r 24
+./build/bin/nano-bench -m <model> -i testdata/01_prose.bin --full -n 256 -r 4
+./build/bin/nano-bench --pages --gb 40        # memory probe, no model needed
+```
+
+**Quote no throughput number without its residency regime.** Cold, hot-subset
+and whole-model-warm differ by more than any optimisation here is worth, and
+mixing them is what made every earlier figure unreliable. `nano-bench` prints
+every repetition and takes its median from the back half, so warmup stays
+visible instead of being averaged in.
+
+Windows / MSVC / 16 threads / GLM-5.2 UD-Q6_K, 38.93 GB read per token:
+
+| regime | working set | result |
+|---|---|---|
+| `--hot`, one position re-decoded | ~39.7 GB | 1.941 tok/s, 75.5 GB/s |
+| `--full`, 256 tokens x 4 passes | ~466 GB | **1.932 tok/s, 75.2 GB/s**, spread 0.4% |
+| prefill, cold to warm | | 0.9 → 6.9 tok/s |
+
+A 12x difference in working set is worth 0.5%: once resident, footprint does
+not matter, and there is no locality prize to be won in DRAM.
+
+`--pages` measures the machine rather than the model — 40 GB, no weights:
+
+| threads | sequential | expert-shaped blocks |
+|--------:|-----------:|---------------------:|
+| 8       | 81.7 GB/s  | 84.5 GB/s            |
+| 16      | 100.6      | 98.9                 |
+| 32      | 102.8      | **106.9**            |
+
+So the scattered block pattern `mul_mat_id` produces costs nothing, ordinary
+4 KiB pages already reach ~73% of the 140.8 GB/s this DDR4-2933 tops out at,
+and the model's 75.4 GB/s is **~75% of what its own access pattern allows** —
+the missing quarter is compute and per-node overhead, not memory.
+
+Older figures, kept for the record: the same 270 one-token decodes with growing
+context, measured *while paging 583 GiB in*, which is why they sit so far below
+everything above.
 
 | threads | nano-glm | llama.cpp `rescore --sim-gen` |
 |--------:|---------:|------------------------------:|

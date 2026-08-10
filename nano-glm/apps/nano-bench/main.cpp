@@ -35,6 +35,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <thread>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -52,6 +53,8 @@ struct bench_params {
     std::string tokens_str;
     bool        hot       = false;
     bool        full      = false;
+    bool        pages     = false;   // memory probe: no model needed
+    size_t      probe_gb  = 40;      // ~ regime A's resident set
     int32_t     n_predict = 256;   // --full only
     int32_t     n_reps    = 10;
     int32_t     n_ctx     = 4096;
@@ -70,13 +73,18 @@ static bool parse_args(int argc, char ** argv, bench_params & p) {
         else if (!strcmp(a, "-c") && i + 1 < argc) p.n_ctx      = atoi(argv[++i]);
         else if (!strcmp(a, "-b") && i + 1 < argc) p.n_batch    = atoi(argv[++i]);
         else if (!strcmp(a, "-t") && i + 1 < argc) p.n_threads  = atoi(argv[++i]);
-        else if (!strcmp(a, "--hot"))  p.hot  = true;
-        else if (!strcmp(a, "--full")) p.full = true;
+        else if (!strcmp(a, "--hot"))   p.hot   = true;
+        else if (!strcmp(a, "--full"))  p.full  = true;
+        else if (!strcmp(a, "--pages")) p.pages = true;
+        else if (!strcmp(a, "--gb") && i + 1 < argc) p.probe_gb = (size_t) atoll(argv[++i]);
         else {
             fprintf(stderr, "nano-bench: unknown argument '%s'\n", a);
             p.model_path.clear();
             break;
         }
+    }
+    if (p.pages) {
+        return true;   // needs neither a model nor a prompt
     }
     if (p.model_path.empty() || (p.input_bin.empty() == p.tokens_str.empty())
             || (p.hot == p.full)) {
@@ -139,6 +147,181 @@ static byte_budget model_bytes(const nano_model & M) {
 }
 
 // ---------------------------------------------------------------------------
+// --pages: does the page size move achievable bandwidth?
+//
+// Asked before rewriting the loader, because the model-scale version of this
+// experiment costs a non-mmap load path, ~583 GiB read from disk per run and
+// 583 GiB locked non-pageable — to answer a question that 40 GB settles.
+//
+// The hypothesis is not really about the TLB. Intel's L2 streamer does not
+// prefetch across a 4 KiB page boundary, so streaming one 31.5 MB expert
+// restarts it ~7,700 times at 4 KiB against ~15 at 2 MB. And there is a gap
+// worth explaining: 12 x 64 GB DDR4-2933 over 6 channels is 140.8 GB/s
+// theoretical, the model sustains 75.4, and six-channel Cascade Lake normally
+// streams at 75-85% of peak.
+//
+// Two access patterns, because they should behave differently: a flat
+// sequential sweep, and the shape mul_mat_id actually produces — blocks the
+// size of one expert, visited in shuffled order, each streamed end to end.
+//
+// Windows only for the large-page arm; elsewhere the 4 KiB arm still runs, so
+// the baseline is comparable across platforms.
+
+struct region {
+    void * base = nullptr;
+    size_t bytes = 0;
+    bool   large = false;
+};
+
+#if defined(_WIN32)
+static bool enable_lock_memory_privilege(std::string & why) {
+    HANDLE tok = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &tok)) {
+        why = "OpenProcessToken failed";
+        return false;
+    }
+    TOKEN_PRIVILEGES tp = {};
+    tp.PrivilegeCount = 1;
+    tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+    bool ok = LookupPrivilegeValueA(nullptr, "SeLockMemoryPrivilege", &tp.Privileges[0].Luid) != 0;
+    if (ok) {
+        AdjustTokenPrivileges(tok, FALSE, &tp, sizeof(tp), nullptr, nullptr);
+        // AdjustTokenPrivileges reports success even when it changed nothing.
+        ok = (GetLastError() == ERROR_SUCCESS);
+        if (!ok) why = "the account does not hold SeLockMemoryPrivilege";
+    } else {
+        why = "LookupPrivilegeValue failed";
+    }
+    CloseHandle(tok);
+    return ok;
+}
+#endif
+
+static bool alloc_region(region & r, size_t bytes, bool large, std::string & why) {
+    r = region();
+#if defined(_WIN32)
+    if (large) {
+        const size_t gran = GetLargePageMinimum();
+        if (gran == 0) { why = "large pages unsupported on this system"; return false; }
+        bytes = ((bytes + gran - 1) / gran) * gran;
+        r.base = VirtualAlloc(nullptr, bytes, MEM_RESERVE | MEM_COMMIT | MEM_LARGE_PAGES,
+                              PAGE_READWRITE);
+        if (!r.base) {
+            const DWORD e = GetLastError();
+            why = (e == ERROR_PRIVILEGE_NOT_HELD)
+                ? "SeLockMemoryPrivilege not held"
+                : (e == ERROR_NO_SYSTEM_RESOURCES
+                    ? "no contiguous physical memory left for 2 MB pages (reboot helps)"
+                    : "VirtualAlloc(MEM_LARGE_PAGES) failed, err " + std::to_string(e));
+            return false;
+        }
+    } else {
+        r.base = VirtualAlloc(nullptr, bytes, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+        if (!r.base) { why = "VirtualAlloc failed, err " + std::to_string(GetLastError()); return false; }
+    }
+#else
+    if (large) { why = "large-page arm is Windows-only in this tool"; return false; }
+    r.base = malloc(bytes);
+    if (!r.base) { why = "malloc failed"; return false; }
+#endif
+    r.bytes = bytes;
+    r.large = large;
+    return true;
+}
+
+static void free_region(region & r) {
+    if (!r.base) return;
+#if defined(_WIN32)
+    VirtualFree(r.base, 0, MEM_RELEASE);
+#else
+    free(r.base);
+#endif
+    r = region();
+}
+
+// Sum with a stride of one cache line: enough loads to saturate, few enough
+// arithmetic ops that this stays a memory test.
+static uint64_t stream_range(const uint64_t * p, size_t n_u64) {
+    uint64_t acc = 0;
+    for (size_t i = 0; i < n_u64; i += 8) acc += p[i];
+    return acc;
+}
+
+static double probe(region & r, int n_threads, bool blocked, size_t block_bytes) {
+    const size_t n_u64 = r.bytes / 8;
+    std::vector<size_t> order;                 // block starts, in visit order
+    const size_t blk_u64 = block_bytes / 8;
+    for (size_t off = 0; off + blk_u64 <= n_u64; off += blk_u64) order.push_back(off);
+    if (blocked) {
+        // Deterministic shuffle: the point is a non-sequential *block* order,
+        // and a fixed one keeps runs comparable.
+        for (size_t i = order.size(); i > 1; i--) {
+            const size_t j = (i * 2654435761u) % i;
+            std::swap(order[i - 1], order[j]);
+        }
+    }
+
+    std::vector<uint64_t> sink(n_threads, 0);
+    std::vector<std::thread> th;
+    const auto t0 = clk::now();
+    for (int t = 0; t < n_threads; t++) {
+        th.emplace_back([&, t] {
+            const uint64_t * p = (const uint64_t *) r.base;
+            uint64_t acc = 0;
+            for (size_t k = t; k < order.size(); k += n_threads) {
+                acc += stream_range(p + order[k], blk_u64);
+            }
+            sink[t] = acc;
+        });
+    }
+    for (auto & x : th) x.join();
+    const double dt = secs(t0, clk::now());
+
+    volatile uint64_t keep = 0;
+    for (uint64_t v : sink) keep += v;       // keep the loads
+    (void) keep;
+    return (order.size() * block_bytes) / dt / 1e9;
+}
+
+static int run_page_probe(size_t gb, int n_threads, size_t expert_mb) {
+    const size_t bytes = gb * (size_t) 1e9;
+    fprintf(stdout, "nano-bench --pages: %s\n", nano_build_line().c_str());
+    fprintf(stdout, "  %zu GB per arm, %d threads, expert-sized block %zu MB\n\n",
+            gb, n_threads, expert_mb);
+
+#if defined(_WIN32)
+    std::string why;
+    if (!enable_lock_memory_privilege(why)) {
+        fprintf(stdout, "  note: %s\n", why.c_str());
+        fprintf(stdout, "        grant \"Lock pages in memory\" to this account in secpol.msc\n"
+                        "        (Local Policies > User Rights Assignment), then log out and in.\n"
+                        "        The 4 KiB arm below still runs and is the baseline either way.\n\n");
+    }
+    fprintf(stdout, "  large page size: %zu MB\n\n", (size_t) GetLargePageMinimum() / (1 << 20));
+#endif
+
+    for (int large = 0; large <= 1; large++) {
+        region r;
+        std::string why;
+        if (!alloc_region(r, bytes, large != 0, why)) {
+            fprintf(stdout, "  %-9s SKIPPED: %s\n", large ? "2 MB" : "4 KiB", why.c_str());
+            continue;
+        }
+        // First touch, so the measurement is bandwidth and not soft faults.
+        memset(r.base, 1, r.bytes);
+
+        const double seq = probe(r, n_threads, false, 64u << 20);
+        const double blk = probe(r, n_threads, true,  expert_mb << 20);
+        fprintf(stdout, "  %-9s sequential %6.1f GB/s   expert-blocks %6.1f GB/s\n",
+                large ? "2 MB" : "4 KiB", seq, blk);
+        fflush(stdout);
+        free_region(r);
+    }
+    fprintf(stdout, "\n  model decode sustains 75.4 GB/s; 6ch DDR4-2933 peaks at 140.8 GB/s.\n");
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
 // reporting
 
 static void report(const char * what, std::vector<double> & ms, double bytes_per_token) {
@@ -177,6 +360,10 @@ int main(int argc, char ** argv) {
 
     bench_params p;
     if (!parse_args(argc, argv, p)) return 1;
+
+    if (p.pages) {
+        return run_page_probe(p.probe_gb, p.n_threads, 32);   // 31.5 MB per expert
+    }
 
     std::string label;
     std::vector<int32_t> prompt = load_prompt_tokens(p.input_bin, p.tokens_str, label, "nano-bench");
