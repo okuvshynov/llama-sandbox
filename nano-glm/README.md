@@ -12,9 +12,10 @@ in about a thousand lines.
 Laid out as a library and the apps that drive it:
 
 ```
-lib/     the engine — model loader, trunk graph, routed-expert block,
-         wire protocol, remote-MoE client, build fingerprint, routing trace
+lib/     the engine — model loader, trunk graph, routed-expert block, wire
+         protocol, remote-MoE client, tokenizer, fingerprint, routing trace
 apps/    nano-glm     the validation harness: token ids in, lkldtopk out
+         nano-chat    single-turn chat: text in, streamed text out
          moe-server   the MoE backend: one activation in, one combined row out
 ```
 
@@ -106,6 +107,31 @@ no text); summary to stderr.
 Output is an `lkldtopk` v1 file (writer shared with logit-kld), so the whole
 logit-kld toolchain applies: `inspect.py` for sanity, `compare.py` against
 any collect/rescore file over the same token sequence.
+
+## Chat
+
+```bash
+./build/bin/nano-chat -m <model> -p "why do cities grow near rivers?" -n 200
+./build/bin/nano-chat -m <model> -p "..." --no-think     # skip the reasoning pass
+./build/bin/nano-chat -m <model> -f prompt.txt --raw     # plain completion
+./build/bin/nano-chat -m <model> -p "..." --dry-run      # tokenization only, ~1s
+```
+
+Byte-level BPE read from the GGUF, GLM-5.2's chat format applied as token ids,
+greedy decoding, tokens streamed as they are produced. `--dry-run` reads only
+shard 1 (9.4 MB of metadata) so you can see what the template built without
+touching 583 GiB of weights.
+
+The tokenizer agrees with llama.cpp on **28/28 cases, 864 tokens, exactly** —
+CJK, Japanese, Korean, Cyrillic, Greek, astral-plane emoji, combining marks and
+the whitespace rules included. Re-check with `python tokenizer_check.py`.
+
+Why this is a separate binary from `nano-glm`: the bit-exactness contract is
+defined over a *fixed token sequence*, so a tokenizer, a chat template or a
+sampler — anything that can change which tokens get evaluated — has to sit
+outside the tool that produces reference numbers, or every stored reference
+quietly rots. `nano-chat --dry-run` prints ids that `nano-glm -T` accepts, which
+is how an interesting generation becomes a reproducible logits test.
 
 ## Routing trace
 

@@ -145,14 +145,42 @@ The gate's `rpc` test always passes `--strict`. The client defaults to lenient
 on purpose; the guarantee that a gate run is never lenient belongs in the
 script, not in the binary's default.
 
+## The tokenizer, separately
+
+```bash
+python tokenizer_check.py            # 28 cases, ~1 min
+python tokenizer_check.py --verbose  # show the ids around a disagreement
+```
+
+Compares `nano-chat --raw --dry-run` against `llama-tokenize --ids --no-bos
+--no-parse-special` over the corpus plus cases chosen to reach the parts of the
+pre-tokenizer regex English prose never does: CJK, Japanese, Korean, Cyrillic,
+Greek, astral-plane emoji, combining marks, digit-run chunking, and the two
+whitespace rules that need backtracking.
+
+Deliberately **not** part of the logits gate. A tokenizer bug that fed the gate
+would present as a numerics failure and send you looking at the graph; keeping
+the two apart means a broken tokenizer says "tokenizer".
+
+Needs a target llama.cpp does not build by default:
+
+```bash
+cmake --build <llama.cpp>/build --target llama-tokenize
+```
+
+Current: 28/28 cases, 864 tokens, 0 differences. It has already earned its
+keep once — it caught that Windows was mangling non-ASCII `argv` through
+cp1252 before the tokenizer ever ran (repo `CLAUDE.md`). The tell was that
+every ASCII case passed and every non-ASCII one failed.
+
 ## Not covered here
 
 - **Unit-level invariants** — Hadamard orthonormality, wire-header layout,
   hparam parsing, the routing statistics. These want a C++ test target, not a
   flag on the shipping binary: PLAN.md step 10.
-- **Tokenizer agreement with llama.cpp** — arrives with the tokenizer
-  (PLAN.md step 7), and stays out of the logits gate so a tokenizer bug cannot
-  present as a numerics failure.
+- **`nano-chat`'s generation.** Only its tokenizer is checked. The decode path
+  it shares with `nano-glm` is covered by the gate above; the chat template is
+  eyeballed against the GGUF's Jinja and has no automated check.
 - **Performance.** Nothing here is a benchmark, and gate timings are not
   comparable between runs: each test cold-starts through 583 GiB, and a single
   mmap-backed Windows timing is not worth reading into (repo `CLAUDE.md`).

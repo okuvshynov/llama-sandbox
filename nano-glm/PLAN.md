@@ -158,18 +158,7 @@ tests bought: `rpc` exists at all (the numbered scheme had no slot for the
 local-vs-backend edge, half of what step 1 built), and `gate.py rpc
 --moe-addr <host>` *is* step 2's correctness argument, already written.
 
-### 6. Cross-prompt residency — **Now**
-
-`ROUTING.md`'s 58.4% is measured *within* one continuation — same topic, same
-register, the easy case. A static VRAM placement is chosen once and serves
-every workload, so the number that decides step 3 is rank-on-prose /
-score-on-code. Until it exists, treat 58.4% as an upper bound.
-
-Five corpus prompts at `-n 256` with `--expert-log`, then compare rankings
-across the five `counts.csv` files. Half an hour of tracing, and it is the
-cheapest decision-relevant measurement left in the plan.
-
-### 7. Core library, and an app that completes prompts — **In progress**
+### 7. Core library, and an app that completes prompts — **Done**
 
 **Done: the split.** `lib/` is the engine — model loader, trunk graph, routed
 block, wire protocol, remote-MoE client, fingerprint, trace — and `apps/` the
@@ -180,22 +169,40 @@ translation unit must convert `nano-lib` to a real static library rather than
 reaching for `inline`. Gated at each stage — move, then extract — against the
 step 5 golden set.
 
-**Next: `nano-chat`** — tokenizer, chat template, sampling, streaming text.
+**Done: `nano-chat`** — byte-level BPE from the GGUF (`lib/vocab.h`), GLM-5.2's
+chat format as token ids (`lib/chat_glm.h`), greedy decode, streamed output.
+`--dry-run` tokenizes from shard 1 alone, so checking what the template built
+costs a second rather than a model load, and its ids feed straight into
+`nano-glm -T` — which is how an interesting generation becomes a reproducible
+logits test.
+
 `nano-glm`'s contract stays frozen: ids in, lkldtopk out, greedy = stored
 top-1, no sampler. The rule that forces that split is **the bit-exactness
 contract is defined over a fixed token sequence, so anything able to change
 that sequence lives outside the tool that produces reference numbers** — a
 sampler with RNG, a template tweak, a tokenizer version bump each silently
 invalidate every stored reference if they hide behind a flag in one binary.
+A sampler belongs in `nano-chat` when it arrives, and costs nothing there.
 
-Two bridges: `nano-chat --dump-ids` turns any interesting behaviour into a
-reproducible logits test, and a detokenizer for lkldtopk files makes corpus
-output readable (the routing study wanted this and had to read raw ids).
+Tokenizer agreement is measured, not assumed: `tokenizer_check.py` versus
+`llama-tokenize`, **28/28 cases and 864 tokens exact**, including CJK, emoji
+and combining marks. `\p{L}`/`\p{N}` come from llama.cpp's own tables via
+`lib/gen_unicode_ranges.py`, so the two cannot drift apart on a Unicode
+revision. Kept out of the logits gate on purpose.
 
-The tokenizer brings its own correctness question — do our ids match
-llama.cpp's for the same text? Vocab only, no model, seconds, and deliberately
-*not* part of the logits gate, so a tokenizer bug cannot present as a numerics
-failure.
+Still open, small: a detokenizer for lkldtopk files, so corpus output is
+readable (the routing study wanted it and read raw ids instead).
+
+### 6. Cross-prompt residency — **Now**
+
+`ROUTING.md`'s 58.4% is measured *within* one continuation — same topic, same
+register, the easy case. A static VRAM placement is chosen once and serves
+every workload, so the number that decides step 3 is rank-on-prose /
+score-on-code. Until it exists, treat 58.4% as an upper bound.
+
+Five corpus prompts at `-n 256` with `--expert-log`, then compare rankings
+across the five `counts.csv` files. Half an hour of tracing, and it is the
+cheapest decision-relevant measurement left in the plan.
 
 ### 3. Vulkan experts inside the backend — **Planned**
 
@@ -245,11 +252,11 @@ Not a `--selftest` flag on the shipping binary: tests belong outside the
 artifact under test, and a flag that only ever runs in CI is dead weight in
 every other invocation.
 
-Sequenced after 7 because unit tests need units, and that is exactly what the
-core-library extraction produces — today `fill_hadamard` is a `static` function
-inside `lib/nano_graph.h` and nothing else can reach it. A few pieces are testable
-sooner (`moe_proto.h` is already a standalone header, `expert_stats.py` needs
-no C++ at all) if the rest slips.
+Unblocked by 7: the units exist now. `lib/` is seven headers an app includes,
+so a test target links `nano-lib` the same way `nano-chat` does. The remaining
+friction is that the pieces are `static`, which a test TU can still include but
+not link against - the first real test is also the nudge to convert `nano-lib`
+into a compiled library (see `lib/README.md`).
 
 ### 9. Latency hiding around the shared expert — **Planned, independent**
 

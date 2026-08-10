@@ -12,6 +12,9 @@ Everything in here is model-and-mechanism; nothing decides policy. Apps in
 | `moe_proto.h` | the client/backend wire protocol and the TCP it needs |
 | `build_info.h` | build fingerprint: `--version`, provenance, handshake |
 | `expert_trace.h` | routing trace, compiled out unless `-DNANO_EXPERT_TRACE` |
+| `vocab.h` | byte-level BPE: GGUF vocab and merges, the glm4 pre-tokenizer, encode/decode |
+| `chat_glm.h` | GLM-5.2's single-turn chat format, as token ids |
+| `unicode_ranges.h` | generated `\p{L}` / `\p{N}` tables — see `gen_unicode_ranges.py` |
 
 Include `nano_graph.h` first in any app: it reaches `moe_proto.h`, and
 winsock2.h has to precede the windows.h that `nano_model.h` pulls in.
@@ -27,12 +30,15 @@ puts the whole of it in two files:
 | file | glm-dsa refs | MLA/DSA refs | scope |
 |---|--:|--:|---|
 | `build_info.h` | 0 | 0 | **any program** |
+| `unicode_ranges.h` | 0 | 0 | **any program** |
 | `moe_proto.h` | 1 | 0 | any MoE backend |
 | `moe_client.h` | 0 | 0 | any MoE backend |
 | `expert_trace.h` | 0 | 0 | any MoE with a top-k selection tensor |
 | `moe_block.h` | 0 | 0 | **DeepSeek-lineage** MoE |
+| `vocab.h` | 0 | 0 | any `gpt2` vocab; the *splitter* is glm4's |
 | `nano_model.h` | 34 | 33 | half generic loader, half glm-dsa definition |
 | `nano_graph.h` | 3 | 90 | **glm-dsa only** |
+| `chat_glm.h` | — | — | **glm-dsa only**, and the most so of anything here |
 
 Three tiers, then, and they are worth naming because they predict cost:
 
@@ -63,7 +69,15 @@ and `lib/` would keep the other two tiers plus the eval driver — backend setup
 graph reuse on `(n_tokens, n_kv)`, `eval_chunk`, `pad_n_kv`.
 
 **Reimplement:** hparams and their asserts (~200 lines), tensor names,
-`build_graph` (~300 lines), the KV cache shape. Roughly 500 lines.
+`build_graph` (~300 lines), the KV cache shape, and the chat format. Roughly
+500 lines plus a template.
+
+The tokenizer is a smaller question than it looks: `vocab.h`'s BPE serves any
+`tokenizer.ggml.model == "gpt2"` vocab unchanged, and a model declaring a
+different `tokenizer.ggml.pre` needs only a new `pretok_split` — one function,
+because that is all a pre-tokenizer is. Both `load_vocab` checks are hard
+aborts precisely so an unported combination cannot be mistaken for a working
+one.
 
 **Reuse unchanged:** the loader plumbing, `moe_block.h` if the gating matches,
 the whole RPC stack including `moe-server`, the trace, the fingerprint, and —
