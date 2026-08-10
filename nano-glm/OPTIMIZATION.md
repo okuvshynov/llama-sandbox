@@ -157,7 +157,6 @@ sequential, so one sequence never has more than one request in flight.
 
 Small, unglamorous, and cheap to fold into whatever touches the file next:
 
-- `moe-server`'s `t_route` field times graph construction, not routing.
 - `per_slot` return mode is declared in the protocol and unimplemented.
 - `moe_client::rtt_us` and `::log` grow without bound.
 - `elapsed_us` returns `uint32_t` — about 71 minutes of microseconds.

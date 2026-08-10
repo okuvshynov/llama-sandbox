@@ -245,14 +245,36 @@ changes shape (below).
 
 #### Increments, each gated
 
-1. **Restructure with one CPU device.** Host-side routing, the device
-   abstraction, partition and combine — no Vulkan. Must stay **byte-identical**
-   (`gate.py aa` and `rpc`), which is the whole point of doing it first.
+1. **Restructure with one CPU device** — **done**. Host-side routing, the
+   `moe_device` abstraction, combine — no Vulkan, in `apps/moe-server/main.cpp`.
+   `gate.py rpc` byte-identical 6/6, which is the whole point of doing it first.
+
+   Two things were deliberately left out, because with one device neither can
+   be *tested*: threading (increment 3) and residency partitioning — device 0
+   holds every expert, so any partition is the identity. The seam is marked in
+   `run_device`, along with what makes increment 2's version hard: residency is
+   per **expert** while slots are per **token**, so which device owns a given
+   (token, slot) pair varies across the batch. A per-device slot subset is
+   therefore not well defined, and the honest options are compaction (gather
+   the pairs a device owns into a dense `ids`) or computing everything
+   everywhere and zeroing the weights — the second defeats the purpose.
+
+   `t_route_us` now times the router rather than graph construction, so the
+   backend can report the split. Measured cold (0.4 tok/s, weights paging in):
+   router p50 228 us vs experts 21985 us at decode, 2051 vs 426796 at prefill —
+   so the router is low single-digit percent of a layer, and *higher* than the
+   1.14% measured, since paging inflates the denominator. Re-measure warm
+   before optimizing against it. The real design consequence is not the cost
+   but the shape: the read-back is a hard per-layer sync point that did not
+   exist before.
 2. **One Vulkan device holding a subset**, misses falling through to the CPU
    device. Gate becomes the KL bound below.
 3. **N devices, one thread each**, trivial expert assignment (`e % n_devices`).
    Measure whether four dies beat one; expert parallelism within a layer is the
-   thing being tested.
+   thing being tested. Also where the per-layer router sync can be overlapped:
+   layer i+1's router genuinely cannot start early (it needs layer i's output),
+   but a device's expert work can start as soon as its slice of the decision
+   lands.
 
 #### Build
 

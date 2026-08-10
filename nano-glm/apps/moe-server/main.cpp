@@ -5,10 +5,17 @@
 // Stateless — no KV, nothing carried between calls — so a restart costs only
 // the model load.
 //
-// Correctness bar is the same as everywhere else here: the graph it builds is
-// build_moe_block() from moe_block.h, the identical source the in-process
-// client used, so a KL == 0 gate against llama.cpp still applies once the
-// trunk talks to this over a socket.
+// Correctness bar is the same as everywhere else here: the graphs it builds
+// come from moe_block.h, the identical source the in-process client uses, so a
+// KL == 0 gate against llama.cpp still applies once the trunk talks to this
+// over a socket.
+//
+// A layer is evaluated in two graphs rather than one — `build_moe_router` on
+// the host, then `build_moe_experts` on each device — because expert work
+// cannot be partitioned across devices until the routing decision is in host
+// memory, and in a single graph it is not. With today's one device that
+// composes back to exactly `build_moe_block`, and the gate holds it to that:
+// `gate.py rpc` is byte-identical to the local path. PLAN.md step 3.
 //
 // moe_proto.h must come first: winsock2.h has to precede windows.h, which
 // nano_model.h pulls in.
@@ -22,10 +29,12 @@
 // faster in later phases (GPU-resident experts, lower-bit quant) and anything
 // currently at 1% becomes 10% once compute drops by 10x.
 //
-//  - Graph cache keyed on (layer, n_tokens). Building the ~15-node graph costs
-//    16-43 us/request, i.e. 0.5-1.4% today. At ~300 us/layer it would be
-//    5-14%. Cost of doing it: 75 layers x every batch shape of compute
-//    buffers held resident, which is why it was not done up front.
+//  - Graph cache keyed on (layer, n_tokens). Building the graphs cost
+//    16-43 us/request when it was one ~15-node graph, i.e. 0.5-1.4% today. At
+//    ~300 us/layer it would be 5-14%. Cost of doing it: 75 layers x every
+//    batch shape of compute buffers held resident, which is why it was not
+//    done up front. Re-measure before acting on it: there are two graphs now,
+//    and `t_route_us` no longer reports construction time.
 //  - Zero-copy request/response. Two 24 KiB memcpys per request (recv into
 //    in_buf then tensor_set; tensor_get into out_buf then send). Could recv
 //    straight into the allocated input tensor and send straight from the
@@ -110,29 +119,52 @@ static bool parse_args(int argc, char ** argv, server_params & p) {
 // ---------------------------------------------------------------------------
 // evaluation
 
-struct moe_backend {
-    nano_model            M;
+// A device is *a backend, the experts it holds, and — from increment 3 — a
+// thread to drive it*. Deliberately not GPU-shaped: a node of the 4-socket
+// NUMA machine is the same object, a backend with thread affinity and expert
+// weights in its own memory, and the partition-then-combine machinery below is
+// identical for both. PLAN.md step 3.
+struct moe_device {
     ggml_backend_t        backend = nullptr;
     ggml_gallocr_t        galloc  = nullptr;
-    int                   n_threads = 1;
+    std::vector<uint8_t>  meta;      // graph scratch, reused across requests
+    std::vector<float>    partial;   // this device's contribution [n_embd, n_tokens]
+
+    // Residency arrives in increment 2. Today device 0 holds every expert.
+};
+
+struct moe_backend {
+    nano_model              M;
+    int                     n_threads = 1;
+    std::vector<moe_device> devices;
+
+    // The router's own graph and its result, read back to the host between the
+    // two halves. Runs on devices[0]'s backend: the DRAM device *is* the host
+    // in this deployment, and sharing the backend avoids a second CPU thread
+    // pool that would only ever idle.
+    ggml_gallocr_t        router_galloc = nullptr;
+    std::vector<uint8_t>  router_meta;
+    std::vector<int32_t>  ids_buf;      // [n_expert_used, n_tokens]
+    std::vector<float>    weights_buf;  // [1, n_expert_used, n_tokens]
 
     // reused across requests so the hot path does no allocation
-    std::vector<uint8_t>  meta;      // ggml context scratch for tensor structs
     std::vector<float>    in_buf;
     std::vector<float>    out_buf;
 };
 
-// Builds and runs one MoE layer. The graph is ~15 nodes, so rebuilding it per
-// request costs microseconds against a multi-millisecond expert evaluation —
-// not worth caching 75 layers x every batch shape of compute buffers.
-static bool eval_layer(moe_backend & B, uint32_t layer, int32_t n_tokens,
-                       const float * x, float * out,
-                       uint32_t & t_route_us, uint32_t & t_compute_us) {
+// ---- the router half ------------------------------------------------------
+//
+// Runs the router and reads its decision back to the host. This read-back is
+// the reason the layer is two graphs instead of one: which experts a token
+// wants is a *node* in the graph (`argsort_top_k`), so in a single graph it is
+// not known until the graph has already run — too late to have partitioned the
+// expert work across devices.
+static bool run_router(moe_backend & B, uint32_t layer, int32_t n_tokens, const float * x) {
     const nano_hparams & h = B.M.h;
 
     ggml_init_params ip = {
-        /*.mem_size   =*/ B.meta.size(),
-        /*.mem_buffer =*/ B.meta.data(),
+        /*.mem_size   =*/ B.router_meta.size(),
+        /*.mem_buffer =*/ B.router_meta.data(),
         /*.no_alloc   =*/ true,
     };
     ggml_context * ctx = ggml_init(ip);
@@ -144,28 +176,141 @@ static bool eval_layer(moe_backend & B, uint32_t layer, int32_t n_tokens,
     ggml_set_name(inp, "x");
     ggml_set_input(inp);
 
-    const auto t_route0 = clk::now();
-    ggml_tensor * moe_out = build_moe_block(ctx, gf, h, layer, B.M.layers[layer], inp, n_tokens);
-    ggml_set_output(moe_out);
-    ggml_build_forward_expand(gf, moe_out);
-    t_route_us = us_since(t_route0);   // graph construction, incl. the router nodes
+    const moe_routing r = build_moe_router(ctx, gf, h, layer, B.M.layers[layer], inp, n_tokens);
 
-    if (!ggml_gallocr_alloc_graph(B.galloc, gf)) {
-        ggml_free(ctx);
-        return false;
-    }
+    // Both are read back, so both are made contiguous first. `ids` needs it:
+    // top-k is a *view* of the argsort output with the unselected rows still
+    // underneath, so its bytes are not a flat range. `weights` needs it for a
+    // subtler reason — it can end as a reshape view, and marking a view as a
+    // graph output does not keep its parent's buffer alive.
+    //
+    // Neither copy changes a value, and `mul_mat_id` only ever reads the ids,
+    // so byte-identity with the single-graph version is preserved.
+    ggml_tensor * ids = ggml_cont(ctx, r.ids);
+    ggml_tensor * wts = ggml_cont(ctx, r.weights);
+    ggml_set_output(ids);
+    ggml_set_output(wts);
+    ggml_build_forward_expand(gf, ids);
+    ggml_build_forward_expand(gf, wts);
 
-    ggml_backend_tensor_set(inp, x, 0, (size_t) h.n_embd * n_tokens * sizeof(float));
-
-    const auto t_compute0 = clk::now();
-    const bool ok = ggml_backend_graph_compute(B.backend, gf) == GGML_STATUS_SUCCESS;
-    t_compute_us = us_since(t_compute0);
-
+    bool ok = ggml_gallocr_alloc_graph(B.router_galloc, gf);
     if (ok) {
-        ggml_backend_tensor_get(moe_out, out, 0, (size_t) h.n_embd * n_tokens * sizeof(float));
+        ggml_backend_tensor_set(inp, x, 0, (size_t) h.n_embd * n_tokens * sizeof(float));
+        ok = ggml_backend_graph_compute(B.devices[0].backend, gf) == GGML_STATUS_SUCCESS;
+    }
+    if (ok) {
+        const size_t n_sel = (size_t) h.n_expert_used * n_tokens;
+        ggml_backend_tensor_get(ids, B.ids_buf.data(),     0, n_sel * sizeof(int32_t));
+        ggml_backend_tensor_get(wts, B.weights_buf.data(), 0, n_sel * sizeof(float));
     }
     ggml_free(ctx);
     return ok;
+}
+
+// ---- one device's share of the expert half --------------------------------
+//
+// `ids` and `weights` come in as ordinary input tensors rather than as the
+// router's own nodes. `ggml_mul_mat_id` cannot tell the difference, which is
+// what makes the split free.
+//
+// Increment 1: devices[0] holds every expert, so its share is the whole
+// routing decision and this runs exactly the op sequence the single graph ran.
+// That is what keeps the gate byte-identical. Increment 2 narrows ids/weights
+// to the (token, slot) pairs whose expert is resident here and lets the rest
+// fall through to the DRAM device — which is where the interesting problem
+// lives, because residency is per *expert* while slots are per *token*.
+static bool run_device(moe_backend & B, moe_device & D, uint32_t layer,
+                       int32_t n_tokens, const float * x) {
+    const nano_hparams & h = B.M.h;
+
+    ggml_init_params ip = {
+        /*.mem_size   =*/ D.meta.size(),
+        /*.mem_buffer =*/ D.meta.data(),
+        /*.no_alloc   =*/ true,
+    };
+    ggml_context * ctx = ggml_init(ip);
+    if (!ctx) return false;
+
+    ggml_cgraph * gf = ggml_new_graph(ctx);
+
+    ggml_tensor * inp = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, h.n_embd, n_tokens);
+    ggml_set_name(inp, "x");
+    ggml_set_input(inp);
+
+    ggml_tensor * ids = ggml_new_tensor_2d(ctx, GGML_TYPE_I32, h.n_expert_used, n_tokens);
+    ggml_set_name(ids, "ids");
+    ggml_set_input(ids);
+
+    ggml_tensor * wts = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, 1, h.n_expert_used, n_tokens);
+    ggml_set_name(wts, "weights");
+    ggml_set_input(wts);
+
+    ggml_tensor * moe_out = build_moe_experts(ctx, gf, h, B.M.layers[layer], inp,
+                                              moe_routing{ ids, wts }, n_tokens);
+    ggml_set_output(moe_out);
+    ggml_build_forward_expand(gf, moe_out);
+
+    bool ok = ggml_gallocr_alloc_graph(D.galloc, gf);
+    if (ok) {
+        const size_t n_act = (size_t) h.n_embd        * n_tokens;
+        const size_t n_sel = (size_t) h.n_expert_used * n_tokens;
+        ggml_backend_tensor_set(inp, x,                    0, n_act * sizeof(float));
+        ggml_backend_tensor_set(ids, B.ids_buf.data(),     0, n_sel * sizeof(int32_t));
+        ggml_backend_tensor_set(wts, B.weights_buf.data(), 0, n_sel * sizeof(float));
+        ok = ggml_backend_graph_compute(D.backend, gf) == GGML_STATUS_SUCCESS;
+    }
+    if (ok) {
+        ggml_backend_tensor_get(moe_out, D.partial.data(), 0,
+                                (size_t) h.n_embd * n_tokens * sizeof(float));
+    }
+    ggml_free(ctx);
+    return ok;
+}
+
+// Builds and runs one MoE layer: route on the host, evaluate experts on each
+// device, combine. Both graphs are a few dozen nodes, so rebuilding them per
+// request costs microseconds against a multi-millisecond expert evaluation —
+// not worth caching 75 layers x every batch shape of compute buffers.
+static bool eval_layer(moe_backend & B, uint32_t layer, int32_t n_tokens,
+                       const float * x, float * out,
+                       uint32_t & t_route_us, uint32_t & t_compute_us) {
+    const nano_hparams & h = B.M.h;
+
+    const size_t n_act = (size_t) h.n_embd        * n_tokens;
+    const size_t n_sel = (size_t) h.n_expert_used * n_tokens;
+
+    if (B.ids_buf.size()     < n_sel) B.ids_buf.resize(n_sel);
+    if (B.weights_buf.size() < n_sel) B.weights_buf.resize(n_sel);
+    // Hoisted out of the compute loop below: once that loop is one thread per
+    // device, a device must not be reallocating a buffer another thread sizes.
+    for (moe_device & D : B.devices) {
+        if (D.partial.size() < n_act) D.partial.resize(n_act);
+    }
+
+    const auto t_route0 = clk::now();
+    if (!run_router(B, layer, n_tokens, x)) return false;
+    t_route_us = us_since(t_route0);   // the router itself, not graph construction
+
+    const auto t_compute0 = clk::now();
+
+    // Increment 3 replaces this loop with one thread per device and a join.
+    // Sequential today because there is exactly one device, and a thread per
+    // device is only worth its synchronisation once there are several.
+    for (moe_device & D : B.devices) {
+        if (!run_device(B, D, layer, n_tokens, x)) return false;
+    }
+
+    // Combine in device order. Fixed order, so the sum is deterministic run to
+    // run — which is the property that matters once devices compute in
+    // different arithmetic and bit-identity is no longer available.
+    memcpy(out, B.devices[0].partial.data(), n_act * sizeof(float));
+    for (size_t d = 1; d < B.devices.size(); d++) {
+        const float * p = B.devices[d].partial.data();
+        for (size_t i = 0; i < n_act; i++) out[i] += p[i];
+    }
+
+    t_compute_us = us_since(t_compute0);
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -346,13 +491,21 @@ int main(int argc, char ** argv) {
     load_model(B.M, p.model_path);
     B.n_threads = p.n_threads;
 
-    B.backend = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);
-    if (!B.backend) { fprintf(stderr, "moe-server: no CPU backend\n"); return 1; }
-    ggml_backend_cpu_set_n_threads(B.backend, B.n_threads);
-    B.galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(B.backend));
+    // One device today: the CPU, holding every expert. Increment 2 adds a
+    // Vulkan device with a subset of them; increment 3 adds the rest of the
+    // dies, and later a NUMA node is just another entry here.
+    B.devices.resize(1);
+    moe_device & D0 = B.devices[0];
 
-    // room for the ~15 tensor structs a layer's graph needs, plus the graph
-    B.meta.resize(ggml_tensor_overhead() * 64 + ggml_graph_overhead());
+    D0.backend = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);
+    if (!D0.backend) { fprintf(stderr, "moe-server: no CPU backend\n"); return 1; }
+    ggml_backend_cpu_set_n_threads(D0.backend, B.n_threads);
+    D0.galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(D0.backend));
+
+    // room for the tensor structs each graph needs, plus the graph itself
+    D0.meta.resize(ggml_tensor_overhead() * 64 + ggml_graph_overhead());
+    B.router_meta.resize(ggml_tensor_overhead() * 64 + ggml_graph_overhead());
+    B.router_galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(D0.backend));
 
     const nano_hparams & h = B.M.h;
     fprintf(stderr, "moe-server: %s\n", nano_build_line().c_str());
