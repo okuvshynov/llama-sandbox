@@ -16,6 +16,7 @@ lib/     the engine — model loader, trunk graph, routed-expert block, wire
          protocol, remote-MoE client, tokenizer, fingerprint, routing trace
 apps/    nano-glm     the validation harness: token ids in, lkldtopk out
          nano-chat    single-turn chat: text in, streamed text out
+         nano-bench   throughput in a named residency regime
          moe-server   the MoE backend: one activation in, one combined row out
 ```
 

@@ -12,7 +12,7 @@ them; the trunk runs wherever trunk work is fastest.
   │ modern GPU (RTX 6000 Pro   │  x  ──►  │ Mac Pro 2019             │
   │ Blackwell class): attention│  75 req  │ 768GB DDR4: ALL routed   │
   │ + KV cache + shared expert │  /token  │ experts (563 GiB)        │
-  │ ~17 GB of trunk weights    │  ◄── y   │ router, experts, combine │
+  │ ~21 GB of trunk weights    │  ◄── y   │ router, experts, combine │
   └────────────────────────────┘          │ 4x Vega II: hot subset   │
                                           └──────────────────────────┘
 ```
@@ -42,9 +42,15 @@ Constraints that hold across every step:
   OS and host; the comparison refuses to run on a mismatch rather than
   reporting a difference. `results/corpus/` had to be discarded for exactly
   this — the files predate the shard repair and nothing in them says so.
-- **Same OS and toolchain on both ends** for any bit-exact claim: a
-  Windows/MSVC and a macOS/clang build of one llama.cpp commit differ by
-  8.85e-3 mean KL on identical hardware.
+- **Same OS and toolchain on both ends** for any bit-exact claim. FP
+  contraction is a compiler choice, so two builds of one llama.cpp commit
+  disagree on identical hardware. The magnitude once recorded here (8.85e-3
+  mean KL) is withdrawn: those artifacts date from the day before the corrupt
+  shards were found, and while the evidence leans clean — they predate the
+  reboot that exposed the corruption, and corruption alone flipped no top-1
+  tokens where that comparison flipped 3.3% — it is unverified. Re-measure
+  before quoting it: one llama.cpp run per platform over the same ids, both
+  models now checked against `checksums/`.
 - **Run configuration is part of the contract.** Thread count, batch shape and
   toolchain all move logits. Pin them before blaming the code. (repo
   `CLAUDE.md`)
@@ -53,35 +59,70 @@ Constraints that hold across every step:
 - **No mmap for the expert store.** Windows timings swing 1.04-1.84 t/s on
   identical configs from standby-list state alone; the backend needs an
   explicit non-mmap load path and should record which mode a run used.
+- **No throughput number without a stated residency regime.** Cold, hot
+  subset and whole-model warm differ by more than any optimisation in this
+  plan claims to be worth — 16x between cold and warm at the layer level.
+  A tok/s figure that does not say which regime it came from is noise with
+  a decimal point (step 11).
 - **Optimise bytes, not flops.** The expert FFN is ~95%+ memory movement.
 
 ## The budget
 
-GLM-5.2 UD-Q6_K, 75 MoE layers, at the 74 GB/s this Mac Pro sustains:
-
-| quantity | value |
-|---|---|
-| one Q6_K expert | 31.09 MB |
-| MoE reads / token | 21.66 GB → 293 ms → **3.42 tok/s ceiling** |
-| trunk on a Blackwell-class card | ~10 ms — negligible |
-| **requests / token** | **75, strictly sequential** |
-| **compute budget / request** | **3.90 ms → 256 req/s** |
-| wire / request, **decode** | 24 KiB each way → 3.7 MB/token, ~2.9 ms on 10GbE |
-| wire / request, **prefill** | n_tokens x 24 KiB — ~2.8 MB at 114 tokens (measured) |
-
-Measured in step 1, superseding the estimates above where they differ:
+Everything here is measured on this machine unless the row says otherwise.
+Byte counts come from walking the loaded GGUF's tensor map (`nano-bench`), not
+from tensor-offset arithmetic, so they follow the model rather than a note.
 
 | quantity | measured |
 |---|---|
-| backend, warm | **3.07 ms/layer, 80.6 GB/s** -> 4.16 tok/s MoE-only |
-| backend, cold | 52 ms/layer — 16x, all page-in |
+| bytes / token, decode | **38.93 GB** = dense 20.03 (shared expert 3.05) + routed 18.90, being 8/256 of 604.81 |
+| one routed expert (gate+up+down) | 31.5 MB |
+| **sustained bandwidth** | **75.4 GB/s** on the model's own access pattern |
+| decode, hot subset (regime A, ~39.7 GB resident) | **1.941 tok/s** |
+| decode, whole model (regime B, ~466 GB resident) | **1.932 tok/s**, spread 0.4% |
+| prefill, cold -> warm | 0.9 -> **6.9 tok/s** |
+| warmup | one repetition for decode (1263 -> 515 ms), three for prefill |
+| MoE-only bytes / token | 21.95 GB -> 291 ms -> **3.44 tok/s**, the ceiling once the trunk is elsewhere |
+| backend (moe-server), warm / cold | 3.07 ms/layer, 80.6 GB/s / 52 ms/layer |
 | RPC overhead, loopback warm | **114 us, 3.6%** of a layer |
 | network+queueing over a corpus prompt | flat 0.7s while compute fell 108s -> 30s |
+| **requests / token** | **75, strictly sequential** |
+| wire / request | 24 KiB each way at decode; n_tokens x 24 KiB at prefill, 2.8 MB at 114 tokens |
 
-The system is entirely MoE-bound, so the figure of merit is the backend's
-sustained request rate. RPC overhead is pure addition, and its *share* grows
-as the backend gets faster — the 0.7s above was 0.7% of the first corpus
-prompt and 2.5% of the fifth, for identical work.
+Still estimates, flagged as such because nothing here has run them:
+
+| quantity | estimate | rests on |
+|---|---|---|
+| compute budget / request | 3.88 ms -> 258 req/s | the MoE-only ceiling divided by 75 |
+| decode wire cost on 10GbE | 3.7 MB/token, ~2.9 ms | line rate, never measured on these NICs (step 2) |
+| prefill wire cost on 10GbE | ~2.2 ms at 114 tokens | same |
+| trunk on a Blackwell-class card | ~10 ms, negligible | vendor bandwidth, no such card here (step 4) |
+
+Two results from step 11, one of them a surprise:
+
+- **74 GB/s was a good assumption.** It came from a synthetic sweep; the
+  model's real access pattern sustains 75.4. Decode is bandwidth-bound and
+  nothing else.
+- **Working-set size does not matter once resident.** Regimes A and B differ by
+  12x in footprint — 39.7 GB against ~466 GB — and by **0.5%** in throughput.
+  There is no locality bonus to be had in DRAM: keeping *hot* experts hot buys
+  nothing, and residency helps only by removing bytes from the DRAM path. That
+  rules out the optimistic reading of the routing study, and it is why step 3's
+  value is computed from bytes alone.
+
+Regime B's 0.4% spread, against the 40% swings that motivated step 11, is what
+makes a 10% change resolvable at all.
+
+**This machine is not MoE-bound; it is bound by everything.** MoE is 56% of the
+bytes a token reads and the dense trunk is 44%, which is exactly why step 4
+matters and why the 3.44 tok/s figure above is a bound for *that* machine, not
+this one. The earlier claim that the system is "entirely MoE-bound" was an
+artifact of counting only MoE bytes.
+
+Weight split, from the same tensor walk: routed experts 604.81 GB, shared
+expert 3.05 GB, everything else 17.99 GB (of which a 1.01 GB embedding table
+that decode reads one row of). Per *token*, though, the split is 56/44 as
+above — near-uniform routing would make it 50/50, and the ratio is what decides
+how much of the win lives on each side of the wire.
 
 ### What the router does
 
@@ -102,21 +143,20 @@ first five MoE layers (3-7), which are near-uniform on every metric. Spending
 a VRAM budget globally rather than per layer exploits that and is worth
 nothing (58.4% either way), so placement can stay uniform per layer.
 
-Weight split (from the GGUF tensor offsets): routed experts 563.27 GiB /
-96.6%, shared expert 2.84 GiB, trunk 16.76 GiB. Per *token*, though, the trunk
-is ~45% of bytes read — which is why moving it to fast silicon removes the
-ceiling that expert offload alone cannot.
-
 ## Steps
 
 **Numbers are stable identifiers, not an ordering.** Code comments and commit
 messages point at "step 1", "step 3"; renumbering would falsify them. The
 order below is the execution order.
 
-Step 2 moved to the back because nothing depends on it: 3, 6, 7, 8, 9 and 10
+Step 2 moved to the back because nothing depends on it: 3, 6, 8, 9, 10 and 11
 all run on this one machine, so machine B is needed by exactly one item, and
 that item is the least informative one left. Step 5 has since made its
 correctness half a one-line invocation.
+
+Step 11 sat ahead of 3 and 8 for the same reason 5 sat ahead of 7: both are
+claims about memory behaviour, and neither could be judged against a baseline
+that moved 40% between runs. It is done, and the baseline now holds to 0.4%.
 
 ### 0. Host-side dispatch, in-process — **Done**
 
@@ -193,6 +233,37 @@ revision. Kept out of the logits gate on purpose.
 Still open, small: a detokenizer for lkldtopk files, so corpus output is
 readable (the routing study wanted it and read raw ids instead).
 
+### 11. A benchmark with stated residency regimes — **Done**
+
+`apps/nano-bench`, repetitions inside one process, every repetition printed and
+the median taken from the back half only — the warmup curve is the signal, and
+folding it into a mean is what produced the 40% swings this step existed to
+replace. Byte counts come from the loaded GGUF (walk the tensor map, `*_exps`
+counted at `n_expert_used/n_expert`), so a quant change updates the budget
+instead of silently invalidating it.
+
+| regime | working set | result |
+|---|---|---|
+| `--hot` one position re-decoded | ~39.7 GB | 1.941 tok/s, 75.5 GB/s, spread 9.5% |
+| `--full` 256 tokens x 4 passes | ~466 GB | **1.932 tok/s, 75.2 GB/s, spread 0.4%** |
+
+Findings are in the budget above. The short version: 74 GB/s was a good
+assumption, decode is purely bandwidth-bound, and **a 12x difference in working
+set is worth 0.5%** — so there is no locality prize in DRAM and residency helps
+only by removing bytes.
+
+Warmup is one repetition for decode and three for prefill, which also explains
+every harness number ever recorded here: 0.94-1.69 tok/s was page-in, not
+compute, and prefill swings 0.9 -> 6.9 tok/s across passes.
+
+Not done, and no longer urgent: the **non-mmap load path**. It was in scope as
+the way to guarantee residency, but repetition achieves that already and the
+0.4% spread says the standby list is not interfering. It survives only as huge
+pages' prerequisite (step 8), which is now the sole reason to build it.
+
+Also open: `--moe-addr` support, so the RPC path can be measured in the same
+regimes.
+
 ### 6. Cross-prompt residency — **Now**
 
 `ROUTING.md`'s 58.4% is measured *within* one continuation — same topic, same
@@ -207,19 +278,36 @@ cheapest decision-relevant measurement left in the plan.
 ### 3. Vulkan experts inside the backend — **Planned**
 
 Hold a resident expert subset on the 4 Vega dies, serve misses from DRAM. 23%
-of 563 GiB fits in 128 GiB of VRAM, and the routing study says that catches
-**58% of selections, not 23%** — DRAM traffic falls 21.66 -> 9.01 GB/token,
-moving the MoE-bound ceiling from 3.42 to ~8 tok/s before dispatch cost. That
-is what makes this step worth doing rather than marginal, so the number is
-load-bearing and step 6 has to land first.
+of the routed 604.81 GB fits in 128 GiB of VRAM, and `ROUTING.md` says that
+catches **58% of selections, not 23%** — which is what makes this step worth
+doing rather than marginal, so that number is load-bearing and step 6 has to
+land first.
+
+What it is worth depends on which machine, and the plan used to quote only the
+larger figure without saying so. At the measured 75.4 GB/s and 38.93 GB/token:
+
+| | DRAM / token | tok/s |
+|---|---|---|
+| today | 38.93 GB | 1.94 |
+| **+ residency, trunk still local** | 27.89 GB | **2.71 (+40%)** |
+| + step 4, no residency | 21.95 GB | 3.44 |
+| + residency and step 4 | 10.91 GB | **6.92** |
+
+So this step is worth **+40% now** and roughly **2x after step 4** — both
+worth having, but they are not the same claim. (The 3.44 also lands on the
+budget's MoE-only ceiling, which is the same arithmetic from the other
+direction.) And because A and B tied, these follow from bytes alone:
+there is no additional gain from the resident set being the *hot* one.
 
 Runs entirely on this machine: backend-side, client on loopback. No dependency
 on step 2.
 
-Placement is **static, not LRU** — PCIe is ~5.7x slower than DRAM, so cache
+Placement is **static, not LRU** — PCIe is far slower than DRAM, so cache
 refill never pays; and uniform per layer, since a global budget measured the
-same. Q4_K experts are the composing lever (~32% less DRAM traffic, ~33%
-resident). Cost model and per-phase dispatch numbers: ../moe-offload.
+same (`ROUTING.md`). Q4_K experts are the composing lever, roughly a third off
+both DRAM traffic and resident size. The PCIe ratio and the Q4_K figures are
+../moe-offload's, not measured here; nothing in this repo has yet run a byte
+over PCIe.
 
 Byte identity ends here for the expert path, so the gate changes shape:
 compare against **the same build's CPU run over the same ids**, never a
@@ -237,8 +325,21 @@ streamer about once per output row. Self-contained, backend-side, independent
 of everything else.
 
 Prerequisite is the non-mmap load path the invariants already require: neither
-Windows nor macOS offers huge pages for file-backed mappings. That path is
-worth having anyway — it is what makes Windows timings reproducible.
+Windows nor macOS offers huge pages for file-backed mappings. Step 11 did not
+build it — repetition turned out to be enough to guarantee residency — so huge
+pages is now the only thing that wants it, and the only reason to build it.
+
+**Step 11 did give it a measurable baseline**, which it did not have before:
+regime B holds 75.2 GB/s to within 0.4%, so a 10% effect is resolvable.
+
+It also narrowed the mechanism without settling it. Regimes A and B tied
+despite a 12x difference in working set, which rules out page-cache pressure
+and standby-list churn as limiters — but *not* TLB pressure, because both
+regimes thrash it equally: 39.7 GB is 9.7M 4 KiB pages and 466 GB is 114M,
+against 1536 L2 TLB entries either way. So the experiment that would separate
+them is still exactly this one, and it is still worth running. What has changed
+is that the honest prior is lower: decode sits at 75 GB/s regardless of
+footprint, which looks more like a DRAM wall than a translation cost.
 
 ### 10. C++ unit tests — **Planned**
 
@@ -255,7 +356,7 @@ every other invocation.
 Unblocked by 7: the units exist now. `lib/` is seven headers an app includes,
 so a test target links `nano-lib` the same way `nano-chat` does. The remaining
 friction is that the pieces are `static`, which a test TU can still include but
-not link against - the first real test is also the nudge to convert `nano-lib`
+not link against — the first real test is also the nudge to convert `nano-lib`
 into a compiled library (see `lib/README.md`).
 
 ### 9. Latency hiding around the shared expert — **Planned, independent**
@@ -265,9 +366,12 @@ flight, collect after. A `moe_send`/`moe_recv` split around the shared-expert
 branch gets it for free, because the CPU backend executes graph nodes in order
 and the other fifteen workers are already waiting out the round trip.
 
-Worth ~0.5 ms against a 3.2 ms request — **16% on loopback today**, more once
-the link is slower. Depends on nothing; it is listed late because it is an
-optimisation, not information. Must not change a bit: same corpus gate.
+Worth about the shared expert's own read: 3.05 GB over 75 layers is 40.7 MB,
+which at the measured 75.4 GB/s is ~0.54 ms against a 3.2 ms request, so of
+order 15% on loopback. That is arithmetic from two measurements, not a measured
+speedup — `nano-bench` can settle it once it speaks `--moe-addr`. Depends on
+nothing; listed late because it is an optimisation, not information. Must not
+change a bit: same corpus gate.
 
 ### 2. Backend on another machine — **Deferred**
 
@@ -281,9 +385,10 @@ build, then
 is measurement: RTT distribution, sustained req/s against the 256 the CPU
 ceiling allows, end-to-end tok/s.
 
-Deferred because most of it is arithmetic — decode adds ~20 us of transfer,
-prefill ~2.2 ms at 114 tokens, and the only real unknown is whether 24 KiB to
-2.8 MB messages reach line rate on these NICs. Its KL == 0 gate also tests a
+Deferred because most of it is arithmetic at line rate — decode would add
+~20 us of transfer and prefill ~2.2 ms at 114 tokens, neither measured, and
+the only real unknown is whether 24 KiB to 2.8 MB messages reach line rate on
+these NICs at all. Its KL == 0 gate also tests a
 configuration we do not intend to ship: once the trunk is on a GPU (step 4),
 end-to-end byte identity is gone by construction. What it *uniquely* de-risks
 is cross-machine identity, and the step 5 handshake answers that on connect,

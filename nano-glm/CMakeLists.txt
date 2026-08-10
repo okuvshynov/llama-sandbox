@@ -113,6 +113,15 @@ target_link_libraries(nano-glm PRIVATE nano-lib)
 add_executable(moe-server apps/moe-server/main.cpp)
 target_link_libraries(moe-server PRIVATE nano-lib)
 
+# Throughput in a named residency regime (PLAN.md step 11). Links
+# logits_file.cpp for prompt_source.h, which reads prompts out of lkldtopk
+# files so a bench run and a gate run can be given the identical token ids.
+add_executable(nano-bench
+    apps/nano-bench/main.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../logit-kld/src/logits_file.cpp
+)
+target_link_libraries(nano-bench PRIVATE nano-lib)
+
 # Single-turn chat: tokenizer, chat template, streaming text. Everything that
 # can change a token sequence lives here rather than in nano-glm, so that
 # adding a sampler cannot invalidate the golden set.
@@ -124,13 +133,14 @@ if(NANO_EXPERT_TRACE)
     target_compile_definitions(nano-glm   PRIVATE NANO_EXPERT_TRACE)
     target_compile_definitions(moe-server PRIVATE NANO_EXPERT_TRACE)
     target_compile_definitions(nano-chat  PRIVATE NANO_EXPERT_TRACE)
+    target_compile_definitions(nano-bench PRIVATE NANO_EXPERT_TRACE)
     message(STATUS "nano-glm: expert routing trace ENABLED (--expert-log)")
 endif()
 
 # Compiler id and version go in as two defines rather than one joined string:
 # neither contains a space, which sidesteps quoting a -D value through cmake,
 # ninja and cl. build_info.h joins them.
-foreach(tgt nano-glm moe-server nano-chat)
+foreach(tgt nano-glm moe-server nano-chat nano-bench)
     target_compile_definitions(${tgt} PRIVATE
         NANO_GIT_REV="${NANO_GIT_REV}"
         NANO_COMPILER_ID="${CMAKE_CXX_COMPILER_ID}"
@@ -145,6 +155,6 @@ if(WIN32)
     # ggml builds DLLs into ${CMAKE_BINARY_DIR}/bin; Windows resolves them from
     # the exe's own directory, so put the exes there too rather than making every
     # invocation prepend build/bin to PATH.
-    set_target_properties(nano-glm moe-server nano-chat PROPERTIES
+    set_target_properties(nano-glm moe-server nano-chat nano-bench PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 endif()

@@ -15,6 +15,7 @@ Everything in here is model-and-mechanism; nothing decides policy. Apps in
 | `vocab.h` | byte-level BPE: GGUF vocab and merges, the glm4 pre-tokenizer, encode/decode |
 | `chat_glm.h` | GLM-5.2's single-turn chat format, as token ids |
 | `unicode_ranges.h` | generated `\p{L}` / `\p{N}` tables — see `gen_unicode_ranges.py` |
+| `prompt_source.h` | prompt token ids from an lkldtopk file or a literal list |
 
 Include `nano_graph.h` first in any app: it reaches `moe_proto.h`, and
 winsock2.h has to precede the windows.h that `nano_model.h` pulls in.

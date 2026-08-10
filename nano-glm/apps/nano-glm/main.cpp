@@ -19,6 +19,7 @@
 #include "expert_trace.h"
 #include "logits_file.h"
 #include "nano_model.h"
+#include "prompt_source.h"
 #include "topk_utils.h"
 
 #include <algorithm>
@@ -101,31 +102,6 @@ static bool parse_args(int argc, char ** argv, nano_params & p) {
 // ---------------------------------------------------------------------------
 // main
 
-static std::vector<int32_t> load_prompt_tokens(const nano_params & p, std::string & label) {
-    std::vector<int32_t> toks;
-    if (!p.input_bin.empty()) {
-        lkld_file f;
-        if (!lkld_read(p.input_bin, f)) NANO_ABORT("cannot read '%s'", p.input_bin.c_str());
-        if (f.seqs.empty()) NANO_ABORT("'%s' has no sequences", p.input_bin.c_str());
-        const lkld_seq & s = f.seqs[0];
-        toks.assign(s.tokens.begin(), s.tokens.begin() + s.n_prompt);
-        label = s.label;
-        fprintf(stderr, "nano-glm: prompt = %d tokens from %s (seq label '%s')\n",
-                s.n_prompt, p.input_bin.c_str(), s.label.c_str());
-    } else {
-        const char * s = p.tokens_str.c_str();
-        while (*s) {
-            char * end = nullptr;
-            long v = strtol(s, &end, 10);
-            if (end == s) NANO_ABORT("bad token list near '%s'", s);
-            toks.push_back((int32_t) v);
-            s = *end == ',' ? end + 1 : end;
-        }
-        label = "tokens";
-    }
-    if (toks.empty()) NANO_ABORT("empty prompt");
-    return toks;
-}
 
 int main(int argc, char ** argv) {
     // Before anything else, and without a model: the gate script reads this to
@@ -142,7 +118,8 @@ int main(int argc, char ** argv) {
     if (!parse_args(argc, argv, params)) return 1;
 
     std::string label;
-    std::vector<int32_t> prompt = load_prompt_tokens(params, label);
+    std::vector<int32_t> prompt = load_prompt_tokens(params.input_bin, params.tokens_str,
+                                                    label, "nano-glm");
     const int32_t n_prompt = (int32_t) prompt.size();
 
     nano_model M;
