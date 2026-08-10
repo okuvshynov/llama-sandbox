@@ -7,7 +7,7 @@ Everything in here is model-and-mechanism; nothing decides policy. Apps in
 |---|---|
 | `nano_model.h` | hparams, GGUF shard loader, read-only mapping |
 | `nano_graph.h` | backends, KV cache, the glm-dsa trunk graph, one chunk eval |
-| `moe_block.h` | the routed-expert graph — router, top-k, expert FFNs, combine |
+| `moe_block.h` | the routed-expert graph, as a router half and an expert half plus the composition the trunk calls |
 | `moe_client.h` | the trunk's side of the remote MoE seam: connect, handshake, stats, the custom-op callback |
 | `moe_proto.h` | the client/backend wire protocol and the TCP it needs |
 | `build_info.h` | build fingerprint: `--version`, provenance, handshake |

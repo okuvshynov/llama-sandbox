@@ -124,7 +124,7 @@ live in `OPTIMIZATION.md` under the same numbers.
   no-model memory probe. A regression guard, not a design input.
 - **6. Cross-prompt residency.** Placement does not transfer; `ROUTING.md`.
 
-### 10. C++ unit tests — **Now**
+### 10. C++ unit tests — **Planned**
 
 The gate is all end-to-end: every check costs a model load and answers in
 minutes, so anything it does not cover is untested in practice. `lib/` is
@@ -147,7 +147,7 @@ artifact under test. The pieces are `static`, which a test TU can include but
 not link against, so the first real test is also the nudge to make `nano-lib` a
 compiled library (`lib/README.md`).
 
-### 2. Backend on another machine — **Next**
+### 2. Backend on another machine — **Planned**
 
 The point of the whole exercise, and the last piece of the core path that has
 never run. Direct-attach 10GbE, TCP_NODELAY, jumbo frames.
@@ -167,35 +167,110 @@ against 24 KiB at decode. If it dominates, the fixes in order of cheapness are
 f16 on the wire (measure the KL), chunking the prefill, or overlapping transfer
 with compute.
 
-### 3. Vulkan experts inside the backend — **Planned**
+### 3. Vulkan experts inside the backend — **Now**
 
-The backend should be able to use the GPUs it has: four Vega II dies and
-128 GiB of VRAM, currently idle while the CPU streams experts from DRAM.
+The backend should use the GPUs it has: four Vega II dies, 128 GiB of VRAM,
+idle while the CPU streams experts from DRAM.
 
-Treat this as **support, not speedup**. A backend that can hold and evaluate
-experts on a GPU is infrastructure this plan needs regardless of what any
-particular placement is worth today; *which* experts to hold is
-`OPTIMIZATION.md`, and its present answer is discouraging in ways that
-multi-turn and quantization may well undo.
+**Support, not speedup** — though ../moe-offload suggests it may be both. One
+fully-resident layer, 8 experts on *one* die, Windows AMD driver: 1.11 ms end
+to end including transfers, against the 3.07 ms per layer in the table above.
 
-Open design question: **expert parallelism across the four dies.** Experts are
-independent within a layer, so a request's 8 selected experts could be split
-across dies and their partial results reduced — using all four dies for one
-request rather than needing four concurrent requests. That interacts with
-placement (each die holding a distinct slice) and with where the weighted
-combine happens.
+**That ~2.8x is a cross-harness comparison and is not yet ours.** The 1.11 ms
+was measured in ../moe-offload, a different program with a different graph and
+its own timing; only the 3.07 ms is in-tree. Two numbers from two harnesses
+divided by each other is precisely the shape of mistake `OPTIMIZATION.md` and
+the bench exist to prevent, so treat it as *inherited motivation* and re-measure
+in-tree at increment 2 before it justifies a design choice. It is a reason to
+build the thing, not a number to plan against.
 
-Runs entirely on this machine, client on loopback; no dependency on step 2.
+../moe-offload also found Vulkan-on-Metal computing *correctly* on hardware
+where native Metal silently NaNs (repo `CLAUDE.md`), so the macOS path is
+usable even at 3.1x slower inside the fence — same caveat on the figure.
 
-Byte identity ends here for the expert path, so the gate changes shape: compare
-against **the same build's CPU run over the same ids**, never a historical
-file; measure the GPU path's own reproducibility floor first (GPU-vs-GPU across
-batch shapes and workgroup sizes) or its KL against CPU means nothing; gate on
-per-position max, not mean, since one mis-routed token vanishes in an average
-over 743 positions. The RPC boundary is the useful diagnostic — a server
-compare-mode evaluating a request on both CPU and GPU localizes divergence to a
-layer instead of smearing it across the forward pass. Dispatch cost model:
-../moe-offload.
+Which experts to hold is `OPTIMIZATION.md`; this step assigns them trivially
+and moves on.
+
+#### The shape the code has to take
+
+`eval_layer` builds one graph and runs it on one backend
+(`apps/moe-server/main.cpp`). Two things break that:
+
+**ggml graphs are sequential.** One `ggml_backend_graph_compute` is one
+backend, in order. Parallelism across devices therefore means *several graphs*,
+one per device, and `ggml_backend_graph_compute_async` is merely
+`graph_compute` without the synchronize — whether it actually returns early is
+backend-specific. So: **one host thread per device**, join, combine. That is
+also the only formulation that generalizes off the GPU.
+
+**Routing has to move to the host.** Today `build_moe_block` routes *inside*
+the graph — `argsort_top_k` is a node — so which experts a token needs is not
+known until the graph runs. Partitioning work across devices needs it before
+the per-device graphs are built. So the layer splits in two: a small router
+graph (a 6144x256 matmul, sigmoid, bias, top-k) whose output is read back, then
+per-device expert graphs. Step 0's `phase0-moe-dispatch` branch (2aeceef)
+already prototyped host-side dispatch and is the reference for doing it without
+perturbing the numbers.
+
+#### Device abstraction
+
+A device is *a backend, the experts it holds, and a thread to drive it*:
+
+```
+struct moe_device {
+    ggml_backend_t backend;      // CPU, Vulkan, later a NUMA-pinned CPU
+    ggml_gallocr_t galloc;
+    std::vector<uint8_t> meta;   // its own graph scratch
+    // expert ids resident here; the rest fall through to the DRAM device
+};
+```
+
+Deliberately not GPU-shaped, because a **4-socket NUMA server** is the same
+problem: a node is a backend with thread affinity and expert weights allocated
+in its own memory, and the partition-then-combine machinery is identical. The
+only GPU-specific part is that VRAM holds ~23% of the experts at Q6_K, so a
+device's set is a subset and misses fall through to a DRAM-resident device.
+
+#### Combine and determinism
+
+Each device sums its own slots' weighted rows and returns one row; the host
+adds the N partials **in device order**. Deterministic run to run, which is
+what matters, and it costs N rows of readback rather than 8 — ../moe-offload
+measured a 192 KiB 8-slot readback at 261 us against 33 us for one row, so this
+is the difference between ~20 ms and ~2.5 ms per token of pure readback.
+
+It is *not* bit-identical to the CPU's pairwise combine, and cannot be: the
+expert FFN itself runs in different arithmetic. That is why this step's gate
+changes shape (below).
+
+#### Increments, each gated
+
+1. **Restructure with one CPU device.** Host-side routing, the device
+   abstraction, partition and combine — no Vulkan. Must stay **byte-identical**
+   (`gate.py aa` and `rpc`), which is the whole point of doing it first.
+2. **One Vulkan device holding a subset**, misses falling through to the CPU
+   device. Gate becomes the KL bound below.
+3. **N devices, one thread each**, trivial expert assignment (`e % n_devices`).
+   Measure whether four dies beat one; expert parallelism within a layer is the
+   thing being tested.
+
+#### Build
+
+Vulkan has to stay off in the default tree: nano-glm aborts when a GPU device
+is present, and that guard exists because of the AMD-Metal NaN incident. A
+separate `build-vk` tree — as `build.ps1 -Trace` already does for the trace
+build — keeps the CPU gate's guarantees while `moe-server` gets a GPU.
+
+#### Gate
+
+Byte identity ends here for the expert path. Compare against **the same
+build's CPU run over the same ids**, never a historical file. Measure the GPU
+path's own reproducibility floor first — GPU-vs-GPU across batch shapes and
+workgroup sizes — or its KL against CPU means nothing. Gate on per-position
+max, not mean, since one mis-routed token vanishes in an average over 743
+positions. The RPC boundary is the useful diagnostic: a server compare-mode
+evaluating a request on both CPU and GPU localizes divergence to a layer
+instead of smearing it across the forward pass.
 
 ### 13. Multi-turn conversations — **Planned**
 

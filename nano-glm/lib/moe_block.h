@@ -24,14 +24,30 @@
 #include <cmath>
 #include <vector>
 
+// The block is written as two halves that compose back into the original, and
+// the composition is what the trunk still calls. The seam exists for the
+// backend (PLAN.md step 3): to spread a layer's experts over several devices
+// it has to know *which* experts a token wants before it can build the graphs
+// that evaluate them, and routing is otherwise a node inside the same graph.
+//
+// Splitting must not move a bit. That is why `build_moe_block` below is a
+// literal composition rather than a reimplementation: one caller keeps the
+// single graph it always had, the other runs the halves separately, and both
+// emit the same ops in the same order.
+
+// What the router decides. Both are real graph nodes; the backend reads them
+// back, the trunk just passes them along.
+struct moe_routing {
+    ggml_tensor * ids;      // i32 [n_expert_used, n_tokens], router rank order
+    ggml_tensor * weights;  // f32 [1, n_expert_used, n_tokens], normalised
+};
+
 // x: [n_embd, n_tokens] post-ffn_norm activation.
 // il is the model layer index — carried only so a routing trace can be
 // labelled; the graph does not otherwise depend on it.
-// returns moe_out: [n_embd, n_tokens] — routed experts only, weighted and
-// summed. The shared expert is NOT included: it stays on the trunk host.
-static ggml_tensor * build_moe_block(ggml_context * ctx0, ggml_cgraph * gf,
-                                     const nano_hparams & h, uint32_t il, const nano_layer & L,
-                                     ggml_tensor * x, int32_t n_tokens) {
+static moe_routing build_moe_router(ggml_context * ctx0, ggml_cgraph * gf,
+                                    const nano_hparams & h, uint32_t il, const nano_layer & L,
+                                    ggml_tensor * x, int32_t n_tokens) {
     // ---- build_moe_ffn: sigmoid gating + selection bias, no groups ----
     ggml_tensor * logits = ggml_mul_mat(ctx0, L.ffn_gate_inp, x); // [n_expert, n_tokens]
     ggml_tensor * probs  = ggml_sigmoid(ctx0, logits);
@@ -71,6 +87,25 @@ static ggml_tensor * build_moe_block(ggml_context * ctx0, ggml_cgraph * gf,
 
     ggml_build_forward_expand(gf, weights);
 
+    return { selected_experts, weights };
+}
+
+// The expert half: given the router's decision, evaluate and combine.
+//
+// `ids` and `weights` are ordinary tensors, so the backend can hand in ones it
+// read back and re-uploaded (or a subset of them) exactly where the router's
+// own nodes would have been. `ggml_mul_mat_id` does not care where its index
+// tensor came from, which is what makes the split free.
+//
+// returns moe_out: [n_embd, n_tokens] — routed experts only, weighted and
+// summed. The shared expert is NOT included: it stays on the trunk host.
+static ggml_tensor * build_moe_experts(ggml_context * ctx0, ggml_cgraph * gf,
+                                       const nano_hparams & h, const nano_layer & L,
+                                       ggml_tensor * x, const moe_routing & r,
+                                       int32_t n_tokens) {
+    ggml_tensor * selected_experts = r.ids;
+    ggml_tensor * weights          = r.weights;
+
     ggml_tensor * moe_x = ggml_reshape_3d(ctx0, x, h.n_embd, 1, n_tokens);
 
     ggml_tensor * up   = ggml_mul_mat_id(ctx0, L.ffn_up_exps,   moe_x, selected_experts);
@@ -95,4 +130,15 @@ static ggml_tensor * build_moe_block(ggml_context * ctx0, ggml_cgraph * gf,
         ggml_build_forward_expand(gf, moe_out);
     }
     return moe_out;
+}
+
+// Route and evaluate in one graph — what the trunk has always done, and still
+// does. Kept as a composition of the two halves above rather than a third
+// implementation, so there is exactly one definition of the op sequence and
+// splitting the backend cannot silently diverge from the client.
+static ggml_tensor * build_moe_block(ggml_context * ctx0, ggml_cgraph * gf,
+                                     const nano_hparams & h, uint32_t il, const nano_layer & L,
+                                     ggml_tensor * x, int32_t n_tokens) {
+    const moe_routing r = build_moe_router(ctx0, gf, h, il, L, x, n_tokens);
+    return build_moe_experts(ctx0, gf, h, L, x, r, n_tokens);
 }
