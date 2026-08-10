@@ -41,7 +41,7 @@
 //
 // One socket, one thread: the callback returns immediately on every worker but
 // ith == 0 (see moe_rpc_cb). The rest then wait out the round trip at the next
-// barrier, which is the overlap opportunity PLAN.md step 9 picks up
+// barrier, which is the overlap opportunity OPTIMIZATION.md step 9 picks up
 // (moe_send/moe_recv around the shared expert).
 
 struct moe_rpc_record {
@@ -215,7 +215,7 @@ static uint32_t elapsed_us(std::chrono::steady_clock::time_point t0) {
 // Called mid-graph with ggml's barriers on either side: every node before this
 // one has finished, none after has started. That ordering is what lets a
 // blocking send/recv sit here at all, and it is also why the other fifteen
-// threads simply wait out the round trip — the overlap PLAN.md step 9 reclaims.
+// threads simply wait out the round trip — the overlap OPTIMIZATION.md step 9 reclaims.
 static void moe_rpc_cb(ggml_tensor * dst, int ith, int /*nth*/, void * userdata) {
     if (ith != 0) return;   // one socket, one owner — see nth above
 

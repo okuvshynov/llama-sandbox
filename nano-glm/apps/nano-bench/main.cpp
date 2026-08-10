@@ -18,10 +18,14 @@
 //            already touches 171 of 256 experts per layer (ROUTING.md), so
 //            this is close to the whole model and is the honest steady state.
 //
-// The gap between the two is the interesting part: if --hot is materially
-// faster at equal bytes, keeping hot experts hot pays even with everything
-// already in DRAM, which is a fact about step 3 that routing statistics alone
-// cannot produce.
+// The gap between the two turned out to be 0.5%: once resident, working-set
+// size does not matter, so there is no locality prize to win in DRAM. That is
+// recorded in PLAN.md's measured facts, and it is why residency helps only by
+// removing bytes.
+//
+// Standing job now: catch pessimization. 1.932 tok/s at 75.2 GB/s with a 0.4%
+// spread is a baseline to defend while the infrastructure gets built, not a
+// figure to chase (OPTIMIZATION.md).
 //
 // Not a correctness tool. gate.py owns that, and the two must stay apart — a
 // benchmark that also gated would invite trading determinism for speed.

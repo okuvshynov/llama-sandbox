@@ -59,7 +59,11 @@ every non-glm-dsa architecture.
 Where this is heading: [PLAN.md](PLAN.md) — remote MoE evaluation. The routed
 experts move behind a network service on a machine that can hold them, the
 trunk runs wherever trunk work is fastest, and GLM-5.2 is the testbed for
-Kimi-K3-scale models that fit nowhere else.
+Kimi-K3-scale models that fit nowhere else. That plan is about making it
+*work*; anything whose purpose is speed lives in
+[OPTIMIZATION.md](OPTIMIZATION.md), where the measurements say what each idea
+would be worth on this one machine, model and workload — which is exactly why
+none of them is on the critical path.
 
 ## Build
 
