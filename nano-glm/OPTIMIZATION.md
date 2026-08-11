@@ -238,7 +238,10 @@ sweep. The headroom the mechanism was invoked to explain is not there.
 
 Unfinished: the 2 MB arm needs `SeLockMemoryPrivilege` ("Lock pages in memory"
 in `secpol.msc`, then log out and in). Expect confirmation rather than a
-surprise. Would also need the non-mmap load path, which nothing else wants now.
+surprise. Would also need the non-mmap load path, which nothing else wants now —
+and that is not incidental: **neither Windows nor macOS offers huge pages for
+file-backed mmap at all**, so there is no version of this that keeps the current
+loader.
 
 ### Caching instead of placement
 
@@ -272,19 +275,51 @@ speculative router at all. Anything clever has to beat that, not uniform.
 
 ### Backend micro-optimisations
 
-All recorded in `apps/moe-server/main.cpp` with the condition that would make
-each matter, because the condition is the useful part — the backend gets faster
-in later phases and a 1% cost becomes 10% when compute drops 10x.
+Each is listed with **the condition that would make it matter**, because the
+condition is the useful part: the backend gets faster in later phases and
+anything at 1% becomes 10% once compute drops 10x. The percentages below were
+taken against a warm CPU backend at **3072 us/layer**; GPU-resident experts have
+since moved that to ~2100 us/layer on decode, so the denominators are already
+shrinking.
 
-- **Graph cache** keyed on (layer, n_tokens): 16-43 us/request today, 0.5-1.4%.
-- **Zero-copy request/response**: two 24 KiB memcpys per request.
-- **Fusing up+gate**: independent, but separated by a barrier, so their weight
-  streams do not overlap.
-- **f16 on the wire**: halves transfer, costs exactness — measure with
+- **Graph cache** keyed on `(layer, n_tokens)`. Building the graph cost
+  16-43 us/request when it was one ~15-node graph — 0.5-1.4% then, and it would
+  be 5-14% at ~300 us/layer. Cost of doing it: 75 layers x every batch shape of
+  compute buffers held resident, which is why it was not done up front.
+
+  **Both sides of that ratio have moved and it is now unmeasured.** A layer is
+  no longer one graph: it is a router graph plus one per device, so `N+1` per
+  layer — five at four dies. And the denominator fell to ~2100 us. Re-measure
+  before acting; `t_route_us` no longer reports construction time either, so the
+  old instrumentation will not give the answer.
+
+- **Zero-copy request/response.** Two 24 KiB memcpys per request: recv into
+  `in_buf` then `tensor_set`, `tensor_get` into `out_buf` then send. Could recv
+  straight into the allocated input tensor and send straight from the output
+  tensor. Sub-microsecond today; matters only once per-request cost approaches
+  the transfer cost.
+
+- **Fusing up+gate.** They are independent — both read only `x` — but sit in
+  separate graph nodes with a barrier between them, so their weight streams do
+  not overlap. Fusing would double memory-level parallelism and drop a barrier.
+  Speculative: needs a custom op and the win is unknown. Worth trying while we
+  are still at ~57% of theoretical bandwidth. The GPU measurements give this a
+  second motive — decode is dispatch-bound enough that four dies help, so fewer
+  and larger dispatches is the lever on that side too.
+
+- **Large pages for the expert store.** Neither Windows nor macOS offers huge
+  pages for *file-backed* mmap, so this can only exist in the non-mmap load
+  path. 4 KiB pages break the L2 streamer about once per output row and cost
+  ~7900 TLB entries per expert. See "8. Huge pages" above: the mechanism was
+  probed and the headroom it was invoked to explain is not there.
+
+- **f16 on the wire.** Halves transfer, costs exactness — measure with
   `compare.py`, do not assume.
 
-Recorded as *not* worth doing: request pipelining. The trunk is strictly
-sequential, so one sequence never has more than one request in flight.
+Recorded as *not* worth doing, so it is not re-derived: **request pipelining**.
+The trunk is strictly sequential — layer i+1 needs layer i's output — so one
+sequence never has more than one request in flight. Concurrency here only pays
+if the backend serves several independent sequences at once.
 
 ## Housekeeping that is not optimization
 

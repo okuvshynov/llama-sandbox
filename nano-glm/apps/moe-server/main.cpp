@@ -20,43 +20,10 @@
 // moe_proto.h must come first: winsock2.h has to precede windows.h, which
 // nano_model.h pulls in.
 //
-// ---------------------------------------------------------------------------
-// Deferred optimisations
-//
-// None of these are worth doing now — measured against a warm 3072 us/layer
-// compute, they are all noise. Each is listed with the condition that would
-// make it matter, because that condition is the useful part: the backend gets
-// faster in later phases (GPU-resident experts, lower-bit quant) and anything
-// currently at 1% becomes 10% once compute drops by 10x.
-//
-//  - Graph cache keyed on (layer, n_tokens). Building the graphs cost
-//    16-43 us/request when it was one ~15-node graph, i.e. 0.5-1.4% today. At
-//    ~300 us/layer it would be 5-14%. Cost of doing it: 75 layers x every
-//    batch shape of compute buffers held resident, which is why it was not
-//    done up front. Re-measure before acting on it: there are two graphs now,
-//    and `t_route_us` no longer reports construction time.
-//  - Zero-copy request/response. Two 24 KiB memcpys per request (recv into
-//    in_buf then tensor_set; tensor_get into out_buf then send). Could recv
-//    straight into the allocated input tensor and send straight from the
-//    output tensor. Sub-microsecond today; matters only if per-request cost
-//    approaches the transfer cost.
-//  - Fusing up+gate. They are independent (both read only x) but sit in
-//    separate graph nodes with a barrier between them, so their weight
-//    streams do not overlap. Fusing would double memory-level parallelism and
-//    drop a barrier. Speculative: needs a custom op, and the win is unknown.
-//    Worth trying only while we are still at ~57% of theoretical bandwidth.
-//  - Large pages for the expert store. Neither Windows nor macOS offers huge
-//    pages for file-backed mmap, so this only exists in the non-mmap load
-//    path the plan already requires. 4 KiB pages break the L2 streamer about
-//    once per output row and cost ~7900 TLB entries per expert.
-//  - f16 on the wire. Halves transfer, costs exactness — a phase-3 trade to
-//    be measured with compare.py, not assumed.
-//
-// Not worth doing at all, recorded so it is not re-derived: request
-// pipelining. The trunk is strictly sequential (layer i+1 needs layer i's
-// output), so there is never more than one request in flight from one
-// sequence. Concurrency here only pays if the backend serves several
-// independent sequences at once.
+// Deferred optimisations for this backend — graph caching, zero-copy transfer,
+// fusing up+gate, f16 on the wire, and why request pipelining is not worth
+// doing — live in OPTIMIZATION.md under "Backend micro-optimisations", each
+// with the condition that would make it matter.
 
 #include "moe_proto.h"
 
@@ -582,9 +549,10 @@ static bool run_device_compact(moe_backend & B, moe_device & D, uint32_t layer,
 }
 
 // Builds and runs one MoE layer: route on the host, evaluate experts on each
-// device, combine. The graphs are a few dozen nodes, so rebuilding them per
-// request costs microseconds against a multi-millisecond expert evaluation —
-// not worth caching 75 layers x every batch shape of compute buffers.
+// device, combine. The graphs are a few dozen nodes and are rebuilt per
+// request; caching them is a live question rather than a settled one now that
+// there are N+1 graphs per layer and the GPU has shortened the layer they are
+// measured against (OPTIMIZATION.md, "Backend micro-optimisations").
 static bool eval_layer(moe_backend & B, uint32_t layer, int32_t n_tokens,
                        const float * x, float * out,
                        uint32_t & t_route_us, uint32_t & t_compute_us) {
