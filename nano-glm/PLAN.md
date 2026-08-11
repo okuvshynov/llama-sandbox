@@ -339,14 +339,55 @@ changes shape (below).
      distinguish a subtly wrong GPU from a correct one; this supports
      "deterministic and plausible", not "verified".
 
-   One number is *not* comfortably inside the noise: `01_prose` compaction
-   alone at 93.2% top-1 against a 97.3% shape floor. The innocent explanation
-   is that compaction changes both the matmul shape *and* the summation order
-   where re-chunking changes only the first — plausible, unverified, and
-   exactly what the per-layer compare-mode would settle.
+   **Per-layer compare-mode settled it.** `--compare` evaluates every layer on
+   both the full CPU path and the split path, hands the trunk the *CPU* answer,
+   and records the deviation. Returning the CPU answer is the whole trick:
+   every layer then receives identical input, so each measurement is local and
+   nothing compounds. Per-layer relative RMS over `smoke`:
 
-   So the compare-mode below is **required**, not a convenience, and is the
-   next piece of work.
+   | path                       | median   | max      | worst layer |
+   |----------------------------|----------|----------|-------------|
+   | compaction (CPU -> CPU)    | 2.06e-08 | 7.64e-08 | 58          |
+   | GPU                        | 1.82e-03 | 1.54e-02 | 58          |
+
+   Five orders of magnitude apart — where the end-to-end KL had called them
+   4.4e-2 and 5.8e-2, i.e. indistinguishable. That gap is the justification for
+   building this mode.
+
+   - **The compaction is correct.** 2e-08 is f32 reassociation and nothing
+     else, so `01_prose`'s 93.2% top-1 was chaotic amplification of a 1e-08
+     perturbation, not a bug. The open question from the previous commit is
+     closed.
+   - **The GPU has a real ~1.8e-03 per-layer difference**, which is a
+     precision/algorithm difference rather than a wrong answer.
+
+   Two internal consistency checks passed: layers 42, 46 and 54 are *exactly*
+   zero in both runs — the router never picked a resident expert there, so the
+   split device got no work — and the worst layers coincide (58, 45, 64),
+   because error tracks how much work the split device actually did.
+
+   **Where the GPU difference does *not* come from.** Four hypotheses, four
+   negative results, overall rel RMS each time — recorded so nobody runs them
+   again:
+
+   | configuration                          | rel RMS  |
+   |----------------------------------------|----------|
+   | default                                | 8.44e-04 |
+   | `GGML_VK_DISABLE_F16=1`                | 8.02e-04 |
+   | `GGML_VK_DISABLE_MMVQ=1`               | 8.45e-04 |
+   | `GGML_VK_DISABLE_INTEGER_DOT_PRODUCT=1`| 9.97e-04 |
+
+   fp16 storage was the obvious suspect — Vega advertises `fp16: 1` — and it is
+   **falsified**: disabling it changes nothing. Neither does dropping the
+   quantized matvec path, and disabling integer dot products makes it slightly
+   *worse*.
+
+   So the ~1e-3 is **intrinsic to ggml's Vulkan Q6_K `mul_mat_id` on this
+   driver**, not a toggle anyone left in the wrong position. It is stable,
+   deterministic and proportional to the work the device does. Whether it is
+   *acceptable* is a separate question this measurement does not answer; what
+   it does is put a number on the cost of moving experts to the GPU, so the
+   trade is explicit rather than discovered later.
 
    **Measure over fixed ids, never over free generation.** The first version of
    `vk_check.py` gave each configuration the same *prompt* and let it generate

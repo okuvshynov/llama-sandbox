@@ -112,10 +112,39 @@ divergence.
 **Known limit of this test.** Raising the GPU's share of the work 5.5x did not
 move any figure, and the floor — no GPU involved — sits in the same band. The
 measurement is saturated: 75 layers amplify any perturbation to the same
-ceiling. So it establishes *deterministic and plausible*, *not correct*. A
-per-layer compare-mode, evaluating one request on both CPU and GPU and
-comparing `moe_out` directly, is what would actually verify the expert path;
-PLAN.md step 3 carries it.
+ceiling. So `vk_check.py` establishes *deterministic and plausible*, **not
+correct**. For that, use the compare-mode below.
+
+## `moe-server --compare`: the measurement that is not saturated
+
+```bash
+moe-server -m <model> --gpu-experts 12 --compare     # or --cpu-experts 12
+```
+
+Evaluates every layer on **both** the full CPU path and the split path, hands
+the trunk the **CPU** answer, and prints per-layer error at disconnect. Roughly
+2x slower.
+
+Returning the CPU answer is the point, not a safety measure: every layer then
+receives identical input, so each layer's number is its own. Feed the split
+result forward instead and layer i+1's "error" includes everything layers 0..i
+did — which is precisely the compounding that makes end-to-end KL saturate.
+
+How much that matters, on `smoke`, per-layer relative RMS:
+
+| path | median | max | end-to-end KL said |
+|---|---|---|---|
+| compaction (CPU→CPU) | 2.06e-08 | 7.64e-08 | 4.4e-2 |
+| GPU | 1.82e-03 | 1.54e-02 | 5.8e-2 |
+
+End-to-end called them indistinguishable. Per-layer separates them by five
+orders of magnitude, and shows the compaction is exact to f32 reassociation
+while the GPU has a real ~1e-3 difference.
+
+Two sanity checks it also gives you for free: layers where the router never
+picked a resident expert read *exactly* 0, and the worst layers are the ones
+the split device did most work in. If either stops holding, distrust the run
+before distrusting the driver.
 
 ## Provenance, and what a refusal means
 

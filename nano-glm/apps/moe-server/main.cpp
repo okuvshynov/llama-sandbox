@@ -72,6 +72,7 @@
 
 #include <chrono>
 #include <cinttypes>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -94,6 +95,7 @@ struct server_params {
     bool        verbose    = false;
     uint32_t    gpu_experts = 0;   // experts per MoE layer to place on a GPU
     uint32_t    cpu_experts = 0;   // ... or on a second CPU device, for testing
+    bool        compare    = false; // evaluate both paths, report per-layer error
 };
 
 static bool parse_args(int argc, char ** argv, server_params & p) {
@@ -105,6 +107,7 @@ static bool parse_args(int argc, char ** argv, server_params & p) {
         else if (!strcmp(a, "-t")       && i + 1 < argc) p.n_threads  = atoi(argv[++i]);
         else if (!strcmp(a, "--gpu-experts") && i + 1 < argc) p.gpu_experts = (uint32_t) atoi(argv[++i]);
         else if (!strcmp(a, "--cpu-experts") && i + 1 < argc) p.cpu_experts = (uint32_t) atoi(argv[++i]);
+        else if (!strcmp(a, "--compare"))                     p.compare     = true;
         else if (!strcmp(a, "-v"))                      p.verbose    = true;
         else { p.model_path.clear(); break; }
     }
@@ -119,6 +122,11 @@ static bool parse_args(int argc, char ** argv, server_params & p) {
             "  --cpu-experts <k>  same, but onto a second CPU device. Same compaction\n"
             "                     path, same arithmetic — so it separates a compaction\n"
             "                     bug from a GPU numerics difference\n"
+            "  --compare     evaluate every layer on BOTH the full CPU path and the\n"
+            "                split path, return the CPU one, and report the per-layer\n"
+            "                error at disconnect. Roughly 2x slower; it is the only\n"
+            "                measurement that sees the expert path without 75 layers\n"
+            "                of amplification on top of it\n"
             "  -v            log every request\n"
             "  --devices     list the ggml devices this build can see, and exit\n"
             "  --version     print the build fingerprint, and exit\n");
@@ -169,10 +177,28 @@ struct moe_device {
     uint64_t              n_pairs_total = 0; // across the connection, for the log
 };
 
+// Per-layer error of the split path against the full CPU path, accumulated
+// over a connection. This is the measurement end-to-end logit KL cannot make:
+// by layer, before 75 layers of amplification turn everything into the same
+// saturated number.
+struct layer_error {
+    double   max_abs  = 0.0;   // largest |split - reference| in this layer
+    double   sum_sq   = 0.0;   // for an RMS relative to the reference's own RMS
+    double   ref_sq   = 0.0;
+    uint64_t n        = 0;
+    uint64_t n_calls  = 0;
+};
+
 struct moe_backend {
     nano_model              M;
     int                     n_threads = 1;
     std::vector<moe_device> devices;
+
+    // Compare mode (--compare). Runs both paths, hands the trunk the *CPU*
+    // one, and records how far the split path was from it.
+    bool                     compare = false;
+    std::vector<float>       ref_out;    // the full path's answer for this layer
+    std::vector<layer_error> err;        // indexed by model layer
 
     // The router's own graph and its result, read back to the host between the
     // two halves. Runs on devices[0]'s backend: the DRAM device *is* the host
@@ -532,6 +558,24 @@ static bool eval_layer(moe_backend & B, uint32_t layer, int32_t n_tokens,
 
     const auto t_compute0 = clk::now();
 
+    // Compare mode: evaluate the reference *first*, on the full CPU path with
+    // every pair, and keep it. The split path is measured against it below and
+    // then discarded, so the trunk always receives CPU numerics.
+    //
+    // Discarding the split result is the entire point. If the split answer
+    // were fed forward, layer i+1 would start from perturbed activations and
+    // its "error" would include everything layers 0..i did — which is exactly
+    // the compounding that makes the end-to-end KL saturate and stop
+    // distinguishing a wrong kernel from a right one. Handing every layer the
+    // same input makes each measurement independent and local.
+    if (B.compare) {
+        for (moe_device & D : B.devices) { D.pair_token.clear(); }
+        B.devices[0].took_all = true;
+        if (!run_device_full(B, B.devices[0], layer, n_tokens, x)) return false;
+        B.ref_out.assign(B.devices[0].partial.begin(),
+                         B.devices[0].partial.begin() + n_act);
+    }
+
     assign_pairs(B, layer, n_tokens);
 
     // Increment 3 replaces this loop with one thread per device and a join.
@@ -577,6 +621,22 @@ static bool eval_layer(moe_backend & B, uint32_t layer, int32_t n_tokens,
             float * dst = out + (size_t) D.pair_token[j] * h.n_embd;
             for (uint32_t i = 0; i < h.n_embd; i++) dst[i] += src[i];
         }
+    }
+
+    if (B.compare) {
+        layer_error & e = B.err[layer];
+        for (size_t i = 0; i < n_act; i++) {
+            const double r = B.ref_out[i];
+            const double d = (double) out[i] - r;
+            const double a = d < 0 ? -d : d;
+            if (a > e.max_abs) e.max_abs = a;
+            e.sum_sq += d * d;
+            e.ref_sq += r * r;
+        }
+        e.n += n_act;
+        e.n_calls++;
+        // Hand back the reference, not the split result — see above.
+        memcpy(out, B.ref_out.data(), n_act * sizeof(float));
     }
 
     t_compute_us = us_since(t_compute0);
@@ -862,6 +922,18 @@ int main(int argc, char ** argv) {
         if (!device_load_experts(B, D1, split_experts)) return 1;
     }
 
+    if (p.compare) {
+        if (B.devices.size() < 2) {
+            fprintf(stderr, "moe-server: --compare needs a split device "
+                            "(--gpu-experts or --cpu-experts)\n");
+            return 1;
+        }
+        B.compare = true;
+        B.err.resize(B.M.h.n_layer);
+        fprintf(stderr, "moe-server: compare mode — both paths per layer, "
+                        "CPU result returned, ~2x slower\n");
+    }
+
     const nano_hparams & h = B.M.h;
     fprintf(stderr, "moe-server: %s\n", nano_build_line().c_str());
     fprintf(stderr, "moe-server: %s | n_layer=%u (dense lead %u) n_embd=%u n_expert=%u used=%u\n",
@@ -911,6 +983,33 @@ int main(int argc, char ** argv) {
             }
         }
         for (moe_device & D : B.devices) D.n_pairs_total = 0;
+
+        // Per-layer error of the split path against the full CPU path. Layers
+        // are independent here — each was handed the same input — so a layer
+        // that stands out is a real signal about that layer, not an artifact
+        // of everything before it.
+        if (B.compare && n_req > 0) {
+            double worst = 0.0; uint32_t worst_l = 0;
+            double tot_sq = 0.0, tot_ref = 0.0;
+            for (uint32_t il = 0; il < B.err.size(); il++) {
+                const layer_error & e = B.err[il];
+                if (e.n == 0) continue;
+                if (e.max_abs > worst) { worst = e.max_abs; worst_l = il; }
+                tot_sq += e.sum_sq; tot_ref += e.ref_sq;
+            }
+            fprintf(stderr, "moe-server: compare — worst layer %u, max |split-cpu| %.3e; "
+                            "overall rel RMS %.3e\n",
+                    worst_l, worst, tot_ref > 0 ? sqrt(tot_sq / tot_ref) : 0.0);
+            fprintf(stderr, "moe-server:   layer  max_abs      rel_rms    calls\n");
+            for (uint32_t il = 0; il < B.err.size(); il++) {
+                const layer_error & e = B.err[il];
+                if (e.n == 0) continue;
+                fprintf(stderr, "moe-server:   %5u  %.3e  %.3e  %" PRIu64 "\n",
+                        il, e.max_abs,
+                        e.ref_sq > 0 ? sqrt(e.sum_sq / e.ref_sq) : 0.0, e.n_calls);
+            }
+            for (layer_error & e : B.err) e = layer_error();
+        }
         moe_close(c);
     }
 }
