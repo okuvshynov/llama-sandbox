@@ -60,6 +60,62 @@ defect this harness exists to prevent.
 | protocol, server, client seam | `rpc` | the trunk is untouched; A↔B still holds from the golden |
 | comments, asserts on untaken paths | `smoke` | cheap proof of no effect |
 | ggml bump, compiler, thread count, machine | `--update-golden`, then `rpc` | the golden is invalid; re-derive it before anything else |
+| GPU expert path | `vk_check.py` **and** `rpc` | see below: bytes still apply with no GPU, and only KL applies with one |
+
+## The GPU expert path: `vk_check.py`
+
+Byte identity ends when experts run on a GPU, so this lives outside `gate.py`
+rather than inside it — mixing "are the bytes the same" with "is the difference
+smaller than the noise" would blur the one thing `gate.py` is good at. A strict
+client *refuses* a Vulkan backend outright (`vulkan` is in `NANO_REPRO_KEYS`),
+and that refusal is the signal to come here.
+
+```bash
+python vk_check.py --gpu-experts 12 --only smoke     # floors, then three servers
+python vk_check.py --floor-only                      # just the floors
+```
+
+It runs three servers against one CPU client build, and the middle one is the
+point:
+
+| run | what it isolates |
+|---|---|
+| CPU, no split | the reference — byte-identical to the golden |
+| CPU, split onto a **second CPU device** | compaction alone: same arithmetic, so any difference is the partition and scatter |
+| CPU, split onto the GPU | compaction + GPU |
+
+**Do not drop the CPU control.** Measured at k=2, compaction alone accounted
+for most of what naively looked like GPU error; without the control the whole
+of it would have been filed against the driver.
+
+Every configuration scores the **golden's full token ids** with `-n 0`, rather
+than being given a prompt and left to generate. That is not a detail. The first
+version did the latter, and four of eighteen comparisons then produced no
+number at all, because the sequences had diverged and `compare.py` refused
+them — including one where *both sides ran on the CPU* and only the partition
+differed. A reassociation flipped one greedily-sampled token and the
+continuations parted. **Free generation cannot measure numerical divergence in
+a system where numerical divergence changes what is generated.**
+
+Two floors run first, and they answer different questions. *Determinism* — same
+server, same batch, twice — asks whether the GPU repeats itself at all; it
+measured exactly 0 across 315 positions. *Shape* — prefill in one chunk versus
+several — is the bar any CPU-vs-GPU figure has to clear. The split batch must
+be **smaller than the prompt**: a first attempt compared `-b 512` with `-b 16`
+on a 14-token prompt, which prefills in one chunk either way, and reported a
+flat 0.0 that read as a flawless GPU and was two identical runs.
+
+**Read `max`, not `mean`.** One mis-routed token vanishes in an average, and
+`compare.py`'s mean can go negative — a top-128 truncation artifact, not a real
+divergence.
+
+**Known limit of this test.** Raising the GPU's share of the work 5.5x did not
+move any figure, and the floor — no GPU involved — sits in the same band. The
+measurement is saturated: 75 layers amplify any perturbation to the same
+ceiling. So it establishes *deterministic and plausible*, *not correct*. A
+per-layer compare-mode, evaluating one request on both CPU and GPU and
+comparing `moe_out` directly, is what would actually verify the expert path;
+PLAN.md step 3 carries it.
 
 ## Provenance, and what a refusal means
 
@@ -71,6 +127,11 @@ Refusal fields — these change the bytes for reasons that have nothing to do
 with your change, so comparing across them measures the configuration:
 
     compiler   ggml_commit   blas   llamafile   n_threads   model shard size/mtime
+
+`vulkan` is a refusal field on the **client's handshake** (`NANO_REPRO_KEYS`)
+but not in `gate.py`'s golden comparison: the client is always CPU-only, so it
+does not change the client's numerics — it means the *backend* cannot be
+byte-compared, and a strict client should say so rather than fail obscurely.
 
 Deliberately *not* refusal fields:
 

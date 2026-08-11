@@ -88,10 +88,12 @@ static uint32_t us_since(clk::time_point t0) {
 
 struct server_params {
     std::string model_path;
-    std::string host      = "127.0.0.1";
-    uint16_t    port      = 5711;
-    int32_t     n_threads = physical_core_count();
-    bool        verbose   = false;
+    std::string host       = "127.0.0.1";
+    uint16_t    port       = 5711;
+    int32_t     n_threads  = physical_core_count();
+    bool        verbose    = false;
+    uint32_t    gpu_experts = 0;   // experts per MoE layer to place on a GPU
+    uint32_t    cpu_experts = 0;   // ... or on a second CPU device, for testing
 };
 
 static bool parse_args(int argc, char ** argv, server_params & p) {
@@ -101,6 +103,8 @@ static bool parse_args(int argc, char ** argv, server_params & p) {
         else if (!strcmp(a, "--host")   && i + 1 < argc) p.host       = argv[++i];
         else if (!strcmp(a, "--port")   && i + 1 < argc) p.port       = (uint16_t) atoi(argv[++i]);
         else if (!strcmp(a, "-t")       && i + 1 < argc) p.n_threads  = atoi(argv[++i]);
+        else if (!strcmp(a, "--gpu-experts") && i + 1 < argc) p.gpu_experts = (uint32_t) atoi(argv[++i]);
+        else if (!strcmp(a, "--cpu-experts") && i + 1 < argc) p.cpu_experts = (uint32_t) atoi(argv[++i]);
         else if (!strcmp(a, "-v"))                      p.verbose    = true;
         else { p.model_path.clear(); break; }
     }
@@ -110,6 +114,11 @@ static bool parse_args(int argc, char ** argv, server_params & p) {
             "  --host <ip>   bind address (default 127.0.0.1)\n"
             "  --port <n>    port (default 5711)\n"
             "  -t <int>      threads (default: physical cores, ignoring SMT siblings)\n"
+            "  --gpu-experts <k>  place k experts of every MoE layer on the first GPU\n"
+            "                     (needs a build.ps1 -Vk build; 0 = CPU only)\n"
+            "  --cpu-experts <k>  same, but onto a second CPU device. Same compaction\n"
+            "                     path, same arithmetic — so it separates a compaction\n"
+            "                     bug from a GPU numerics difference\n"
             "  -v            log every request\n"
             "  --devices     list the ggml devices this build can see, and exit\n"
             "  --version     print the build fingerprint, and exit\n");
@@ -121,6 +130,16 @@ static bool parse_args(int argc, char ** argv, server_params & p) {
 // ---------------------------------------------------------------------------
 // evaluation
 
+// One MoE layer's worth of experts held on a device that does not hold them
+// all. The three tensors mirror the model's `ffn_*_exps` but with only the
+// resident experts, so the third dimension is k rather than n_expert.
+struct device_layer {
+    ggml_tensor * up   = nullptr;   // [n_embd, n_ff_exp, k]
+    ggml_tensor * gate = nullptr;
+    ggml_tensor * down = nullptr;
+    std::vector<int32_t> local_of;  // n_expert entries; -1 where not resident
+};
+
 // A device is *a backend, the experts it holds, and — from increment 3 — a
 // thread to drive it*. Deliberately not GPU-shaped: a node of the 4-socket
 // NUMA machine is the same object, a backend with thread affinity and expert
@@ -130,9 +149,24 @@ struct moe_device {
     ggml_backend_t        backend = nullptr;
     ggml_gallocr_t        galloc  = nullptr;
     std::vector<uint8_t>  meta;      // graph scratch, reused across requests
-    std::vector<float>    partial;   // this device's contribution [n_embd, n_tokens]
+    std::vector<float>    partial;   // full-path contribution [n_embd, n_tokens]
 
-    // Residency arrives in increment 2. Today device 0 holds every expert.
+    // Residency. `holds_all` is the DRAM device: it uses the model's own
+    // tensors and is the fallthrough for every expert no other device has.
+    bool                    holds_all = true;
+    ggml_context *          wctx = nullptr;   // tensor structs for the slices
+    ggml_backend_buffer_t   wbuf = nullptr;   // the device memory holding them
+    std::vector<device_layer> dl;             // indexed by model layer
+
+    // This request's share, as (token, slot) pairs. Rebuilt per request; the
+    // capacity survives, so the hot path does not allocate.
+    std::vector<int32_t>  pair_token;
+    std::vector<int32_t>  pair_expert;  // index into this device's weights
+    std::vector<float>    pair_weight;
+    std::vector<float>    gathered_x;   // [n_embd, m], x rows repeated per pair
+    std::vector<float>    rows_out;     // [n_embd, m], what the device returned
+    bool                  took_all = false;  // owns every pair this request
+    uint64_t              n_pairs_total = 0; // across the connection, for the log
 };
 
 struct moe_backend {
@@ -209,20 +243,141 @@ static bool run_router(moe_backend & B, uint32_t layer, int32_t n_tokens, const 
     return ok;
 }
 
+// ---- residency ------------------------------------------------------------
+//
+// Copy `k` experts of every MoE layer onto a device. Which k is deliberately
+// the dumbest possible choice — experts 0..k-1 — because *which* experts to
+// hold is a placement question and placement lives in OPTIMIZATION.md, whose
+// current answer is that no static choice transfers between prompts.
+//
+// The copy is cheap to express because experts are contiguous in the model's
+// `ffn_*_exps`: expert e is exactly the byte range [e*nb[2], (e+1)*nb[2]), and
+// the model is mmap'd into host memory, so each expert is one tensor_set.
+static bool device_load_experts(moe_backend & B, moe_device & D, uint32_t k) {
+    const nano_hparams & h = B.M.h;
+    const uint32_t n_moe = h.n_layer - h.n_dense_lead;
+
+    D.holds_all = false;
+    D.dl.resize(h.n_layer);
+
+    ggml_init_params ip = {
+        /*.mem_size   =*/ ggml_tensor_overhead() * 3 * n_moe + 4096,
+        /*.mem_buffer =*/ nullptr,
+        /*.no_alloc   =*/ true,
+    };
+    D.wctx = ggml_init(ip);
+    if (!D.wctx) { fprintf(stderr, "moe-server: no context for resident experts\n"); return false; }
+
+    for (uint32_t il = h.n_dense_lead; il < h.n_layer; il++) {
+        const nano_layer & L = B.M.layers[il];
+        device_layer & dl = D.dl[il];
+        dl.up   = ggml_new_tensor_3d(D.wctx, L.ffn_up_exps->type,
+                                     L.ffn_up_exps->ne[0],   L.ffn_up_exps->ne[1],   k);
+        dl.gate = ggml_new_tensor_3d(D.wctx, L.ffn_gate_exps->type,
+                                     L.ffn_gate_exps->ne[0], L.ffn_gate_exps->ne[1], k);
+        dl.down = ggml_new_tensor_3d(D.wctx, L.ffn_down_exps->type,
+                                     L.ffn_down_exps->ne[0], L.ffn_down_exps->ne[1], k);
+    }
+
+    ggml_backend_buffer_type_t buft = ggml_backend_get_default_buffer_type(D.backend);
+    const size_t need = ggml_backend_alloc_ctx_tensors_from_buft_size(D.wctx, buft);
+    size_t dev_free = 0, dev_total = 0;
+    ggml_backend_dev_memory(ggml_backend_get_device(D.backend), &dev_free, &dev_total);
+    fprintf(stderr, "moe-server: resident experts need %.2f GiB, device has %.2f GiB free\n",
+            need / 1073741824.0, dev_free / 1073741824.0);
+    if (need > dev_free) {
+        fprintf(stderr, "moe-server: not enough device memory — lower --vk-experts\n");
+        return false;
+    }
+
+    D.wbuf = ggml_backend_alloc_ctx_tensors(D.wctx, D.backend);
+    if (!D.wbuf) { fprintf(stderr, "moe-server: failed to allocate resident experts\n"); return false; }
+
+    const auto t0 = clk::now();
+    for (uint32_t il = h.n_dense_lead; il < h.n_layer; il++) {
+        const nano_layer & L = B.M.layers[il];
+        device_layer & dl = D.dl[il];
+        dl.local_of.assign(h.n_expert, -1);
+
+        ggml_tensor * src[3] = { L.ffn_up_exps, L.ffn_gate_exps, L.ffn_down_exps };
+        ggml_tensor * dst[3] = { dl.up,         dl.gate,         dl.down         };
+        for (uint32_t j = 0; j < k; j++) {
+            const uint32_t e = j;   // the trivial placement
+            dl.local_of[e] = (int32_t) j;
+            for (int w = 0; w < 3; w++) {
+                const size_t stride = src[w]->nb[2];
+                ggml_backend_tensor_set(dst[w], (const char *) src[w]->data + (size_t) e * stride,
+                                        (size_t) j * stride, stride);
+            }
+        }
+    }
+    fprintf(stderr, "moe-server: uploaded %u experts/layer x %u layers in %.1fs\n",
+            k, n_moe, std::chrono::duration<double>(clk::now() - t0).count());
+    return true;
+}
+
+// ---- assigning this request's work to devices -----------------------------
+//
+// Residency is per *expert*; slots are per *token*. So a device's share is a
+// set of (token, slot) pairs and it varies across the batch — there is no
+// per-device slot subset to speak of, which is why the work is compacted
+// rather than masked.
+//
+// devices[0] holds everything and is the fallthrough, so every pair lands
+// somewhere and no pair lands twice.
+static void assign_pairs(moe_backend & B, uint32_t layer, int32_t n_tokens) {
+    const nano_hparams & h = B.M.h;
+    const size_t n_pairs = (size_t) n_tokens * h.n_expert_used;
+
+    for (moe_device & D : B.devices) {
+        D.pair_token.clear();
+        D.pair_expert.clear();
+        D.pair_weight.clear();
+    }
+
+    // Slot-major within a token, and devices scanned in a fixed order, so the
+    // assignment — and therefore the combine — is deterministic run to run.
+    for (int32_t t = 0; t < n_tokens; t++) {
+        for (uint32_t s = 0; s < h.n_expert_used; s++) {
+            const size_t  idx = (size_t) t * h.n_expert_used + s;
+            const int32_t e   = B.ids_buf[idx];
+
+            size_t  dev   = 0;   // the fallthrough device holds everything
+            int32_t local = e;   // and indexes its weights by global expert id
+
+            for (size_t d = 1; d < B.devices.size(); d++) {
+                const std::vector<int32_t> & lo = B.devices[d].dl[layer].local_of;
+                if (!lo.empty() && lo[e] >= 0) {
+                    dev   = d;
+                    local = lo[e];
+                    break;
+                }
+            }
+
+            B.devices[dev].pair_token.push_back(t);
+            B.devices[dev].pair_expert.push_back(local);
+            B.devices[dev].pair_weight.push_back(B.weights_buf[idx]);
+        }
+    }
+
+    for (moe_device & D : B.devices) {
+        D.took_all = D.pair_token.size() == n_pairs;
+        D.n_pairs_total += D.pair_token.size();
+    }
+}
+
 // ---- one device's share of the expert half --------------------------------
 //
 // `ids` and `weights` come in as ordinary input tensors rather than as the
 // router's own nodes. `ggml_mul_mat_id` cannot tell the difference, which is
 // what makes the split free.
 //
-// Increment 1: devices[0] holds every expert, so its share is the whole
-// routing decision and this runs exactly the op sequence the single graph ran.
-// That is what keeps the gate byte-identical. Increment 2 narrows ids/weights
-// to the (token, slot) pairs whose expert is resident here and lets the rest
-// fall through to the DRAM device — which is where the interesting problem
-// lives, because residency is per *expert* while slots are per *token*.
-static bool run_device(moe_backend & B, moe_device & D, uint32_t layer,
-                       int32_t n_tokens, const float * x) {
+// The full path: this device owns every pair and holds every expert, so it
+// runs exactly the op sequence the single graph ran. That is what keeps the
+// gate byte-identical in the CPU-only configuration, and it is why the
+// compacted path below is used *only* when some other device took work.
+static bool run_device_full(moe_backend & B, moe_device & D, uint32_t layer,
+                            int32_t n_tokens, const float * x) {
     const nano_hparams & h = B.M.h;
 
     ggml_init_params ip = {
@@ -269,8 +424,90 @@ static bool run_device(moe_backend & B, moe_device & D, uint32_t layer,
     return ok;
 }
 
+// The compacted path: this device owns only some of the (token, slot) pairs.
+//
+// Every pair becomes one column of a dense batch, so the shape presented to
+// `mul_mat_id` is [n_embd, 1, m] with a [1, m] id tensor — one expert per
+// column — rather than [n_embd, 1, n_tokens] with n_expert_used per column. A
+// token that has three of its eight experts here appears three times in `x`.
+// Duplicating the activation is the price of not making the device evaluate
+// experts it does not hold, and at 24 KiB a row it is a good trade.
+//
+// The op sequence is the same as `build_moe_experts` up to the weighted
+// multiply; the per-token sum that `build_moe_experts` does with pairwise adds
+// happens on the host instead, in the scatter-add, because which rows belong
+// to a token is host knowledge.
+static bool run_device_compact(moe_backend & B, moe_device & D, uint32_t layer,
+                               const float * x) {
+    const nano_hparams & h = B.M.h;
+    const int32_t m = (int32_t) D.pair_token.size();
+    if (m == 0) return true;
+
+    ggml_tensor * w_up;
+    ggml_tensor * w_gate;
+    ggml_tensor * w_down;
+    if (D.holds_all) {
+        const nano_layer & L = B.M.layers[layer];
+        w_up = L.ffn_up_exps; w_gate = L.ffn_gate_exps; w_down = L.ffn_down_exps;
+    } else {
+        const device_layer & dl = D.dl[layer];
+        w_up = dl.up; w_gate = dl.gate; w_down = dl.down;
+    }
+
+    ggml_init_params ip = {
+        /*.mem_size   =*/ D.meta.size(),
+        /*.mem_buffer =*/ D.meta.data(),
+        /*.no_alloc   =*/ true,
+    };
+    ggml_context * ctx = ggml_init(ip);
+    if (!ctx) return false;
+
+    ggml_cgraph * gf = ggml_new_graph(ctx);
+
+    ggml_tensor * inp = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, h.n_embd, 1, m);
+    ggml_set_name(inp, "x");
+    ggml_set_input(inp);
+
+    ggml_tensor * ids = ggml_new_tensor_2d(ctx, GGML_TYPE_I32, 1, m);
+    ggml_set_name(ids, "ids");
+    ggml_set_input(ids);
+
+    ggml_tensor * wts = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, 1, 1, m);
+    ggml_set_name(wts, "weights");
+    ggml_set_input(wts);
+
+    ggml_tensor * up   = ggml_mul_mat_id(ctx, w_up,   inp, ids);
+    ggml_tensor * gate = ggml_mul_mat_id(ctx, w_gate, inp, ids);
+    ggml_tensor * act  = ggml_swiglu_split(ctx, gate, up);
+    ggml_tensor * res  = ggml_mul_mat_id(ctx, w_down, act, ids);
+    res = ggml_mul(ctx, res, wts);
+    ggml_set_output(res);
+    ggml_build_forward_expand(gf, res);
+
+    bool ok = ggml_gallocr_alloc_graph(D.galloc, gf);
+    if (ok) {
+        D.gathered_x.resize((size_t) h.n_embd * m);
+        for (int32_t j = 0; j < m; j++) {
+            memcpy(&D.gathered_x[(size_t) j * h.n_embd],
+                   x + (size_t) D.pair_token[j] * h.n_embd,
+                   (size_t) h.n_embd * sizeof(float));
+        }
+        ggml_backend_tensor_set(inp, D.gathered_x.data(),  0, (size_t) h.n_embd * m * sizeof(float));
+        ggml_backend_tensor_set(ids, D.pair_expert.data(), 0, (size_t) m * sizeof(int32_t));
+        ggml_backend_tensor_set(wts, D.pair_weight.data(), 0, (size_t) m * sizeof(float));
+        ok = ggml_backend_graph_compute(D.backend, gf) == GGML_STATUS_SUCCESS;
+    }
+    if (ok) {
+        D.rows_out.resize((size_t) h.n_embd * m);
+        ggml_backend_tensor_get(res, D.rows_out.data(), 0,
+                                (size_t) h.n_embd * m * sizeof(float));
+    }
+    ggml_free(ctx);
+    return ok;
+}
+
 // Builds and runs one MoE layer: route on the host, evaluate experts on each
-// device, combine. Both graphs are a few dozen nodes, so rebuilding them per
+// device, combine. The graphs are a few dozen nodes, so rebuilding them per
 // request costs microseconds against a multi-millisecond expert evaluation —
 // not worth caching 75 layers x every batch shape of compute buffers.
 static bool eval_layer(moe_backend & B, uint32_t layer, int32_t n_tokens,
@@ -295,20 +532,51 @@ static bool eval_layer(moe_backend & B, uint32_t layer, int32_t n_tokens,
 
     const auto t_compute0 = clk::now();
 
+    assign_pairs(B, layer, n_tokens);
+
     // Increment 3 replaces this loop with one thread per device and a join.
-    // Sequential today because there is exactly one device, and a thread per
-    // device is only worth its synchronisation once there are several.
+    // Sequential today; a thread per device is only worth its synchronisation
+    // once the devices actually overlap.
     for (moe_device & D : B.devices) {
-        if (!run_device(B, D, layer, n_tokens, x)) return false;
+        const bool ok = (D.holds_all && D.took_all)
+                      ? run_device_full(B, D, layer, n_tokens, x)
+                      : run_device_compact(B, D, layer, x);
+        if (!ok) return false;
     }
 
-    // Combine in device order. Fixed order, so the sum is deterministic run to
-    // run — which is the property that matters once devices compute in
-    // different arithmetic and bit-identity is no longer available.
-    memcpy(out, B.devices[0].partial.data(), n_act * sizeof(float));
-    for (size_t d = 1; d < B.devices.size(); d++) {
-        const float * p = B.devices[d].partial.data();
-        for (size_t i = 0; i < n_act; i++) out[i] += p[i];
+    // Combine in device order — fixed, so the sum is deterministic run to run.
+    // That is the property that matters once devices compute in different
+    // arithmetic and bit-identity is no longer available.
+    //
+    // The CPU-only configuration takes the memcpy branch with an empty loop
+    // after it, which is bit-for-bit what increment 1 did. Note this is not
+    // merely an optimisation of `memset` + accumulate: 0.0f + -0.0f is +0.0f,
+    // so zero-then-add would flip the sign of any negative zero and break the
+    // byte gate.
+    size_t d0 = 0;
+    if (B.devices[0].holds_all && B.devices[0].took_all) {
+        memcpy(out, B.devices[0].partial.data(), n_act * sizeof(float));
+        d0 = 1;
+    } else {
+        memset(out, 0, n_act * sizeof(float));
+    }
+    for (size_t d = d0; d < B.devices.size(); d++) {
+        moe_device & D = B.devices[d];
+        if (D.holds_all && D.took_all) {
+            const float * p = D.partial.data();
+            for (size_t i = 0; i < n_act; i++) out[i] += p[i];
+            continue;
+        }
+        // Scatter-add: row j of this device's output belongs to token
+        // pair_token[j]. Rows for one token arrive in slot order, so a token
+        // whose experts all live on one device accumulates in exactly the
+        // order build_moe_experts would have used.
+        const size_t m = D.pair_token.size();
+        for (size_t j = 0; j < m; j++) {
+            const float * src = &D.rows_out[j * h.n_embd];
+            float * dst = out + (size_t) D.pair_token[j] * h.n_embd;
+            for (uint32_t i = 0; i < h.n_embd; i++) dst[i] += src[i];
+        }
     }
 
     t_compute_us = us_since(t_compute0);
@@ -524,21 +792,75 @@ int main(int argc, char ** argv) {
     load_model(B.M, p.model_path);
     B.n_threads = p.n_threads;
 
-    // One device today: the CPU, holding every expert. Increment 2 adds a
-    // Vulkan device with a subset of them; increment 3 adds the rest of the
-    // dies, and later a NUMA node is just another entry here.
-    B.devices.resize(1);
+    // devices[0] is always the DRAM device: it holds every expert and is the
+    // fallthrough for anything no other device has. Optional GPU devices follow
+    // it; increment 3 adds the remaining dies, and later a NUMA node is just
+    // another entry here.
+    if (p.gpu_experts > 0 && p.cpu_experts > 0) {
+        fprintf(stderr, "moe-server: --gpu-experts and --cpu-experts are alternatives\n");
+        return 1;
+    }
+    const uint32_t split_experts = p.gpu_experts > 0 ? p.gpu_experts : p.cpu_experts;
+    const size_t n_dev = split_experts > 0 ? 2 : 1;
+    B.devices.resize(n_dev);
     moe_device & D0 = B.devices[0];
 
     D0.backend = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);
     if (!D0.backend) { fprintf(stderr, "moe-server: no CPU backend\n"); return 1; }
     ggml_backend_cpu_set_n_threads(D0.backend, B.n_threads);
     D0.galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(D0.backend));
+    D0.holds_all = true;
+    D0.dl.resize(B.M.h.n_layer);   // empty local_of everywhere: indexes globally
 
     // room for the tensor structs each graph needs, plus the graph itself
     D0.meta.resize(ggml_tensor_overhead() * 64 + ggml_graph_overhead());
     B.router_meta.resize(ggml_tensor_overhead() * 64 + ggml_graph_overhead());
     B.router_galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(D0.backend));
+
+    if (split_experts > 0) {
+        if (split_experts > B.M.h.n_expert) {
+            fprintf(stderr, "moe-server: %u experts exceeds n_expert %u\n",
+                    split_experts, B.M.h.n_expert);
+            return 1;
+        }
+
+        moe_device & D1 = B.devices[1];
+        if (p.gpu_experts > 0) {
+            ggml_backend_load_all();
+            ggml_backend_dev_t gpu = nullptr;
+            for (size_t i = 0; i < ggml_backend_dev_count() && !gpu; i++) {
+                ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+                const auto type = ggml_backend_dev_type(dev);
+                if (type == GGML_BACKEND_DEVICE_TYPE_GPU || type == GGML_BACKEND_DEVICE_TYPE_IGPU) {
+                    gpu = dev;
+                }
+            }
+            if (!gpu) {
+                fprintf(stderr, "moe-server: --gpu-experts needs a GPU device; this build has "
+                                "none (rebuild with build.ps1 -Vk). See --devices.\n");
+                return 1;
+            }
+            D1.backend = ggml_backend_dev_init(gpu, nullptr);
+            if (!D1.backend) { fprintf(stderr, "moe-server: failed to init %s\n",
+                                       ggml_backend_dev_name(gpu)); return 1; }
+            fprintf(stderr, "moe-server: split device %s (%s)\n",
+                    ggml_backend_dev_name(gpu), ggml_backend_dev_description(gpu));
+        } else {
+            // A second CPU device. Same compaction path, same kernels, same
+            // arithmetic — so a difference against the CPU-only run is the
+            // compaction's doing and nothing else. That is the control the GPU
+            // comparison needs, and it is the only way to tell a routing or
+            // scatter bug from an honest numerics difference.
+            D1.backend = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);
+            if (!D1.backend) { fprintf(stderr, "moe-server: no second CPU backend\n"); return 1; }
+            ggml_backend_cpu_set_n_threads(D1.backend, B.n_threads);
+            fprintf(stderr, "moe-server: split device CPU (compaction control)\n");
+        }
+
+        D1.galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(D1.backend));
+        D1.meta.resize(ggml_tensor_overhead() * 64 + ggml_graph_overhead());
+        if (!device_load_experts(B, D1, split_experts)) return 1;
+    }
 
     const nano_hparams & h = B.M.h;
     fprintf(stderr, "moe-server: %s\n", nano_build_line().c_str());
@@ -573,6 +895,22 @@ int main(int argc, char ** argv) {
         const double secs = std::chrono::duration<double>(clk::now() - t_conn0).count();
         fprintf(stderr, "moe-server: client gone after %" PRIu64 " requests (%.1fs, %.0f req/s)\n",
                 n_req, secs, secs > 0 ? n_req / secs : 0.0);
+
+        // How the (token, slot) pairs actually divided. Worth printing rather
+        // than deriving from residency: the share depends on how often the
+        // router picks a resident expert, which is a property of the prompt,
+        // not of k.
+        if (B.devices.size() > 1) {
+            uint64_t total = 0;
+            for (const moe_device & D : B.devices) total += D.n_pairs_total;
+            for (size_t d = 0; d < B.devices.size(); d++) {
+                const moe_device & D = B.devices[d];
+                fprintf(stderr, "moe-server:   device %zu (%s) %" PRIu64 " pairs (%.2f%%)\n",
+                        d, D.holds_all ? "DRAM, fallthrough" : "split",
+                        D.n_pairs_total, total ? 100.0 * D.n_pairs_total / total : 0.0);
+            }
+        }
+        for (moe_device & D : B.devices) D.n_pairs_total = 0;
         moe_close(c);
     }
 }

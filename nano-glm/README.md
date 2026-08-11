@@ -209,9 +209,21 @@ python gate.py llamacpp         # re-derived by llama.cpp at KL == 0, ~40 min
 Four named tests, a golden set in `testdata/`, and a provenance record the gate
 checks *before* it compares bytes — so a mismatched compiler, thread count or
 model is a refusal rather than a difference that looks like yours.
+
+```bash
+python vk_check.py --gpu-experts 12    # the GPU expert path, where bytes stop applying
+```
+
+Separate from `gate.py` on purpose: once experts run on a GPU the question
+changes from "are the bytes identical" to "is the difference smaller than the
+difference this pipeline has with itself", and those want different machinery.
+It measures two floors first, and runs the same split onto a second **CPU**
+device as a control — which is what shows how much of an apparent GPU error is
+really just the change in summation order.
+
 **[TESTING.md](TESTING.md)** has the full picture: which test to run after
-which change, what a refusal means, how to re-baseline, and how to point the
-same test at another machine.
+which change, what a refusal means, how to re-baseline, how to point the same
+test at another machine, and what `vk_check.py` can and cannot establish.
 
 Current status: 6 prompts, 761 positions, KL == 0 against llama.cpp, and the
 RPC path byte-identical to the local one.

@@ -304,6 +304,80 @@ changes shape (below).
    pairs, and the host scatter-adds the returned rows. Increment 3 needs the
    same machinery for expert parallelism within a layer, so the cheap version
    would be built to be thrown away.
+
+   *Implemented and measured.* `--gpu-experts k` uploads k experts of every
+   MoE layer (26.06 GiB at k=12, 16.3 s) and the CPU device keeps the
+   byte-identical full path whenever it still owns every pair — so `gate.py
+   rpc` with no GPU is unchanged, verified 6/6.
+
+   **The measurements.** `vk_check.py`, k=12, one die, scoring **fixed token
+   ids** taken from the golden (top-1 agreement / KL max):
+
+   | prompt          | determinism | shape floor  | compaction alone | GPU alone    | end to end   |
+   |-----------------|-------------|--------------|------------------|--------------|--------------|
+   | smoke (18)      | **0** /100% | 94.4% /3.4e-2| 100%  /7.5e-3    | 94.4%/1.2e-2 | 94.4%/1.1e-2 |
+   | 04_history (151)| **0** /100% | 98.7% /2.8e-2| 97.4% /6.6e-2    | 97.4%/5.4e-2 | 96.7%/8.9e-2 |
+   | 01_prose (146)  | **0** /100% | 97.3% /4.4e-2| 93.2% /4.4e-2    | 95.2%/5.8e-2 | 95.2%/5.5e-2 |
+
+   The GPU took a measured **4.37%** of (token, slot) pairs at k=12, matching
+   the 12/256 residency, so the router picks resident experts about as often as
+   chance.
+
+   Three conclusions, in decreasing order of how well they are supported:
+
+   - The Vulkan path is **bit-reproducible** — KL exactly 0 across 315
+     positions, and also at k=2. That is the one unambiguous result, and it is
+     what makes any gate possible at all.
+   - **The split dominates, not the driver.** `compaction alone` is comparable
+     to `GPU alone` everywhere and worse than it on `01_prose`. Without the
+     second-CPU-device control the whole difference would have been filed
+     against the GPU.
+   - **The measurement is saturated, so it cannot certify correctness.**
+     Raising the GPU's share 5.5x (k=2 -> k=12) moved nothing, and the shape
+     floor — no GPU involved — lands in the same band. 75 layers amplify any
+     perturbation to the same ceiling. End-to-end logit KL therefore cannot
+     distinguish a subtly wrong GPU from a correct one; this supports
+     "deterministic and plausible", not "verified".
+
+   One number is *not* comfortably inside the noise: `01_prose` compaction
+   alone at 93.2% top-1 against a 97.3% shape floor. The innocent explanation
+   is that compaction changes both the matmul shape *and* the summation order
+   where re-chunking changes only the first — plausible, unverified, and
+   exactly what the per-layer compare-mode would settle.
+
+   So the compare-mode below is **required**, not a convenience, and is the
+   next piece of work.
+
+   **Measure over fixed ids, never over free generation.** The first version of
+   `vk_check.py` gave each configuration the same *prompt* and let it generate
+   its own continuation. Four of eighteen comparisons then produced no number
+   at all — the token sequences had diverged and `compare.py` correctly refused
+   them. The instructive one was `04_history` "compaction alone", where **both
+   sides ran on the CPU** with identical arithmetic: reassociating a token's
+   8-term expert sum flipped one greedily-sampled token, and the continuations
+   parted from there. Free generation cannot measure numerical divergence in a
+   system where numerical divergence changes what is generated. The script now
+   scores the golden's full id sequence with `-n 0`.
+
+   Two controls earned their keep and should not be removed:
+
+   - **A second CPU device** (`--cpu-experts k`) running the identical
+     compaction. Without it the whole CPU-vs-GPU difference would have been
+     filed against the GPU, when in fact compaction alone accounts for most of
+     it — splitting a token's 8-term sum into (7)+(1) is a reassociation, and
+     75 layers amplify it.
+   - **A shape floor that actually varies the shape.** The first attempt
+     compared `-b 512` against `-b 16` on a 14-token prompt: both prefill in
+     one chunk, so it reported a flat 0.0 that looked like a perfectly
+     deterministic GPU and was two identical runs. The split batch must be
+     smaller than the prompt.
+
+   Incidental but worth keeping: the CPU control assigned **478** pairs to its
+   split device where the GPU run assigned **472**, same k and same placement.
+   Numerical divergence changes a routing decision, which changes which pairs
+   exist — MoE routing turns continuous differences into discrete ones. It did
+   not move top-1 here, but it is why "small KL" is a weaker guarantee in an
+   MoE than elsewhere.
 3. **N devices, one thread each**, trivial expert assignment (`e % n_devices`).
    Measure whether four dies beat one; expert parallelism within a layer is the
    thing being tested. Also where the per-layer router sync can be overlapped:
