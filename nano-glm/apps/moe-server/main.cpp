@@ -95,6 +95,7 @@ struct server_params {
     bool        verbose    = false;
     uint32_t    gpu_experts = 0;   // experts per MoE layer to place on a GPU
     uint32_t    cpu_experts = 0;   // ... or on a second CPU device, for testing
+    uint32_t    gpu_devices = 0;   // how many GPU dies to spread over; 0 = all
     bool        compare    = false; // evaluate both paths, report per-layer error
 };
 
@@ -107,6 +108,7 @@ static bool parse_args(int argc, char ** argv, server_params & p) {
         else if (!strcmp(a, "-t")       && i + 1 < argc) p.n_threads  = atoi(argv[++i]);
         else if (!strcmp(a, "--gpu-experts") && i + 1 < argc) p.gpu_experts = (uint32_t) atoi(argv[++i]);
         else if (!strcmp(a, "--cpu-experts") && i + 1 < argc) p.cpu_experts = (uint32_t) atoi(argv[++i]);
+        else if (!strcmp(a, "--gpu-devices") && i + 1 < argc) p.gpu_devices = (uint32_t) atoi(argv[++i]);
         else if (!strcmp(a, "--compare"))                     p.compare     = true;
         else if (!strcmp(a, "-v"))                      p.verbose    = true;
         else { p.model_path.clear(); break; }
@@ -117,8 +119,10 @@ static bool parse_args(int argc, char ** argv, server_params & p) {
             "  --host <ip>   bind address (default 127.0.0.1)\n"
             "  --port <n>    port (default 5711)\n"
             "  -t <int>      threads (default: physical cores, ignoring SMT siblings)\n"
-            "  --gpu-experts <k>  place k experts of every MoE layer on the first GPU\n"
-            "                     (needs a build.ps1 -Vk build; 0 = CPU only)\n"
+            "  --gpu-experts <k>  place experts 0..k-1 of every MoE layer on the GPUs,\n"
+            "                     dealt round-robin (needs build.ps1 -Vk; 0 = CPU only)\n"
+            "  --gpu-devices <n>  spread over n GPU dies (default: every one found).\n"
+            "                     Each device gets its own host thread\n"
             "  --cpu-experts <k>  same, but onto a second CPU device. Same compaction\n"
             "                     path, same arithmetic — so it separates a compaction\n"
             "                     bug from a GPU numerics difference\n"
@@ -271,17 +275,20 @@ static bool run_router(moe_backend & B, uint32_t layer, int32_t n_tokens, const 
 
 // ---- residency ------------------------------------------------------------
 //
-// Copy `k` experts of every MoE layer onto a device. Which k is deliberately
-// the dumbest possible choice — experts 0..k-1 — because *which* experts to
-// hold is a placement question and placement lives in OPTIMIZATION.md, whose
-// current answer is that no static choice transfers between prompts.
+// Copy the given experts of every MoE layer onto a device. *Which* experts is
+// the caller's business and deliberately the dumbest possible choice — a
+// prefix, split round-robin across devices — because placement is a separate
+// question that lives in OPTIMIZATION.md, whose current answer is that no
+// static choice transfers between prompts.
 //
 // The copy is cheap to express because experts are contiguous in the model's
 // `ffn_*_exps`: expert e is exactly the byte range [e*nb[2], (e+1)*nb[2]), and
 // the model is mmap'd into host memory, so each expert is one tensor_set.
-static bool device_load_experts(moe_backend & B, moe_device & D, uint32_t k) {
+static bool device_load_experts(moe_backend & B, moe_device & D,
+                                const std::vector<int32_t> & experts) {
     const nano_hparams & h = B.M.h;
     const uint32_t n_moe = h.n_layer - h.n_dense_lead;
+    const uint32_t k = (uint32_t) experts.size();
 
     D.holds_all = false;
     D.dl.resize(h.n_layer);
@@ -312,7 +319,7 @@ static bool device_load_experts(moe_backend & B, moe_device & D, uint32_t k) {
     fprintf(stderr, "moe-server: resident experts need %.2f GiB, device has %.2f GiB free\n",
             need / 1073741824.0, dev_free / 1073741824.0);
     if (need > dev_free) {
-        fprintf(stderr, "moe-server: not enough device memory — lower --vk-experts\n");
+        fprintf(stderr, "moe-server: not enough device memory — lower --gpu-experts\n");
         return false;
     }
 
@@ -328,7 +335,7 @@ static bool device_load_experts(moe_backend & B, moe_device & D, uint32_t k) {
         ggml_tensor * src[3] = { L.ffn_up_exps, L.ffn_gate_exps, L.ffn_down_exps };
         ggml_tensor * dst[3] = { dl.up,         dl.gate,         dl.down         };
         for (uint32_t j = 0; j < k; j++) {
-            const uint32_t e = j;   // the trivial placement
+            const uint32_t e = (uint32_t) experts[j];
             dl.local_of[e] = (int32_t) j;
             for (int w = 0; w < 3; w++) {
                 const size_t stride = src[w]->nb[2];
@@ -578,14 +585,43 @@ static bool eval_layer(moe_backend & B, uint32_t layer, int32_t n_tokens,
 
     assign_pairs(B, layer, n_tokens);
 
-    // Increment 3 replaces this loop with one thread per device and a join.
-    // Sequential today; a thread per device is only worth its synchronisation
-    // once the devices actually overlap.
-    for (moe_device & D : B.devices) {
-        const bool ok = (D.holds_all && D.took_all)
-                      ? run_device_full(B, D, layer, n_tokens, x)
-                      : run_device_compact(B, D, layer, x);
-        if (!ok) return false;
+    // One host thread per device, because ggml graphs are sequential: a single
+    // `ggml_backend_graph_compute` is one backend, in order, and
+    // `..._async` is only that call minus the synchronize — whether it truly
+    // returns early is backend-specific. Several graphs driven by several
+    // threads is the formulation that actually overlaps, and the one that
+    // generalizes to NUMA nodes rather than only to GPUs.
+    //
+    // devices[0] runs on *this* thread rather than a spawned one: it is the
+    // DRAM device with the largest share, so giving it the caller's thread
+    // saves a spawn and a join on the critical path.
+    //
+    // Everything a device touches during compute is its own — backend, galloc,
+    // meta scratch, pair vectors, gathered_x, rows_out — and the two things
+    // that are shared, `B.ids_buf`/`B.weights_buf` and the model, are read
+    // only. The `partial` resize was hoisted above for exactly this reason.
+    {
+        const size_t n_dev = B.devices.size();
+        auto run_one = [&](size_t d) -> bool {
+            moe_device & D = B.devices[d];
+            return (D.holds_all && D.took_all)
+                 ? run_device_full(B, D, layer, n_tokens, x)
+                 : run_device_compact(B, D, layer, x);
+        };
+
+        if (n_dev == 1) {
+            if (!run_one(0)) return false;
+        } else {
+            std::vector<std::thread> workers;
+            std::vector<char> ok(n_dev, 1);
+            workers.reserve(n_dev - 1);
+            for (size_t d = 1; d < n_dev; d++) {
+                workers.emplace_back([&, d] { ok[d] = run_one(d) ? 1 : 0; });
+            }
+            ok[0] = run_one(0) ? 1 : 0;
+            for (std::thread & t : workers) t.join();   // join before any early return
+            for (size_t d = 0; d < n_dev; d++) if (!ok[d]) return false;
+        }
     }
 
     // Combine in device order — fixed, so the sum is deterministic run to run.
@@ -861,8 +897,31 @@ int main(int argc, char ** argv) {
         return 1;
     }
     const uint32_t split_experts = p.gpu_experts > 0 ? p.gpu_experts : p.cpu_experts;
-    const size_t n_dev = split_experts > 0 ? 2 : 1;
-    B.devices.resize(n_dev);
+
+    // How many devices the split spreads over. GPUs: as many dies as were
+    // asked for and exist. The CPU control stays a single extra device — it is
+    // there to isolate the compaction, and more of them would only add thread
+    // oversubscription to what it measures.
+    std::vector<ggml_backend_dev_t> gpus;
+    if (p.gpu_experts > 0) {
+        ggml_backend_load_all();
+        for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
+            ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+            const auto type = ggml_backend_dev_type(dev);
+            if (type == GGML_BACKEND_DEVICE_TYPE_GPU || type == GGML_BACKEND_DEVICE_TYPE_IGPU) {
+                gpus.push_back(dev);
+            }
+        }
+        if (gpus.empty()) {
+            fprintf(stderr, "moe-server: --gpu-experts needs a GPU device; this build has "
+                            "none (rebuild with build.ps1 -Vk). See --devices.\n");
+            return 1;
+        }
+        if (p.gpu_devices > 0 && p.gpu_devices < gpus.size()) gpus.resize(p.gpu_devices);
+    }
+
+    const size_t n_split = split_experts == 0 ? 0 : (p.gpu_experts > 0 ? gpus.size() : 1);
+    B.devices.resize(1 + n_split);
     moe_device & D0 = B.devices[0];
 
     D0.backend = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);
@@ -884,42 +943,41 @@ int main(int argc, char ** argv) {
             return 1;
         }
 
-        moe_device & D1 = B.devices[1];
-        if (p.gpu_experts > 0) {
-            ggml_backend_load_all();
-            ggml_backend_dev_t gpu = nullptr;
-            for (size_t i = 0; i < ggml_backend_dev_count() && !gpu; i++) {
-                ggml_backend_dev_t dev = ggml_backend_dev_get(i);
-                const auto type = ggml_backend_dev_type(dev);
-                if (type == GGML_BACKEND_DEVICE_TYPE_GPU || type == GGML_BACKEND_DEVICE_TYPE_IGPU) {
-                    gpu = dev;
-                }
-            }
-            if (!gpu) {
-                fprintf(stderr, "moe-server: --gpu-experts needs a GPU device; this build has "
-                                "none (rebuild with build.ps1 -Vk). See --devices.\n");
-                return 1;
-            }
-            D1.backend = ggml_backend_dev_init(gpu, nullptr);
-            if (!D1.backend) { fprintf(stderr, "moe-server: failed to init %s\n",
-                                       ggml_backend_dev_name(gpu)); return 1; }
-            fprintf(stderr, "moe-server: split device %s (%s)\n",
-                    ggml_backend_dev_name(gpu), ggml_backend_dev_description(gpu));
-        } else {
-            // A second CPU device. Same compaction path, same kernels, same
-            // arithmetic — so a difference against the CPU-only run is the
-            // compaction's doing and nothing else. That is the control the GPU
-            // comparison needs, and it is the only way to tell a routing or
-            // scatter bug from an honest numerics difference.
-            D1.backend = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);
-            if (!D1.backend) { fprintf(stderr, "moe-server: no second CPU backend\n"); return 1; }
-            ggml_backend_cpu_set_n_threads(D1.backend, B.n_threads);
-            fprintf(stderr, "moe-server: split device CPU (compaction control)\n");
-        }
+        // Experts 0..split_experts-1 dealt round-robin over the split devices:
+        // device d gets {e < split_experts : e % n_split == d}. Trivial on
+        // purpose — the point of this increment is that N devices work at all
+        // and overlap, not which experts they should hold.
+        for (size_t s = 0; s < n_split; s++) {
+            moe_device & D = B.devices[1 + s];
 
-        D1.galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(D1.backend));
-        D1.meta.resize(ggml_tensor_overhead() * 64 + ggml_graph_overhead());
-        if (!device_load_experts(B, D1, split_experts)) return 1;
+            if (p.gpu_experts > 0) {
+                ggml_backend_dev_t gpu = gpus[s];
+                D.backend = ggml_backend_dev_init(gpu, nullptr);
+                if (!D.backend) { fprintf(stderr, "moe-server: failed to init %s\n",
+                                          ggml_backend_dev_name(gpu)); return 1; }
+                fprintf(stderr, "moe-server: split device %zu: %s (%s)\n",
+                        s, ggml_backend_dev_name(gpu), ggml_backend_dev_description(gpu));
+            } else {
+                // A second CPU device. Same compaction path, same kernels, same
+                // arithmetic — so a difference against the CPU-only run is the
+                // compaction's doing and nothing else. That is the control the
+                // GPU comparison needs, and the only way to tell a routing or
+                // scatter bug from an honest numerics difference.
+                D.backend = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);
+                if (!D.backend) { fprintf(stderr, "moe-server: no second CPU backend\n"); return 1; }
+                ggml_backend_cpu_set_n_threads(D.backend, B.n_threads);
+                fprintf(stderr, "moe-server: split device CPU (compaction control)\n");
+            }
+
+            std::vector<int32_t> mine;
+            for (uint32_t e = 0; e < split_experts; e++) {
+                if (e % n_split == s) mine.push_back((int32_t) e);
+            }
+
+            D.galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(D.backend));
+            D.meta.resize(ggml_tensor_overhead() * 64 + ggml_graph_overhead());
+            if (!device_load_experts(B, D, mine)) return 1;
+        }
     }
 
     if (p.compare) {

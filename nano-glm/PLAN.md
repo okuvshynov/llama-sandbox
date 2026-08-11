@@ -419,12 +419,62 @@ changes shape (below).
    exist — MoE routing turns continuous differences into discrete ones. It did
    not move top-1 here, but it is why "small KL" is a weaker guarantee in an
    MoE than elsewhere.
-3. **N devices, one thread each**, trivial expert assignment (`e % n_devices`).
-   Measure whether four dies beat one; expert parallelism within a layer is the
-   thing being tested. Also where the per-layer router sync can be overlapped:
-   layer i+1's router genuinely cannot start early (it needs layer i's output),
-   but a device's expert work can start as soon as its slice of the decision
-   lands.
+3. **N devices, one thread each** — **done**. `--gpu-devices n` spreads experts
+   `0..k-1` round-robin over n dies, each driven by its own host thread;
+   `devices[0]` runs on the caller's thread since it has the largest share.
+   One `ggml_backend_graph_compute` is one backend in order, and `..._async` is
+   only that call minus the synchronize, so several graphs on several threads
+   is the formulation that actually overlaps — and the one that generalizes to
+   NUMA nodes rather than only to GPUs.
+
+   **Correctness, via `--compare`.** Same expert set {0..11}, one die versus
+   four:
+
+   |        | rel RMS  | split pairs                       |
+   |--------|----------|-----------------------------------|
+   | 1 die  | 8.44e-04 | 482                               |
+   | 4 dies | 8.21e-04 | 129 + 118 + 132 + 103 = **482**   |
+
+   Identical pair total and identical DRAM fallthrough (10318), so the
+   round-robin loses none and duplicates none; the small RMS change is the
+   combine going from one partial to four. A broken local-index map would have
+   read the wrong expert's weights and shown order-1 error, not 1e-3.
+
+   Incidental: compare mode reports **482** pairs where the free-running GPU
+   and CPU-control runs reported 472 and 478. Returning CPU activations to the
+   trunk removes the routing feedback, so 482 is the canonical count and the
+   earlier spread was that feedback, measured.
+
+   **Does it go faster? Barely, and the honest answer is "not established".**
+   `04_history`, 151 fixed ids, k=52 over four dies (13 experts/die, 28.23 GiB
+   each, 112.9 GiB total), one discarded warm-up then three measured passes:
+
+   | config          | passes           | mean   | sd    |
+   |-----------------|------------------|--------|-------|
+   | CPU only        | 36.5 33.0 33.4   | 34.3 s | 1.6 s |
+   | 4 dies, k=52    | 33.8 31.3 31.5   | 32.2 s | 1.1 s |
+
+   1.06x. The difference is ~1.9 sigma with overlapping ranges, so it is
+   suggestive and not more than that. A first single-shot pair had said 1.10x;
+   its CPU sample (37.6 s) fell outside all three later reps, which is the repo
+   `CLAUDE.md` warning about single mmap-backed timings on Windows arriving
+   exactly on schedule. Do not quote a speedup from one pass.
+
+   **The ceiling is residency, not parallelism**, and that is the useful part.
+   `devices[0]` holds every expert and takes the *complement* of what the GPUs
+   take, so at 19.85% of pairs on the GPUs the CPU still does 80.15% and the
+   best attainable speedup is **~1.25x** however many dies are added. Four dies
+   raise how much can be *resident* (~22% of experts in 125 GiB), not how much
+   of the work can move. We are getting roughly a quarter of that headroom; the
+   rest is dispatch, transfer and sync not hidden behind the CPU's share.
+
+   Getting past 1.25x is therefore not a threading problem. It needs the CPU to
+   stop being the fallthrough for everything — a placement question
+   (`OPTIMIZATION.md`), or a smaller expert quant on the GPU side so more fits.
+
+   Still open here: the per-layer router read-back is a hard sync point, and a
+   device's expert work could start as soon as its slice of the decision lands.
+   Not attempted yet.
 
 #### Build
 

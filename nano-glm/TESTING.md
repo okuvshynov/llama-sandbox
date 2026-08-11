@@ -118,7 +118,8 @@ correct**. For that, use the compare-mode below.
 ## `moe-server --compare`: the measurement that is not saturated
 
 ```bash
-moe-server -m <model> --gpu-experts 12 --compare     # or --cpu-experts 12
+moe-server -m <model> --gpu-experts 12 --compare                  # or --cpu-experts 12
+moe-server -m <model> --gpu-experts 52 --gpu-devices 4 --compare  # N dies, one thread each
 ```
 
 Evaluates every layer on **both** the full CPU path and the split path, hands
