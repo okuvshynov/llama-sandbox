@@ -147,6 +147,41 @@ picked a resident expert read *exactly* 0, and the worst layers are the ones
 the split device did most work in. If either stops holding, distrust the run
 before distrusting the driver.
 
+## `--force-split`: timing a distribution that residency cannot reach
+
+```bash
+moe-server -m <model> --gpu-experts 52 --gpu-devices 4 --force-split 2,2,2,2
+```
+
+**This computes the wrong answer on purpose. Never use it to produce logits.**
+
+The problem it solves: `devices[0]` holds every expert and takes the complement
+of whatever the GPUs take, so the CPU's share is pinned to `1 - residency` and
+no measurement can separate "the dies are slow" from "the CPU still has 80% of
+the work". Forced placement breaks that coupling — slot *s* of every token goes
+where the pattern says regardless of routing, and the expert is remapped into
+that device's resident range.
+
+The work then has exactly the right shape and cost — same matmul dimensions,
+same transfers, same pairs per device — and only the weights are wrong. That is
+precisely enough to time a distribution, and not nearly enough to trust an
+output. `--compare` refuses to run alongside it, because there is nothing
+meaningful to compare a deliberately wrong answer against.
+
+With 8 experts used per token, the interesting patterns are:
+
+| pattern   | meaning                                        |
+|-----------|------------------------------------------------|
+| `0,0,0,0` | devices exist but do nothing — isolates the machinery's overhead |
+| `8,0,0,0` | one die does everything, CPU idle              |
+| `4,4,0,0` | two dies                                       |
+| `2,2,2,2` | four dies, CPU idle — the parallelism ceiling  |
+| `2,2,2,1` | seven slots on dies, **one** left on the CPU   |
+
+The last two are the pair worth running. The gap between them is the price of
+any CPU involvement at all, and it is what decides whether partial offload is
+worth pursuing or whether the DRAM stream dominates regardless.
+
 ## Provenance, and what a refusal means
 
 `testdata/provenance.json` records what the golden set was made with: compiler,

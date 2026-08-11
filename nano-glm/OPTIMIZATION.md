@@ -72,6 +72,62 @@ not a measured speedup; `nano-bench` could settle it once it speaks
 **The largest confirmed win on this list**, and small: one graph restructuring,
 no new subsystem. Must not change a bit — same corpus gate.
 
+### 3-adjacent. What GPU offload is actually worth — measured
+
+Step 3 shipped a Vulkan backend that can hold resident experts. The obvious
+question — how much is that worth, and would more dies help — was unanswerable
+from the real system, because `devices[0]` holds every expert and takes the
+complement of whatever the GPUs take, pinning the CPU's share to `1 - residency`.
+
+`moe-server --force-split a,b,c,d` (`TESTING.md`) breaks the coupling: slot *s*
+of every token goes where the pattern says, regardless of routing, with the
+expert remapped into that device's resident range. **The output is wrong by
+construction**; the work has the right shape and cost, which is all a timing
+needs. `04_history`, 151 fixed ids, k=52 over four dies, one discarded warm-up
+and three measured passes:
+
+| forced split | slots on CPU | mean | sd | vs CPU-only |
+|---|---|---|---|---|
+| CPU only | 8 | 37.9 s | 1.6 | 1.00x |
+| `0,0,0,0` — dies idle | 8 | 35.4 s | 1.6 | 1.07x |
+| `8,0,0,0` — one die | 0 | 20.2 s | 0.2 | 1.87x |
+| `4,4,0,0` — two dies | 0 | 20.6 s | 0.1 | 1.84x |
+| `2,2,2,2` — four dies | 0 | 20.0 s | 0.1 | **1.89x** |
+| `2,2,2,1` | 1 | 22.1 s | 0.2 | 1.71x |
+
+**One die is as fast as four.** 20.2 / 20.6 / 20.0, with sd 0.1-0.2 — equal, and
+tightly enough measured to mean it. A single Vega absorbs the entire expert
+workload of a 151-token prefill at the speed four do sharing it, so the dies are
+nowhere near throughput-bound; they are bound by something fixed per dispatch
+(../moe-offload measured ~190 us for a null dispatch). **Adding dies buys VRAM
+capacity, not speed** — which is the opposite of the intuitive reading of
+"expert parallelism", and worth knowing before anyone buys hardware for it.
+
+**Time is linear in the slots left on the CPU**, at 2.24 s per slot
+((37.9 - 20.0)/8). The model `T ~= 20.0 + 2.24 x cpu_slots` predicts the
+one-slot case at 22.2 s against 22.1 s measured. So offload pays *strictly in
+proportion* to how much work leaves the CPU — no threshold, no cliff.
+
+**And that is the discouraging part.** Only ~22% of experts fit in 125 GiB of
+VRAM at Q6_K, so cpu_slots ~= 6.2 and the model predicts ~1.11x — consistent
+with the 1.06x measured on the real residency path (`PLAN.md` step 3). Q4_K
+experts would reach ~33% residency and ~1.18x. The 1.89x ceiling needs
+essentially every expert resident, i.e. ~4.5x more VRAM than exists here.
+
+Consequences for this list:
+- **More dies: no.** Capacity only.
+- **Smaller expert quant: yes, linearly**, and it now has a number attached.
+- **Fewer, larger dispatches** is the lever on the GPU side, since one die at 4x
+  the work costs the same. Fusing up+gate, or a layer at a time, would test it.
+- The 1.89x ceiling is Amdahl on the trunk: attention still runs on the client
+  CPU and is ~53% of wall time here. `PLAN.md` step 4 (trunk on GPU) is what
+  moves it.
+
+Caveat: measured on **prefill** (151 tokens in one batch), where the CPU reads
+each expert once and amortizes it across the tokens that routed there. Decode
+has far worse arithmetic intensity on the CPU side, so offload should help
+*more* there. Not yet measured; do that before generalizing these ratios.
+
 ### 3-adjacent. Better expert placement
 
 Step 3 itself (a Vulkan backend that can hold resident experts) is

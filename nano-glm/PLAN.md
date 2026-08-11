@@ -472,6 +472,15 @@ changes shape (below).
    stop being the fallthrough for everything — a placement question
    (`OPTIMIZATION.md`), or a smaller expert quant on the GPU side so more fits.
 
+   **`--force-split` settled what the dies are worth.** Forcing the work
+   distribution regardless of routing (wrong output, right cost — `TESTING.md`)
+   shows **one die is as fast as four** (20.2 / 20.6 / 20.0 s, sd 0.1-0.2) and
+   that time is linear in the slots left on the CPU at 2.24 s each. Full
+   offload caps at 1.89x, bounded by the trunk. So more dies buy VRAM capacity,
+   not speed, and the payoff scales strictly with residency. Numbers,
+   consequences and the decode caveat: `OPTIMIZATION.md`, "What GPU offload is
+   actually worth".
+
    Still open here: the per-layer router read-back is a hard sync point, and a
    device's expert work could start as soon as its slice of the decision lands.
    Not attempted yet.

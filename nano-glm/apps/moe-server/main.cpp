@@ -97,6 +97,7 @@ struct server_params {
     uint32_t    cpu_experts = 0;   // ... or on a second CPU device, for testing
     uint32_t    gpu_devices = 0;   // how many GPU dies to spread over; 0 = all
     bool        compare    = false; // evaluate both paths, report per-layer error
+    std::string force_split;       // e.g. "2,2,2,2" — timing only, wrong output
 };
 
 static bool parse_args(int argc, char ** argv, server_params & p) {
@@ -109,6 +110,7 @@ static bool parse_args(int argc, char ** argv, server_params & p) {
         else if (!strcmp(a, "--gpu-experts") && i + 1 < argc) p.gpu_experts = (uint32_t) atoi(argv[++i]);
         else if (!strcmp(a, "--cpu-experts") && i + 1 < argc) p.cpu_experts = (uint32_t) atoi(argv[++i]);
         else if (!strcmp(a, "--gpu-devices") && i + 1 < argc) p.gpu_devices = (uint32_t) atoi(argv[++i]);
+        else if (!strcmp(a, "--force-split") && i + 1 < argc) p.force_split = argv[++i];
         else if (!strcmp(a, "--compare"))                     p.compare     = true;
         else if (!strcmp(a, "-v"))                      p.verbose    = true;
         else { p.model_path.clear(); break; }
@@ -126,6 +128,14 @@ static bool parse_args(int argc, char ** argv, server_params & p) {
             "  --cpu-experts <k>  same, but onto a second CPU device. Same compaction\n"
             "                     path, same arithmetic — so it separates a compaction\n"
             "                     bug from a GPU numerics difference\n"
+            "  --force-split <a,b,..>  ignore routing and give device 1 a slots of\n"
+            "                every token, device 2 b, ...; the rest stay on the CPU.\n"
+            "                e.g. with 8 used experts: 2,2,2,2 = all on four dies,\n"
+            "                0 on CPU; 2,2,2,1 = 7 on dies, 1 on CPU; 7,0,0,0 = one\n"
+            "                die does 7. *** PRODUCES WRONG OUTPUT ON PURPOSE ***\n"
+            "                — the work has the right shape and cost but the wrong\n"
+            "                weights, so it times distributions residency cannot\n"
+            "                currently reach. Never use it to produce logits.\n"
             "  --compare     evaluate every layer on BOTH the full CPU path and the\n"
             "                split path, return the CPU one, and report the per-layer\n"
             "                error at disconnect. Roughly 2x slower; it is the only\n"
@@ -166,6 +176,7 @@ struct moe_device {
     // Residency. `holds_all` is the DRAM device: it uses the model's own
     // tensors and is the fallthrough for every expert no other device has.
     bool                    holds_all = true;
+    uint32_t                n_resident = 0;   // experts per layer held here
     ggml_context *          wctx = nullptr;   // tensor structs for the slices
     ggml_backend_buffer_t   wbuf = nullptr;   // the device memory holding them
     std::vector<device_layer> dl;             // indexed by model layer
@@ -197,6 +208,12 @@ struct moe_backend {
     nano_model              M;
     int                     n_threads = 1;
     std::vector<moe_device> devices;
+
+    // Forced placement (--force-split). Slot counts for devices 1..n; whatever
+    // is left of n_expert_used stays on device 0. Produces WRONG OUTPUT by
+    // construction — it exists to time work distributions that residency
+    // cannot currently produce.
+    std::vector<uint32_t>    force_split;
 
     // Compare mode (--compare). Runs both paths, hands the trunk the *CPU*
     // one, and records how far the split path was from it.
@@ -290,7 +307,8 @@ static bool device_load_experts(moe_backend & B, moe_device & D,
     const uint32_t n_moe = h.n_layer - h.n_dense_lead;
     const uint32_t k = (uint32_t) experts.size();
 
-    D.holds_all = false;
+    D.holds_all  = false;
+    D.n_resident = k;
     D.dl.resize(h.n_layer);
 
     ggml_init_params ip = {
@@ -378,12 +396,36 @@ static void assign_pairs(moe_backend & B, uint32_t layer, int32_t n_tokens) {
             size_t  dev   = 0;   // the fallthrough device holds everything
             int32_t local = e;   // and indexes its weights by global expert id
 
-            for (size_t d = 1; d < B.devices.size(); d++) {
-                const std::vector<int32_t> & lo = B.devices[d].dl[layer].local_of;
-                if (!lo.empty() && lo[e] >= 0) {
-                    dev   = d;
-                    local = lo[e];
-                    break;
+            if (!B.force_split.empty()) {
+                // Forced placement: slot s goes wherever the pattern says,
+                // regardless of which expert the router picked. The expert is
+                // then remapped into that device's resident range, because it
+                // almost certainly does not hold the one that was chosen.
+                //
+                // **This computes the wrong answer on purpose.** The shape and
+                // cost of the work are exactly right — same matmul dimensions,
+                // same transfers, same number of pairs per device — and only
+                // the weights are wrong, so it measures the timing of a work
+                // distribution that residency cannot currently produce.
+                uint32_t cursor = 0;
+                for (size_t d = 1; d < B.devices.size(); d++) {
+                    const uint32_t take = d - 1 < B.force_split.size() ? B.force_split[d - 1] : 0;
+                    if (s >= cursor && s < cursor + take) {
+                        const uint32_t k = B.devices[d].n_resident;
+                        dev   = d;
+                        local = k ? (int32_t) ((uint32_t) e % k) : 0;
+                        break;
+                    }
+                    cursor += take;
+                }
+            } else {
+                for (size_t d = 1; d < B.devices.size(); d++) {
+                    const std::vector<int32_t> & lo = B.devices[d].dl[layer].local_of;
+                    if (!lo.empty() && lo[e] >= 0) {
+                        dev   = d;
+                        local = lo[e];
+                        break;
+                    }
                 }
             }
 
@@ -980,7 +1022,45 @@ int main(int argc, char ** argv) {
         }
     }
 
+    if (!p.force_split.empty()) {
+        if (B.devices.size() < 2) {
+            fprintf(stderr, "moe-server: --force-split needs split devices "
+                            "(--gpu-experts or --cpu-experts)\n");
+            return 1;
+        }
+        uint32_t total = 0;
+        for (size_t pos = 0; pos <= p.force_split.size(); ) {
+            const size_t c = p.force_split.find(',', pos);
+            const std::string tok = p.force_split.substr(pos, c == std::string::npos
+                                                              ? std::string::npos : c - pos);
+            if (!tok.empty()) { B.force_split.push_back((uint32_t) atoi(tok.c_str())); }
+            if (c == std::string::npos) break;
+            pos = c + 1;
+        }
+        for (uint32_t v : B.force_split) total += v;
+        if (B.force_split.size() > B.devices.size() - 1) {
+            fprintf(stderr, "moe-server: --force-split lists %zu devices, only %zu split "
+                            "devices exist\n", B.force_split.size(), B.devices.size() - 1);
+            return 1;
+        }
+        if (total > B.M.h.n_expert_used) {
+            fprintf(stderr, "moe-server: --force-split sums to %u, only %u experts are used "
+                            "per token\n", total, B.M.h.n_expert_used);
+            return 1;
+        }
+        fprintf(stderr, "moe-server: *** --force-split active: OUTPUT WILL BE WRONG ***\n");
+        fprintf(stderr, "moe-server: per token, %u of %u slots forced onto split devices "
+                        "(CPU keeps %u); timing only\n",
+                total, B.M.h.n_expert_used, B.M.h.n_expert_used - total);
+    }
+
     if (p.compare) {
+        if (!p.force_split.empty()) {
+            fprintf(stderr, "moe-server: --compare and --force-split are incompatible — "
+                            "forced placement deliberately computes the wrong answer, so "
+                            "there is nothing meaningful to compare against\n");
+            return 1;
+        }
         if (B.devices.size() < 2) {
             fprintf(stderr, "moe-server: --compare needs a split device "
                             "(--gpu-experts or --cpu-experts)\n");
