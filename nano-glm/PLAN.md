@@ -474,12 +474,13 @@ changes shape (below).
 
    **`--force-split` settled what the dies are worth.** Forcing the work
    distribution regardless of routing (wrong output, right cost — `TESTING.md`)
-   shows **one die is as fast as four** (20.2 / 20.6 / 20.0 s, sd 0.1-0.2) and
-   that time is linear in the slots left on the CPU at 2.24 s each. Full
-   offload caps at 1.89x, bounded by the trunk. So more dies buy VRAM capacity,
-   not speed, and the payoff scales strictly with residency. Numbers,
-   consequences and the decode caveat: `OPTIMIZATION.md`, "What GPU offload is
-   actually worth".
+   gives a full-offload ceiling of **1.89x on prefill** and **1.43x on decode**,
+   both bounded by the trunk still running on the client CPU (~53% and ~61% of
+   the time respectively). Four dies are worth nothing on prefill and +4.9% on
+   decode, so they buy VRAM capacity rather than parallelism. At the ~22%
+   residency that actually fits, both regimes land near **1.1x**. Numbers, the
+   sublinear decode curve, and a prediction of mine that the data falsified:
+   `OPTIMIZATION.md`, "What GPU offload is actually worth".
 
    Still open here: the per-layer router read-back is a hard sync point, and a
    device's expert work could start as soon as its slice of the decision lands.

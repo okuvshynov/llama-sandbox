@@ -114,19 +114,66 @@ with the 1.06x measured on the real residency path (`PLAN.md` step 3). Q4_K
 experts would reach ~33% residency and ~1.18x. The 1.89x ceiling needs
 essentially every expert resident, i.e. ~4.5x more VRAM than exists here.
 
-Consequences for this list:
-- **More dies: no.** Capacity only.
-- **Smaller expert quant: yes, linearly**, and it now has a number attached.
-- **Fewer, larger dispatches** is the lever on the GPU side, since one die at 4x
-  the work costs the same. Fusing up+gate, or a layer at a time, would test it.
-- The 1.89x ceiling is Amdahl on the trunk: attention still runs on the client
-  CPU and is ~53% of wall time here. `PLAN.md` step 4 (trunk on GPU) is what
-  moves it.
+Consequences for this list (revised after the decode measurement below):
+- **More dies: marginal.** Nothing in prefill, +4.9% in decode. Buy them for
+  VRAM capacity, not for parallelism.
+- **Smaller expert quant: yes**, and it now has numbers attached in both
+  regimes.
+- **Fewer, larger dispatches** is the lever on the GPU side: one die at 4x the
+  prefill work costs the same, and decode is dispatch-bound enough that four
+  dies help. Fusing up+gate, or a layer at a time, would test it.
+- The ceiling is Amdahl on the trunk — attention still runs on the client CPU,
+  ~53% of prefill and ~61% of decode. `PLAN.md` step 4 (trunk on GPU) is the
+  only thing that moves it.
 
-Caveat: measured on **prefill** (151 tokens in one batch), where the CPU reads
-each expert once and amortizes it across the tokens that routed there. Decode
-has far worse arithmetic intensity on the CPU side, so offload should help
-*more* there. Not yet measured; do that before generalizing these ratios.
+Everything above is **prefill** (151 tokens in one batch). Decode was measured
+next and disagrees with it in two places, so read the two together.
+
+#### Decode, and two corrections to the above
+
+14-token prompt + 32 generated, one token per step, same k=52 over four dies.
+Reported as tok/s because forced-split output is garbage and could in principle
+trip EOS early (it did not — every run generated all 32):
+
+| forced split | slots on CPU | tok/s | sd | vs CPU-only | ms/token |
+|---|---|---|---|---|---|
+| CPU only | 8 | 1.317 | 0.005 | 1.00x | 759 |
+| `8,0,0,0` one die | 0 | 1.793 | 0.005 | 1.36x | 558 |
+| `2,2,2,2` four dies | 0 | 1.880 | 0.008 | **1.43x** | 532 |
+| `2,2,2,1` | 1 | 1.857 | 0.005 | 1.41x | 538 |
+| `1,1,1,1` | 4 | 1.633 | 0.005 | 1.24x | 612 |
+
+**Correction 1: "one die is as fast as four" is prefill-only.** In decode four
+dies beat one by 4.9% (1.880 vs 1.793), which is far outside sd 0.005-0.008.
+The reason is the same fixed-dispatch story seen from the other side: a decode
+layer gives each die *two pairs*, so there is essentially no work to be
+throughput-bound by and four concurrent dispatches genuinely overlap. Prefill
+hands one die enough work that a second adds nothing.
+
+**Correction 2: the CPU cost is sublinear in decode, not linear.** Marginal
+cost of a slot left on the CPU: the **1st costs 6.6 ms**, slots 2-4 about
+20 ms each, slots 5-8 about 37 ms each. Against prefill's flat 2.24 s per slot,
+that curve is the thread-per-device overlap working — the first CPU slot hides
+almost entirely behind the GPUs' work and only becomes visible once the CPU's
+share exceeds theirs. Keeping *a few* experts on the CPU is close to free;
+keeping most of them is not.
+
+**And the prediction in the previous version of this section was wrong.** It
+said decode "should help *more*" because decode has worse arithmetic intensity
+on the CPU. It helps **less**: 1.43x against prefill's 1.89x. The reason is
+that decode's CPU-side MoE is memory-bound, where the GPU's edge is only VRAM
+versus DRAM (~4.3x here), while prefill's CPU-side MoE is compute-bound, where
+the GPU's edge is much larger. Worth keeping as a reminder that "memory-bound
+work benefits more from offload" does not follow.
+
+Decomposing with the 5-8 slot marginal (~37 ms/slot): the trunk is ~463 ms of
+the 759 ms token, i.e. **61%**, so the decode ceiling with a free MoE is
+~1.64x and 1.43x captures 87% of it. The MoE itself is ~296 ms on CPU against
+~69 ms on the GPUs.
+
+At realistic residency (~22%, so ~6.2 slots left on the CPU) the curve gives
+~694 ms, i.e. **~1.09x** — in line with the ~1.11x the prefill model predicts,
+and with the 1.06x measured on the real residency path.
 
 ### 3-adjacent. Better expert placement
 
