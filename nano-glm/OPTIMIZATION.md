@@ -122,9 +122,9 @@ Consequences for this list (revised after the decode measurement below):
 - **Fewer, larger dispatches** is the lever on the GPU side: one die at 4x the
   prefill work costs the same, and decode is dispatch-bound enough that four
   dies help. Fusing up+gate, or a layer at a time, would test it.
-- The ceiling is Amdahl on the trunk — attention still runs on the client CPU,
-  ~53% of prefill and ~61% of decode. `PLAN.md` step 4 (trunk on GPU) is the
-  only thing that moves it.
+- The ceiling is Amdahl on the trunk — it still runs on the client CPU and is
+  ~40% of prefill and ~50% of decode (measured; see the correction below).
+  `PLAN.md` step 4 (trunk on GPU) is the only thing that moves it.
 
 Everything above is **prefill** (151 tokens in one batch). Decode was measured
 next and disagrees with it in two places, so read the two together.
@@ -166,10 +166,40 @@ versus DRAM (~4.3x here), while prefill's CPU-side MoE is compute-bound, where
 the GPU's edge is much larger. Worth keeping as a reminder that "memory-bound
 work benefits more from offload" does not follow.
 
-Decomposing with the 5-8 slot marginal (~37 ms/slot): the trunk is ~463 ms of
-the 759 ms token, i.e. **61%**, so the decode ceiling with a free MoE is
-~1.64x and 1.43x captures 87% of it. The MoE itself is ~296 ms on CPU against
-~69 ms on the GPUs.
+#### Correction: the trunk split, measured rather than inferred
+
+An earlier version of this section put the trunk at ~53% of prefill and ~61% of
+decode. **Both were wrong**, from treating the full-offload wall time as if it
+were the trunk when it still contains several seconds of GPU MoE. The client's
+own RPC accounting gives it directly — `MoE RPC: ... total = Xs server + Ys
+network` for prefill, and `rtt p50` x 75 layers for decode:
+
+| | wall / token | MoE (RPC) | trunk | trunk share |
+|---|---|---|---|---|
+| prefill, CPU only | 37.9 s | 22.3 s | 15.6 s | |
+| prefill, `2,2,2,2` | 20.0 s | **4.9 s** | 15.1 s | **~40%** |
+| decode, CPU only | 759 ms | 371 ms | 388 ms | |
+| decode, `2,2,2,2` | 532 ms | **155 ms** | 377 ms | **~50%** |
+| decode, `8,0,0,0` | 558 ms | 177 ms | 381 ms | |
+| decode, `1,1,1,1` | 612 ms | 234 ms | 378 ms | |
+
+The trunk lands at 377-388 ms across four independent decode configurations,
+which is what makes the decomposition trustworthy.
+
+**The GPU MoE is not free**, and it is worth being explicit because the shape
+of the numbers invites that reading. It is 25% of the offloaded prefill and 29%
+of the offloaded token. What offload buys is **4.6x** on prefill MoE and
+**2.4x** on decode MoE. Decode works out at ~2.1 ms/layer including router and
+transfer, the same ballpark as ../moe-offload's independently measured 1.11 ms
+for a fully-resident layer.
+
+With a *completely* free MoE the ceilings would be 2.5x (prefill) and 2.0x
+(decode); the measured 1.89x and 1.43x are what a 4.6x/2.4x MoE actually gives.
+
+Note "trunk" is not only attention: it is MLA plus the DSA lightning indexer,
+**the shared expert** (which stays on the trunk by design, `moe_block.h`), the
+154880-wide output head, embeddings and norms. The shared expert is itself an
+offload candidate and nothing has measured it.
 
 At realistic residency (~22%, so ~6.2 slots left on the CPU) the curve gives
 ~694 ms, i.e. **~1.09x** — in line with the ~1.11x the prefill model predicts,

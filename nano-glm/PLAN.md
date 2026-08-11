@@ -475,12 +475,14 @@ changes shape (below).
    **`--force-split` settled what the dies are worth.** Forcing the work
    distribution regardless of routing (wrong output, right cost — `TESTING.md`)
    gives a full-offload ceiling of **1.89x on prefill** and **1.43x on decode**,
-   both bounded by the trunk still running on the client CPU (~53% and ~61% of
-   the time respectively). Four dies are worth nothing on prefill and +4.9% on
-   decode, so they buy VRAM capacity rather than parallelism. At the ~22%
-   residency that actually fits, both regimes land near **1.1x**. Numbers, the
-   sublinear decode curve, and a prediction of mine that the data falsified:
-   `OPTIMIZATION.md`, "What GPU offload is actually worth".
+   both bounded by the trunk still running on the client CPU (~40% of prefill
+   and ~50% of decode, measured from the RPC accounting). The GPU MoE is *not*
+   free — it is 25-29% of the offloaded run; what offload buys is 4.6x on
+   prefill MoE and 2.4x on decode MoE. Four dies are worth nothing on prefill
+   and +4.9% on decode, so they buy VRAM capacity rather than parallelism. At
+   the ~22% residency that actually fits, both regimes land near **1.1x**.
+   Numbers, the sublinear decode curve, and two claims of mine the data
+   falsified: `OPTIMIZATION.md`, "What GPU offload is actually worth".
 
    Still open here: the per-layer router read-back is a hard sync point, and a
    device's expert work could start as soon as its slice of the decision lands.
