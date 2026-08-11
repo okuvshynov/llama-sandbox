@@ -158,7 +158,13 @@ if(NOT NANO_VULKAN)
     add_executable(nano-chat apps/nano-chat/main.cpp)
     target_link_libraries(nano-chat PRIVATE nano-lib)
 
-    list(APPEND NANO_TARGETS nano-glm nano-bench nano-chat)
+    # Temporary: the deepseek4 porting harness. Runs the trunk as far as it is
+    # ported and dumps named tensors for comparison against llama.cpp
+    # (logit-kld's `dump`). Goes away when the graph is complete.
+    add_executable(ds4-port apps/ds4-port/main.cpp)
+    target_link_libraries(ds4-port PRIVATE nano-lib)
+
+    list(APPEND NANO_TARGETS nano-glm nano-bench nano-chat ds4-port)
 endif()
 
 # moe_block.h is shared, so both binaries must agree on whether it traces.

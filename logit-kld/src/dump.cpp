@@ -57,7 +57,7 @@ struct dump_params {
     std::string prompt;
     std::string out_path = "dump.ntd";
     std::string name_filter;      // substring match on the tensor name
-    int32_t     layer     = -2;   // -2 = any; -1 = the non-layer tensors
+    std::vector<int32_t> layers;  // empty = any; a negative entry = non-layer tensors
     int32_t     n_threads = (int32_t) physical_core_count();
     int32_t     n_ctx     = 4096;
     uint64_t    max_elem  = 4u * 1024 * 1024;  // per tensor, then truncate
@@ -77,18 +77,25 @@ static bool name_matches(const dump_params & p, const char * name) {
     if (!p.name_filter.empty() && !strstr(name, p.name_filter.c_str())) {
         return false;
     }
-    if (p.layer == -2) {
+    if (p.layers.empty()) {
         return true;
     }
-    char suffix[32];
-    snprintf(suffix, sizeof(suffix), "-%d", p.layer);
-    const size_t n = strlen(name), s = strlen(suffix);
-    if (p.layer >= 0) {
-        return n > s && strcmp(name + n - s, suffix) == 0;
+    // Non-negative layers only. llama.cpp gives a negative layer index no
+    // suffix — but so does every *unnamed* ggml node, and there are thousands
+    // of those, so "has no suffix" cannot pick out the handful of tensors built
+    // outside the layer loop. Tried it: `--layer 0,-1` captured 5478 tensors
+    // where `--layer 0` captures 53. Use `--name` for those; it is exact.
+    const size_t n = strlen(name);
+    for (int32_t layer : p.layers) {
+        if (layer < 0) {
+            continue;
+        }
+        char suffix[32];
+        snprintf(suffix, sizeof(suffix), "-%d", layer);
+        const size_t sl = strlen(suffix);
+        if (n > sl && strcmp(name + n - sl, suffix) == 0) return true;
     }
-    // -1: the tensors llama.cpp builds outside the layer loop, which it also
-    // tags "-1". Same rule.
-    return n > 2 && strcmp(name + n - 2, "-1") == 0;
+    return false;
 }
 
 static bool eval_cb(ggml_tensor * t, bool ask, void * user_data) {
@@ -162,7 +169,19 @@ static bool parse_args(int argc, char ** argv, dump_params & p) {
         else if (a == "-p"      && i + 1 < argc) p.prompt      = argv[++i];
         else if (a == "-o"      && i + 1 < argc) p.out_path    = argv[++i];
         else if (a == "--name"  && i + 1 < argc) p.name_filter = argv[++i];
-        else if (a == "--layer" && i + 1 < argc) p.layer       = atoi(argv[++i]);
+        else if (a == "--layer" && i + 1 < argc) {
+            // Comma-separated, so "0,-1" takes one layer plus the tensors built
+            // outside the layer loop — which is what a comparison needs.
+            const std::string v = argv[++i];
+            size_t pos = 0;
+            while (pos <= v.size()) {
+                const size_t c = v.find(',', pos);
+                const std::string tok = v.substr(pos, c == std::string::npos ? std::string::npos : c - pos);
+                if (!tok.empty()) p.layers.push_back(atoi(tok.c_str()));
+                if (c == std::string::npos) break;
+                pos = c + 1;
+            }
+        }
         else if (a == "-t"      && i + 1 < argc) p.n_threads   = atoi(argv[++i]);
         else if (a == "-c"      && i + 1 < argc) p.n_ctx       = atoi(argv[++i]);
         else if (a == "--max-elem" && i + 1 < argc) p.max_elem = strtoull(argv[++i], nullptr, 10);
@@ -172,8 +191,10 @@ static bool parse_args(int argc, char ** argv, dump_params & p) {
         fprintf(stderr,
             "Usage: dump -m <model.gguf> -p <prompt> [options]\n"
             "  -o <path>       output (default dump.ntd)\n"
-            "  --layer <n>     only tensors llama.cpp tagged with this layer;\n"
-            "                  -1 selects the ones built outside the layer loop\n"
+            "  --layer <list>  comma-separated layer indices, e.g. 0 or 0,1.\n"
+            "                  For the tensors built outside the layer loop use\n"
+            "                  --name: they carry no layer suffix, and neither do\n"
+            "                  the thousands of unnamed ggml nodes\n"
             "  --name <sub>    only tensors whose name contains <sub>\n"
             "  --max-elem <n>  truncate each tensor to n elements (default 4M)\n"
             "  -c <int>        context size (default 4096)\n"
