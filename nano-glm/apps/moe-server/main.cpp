@@ -28,6 +28,8 @@
 #include "moe_proto.h"
 
 #include "build_info.h"
+#include "models/deepseek4/model.h"
+#include "models/deepseek4/moe_block.h"
 #include "models/glm_dsa/model.h"
 #include "models/glm_dsa/moe_block.h"
 #include "cpu_topology.h"
@@ -171,8 +173,17 @@ struct layer_error {
     uint64_t n_calls  = 0;
 };
 
+// Which architecture is loaded. Two explicit cases rather than an interface:
+// the graphs differ in ops, not in parameters, and lib/README.md argues at
+// length for copying over abstracting here.
+enum moe_arch { MOE_ARCH_GLM_DSA, MOE_ARCH_DEEPSEEK4 };
+
 struct moe_backend {
-    nano_model              M;
+    moe_arch                arch = MOE_ARCH_GLM_DSA;
+    nano_model              glm;      // exactly one of these is loaded
+    ds4_model               ds4;
+    moe_shape               shape;    // whichever, projected to the shared set
+
     int                     n_threads = 1;
     std::vector<moe_device> devices;
 
@@ -202,6 +213,26 @@ struct moe_backend {
     std::vector<float>    out_buf;
 };
 
+// The mmap'd store behind whichever model is loaded, for the handshake.
+static const gguf_store & store_of(const moe_backend & B) {
+    return B.arch == MOE_ARCH_DEEPSEEK4 ? (const gguf_store &) B.ds4
+                                        : (const gguf_store &) B.glm;
+}
+
+// A layer's three routed-expert tensors. Everything that only *moves* expert
+// weights — residency upload, the compacted path — needs these and nothing
+// else, so it can stay arch-neutral.
+struct expert_w { ggml_tensor * up; ggml_tensor * gate; ggml_tensor * down; };
+
+static expert_w experts_of(const moe_backend & B, uint32_t il) {
+    if (B.arch == MOE_ARCH_DEEPSEEK4) {
+        const ds4_layer & L = B.ds4.layers[il];
+        return { L.ffn_up_exps, L.ffn_gate_exps, L.ffn_down_exps };
+    }
+    const nano_layer & L = B.glm.layers[il];
+    return { L.ffn_up_exps, L.ffn_gate_exps, L.ffn_down_exps };
+}
+
 // ---- the router half ------------------------------------------------------
 //
 // Runs the router and reads its decision back to the host. This read-back is
@@ -210,7 +241,7 @@ struct moe_backend {
 // not known until the graph has already run — too late to have partitioned the
 // expert work across devices.
 static bool run_router(moe_backend & B, uint32_t layer, int32_t n_tokens, const float * x) {
-    const nano_hparams & h = B.M.h;
+    const moe_shape & h = B.shape;
 
     ggml_init_params ip = {
         /*.mem_size   =*/ B.router_meta.size(),
@@ -226,7 +257,18 @@ static bool run_router(moe_backend & B, uint32_t layer, int32_t n_tokens, const 
     ggml_set_name(inp, "x");
     ggml_set_input(inp);
 
-    const moe_routing r = build_moe_router(ctx, gf, h, layer, B.M.layers[layer], inp, n_tokens);
+    ggml_tensor * r_ids = nullptr;
+    ggml_tensor * r_wts = nullptr;
+    if (B.arch == MOE_ARCH_DEEPSEEK4) {
+        const ds4_routing r = build_ds4_moe_router(ctx, gf, B.ds4.h, layer, B.ds4.layers[layer],
+                                                   inp, n_tokens);
+        r_ids = r.ids; r_wts = r.weights;
+    } else {
+        const moe_routing r = build_moe_router(ctx, gf, B.glm.h, layer, B.glm.layers[layer],
+                                               inp, n_tokens);
+        r_ids = r.ids; r_wts = r.weights;
+    }
+    const moe_routing r = { r_ids, r_wts };
 
     // Both are read back, so both are made contiguous first. `ids` needs it:
     // top-k is a *view* of the argsort output with the unselected rows still
@@ -270,7 +312,7 @@ static bool run_router(moe_backend & B, uint32_t layer, int32_t n_tokens, const 
 // the model is mmap'd into host memory, so each expert is one tensor_set.
 static bool device_load_experts(moe_backend & B, moe_device & D,
                                 const std::vector<int32_t> & experts) {
-    const nano_hparams & h = B.M.h;
+    const moe_shape & h = B.shape;
     const uint32_t n_moe = h.n_layer - h.n_dense_lead;
     const uint32_t k = (uint32_t) experts.size();
 
@@ -287,14 +329,11 @@ static bool device_load_experts(moe_backend & B, moe_device & D,
     if (!D.wctx) { fprintf(stderr, "moe-server: no context for resident experts\n"); return false; }
 
     for (uint32_t il = h.n_dense_lead; il < h.n_layer; il++) {
-        const nano_layer & L = B.M.layers[il];
+        const expert_w E = experts_of(B, il);
         device_layer & dl = D.dl[il];
-        dl.up   = ggml_new_tensor_3d(D.wctx, L.ffn_up_exps->type,
-                                     L.ffn_up_exps->ne[0],   L.ffn_up_exps->ne[1],   k);
-        dl.gate = ggml_new_tensor_3d(D.wctx, L.ffn_gate_exps->type,
-                                     L.ffn_gate_exps->ne[0], L.ffn_gate_exps->ne[1], k);
-        dl.down = ggml_new_tensor_3d(D.wctx, L.ffn_down_exps->type,
-                                     L.ffn_down_exps->ne[0], L.ffn_down_exps->ne[1], k);
+        dl.up   = ggml_new_tensor_3d(D.wctx, E.up->type,   E.up->ne[0],   E.up->ne[1],   k);
+        dl.gate = ggml_new_tensor_3d(D.wctx, E.gate->type, E.gate->ne[0], E.gate->ne[1], k);
+        dl.down = ggml_new_tensor_3d(D.wctx, E.down->type, E.down->ne[0], E.down->ne[1], k);
     }
 
     ggml_backend_buffer_type_t buft = ggml_backend_get_default_buffer_type(D.backend);
@@ -313,11 +352,11 @@ static bool device_load_experts(moe_backend & B, moe_device & D,
 
     const auto t0 = clk::now();
     for (uint32_t il = h.n_dense_lead; il < h.n_layer; il++) {
-        const nano_layer & L = B.M.layers[il];
+        const expert_w E = experts_of(B, il);
         device_layer & dl = D.dl[il];
         dl.local_of.assign(h.n_expert, -1);
 
-        ggml_tensor * src[3] = { L.ffn_up_exps, L.ffn_gate_exps, L.ffn_down_exps };
+        ggml_tensor * src[3] = { E.up, E.gate, E.down };
         ggml_tensor * dst[3] = { dl.up,         dl.gate,         dl.down         };
         for (uint32_t j = 0; j < k; j++) {
             const uint32_t e = (uint32_t) experts[j];
@@ -344,7 +383,7 @@ static bool device_load_experts(moe_backend & B, moe_device & D,
 // devices[0] holds everything and is the fallthrough, so every pair lands
 // somewhere and no pair lands twice.
 static void assign_pairs(moe_backend & B, uint32_t layer, int32_t n_tokens) {
-    const nano_hparams & h = B.M.h;
+    const moe_shape & h = B.shape;
     const size_t n_pairs = (size_t) n_tokens * h.n_expert_used;
 
     for (moe_device & D : B.devices) {
@@ -420,7 +459,7 @@ static void assign_pairs(moe_backend & B, uint32_t layer, int32_t n_tokens) {
 // compacted path below is used *only* when some other device took work.
 static bool run_device_full(moe_backend & B, moe_device & D, uint32_t layer,
                             int32_t n_tokens, const float * x) {
-    const nano_hparams & h = B.M.h;
+    const moe_shape & h = B.shape;
 
     ggml_init_params ip = {
         /*.mem_size   =*/ D.meta.size(),
@@ -444,8 +483,15 @@ static bool run_device_full(moe_backend & B, moe_device & D, uint32_t layer,
     ggml_set_name(wts, "weights");
     ggml_set_input(wts);
 
-    ggml_tensor * moe_out = build_moe_experts(ctx, gf, h, B.M.layers[layer], inp,
-                                              moe_routing{ ids, wts }, n_tokens);
+    ggml_tensor * moe_out = nullptr;
+    if (B.arch == MOE_ARCH_DEEPSEEK4) {
+        moe_out = build_ds4_moe_experts(ctx, gf, B.ds4.h, B.ds4.layers[layer], inp,
+                                        ds4_routing{ ids, wts },
+                                        B.ds4.h.swiglu_clamp_exp[layer], n_tokens);
+    } else {
+        moe_out = build_moe_experts(ctx, gf, B.glm.h, B.glm.layers[layer], inp,
+                                    moe_routing{ ids, wts }, n_tokens);
+    }
     ggml_set_output(moe_out);
     ggml_build_forward_expand(gf, moe_out);
 
@@ -481,7 +527,7 @@ static bool run_device_full(moe_backend & B, moe_device & D, uint32_t layer,
 // to a token is host knowledge.
 static bool run_device_compact(moe_backend & B, moe_device & D, uint32_t layer,
                                const float * x) {
-    const nano_hparams & h = B.M.h;
+    const moe_shape & h = B.shape;
     const int32_t m = (int32_t) D.pair_token.size();
     if (m == 0) return true;
 
@@ -489,8 +535,8 @@ static bool run_device_compact(moe_backend & B, moe_device & D, uint32_t layer,
     ggml_tensor * w_gate;
     ggml_tensor * w_down;
     if (D.holds_all) {
-        const nano_layer & L = B.M.layers[layer];
-        w_up = L.ffn_up_exps; w_gate = L.ffn_gate_exps; w_down = L.ffn_down_exps;
+        const expert_w E = experts_of(B, layer);
+        w_up = E.up; w_gate = E.gate; w_down = E.down;
     } else {
         const device_layer & dl = D.dl[layer];
         w_up = dl.up; w_gate = dl.gate; w_down = dl.down;
@@ -556,7 +602,7 @@ static bool run_device_compact(moe_backend & B, moe_device & D, uint32_t layer,
 static bool eval_layer(moe_backend & B, uint32_t layer, int32_t n_tokens,
                        const float * x, float * out,
                        uint32_t & t_route_us, uint32_t & t_compute_us) {
-    const nano_hparams & h = B.M.h;
+    const moe_shape & h = B.shape;
 
     const size_t n_act = (size_t) h.n_embd        * n_tokens;
     const size_t n_sel = (size_t) h.n_expert_used * n_tokens;
@@ -738,9 +784,9 @@ static bool serve_hello(moe_backend & B, moe_socket c, const std::string & model
         }
     }
 
-    const nano_hparams & h = B.M.h;
+    const moe_shape & h = B.shape;
     const std::string me = nano_build_info() + nano_run_info(B.n_threads)
-                         + nano_model_info(model_path, B.M.bytes_mapped, B.M.n_shards);
+                         + nano_model_info(model_path, store_of(B).bytes_mapped, store_of(B).n_shards);
 
     moe_hello_response rh = {};
     rh.magic         = MOE_MAGIC;
@@ -782,7 +828,7 @@ static bool serve_one(moe_backend & B, moe_socket c, bool verbose) {
         return false;
     }
 
-    const nano_hparams & h = B.M.h;
+    const moe_shape & h = B.shape;
     if (rq.n_embd != h.n_embd || rq.n_tokens == 0) {
         send_error(c, MOE_ERR_DIMS, "n_embd mismatch or n_tokens == 0");
         return false;
@@ -896,7 +942,34 @@ int main(int argc, char ** argv) {
 
     moe_backend B;
     const auto t_load0 = clk::now();
-    load_model(B.M, p.model_path);
+    // Peek at the architecture, then load with that model's own loader. Each
+    // hard-aborts on the wrong arch, which is right but a poor error here.
+    {
+        ggml_context * pctx = nullptr;
+        gguf_init_params pgp = { /*no_alloc =*/ true, /*ctx =*/ &pctx };
+        gguf_context * pg = gguf_init_from_file(p.model_path.c_str(), pgp);
+        if (!pg) {
+            fprintf(stderr, "moe-server: cannot read GGUF '%s'\n", p.model_path.c_str());
+            return 1;
+        }
+        const std::string arch = kv_str_opt(pg, "general.architecture", "?");
+        gguf_free(pg);
+        ggml_free(pctx);
+
+        if (arch == "deepseek4") {
+            B.arch = MOE_ARCH_DEEPSEEK4;
+            ds4_load_model(B.ds4, p.model_path);
+            B.shape = ds4_moe_shape_of(B.ds4.h);
+        } else if (arch == "glm-dsa") {
+            B.arch = MOE_ARCH_GLM_DSA;
+            load_model(B.glm, p.model_path);
+            B.shape = moe_shape_of(B.glm.h);
+        } else {
+            fprintf(stderr, "moe-server: architecture '%s' has no MoE block here "
+                            "(have: glm-dsa, deepseek4)\n", arch.c_str());
+            return 1;
+        }
+    }
     B.n_threads = p.n_threads;
 
     // devices[0] is always the DRAM device: it holds every expert and is the
@@ -940,7 +1013,7 @@ int main(int argc, char ** argv) {
     ggml_backend_cpu_set_n_threads(D0.backend, B.n_threads);
     D0.galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(D0.backend));
     D0.holds_all = true;
-    D0.dl.resize(B.M.h.n_layer);   // empty local_of everywhere: indexes globally
+    D0.dl.resize(B.shape.n_layer);   // empty local_of everywhere: indexes globally
 
     // room for the tensor structs each graph needs, plus the graph itself
     D0.meta.resize(ggml_tensor_overhead() * 64 + ggml_graph_overhead());
@@ -948,9 +1021,9 @@ int main(int argc, char ** argv) {
     B.router_galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(D0.backend));
 
     if (split_experts > 0) {
-        if (split_experts > B.M.h.n_expert) {
+        if (split_experts > B.shape.n_expert) {
             fprintf(stderr, "moe-server: %u experts exceeds n_expert %u\n",
-                    split_experts, B.M.h.n_expert);
+                    split_experts, B.shape.n_expert);
             return 1;
         }
 
@@ -1012,15 +1085,15 @@ int main(int argc, char ** argv) {
                             "devices exist\n", B.force_split.size(), B.devices.size() - 1);
             return 1;
         }
-        if (total > B.M.h.n_expert_used) {
+        if (total > B.shape.n_expert_used) {
             fprintf(stderr, "moe-server: --force-split sums to %u, only %u experts are used "
-                            "per token\n", total, B.M.h.n_expert_used);
+                            "per token\n", total, B.shape.n_expert_used);
             return 1;
         }
         fprintf(stderr, "moe-server: *** --force-split active: OUTPUT WILL BE WRONG ***\n");
         fprintf(stderr, "moe-server: per token, %u of %u slots forced onto split devices "
                         "(CPU keeps %u); timing only\n",
-                total, B.M.h.n_expert_used, B.M.h.n_expert_used - total);
+                total, B.shape.n_expert_used, B.shape.n_expert_used - total);
     }
 
     if (p.compare) {
@@ -1036,15 +1109,15 @@ int main(int argc, char ** argv) {
             return 1;
         }
         B.compare = true;
-        B.err.resize(B.M.h.n_layer);
+        B.err.resize(B.shape.n_layer);
         fprintf(stderr, "moe-server: compare mode — both paths per layer, "
                         "CPU result returned, ~2x slower\n");
     }
 
-    const nano_hparams & h = B.M.h;
+    const moe_shape & h = B.shape;
     fprintf(stderr, "moe-server: %s\n", nano_build_line().c_str());
     fprintf(stderr, "moe-server: %s | n_layer=%u (dense lead %u) n_embd=%u n_expert=%u used=%u\n",
-            B.M.desc.c_str(), h.n_layer, h.n_dense_lead, h.n_embd, h.n_expert, h.n_expert_used);
+            store_of(B).desc.c_str(), h.n_layer, h.n_dense_lead, h.n_embd, h.n_expert, h.n_expert_used);
     fprintf(stderr, "moe-server: load+init %.1fs, threads %d (%d physical / %d logical)\n",
             std::chrono::duration<double>(clk::now() - t_load0).count(),
             B.n_threads, physical_core_count(), (int) std::thread::hardware_concurrency());

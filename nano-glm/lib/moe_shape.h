@@ -21,7 +21,11 @@ struct moe_shape {
 
     uint32_t n_embd        = 0;
     uint32_t n_layer       = 0;
-    uint32_t n_dense_lead  = 0;   // leading non-MoE layers, if any
+    // Leading layers the backend does NOT serve, which the client evaluates
+    // itself. For glm-dsa those are its dense layers; for deepseek4 they are
+    // the hash-routed ones, whose experts come from a token-id lookup the
+    // wire protocol does not carry. Same field, same meaning to the client.
+    uint32_t n_dense_lead  = 0;
     uint32_t n_expert      = 0;
     uint32_t n_expert_used = 0;
     uint32_t n_ff_exp      = 0;

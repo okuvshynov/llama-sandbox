@@ -275,7 +275,9 @@ static moe_shape ds4_moe_shape_of(const ds4_hparams & h) {
     s.arch          = h.arch;
     s.n_embd        = h.n_embd;
     s.n_layer       = h.n_layer;
-    s.n_dense_lead  = 0;          // every layer is routed
+    // Every layer is routed, but layers 0..n_hash_layer-1 route by token id
+    // and stay on the client, which is what this field tells it.
+    s.n_dense_lead  = h.n_hash_layer;
     s.n_expert      = h.n_expert;
     s.n_expert_used = h.n_expert_used;
     s.n_ff_exp      = h.n_ff_exp;

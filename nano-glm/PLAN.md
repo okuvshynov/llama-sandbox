@@ -124,6 +124,48 @@ live in `OPTIMIZATION.md` under the same numbers.
   no-model memory probe. A regression guard, not a design input.
 - **6. Cross-prompt residency.** Placement does not transfer; `ROUTING.md`.
 
+### 14. A second architecture: DeepSeek-V4-Flash — **Now** (branch `deepseek-v4-flash`)
+
+`unsloth/DeepSeek-V4-Flash-0731-GGUF`, UD-Q8_K_XL, 5 shards, 150.7 GiB at
+`D:\llms\ds-v4-flash`. Three reasons it is worth the port, in order:
+
+1. **It is the second model**, which is the only way to find out which of
+   `lib/`'s tier boundaries were real. `lib/README.md` scores its own
+   prediction; the short version is that the "DeepSeek lineage" family tier was
+   wishful and the loader had a latent alignment bug.
+2. **~91% expert residency** on this hardware, against GLM-5.2's 22%. Every
+   offload conclusion in `OPTIMIZATION.md` is bounded by that 22% and says so.
+   This model reaches the regime those measurements could not see.
+3. **A high-residency thread-overhead check.** The per-layer thread spawn cost
+   ~3-7% of a decode layer at 20% residency; whether that holds when the GPUs
+   hold nearly everything is unmeasured.
+
+**Done:** `lib/models/{glm_dsa,deepseek4}/`, the generic loader split into
+`gguf_store.h`, `moe_shape.h` for the client/backend contract, the deepseek4
+hparams and loader, its MoE block, `moe-server` dispatching on architecture,
+and `nano-probe` / `gguf_peek.py` to see what a checkpoint actually contains.
+GLM-5.2 stayed byte-identical through all of it (`gate.py rpc`, 6/6).
+
+**Hash-routed layers stay on the client.** Layers 0-2 pick experts from a
+token-id lookup, and the wire protocol carries activations, not token ids.
+Rather than grow the request, `moe_shape.n_dense_lead` reports 3 for this model
+— the field already means "leading layers the backend does not serve", and the
+client already honours it. It makes the trunk slightly bigger and the protocol
+not at all.
+
+**Next, in order:**
+
+- **The trunk graph.** The large half, and larger than glm-dsa's was.
+  Hyper-connections replace the residual stream with 4 Sinkhorn-mixed streams
+  (20 iterations), so it is not a matter of swapping an attention kernel. Also
+  MLA with per-layer KV compressors (41 layers), attention sinks, yarn rope,
+  the DSA indexer on the even layers, and the hash routing above.
+- **A golden set.** llama.cpp supports `LLM_ARCH_DEEPSEEK4`, so `gate.py
+  llamacpp` can create one exactly as it did for glm-dsa. The verification
+  methodology survives the second model unchanged, which was not guaranteed.
+- **The two measurements** this model was chosen for, once a trunk exists to
+  drive the server end to end.
+
 ### 10. C++ unit tests — **Planned**
 
 The gate is all end-to-end: every check costs a model load and answers in
