@@ -24,7 +24,9 @@ add_subdirectory(${LLAMA_CPP_DIR} ${CMAKE_CURRENT_BINARY_DIR}/llama.cpp)
 
 find_package(Threads REQUIRED)
 
-foreach(tool collect rescore)
+# `dump` captures llama.cpp's named intermediates so a port can be checked
+# tensor by tensor instead of only at the logits — see src/dump.cpp.
+foreach(tool collect rescore dump)
     add_executable(${tool}
         src/${tool}.cpp
         src/logits_file.cpp
