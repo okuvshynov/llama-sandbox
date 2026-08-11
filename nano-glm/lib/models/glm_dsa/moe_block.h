@@ -17,7 +17,7 @@
 // the seemingly redundant reshapes and the pairwise combine. Do not tidy it.
 
 #include "expert_trace.h"
-#include "nano_model.h"
+#include "model.h"
 
 #include "ggml.h"
 

@@ -28,7 +28,8 @@
 // study artefact, not a hot path: ~2.4 KB per position, and being able to
 // grep it is worth more than the bytes.
 
-#include "nano_model.h"
+#include "gguf_store.h"
+#include "moe_shape.h"
 
 #include "ggml.h"
 #include "ggml-backend.h"
@@ -59,7 +60,7 @@ struct expert_trace_state {
 
 static expert_trace_state g_expert_trace;
 
-static void expert_trace_open(const std::string & path, const nano_hparams & h,
+static void expert_trace_open(const std::string & path, const moe_shape & h,
                               const std::string & model_desc, int32_t n_prompt) {
     FILE * f = fopen(path.c_str(), "w");
     if (!f) NANO_ABORT("cannot write expert trace '%s'", path.c_str());
@@ -154,7 +155,7 @@ static bool     expert_trace_built() { return true; }
 
 #else  // !NANO_EXPERT_TRACE — every hook compiles away
 
-static inline void expert_trace_open(const std::string &, const nano_hparams &,
+static inline void expert_trace_open(const std::string &, const moe_shape &,
                                      const std::string &, int32_t) {}
 static inline void expert_trace_reset() {}
 static inline void expert_trace_node_add(uint32_t, ggml_tensor *) {}

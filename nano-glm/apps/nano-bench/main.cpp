@@ -30,11 +30,11 @@
 // Not a correctness tool. gate.py owns that, and the two must stay apart — a
 // benchmark that also gated would invite trading determinism for speed.
 //
-// nano_graph.h first, for the winsock2-before-windows.h ordering.
-#include "nano_graph.h"
+// models/glm_dsa/graph.h first, for the winsock2-before-windows.h ordering.
+#include "models/glm_dsa/graph.h"
 
 #include "cpu_topology.h"
-#include "nano_model.h"
+#include "models/glm_dsa/model.h"
 #include "prompt_source.h"
 
 #include <algorithm>

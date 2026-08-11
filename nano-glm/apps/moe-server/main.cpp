@@ -6,7 +6,7 @@
 // the model load.
 //
 // Correctness bar is the same as everywhere else here: the graphs it builds
-// come from moe_block.h, the identical source the in-process client uses, so a
+// come from models/glm_dsa/moe_block.h, the identical source the in-process client uses, so a
 // KL == 0 gate against llama.cpp still applies once the trunk talks to this
 // over a socket.
 //
@@ -18,7 +18,7 @@
 // `gate.py rpc` is byte-identical to the local path. PLAN.md step 3.
 //
 // moe_proto.h must come first: winsock2.h has to precede windows.h, which
-// nano_model.h pulls in.
+// models/glm_dsa/model.h pulls in.
 //
 // Deferred optimisations for this backend — graph caching, zero-copy transfer,
 // fusing up+gate, f16 on the wire, and why request pipelining is not worth
@@ -28,8 +28,8 @@
 #include "moe_proto.h"
 
 #include "build_info.h"
-#include "moe_block.h"
-#include "nano_model.h"
+#include "models/glm_dsa/model.h"
+#include "models/glm_dsa/moe_block.h"
 #include "cpu_topology.h"
 
 #include "ggml.h"
@@ -622,6 +622,7 @@ static bool eval_layer(moe_backend & B, uint32_t layer, int32_t n_tokens,
         if (n_dev == 1) {
             if (!run_one(0)) return false;
         } else {
+            // TODO: create thread pool here
             std::vector<std::thread> workers;
             std::vector<char> ok(n_dev, 1);
             workers.reserve(n_dev - 1);

@@ -13,8 +13,8 @@
 // misparses is indistinguishable from a model that is subtly wrong, and this
 // whole project exists to tell those apart.
 //
-// NOTE: include this BEFORE nano_model.h. winsock2.h must precede windows.h,
-// and nano_model.h pulls the latter in.
+// NOTE: include this BEFORE gguf_store.h. winsock2.h must precede windows.h,
+// and gguf_store.h pulls the latter in.
 
 #if defined(_WIN32)
 #   ifndef WIN32_LEAN_AND_MEAN

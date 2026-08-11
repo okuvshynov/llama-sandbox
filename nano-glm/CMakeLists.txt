@@ -124,7 +124,15 @@ endif()
 # the Vulkan tree, per the comment on NANO_VULKAN above.
 add_executable(moe-server apps/moe-server/main.cpp)
 target_link_libraries(moe-server PRIVATE nano-lib)
-set(NANO_TARGETS moe-server)
+
+# Loads a model with the real loader and reports its structure and expert
+# footprint. Built in both trees: in the Vulkan one it can also say how much of
+# the model the GPUs would hold, which is the question that decides whether
+# offload is worth measuring for a given model.
+add_executable(nano-probe apps/nano-probe/main.cpp)
+target_link_libraries(nano-probe PRIVATE nano-lib)
+
+set(NANO_TARGETS moe-server nano-probe)
 
 if(NOT NANO_VULKAN)
     # The validation harness: raw token ids in, an lkldtopk file out. Frozen

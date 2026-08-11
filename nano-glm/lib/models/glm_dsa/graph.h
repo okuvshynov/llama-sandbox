@@ -15,7 +15,7 @@
 
 #include "expert_trace.h"
 #include "moe_block.h"
-#include "nano_model.h"
+#include "model.h"
 
 #include "ggml.h"
 #include "ggml-alloc.h"

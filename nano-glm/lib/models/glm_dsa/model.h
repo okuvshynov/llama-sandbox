@@ -1,92 +1,19 @@
 #pragma once
 
-// Model definition and GGUF loader for GLM-5.2 ("glm-dsa"), shared by the
-// nano-glm client and the moe-server backend. Both mmap the same shards and
-// touch only the tensors their role needs, so the page cache is shared and
-// neither pays for the other's weights.
+// GLM-5.2 ("glm-dsa"): hparams, tensor names, and the loader that binds them.
 //
-// Extracted from the trunk app when the MoE block moved behind a network
-// service; the hparams asserts and tensor names must stay in one place or the
-// two binaries can disagree about the model while both appearing to work.
+// Tier three of lib/README.md's split — one model, and deliberately so. The
+// generic half (metadata helpers, mmap, shard enumeration, the tensor map) is
+// gguf_store.h; everything here knows it is looking at glm-dsa.
+//
+// Shared by the nano-glm client and the moe-server backend: both mmap the same
+// shards and touch only the tensors their role needs, so the page cache is
+// shared and neither pays for the other's weights. The hparams asserts and
+// tensor names must stay in one place or the two binaries can disagree about
+// the model while both appearing to work.
 
-#include "ggml.h"
-#include "gguf.h"
-#include "ggml-backend.h"
-
-
-// File mapping for the weight shards (map_file_ro below). Guarded because
-// cpu_topology.h may have pulled windows.h in already; NOMINMAX has to be set
-// before the first include of it either way, or the min/max macros eat the
-// std::min / std::max calls further down.
-#if defined(_WIN32)
-#   ifndef WIN32_LEAN_AND_MEAN
-#       define WIN32_LEAN_AND_MEAN
-#   endif
-#   ifndef NOMINMAX
-#       define NOMINMAX
-#   endif
-#   include <windows.h>
-#else
-#   include <fcntl.h>
-#   include <sys/mman.h>
-#   include <sys/stat.h>
-#   include <unistd.h>
-#endif
-
-#include <cinttypes>
-#include <cstdio>
-#include <cstdlib>
-#include <cstring>
-#include <map>
-#include <string>
-#include <vector>
-
-#define NANO_ABORT(...) do { fprintf(stderr, "nano-glm: " __VA_ARGS__); fprintf(stderr, "\n"); exit(1); } while (0)
-
-// ---------------------------------------------------------------------------
-// GGUF metadata helpers (hard error on missing key unless *_opt)
-
-static int64_t kv_id(const gguf_context * g, const char * key, bool required) {
-    int64_t id = gguf_find_key(g, key);
-    if (id < 0 && required) NANO_ABORT("missing GGUF key '%s'", key);
-    return id;
-}
-
-static uint32_t kv_u32(const gguf_context * g, const char * key) {
-    int64_t id = kv_id(g, key, true);
-    switch (gguf_get_kv_type(g, id)) {
-        case GGUF_TYPE_UINT32: return gguf_get_val_u32(g, id);
-        case GGUF_TYPE_INT32:  return (uint32_t) gguf_get_val_i32(g, id);
-        case GGUF_TYPE_UINT64: return (uint32_t) gguf_get_val_u64(g, id);
-        case GGUF_TYPE_UINT16: return gguf_get_val_u16(g, id);
-        case GGUF_TYPE_INT16:  return (uint32_t) gguf_get_val_i16(g, id);
-        case GGUF_TYPE_UINT8:  return gguf_get_val_u8(g, id);
-        default: NANO_ABORT("GGUF key '%s' is not an integer", key);
-    }
-}
-
-static uint32_t kv_u32_opt(const gguf_context * g, const char * key, uint32_t dflt) {
-    return gguf_find_key(g, key) < 0 ? dflt : kv_u32(g, key);
-}
-
-static float kv_f32(const gguf_context * g, const char * key) {
-    return gguf_get_val_f32(g, kv_id(g, key, true));
-}
-
-static float kv_f32_opt(const gguf_context * g, const char * key, float dflt) {
-    int64_t id = gguf_find_key(g, key);
-    return id < 0 ? dflt : gguf_get_val_f32(g, id);
-}
-
-static bool kv_bool_opt(const gguf_context * g, const char * key, bool dflt) {
-    int64_t id = gguf_find_key(g, key);
-    return id < 0 ? dflt : gguf_get_val_bool(g, id);
-}
-
-static std::string kv_str_opt(const gguf_context * g, const char * key, const std::string & dflt) {
-    int64_t id = gguf_find_key(g, key);
-    return id < 0 ? dflt : gguf_get_val_str(g, id);
-}
+#include "gguf_store.h"
+#include "moe_shape.h"
 
 // ---------------------------------------------------------------------------
 // hparams (GLM-5.2 / glm-dsa; values asserted where the graph hardcodes structure)
@@ -258,18 +185,25 @@ struct nano_layer {
     ggml_tensor * indexer_attn_q_b;
 };
 
-struct nano_model {
+// What the RPC handshake and the routing trace need, and nothing more.
+static moe_shape moe_shape_of(const nano_hparams & h) {
+    moe_shape s;
+    s.arch          = h.arch;
+    s.n_embd        = h.n_embd;
+    s.n_layer       = h.n_layer;
+    s.n_dense_lead  = h.n_dense_lead;
+    s.n_expert      = h.n_expert;
+    s.n_expert_used = h.n_expert_used;
+    s.n_ff_exp      = h.n_ff_exp;
+    s.expert_scale  = h.expert_scale;
+    s.expert_norm   = h.expert_norm;
+    return s;
+}
+
+// Derives from gguf_store, so `M.tensors`, `M.bytes_mapped` and `M.desc` read
+// exactly as they did when this was one struct.
+struct nano_model : gguf_store {
     nano_hparams h;
-    std::string  desc;
-
-    // Summed as shards are mapped, so the handshake can report which model is
-    // loaded without stat'ing the directory a second time.
-    uint64_t bytes_mapped = 0;
-    uint32_t n_shards     = 0;
-
-    std::vector<ggml_context *>        meta_ctxs;   // own the tensor structs
-    std::vector<ggml_backend_buffer_t> map_bufs;    // wrap the mmap'd data regions
-    std::map<std::string, ggml_tensor *> tensors;
 
     ggml_tensor * tok_embd;
     ggml_tensor * output_norm;
@@ -277,106 +211,13 @@ struct nano_model {
     std::vector<nano_layer> layers;
 };
 
-// Read-only whole-file mapping. Weights are used straight from the mapping
-// (ggml_backend_cpu_buffer_from_ptr), so it must outlive the model; nothing
-// unmaps — the process exits and the OS reclaims.
-static void * map_file_ro(const std::string & path, size_t * size_out) {
-#if defined(_WIN32)
-    HANDLE fh = CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
-                            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (fh == INVALID_HANDLE_VALUE) NANO_ABORT("cannot open '%s' (err %lu)", path.c_str(), GetLastError());
-    LARGE_INTEGER sz;
-    if (!GetFileSizeEx(fh, &sz)) NANO_ABORT("cannot size '%s' (err %lu)", path.c_str(), GetLastError());
-    HANDLE mh = CreateFileMappingA(fh, nullptr, PAGE_READONLY, 0, 0, nullptr);
-    if (!mh) NANO_ABORT("CreateFileMapping failed for '%s' (err %lu)", path.c_str(), GetLastError());
-    void * addr = MapViewOfFile(mh, FILE_MAP_READ, 0, 0, 0);
-    // the view keeps the file and section alive on its own
-    CloseHandle(mh);
-    CloseHandle(fh);
-    if (!addr) NANO_ABORT("MapViewOfFile failed for '%s' (err %lu)", path.c_str(), GetLastError());
-    *size_out = (size_t) sz.QuadPart;
-    return addr;
-#else
-    int fd = open(path.c_str(), O_RDONLY);
-    if (fd < 0) NANO_ABORT("cannot open '%s'", path.c_str());
-    struct stat st;
-    fstat(fd, &st);
-    void * addr = mmap(nullptr, st.st_size, PROT_READ, MAP_SHARED, fd, 0);
-    close(fd);
-    if (addr == MAP_FAILED) NANO_ABORT("mmap failed for '%s'", path.c_str());
-    *size_out = (size_t) st.st_size;
-    return addr;
-#endif
-}
-
-static void load_shard(nano_model & M, const std::string & path, const gguf_context ** meta_out) {
-    ggml_context * ctx_meta = nullptr;
-    gguf_init_params gp = { /*no_alloc =*/ true, /*ctx =*/ &ctx_meta };
-    gguf_context * g = gguf_init_from_file(path.c_str(), gp);
-    if (!g) NANO_ABORT("failed to read GGUF '%s'", path.c_str());
-    M.meta_ctxs.push_back(ctx_meta);
-
-    size_t file_size = 0;
-    void * addr = map_file_ro(path, &file_size);
-    M.bytes_mapped += file_size;
-    M.n_shards     += 1;
-
-    const size_t data_off = gguf_get_data_offset(g);
-    ggml_backend_buffer_t buf = ggml_backend_cpu_buffer_from_ptr((char *) addr + data_off, file_size - data_off);
-    M.map_bufs.push_back(buf);
-
-    for (int64_t i = 0; i < gguf_get_n_tensors(g); i++) {
-        const char * name = gguf_get_tensor_name(g, i);
-        ggml_tensor * t = ggml_get_tensor(ctx_meta, name);
-        if (!t) NANO_ABORT("tensor '%s' missing from meta context", name);
-        ggml_backend_tensor_alloc(buf, t, (char *) addr + data_off + gguf_get_tensor_offset(g, i));
-        M.tensors[name] = t;
-    }
-
-    if (meta_out) {
-        *meta_out = g; // caller reads hparams from shard 1 and frees it
-    } else {
-        gguf_free(g);
-    }
-}
-
-static ggml_tensor * get_tensor(nano_model & M, const std::string & name, bool required = true) {
-    auto it = M.tensors.find(name);
-    if (it == M.tensors.end()) {
-        if (required) NANO_ABORT("missing tensor '%s'", name.c_str());
-        return nullptr;
-    }
-    return it->second;
-}
-
-static std::string blk(int il, const char * suffix) {
-    return "blk." + std::to_string(il) + "." + suffix;
-}
 
 static void load_model(nano_model & M, const std::string & first_shard) {
-    // shard file names: ...-00001-of-000NN.gguf
-    const gguf_context * meta = nullptr;
-    load_shard(M, first_shard, &meta);
-    M.h = load_hparams(meta);
-
-    const uint32_t n_split = kv_u32_opt(meta, "split.count", 1);
-    gguf_free((gguf_context *) meta);
-
-    if (n_split > 1) {
-        const std::string pat = "-00001-of-";
-        size_t at = first_shard.find(pat);
-        if (at == std::string::npos) NANO_ABORT("split.count=%u but path has no '-00001-of-' pattern", n_split);
-        for (uint32_t s = 2; s <= n_split; s++) {
-            char idx[16];
-            snprintf(idx, sizeof(idx), "-%05u-of-", s);
-            std::string path = first_shard;
-            path.replace(at, pat.size(), idx);
-            load_shard(M, path, nullptr);
-        }
-    }
+    load_shards(M, first_shard, [&](const gguf_context * meta) {
+        M.h = load_hparams(meta);
+    });
 
     const nano_hparams & h = M.h;
-
     M.tok_embd    = get_tensor(M, "token_embd.weight");
     M.output_norm = get_tensor(M, "output_norm.weight");
     M.output      = get_tensor(M, "output.weight", false);

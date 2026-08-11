@@ -6,7 +6,7 @@
 // or benchmark, wants the same seam.
 //
 // moe_proto.h must come first here as everywhere: winsock2.h has to precede
-// windows.h, which nano_model.h pulls in.
+// windows.h, which gguf_store.h pulls in.
 //
 // State note: g_moe and g_rpc_ctxs are file-static, so this header is safe
 // only while each app is a single translation unit. See lib/README.md before
@@ -15,7 +15,8 @@
 #include "moe_proto.h"
 
 #include "build_info.h"
-#include "nano_model.h"
+#include "gguf_store.h"
+#include "moe_shape.h"
 
 #include "ggml.h"
 
@@ -99,9 +100,9 @@ static std::deque<moe_rpc_ctx> g_rpc_ctxs;
 // Printed either way, strict or not. The durable half of this is
 // observability: a run whose log records what it was actually talking to can
 // be diagnosed later, whereas a refusal only helps someone who is watching.
-static void moe_hello(const nano_model & M, const std::string & addr, bool strict,
+static void moe_hello(const moe_shape & h, const gguf_store & M,
+                      const std::string & addr, bool strict,
                       const std::string & model_path, int n_threads) {
-    const nano_hparams & h = M.h;
     const std::string me = nano_build_info() + nano_run_info(n_threads)
                          + nano_model_info(model_path, M.bytes_mapped, M.n_shards);
 

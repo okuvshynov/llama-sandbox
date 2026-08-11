@@ -11,7 +11,7 @@
 // nano-chat is where text becomes ids, and its `--dry-run` prints a list that
 // pastes straight into `-T`.
 
-#include "nano_model.h"
+#include "gguf_store.h"
 
 #include "logits_file.h"
 

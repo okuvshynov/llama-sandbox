@@ -6,19 +6,19 @@
 // to live in a different binary or every stored reference silently rots. See
 // PLAN.md step 7.
 //
-// The engine it drives is in ../../lib: nano_graph.h holds the backends, KV
+// The engine it drives is in ../../lib: models/glm_dsa/graph.h holds the backends, KV
 // cache and the op-for-op port of llama.cpp's glm-dsa trunk graph, moe_client.h
 // the optional remote MoE seam. What is left here is policy — arguments, where
 // the prompt comes from, the greedy loop, what gets written.
 //
-// nano_graph.h first: it reaches moe_proto.h, and winsock2.h must precede the
-// windows.h that nano_model.h and cpu_topology.h pull in.
-#include "nano_graph.h"
+// models/glm_dsa/graph.h first: it reaches moe_proto.h, and winsock2.h must precede the
+// windows.h that models/glm_dsa/model.h and cpu_topology.h pull in.
+#include "models/glm_dsa/graph.h"
 
 #include "cpu_topology.h"
 #include "expert_trace.h"
 #include "logits_file.h"
-#include "nano_model.h"
+#include "models/glm_dsa/model.h"
 #include "prompt_source.h"
 #include "topk_utils.h"
 
@@ -146,7 +146,7 @@ int main(int argc, char ** argv) {
         }
         g_moe.want_log = !params.moe_log.empty();
         fprintf(stderr, "nano-glm: routed experts via moe-server at %s\n", params.moe_addr.c_str());
-        moe_hello(M, params.moe_addr, params.moe_strict, params.model_path, params.n_threads);
+        moe_hello(moe_shape_of(M.h), M, params.moe_addr, params.moe_strict, params.model_path, params.n_threads);
     }
 
     // Before the first eval: the trace hooks itself into the graph as it is built.
@@ -161,7 +161,7 @@ int main(int argc, char ** argv) {
             // sequence positions the protocol does not carry.
             NANO_ABORT("--expert-log requires the local MoE path (drop --moe-addr)");
         }
-        expert_trace_open(params.expert_log, h, M.desc, n_prompt);
+        expert_trace_open(params.expert_log, moe_shape_of(h), M.desc, n_prompt);
         fprintf(stderr, "nano-glm: routing trace -> %s\n", params.expert_log.c_str());
     }
 

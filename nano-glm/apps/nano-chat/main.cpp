@@ -9,13 +9,13 @@
 // Greedy for now, so a run is still reproducible; a sampler is the first thing
 // that would make it not, and it belongs here when it arrives.
 //
-// nano_graph.h first: it reaches moe_proto.h, and winsock2.h must precede the
-// windows.h that nano_model.h pulls in.
-#include "nano_graph.h"
+// models/glm_dsa/graph.h first: it reaches moe_proto.h, and winsock2.h must precede the
+// windows.h that models/glm_dsa/model.h pulls in.
+#include "models/glm_dsa/graph.h"
 
-#include "chat_glm.h"
+#include "models/glm_dsa/chat.h"
 #include "cpu_topology.h"
-#include "nano_model.h"
+#include "models/glm_dsa/model.h"
 #include "vocab.h"
 
 #include <algorithm>
@@ -179,7 +179,7 @@ int main(int argc, char ** argv) {
                        moe_net_error().c_str());
         }
         fprintf(stderr, "nano-chat: routed experts via moe-server at %s\n", params.moe_addr.c_str());
-        moe_hello(M, params.moe_addr, params.moe_strict, params.model_path, params.n_threads);
+        moe_hello(moe_shape_of(M.h), M, params.moe_addr, params.moe_strict, params.model_path, params.n_threads);
     }
 
     const int32_t n_prompt = (int32_t) prompt.size();

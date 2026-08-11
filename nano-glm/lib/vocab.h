@@ -19,7 +19,7 @@
 // our ids against llama-tokenize over a corpus and prints the disagreement
 // rate. Treat that number as the contract.
 
-#include "nano_model.h"
+#include "gguf_store.h"
 #include "unicode_ranges.h"
 
 #include "gguf.h"
@@ -341,7 +341,7 @@ static void bpe_merge(const nano_vocab & V, std::vector<std::string> & sym) {
 }
 
 // Plain text -> ids. Control tokens in the text are NOT interpreted: the
-// caller emits those itself (see chat_glm.h). That is deliberate — it means a
+// caller emits those itself (see models/glm_dsa/chat.h). That is deliberate — it means a
 // user pasting "<|assistant|>" gets the literal characters rather than seizing
 // control of the prompt.
 static std::vector<int32_t> tokenize(const nano_vocab & V, const std::string & text) {

@@ -5,20 +5,29 @@ Everything in here is model-and-mechanism; nothing decides policy. Apps in
 
 | file | what |
 |---|---|
-| `nano_model.h` | hparams, GGUF shard loader, read-only mapping |
-| `nano_graph.h` | backends, KV cache, the glm-dsa trunk graph, one chunk eval |
-| `moe_block.h` | the routed-expert graph, as a router half and an expert half plus the composition the trunk calls |
+| `gguf_store.h` | GGUF metadata helpers, read-only mapping, shard enumeration, the tensor map |
+| `moe_shape.h` | the MoE dimensions a client and a backend must agree on |
 | `moe_client.h` | the trunk's side of the remote MoE seam: connect, handshake, stats, the custom-op callback |
 | `moe_proto.h` | the client/backend wire protocol and the TCP it needs |
 | `build_info.h` | build fingerprint: `--version`, provenance, handshake |
 | `expert_trace.h` | routing trace, compiled out unless `-DNANO_EXPERT_TRACE` |
 | `vocab.h` | byte-level BPE: GGUF vocab and merges, the glm4 pre-tokenizer, encode/decode |
-| `chat_glm.h` | GLM-5.2's single-turn chat format, as token ids |
 | `unicode_ranges.h` | generated `\p{L}` / `\p{N}` tables — see `gen_unicode_ranges.py` |
 | `prompt_source.h` | prompt token ids from an lkldtopk file or a literal list |
 
-Include `nano_graph.h` first in any app: it reaches `moe_proto.h`, and
-winsock2.h has to precede the windows.h that `nano_model.h` pulls in.
+and one directory per architecture, holding everything that knows which model
+it is looking at:
+
+| file | what |
+|---|---|
+| `models/glm_dsa/model.h` | GLM-5.2 hparams, tensor names, loader |
+| `models/glm_dsa/graph.h` | backends, KV cache, the glm-dsa trunk graph, one chunk eval |
+| `models/glm_dsa/moe_block.h` | its routed-expert graph, as a router half and an expert half plus the composition the trunk calls |
+| `models/glm_dsa/chat.h` | GLM-5.2's single-turn chat format, as token ids |
+| `models/deepseek4/model.h` | DeepSeek-V4-Flash hparams, tensor names, loader |
+
+Include the model's `graph.h` first in any app: it reaches `moe_proto.h`, and
+winsock2.h has to precede the windows.h that `gguf_store.h` pulls in.
 
 `../../logit-kld/src` comes along on the include path for `logits_file.{h,cpp}`
 (the lkldtopk format), `cpu_topology.h` and `topk_utils.h`.
@@ -28,50 +37,49 @@ winsock2.h has to precede the windows.h that `nano_model.h` pulls in.
 Not evenly. Counting mentions of `glm-dsa`, `_mla`, `indexer` and `hadamard`
 puts the whole of it in two files:
 
-| file | glm-dsa refs | MLA/DSA refs | scope |
-|---|--:|--:|---|
-| `build_info.h` | 0 | 0 | **any program** |
-| `unicode_ranges.h` | 0 | 0 | **any program** |
-| `moe_proto.h` | 1 | 0 | any MoE backend |
-| `moe_client.h` | 0 | 0 | any MoE backend |
-| `expert_trace.h` | 0 | 0 | any MoE with a top-k selection tensor |
-| `moe_block.h` | 0 | 0 | **DeepSeek-lineage** MoE |
-| `vocab.h` | 0 | 0 | any `gpt2` vocab; the *splitter* is glm4's |
-| `nano_model.h` | 34 | 33 | half generic loader, half glm-dsa definition |
-| `nano_graph.h` | 3 | 90 | **glm-dsa only** |
-| `chat_glm.h` | — | — | **glm-dsa only**, and the most so of anything here |
+Two tiers in `lib/`, and a third under `models/`:
 
-Three tiers, then, and they are worth naming because they predict cost:
+- **generic** — `gguf_store.h` (GGUF key helpers, `map_file_ro`, shard
+  splitting, the tensor map), `build_info.h`, the protocol and client, the
+  trace, `unicode_ranges.h`, `prompt_source.h`. Nothing here knows what a model
+  is.
+- **shared contract** — `moe_shape.h`. Not ops, just the dimensions a client
+  and a backend must agree on, which is exactly what `moe_hello_response`
+  already carried over the wire.
+- **one model** — everything under `models/<arch>/`: hparams and their asserts,
+  tensor names, the routed-expert graph, the trunk graph, the KV layout, the
+  chat format.
 
-- **generic** — `build_info.h`, the protocol and client, the trace, and inside
-  `nano_model.h` the GGUF key helpers, `map_file_ro`, shard splitting and the
-  tensor map. Nothing here knows what a model is.
-- **model family** — `moe_block.h`. Sigmoid gating, selection bias, weight
-  normalisation, expert scale: that is the DeepSeek lineage, shared by
-  glm-dsa, DeepSeek and Kimi. A Mixtral-style softmax-top-k router would not
-  reuse it.
-- **one model** — `nano_hparams`, `nano_layer`, `load_hparams`, `build_graph`,
-  and the KV cache layout in `nano_state` (576-wide MLA rows, 128-wide indexer
-  rows). This is where MLA absorption, the lightning indexer, the Hadamard
-  rotation and the DSA top-k mask live.
+## Adding a second model: what it actually cost
 
-## If we add a second model
+DeepSeek-V4-Flash (`deepseek4`) is the second architecture, and it is worth
+scoring the prediction this section used to make.
 
-Say Kimi-K3, the model this whole plan exists for. A `models/` directory would
-hold **only the third tier**:
+**Right:** `models/` holds only the third tier; `lib/` keeps the rest.
+Hparams, tensor names, graph and KV layout are indeed the four things that get
+written again. "Copy, do not abstract" held — see below.
 
-```
-models/
-  glm_dsa/         hparams + tensor names + build_graph + KV layout
-  kimi_k3/         the same four things, written again
-```
+**Wrong, and instructively:** the old text said `moe_block.h` was a *family*
+tier, reusable across "the DeepSeek lineage" if the gating matched. It did not
+match. deepseek4 gates with `sqrt(softplus(x))` where glm-dsa uses sigmoid, and
+clamps its SwiGLU. Two models in the same lineage, and the ops still differ.
 
-and `lib/` would keep the other two tiers plus the eval driver — backend setup,
-graph reuse on `(n_tokens, n_kv)`, `eval_chunk`, `pad_n_kv`.
+So the family tier was wishful: what is genuinely shared between two MoE models
+is the *shape* — `n_expert`, `n_expert_used`, `n_ff_exp`, the scale and the
+norm flag — and not a line of arithmetic. That is now `moe_shape.h`, which is
+small and honest, and each architecture writes its own expert graph.
 
-**Reimplement:** hparams and their asserts (~200 lines), tensor names,
-`build_graph` (~300 lines), the KV cache shape, and the chat format. Roughly
-500 lines plus a template.
+**One latent bug surfaced**, which is the usual dividend of a second case:
+`load_shard` built a CPU buffer for every shard including metadata-only ones,
+and `gguf_get_data_offset` returns the *unpadded* header end when a shard has
+no tensors. GLM-5.2's metadata shard happens to end on a multiple of 32;
+DeepSeek's ends 18 bytes past one, and ggml asserted. Nothing was wrong with
+the second model.
+
+**Reuse unchanged:** the loader plumbing (after that fix), the whole RPC stack
+including `moe-server`, the trace, the fingerprint, and — the part that
+actually costs time to build — `gate.py`, the lkldtopk format, and
+`compare.py`.
 
 The tokenizer is a smaller question than it looks: `vocab.h`'s BPE serves any
 `tokenizer.ggml.model == "gpt2"` vocab unchanged, and a model declaring a
@@ -80,10 +88,12 @@ because that is all a pre-tokenizer is. Both `load_vocab` checks are hard
 aborts precisely so an unported combination cannot be mistaken for a working
 one.
 
-**Reuse unchanged:** the loader plumbing, `moe_block.h` if the gating matches,
-the whole RPC stack including `moe-server`, the trace, the fingerprint, and —
-the part that actually costs time to build — `gate.py`, the lkldtopk format,
-and `compare.py`.
+**On the cost estimate:** the old text guessed ~500 lines. Hparams, tensor
+names and the loader alone came to ~330 for deepseek4, and the trunk graph is
+the larger half and not yet written — hyper-connections replace the residual
+stream with four Sinkhorn-mixed streams, so it is not a matter of swapping an
+attention kernel. Expect the estimate to be right for a model in the same
+shape as one already ported, and low for one that is not.
 
 **Copy, do not abstract.** Two `build_graph`s that share a few `ggml_mul_mat`
 calls are two functions; a `build_graph` behind an interface that both models
