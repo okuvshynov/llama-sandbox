@@ -30,6 +30,7 @@
 #include "ggml-cpu.h"
 
 #include <cinttypes>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -143,13 +144,52 @@ int main(int argc, char ** argv) {
     ggml_set_name(inp_tokens, "inp_tokens");
     ggml_set_input(inp_tokens);
 
-    ggml_tensor * out = ds4_build_graph(ctx, gf, M, inp_tokens, n_tokens, DS4_STAGE_HC_PRE);
+    ggml_tensor * inp_pos = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, n_tokens);
+    ggml_set_name(inp_pos, "inp_pos");
+    ggml_set_input(inp_pos);
+
+    // One prefill from position 0, so the mask is plainly causal. The model's
+    // 128-wide sliding window does not bite at these lengths; when it does,
+    // this harness needs it and the assert below is the reminder.
+    if (n_tokens > (int32_t) M.h.sliding_window) {
+        NANO_ABORT("%d tokens exceeds the %u sliding window; the mask here is causal only",
+                   n_tokens, M.h.sliding_window);
+    }
+    // F16: ggml_flash_attn_ext requires it, where the explicit path wants F32.
+    ggml_tensor * kq_mask = ggml_new_tensor_2d(ctx, GGML_TYPE_F16, n_tokens, n_tokens);
+    ggml_set_name(kq_mask, "kq_mask");
+    ggml_set_input(kq_mask);
+
+    // The rotation applied to q/kv before attention and undone after.
+    ggml_tensor * rot = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, M.h.d_key, M.h.d_key);
+    ggml_set_name(rot, "k_rot");
+    ggml_set_input(rot);
+
+    ggml_tensor * out = ds4_build_graph(ctx, gf, M, inp_tokens, inp_pos, kq_mask, rot,
+                                        n_tokens, DS4_STAGE_ATTN);
     ggml_build_forward_expand(gf, out);
 
     ggml_gallocr_t galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
     if (!ggml_gallocr_alloc_graph(galloc, gf)) NANO_ABORT("graph alloc failed");
 
     ggml_backend_tensor_set(inp_tokens, tokens.data(), 0, n_tokens * sizeof(int32_t));
+
+    std::vector<int32_t> pos(n_tokens);
+    for (int32_t i = 0; i < n_tokens; i++) pos[i] = i;
+    ggml_backend_tensor_set(inp_pos, pos.data(), 0, n_tokens * sizeof(int32_t));
+
+    // mask[j, i] is the bias added to the score of key j for query i.
+    std::vector<ggml_fp16_t> mask((size_t) n_tokens * n_tokens);
+    for (int32_t i = 0; i < n_tokens; i++) {
+        for (int32_t j = 0; j < n_tokens; j++) {
+            mask[(size_t) i * n_tokens + j] = ggml_fp32_to_fp16(j <= i ? 0.0f : -INFINITY);
+        }
+    }
+    ggml_backend_tensor_set(kq_mask, mask.data(), 0, mask.size() * sizeof(ggml_fp16_t));
+
+    std::vector<float> had;
+    ds4_fill_hadamard(had, (int) M.h.d_key);
+    ggml_backend_tensor_set(rot, had.data(), 0, had.size() * sizeof(float));
 
     if (ggml_backend_graph_compute(backend, gf) != GGML_STATUS_SUCCESS) NANO_ABORT("compute failed");
 

@@ -13,15 +13,31 @@
 //
 // Progress, in the order llama.cpp emits the tensors for a layer:
 //
-//   hc_mixes       done
-//   hc_pre         done
-//   hc_attn_pre    done
-//   norm           done
-//   attn_norm      done
-//   qr .. attn_out NOT YET — the attention. Layer 0 takes the simplest path
-//                  (`attn_raw`, no KV compressor, no indexer), which is why
-//                  layer 0 is being ported first.
-//   hc_post/comb   done (built by hc_pre; the post-combine needs attention)
+//   hc_mixes       bit-identical
+//   hc_pre         bit-identical
+//   hc_post/comb   bit-identical
+//   hc_attn_pre    bit-identical
+//   norm           bit-identical
+//   attn_norm      bit-identical
+//   qr, qr_norm    bit-identical
+//   q_norm, q_pe, q          bit-identical
+//   kv_norm, kv_pe, kv       bit-identical
+//   attn_raw ...   **NOT MATCHING** — 4.0e-03 absolute, ~7e-4 relative to the
+//                  tensor's scale. Everything feeding it is exact, so the gap
+//                  is inside the attention core and nowhere else.
+//
+//                  Two hypotheses tried and rejected: the KV cache dtype (an
+//                  F16 round-trip on the key moved it from 4.4e-03 to 4.0e-03
+//                  but did not close it) and fused-vs-explicit attention
+//                  (llama.cpp resolves "Flash Attention enabled" for this
+//                  model, so we use ggml_flash_attn_ext too — same result).
+//
+//                  ~7e-4 is F16 epsilon, so the live hypothesis is a remaining
+//                  precision difference: the sinks, the flash-attn internal
+//                  accumulation, or the Hadamard kernel selected by
+//                  GGML_HINT_SRC0_IS_HADAMARD. The next diagnostic is to run
+//                  without sinks and see whether the difference grows, which
+//                  says whether they are being applied at all.
 //   ffn half       NOT YET
 //
 // Shapes for this checkpoint, since they make the code readable:
@@ -246,10 +262,193 @@ static ggml_tensor * ds4_norm(ggml_context * ctx, const ds4_hparams & h, ggml_te
 }
 
 // ---------------------------------------------------------------------------
+// The Hadamard rotation applied to q and kv before attention, and undone after.
+//
+// Copied from models/glm_dsa/graph.h rather than shared: it is fifteen lines of
+// fixed mathematics, and lib/README.md argues for copying over abstracting at
+// two models. That copy is bit-exact against llama.cpp's `ggml_gen_hadamard`
+// (which is not in ggml's public header), proven by glm-dsa's KL == 0 gate.
+static void ds4_fill_hadamard(std::vector<float> & data, int n) {
+    if (n <= 0 || (n & (n - 1)) != 0) {
+        NANO_ABORT("hadamard order %d is not a power of two", n);
+    }
+    data.assign((size_t) n * n, 0.0f);
+    data[0] = 1.0f / sqrtf((float) n);
+    for (int s = 1; s < n; s *= 2) {
+        for (int i = 0; i < s; i++) {
+            for (int j = 0; j < s; j++) {
+                const float val = data[(size_t) i * n + j];
+                data[(size_t) (i + s) * n + j]       =  val;
+                data[(size_t) i * n + (j + s)]       =  val;
+                data[(size_t) (i + s) * n + (j + s)] = -val;
+            }
+        }
+    }
+}
+
+// Reshape to [n, rest], rotate, reshape back. llama_mul_mat_hadamard.
+static ggml_tensor * ds4_hadamard(ggml_context * ctx, ggml_tensor * cur, ggml_tensor * rot) {
+    const int64_t n = rot->ne[0];
+    ggml_tensor * res = ggml_is_contiguous(cur)
+                      ? ggml_reshape_2d(ctx, cur, n, ggml_nelements(cur) / n)
+                      : ggml_cont_2d(ctx, cur, n, ggml_nelements(cur) / n);
+    res = ggml_mul_mat(ctx, rot, res);
+    // The hint is copied along with everything else: it steers kernel choice,
+    // and a different kernel is a different summation order.
+    ggml_mul_mat_set_hint(res, GGML_HINT_SRC0_IS_HADAMARD);
+    return ggml_reshape_4d(ctx, res, cur->ne[0], cur->ne[1], cur->ne[2], cur->ne[3]);
+}
+
+// ---------------------------------------------------------------------------
+// Attention, layer-0 shape only: `attn_raw`, i.e. no KV compressor and no
+// lightning indexer. That is the path a layer with `compress_ratio == 0` takes,
+// which is layers 0 and 1.
+//
+// `kv_all` is the full key sequence. In a real eval that comes from the KV
+// cache; the porting harness passes the current chunk, which is the same thing
+// for a single prefill from position 0 — and it keeps a cache out of the first
+// comparison.
+static ggml_tensor * ds4_build_attention_raw(ggml_context * ctx, ggml_cgraph * gf,
+                                             const ds4_hparams & h, const ds4_layer & L,
+                                             ggml_tensor * cur, ggml_tensor * inp_pos,
+                                             ggml_tensor * kq_mask, ggml_tensor * rot,
+                                             int32_t n_tokens, uint32_t il) {
+    const int64_t d_head = h.d_key;                    // 512
+    const int64_t d_rope = h.rope_dim;                 // 64
+    const int64_t d_nope = d_head - d_rope;            // 448
+    const int64_t n_head = h.n_head;                   // 64
+    const int64_t n_grp  = h.out_group_count;          // 8
+    const int64_t grp_dim = (n_head / n_grp) * d_head; // 8*512 = 4096
+
+    // Layer 0 has no compressor, so rope runs unscaled: llama.cpp's
+    // `use_compress_rope` is false and every yarn parameter collapses.
+    const float   freq_base   = h.rope_freq_base;
+    const float   freq_scale  = 1.0f;
+    const float   ext_factor  = 0.0f;
+    const float   attn_factor = 1.0f;   // dsv4_rope_attn_factor(_, 0) == 1
+    const float   beta_fast   = 0.0f;
+    const float   beta_slow   = 0.0f;
+    const int32_t n_ctx_orig  = 0;
+    const int     rope_type   = 0;      // LLAMA_ROPE_TYPE_NORM, as glm-dsa
+
+    // ---- q: a LoRA, a weighted norm, an expansion, then a *plain* norm ----
+    ggml_tensor * qr = ggml_mul_mat(ctx, L.attn_q_a, cur);
+    ds4_name(qr, "qr", il);
+    qr = ds4_norm(ctx, h, qr, L.attn_q_a_norm, "qr_norm", il);
+
+    ggml_tensor * q = ggml_mul_mat(ctx, L.attn_q_b, qr);
+    q = ggml_reshape_3d(ctx, q, d_head, n_head, n_tokens);
+    // Note: no weight. The other norms in this layer have one; this does not.
+    q = ggml_rms_norm(ctx, q, h.f_norm_rms_eps);
+    ds4_name(q, "q_norm", il);
+
+    ggml_tensor * q_nope = ggml_view_3d(ctx, q, d_nope, n_head, n_tokens,
+                                        ggml_row_size(q->type, d_head),
+                                        ggml_row_size(q->type, d_head) * n_head, 0);
+    ggml_tensor * q_pe = ggml_view_3d(ctx, q, d_rope, n_head, n_tokens,
+                                      ggml_row_size(q->type, d_head),
+                                      ggml_row_size(q->type, d_head) * n_head,
+                                      ggml_row_size(q->type, d_nope));
+    q_pe = ggml_rope_ext(ctx, q_pe, inp_pos, nullptr, d_rope, rope_type, n_ctx_orig,
+                         freq_base, freq_scale, ext_factor, attn_factor, beta_fast, beta_slow);
+    ds4_name(q_pe, "q_pe", il);
+    q = ggml_concat(ctx, q_nope, q_pe, 0);
+    ds4_name(q, "q", il);
+
+    // ---- kv: one latent row per token, serving as both K and V ----
+    ggml_tensor * kv = ggml_mul_mat(ctx, L.attn_kv, cur);
+    kv = ds4_norm(ctx, h, kv, L.attn_kv_a_norm, "kv_a_norm_out", il);
+    kv = ggml_reshape_3d(ctx, kv, d_head, 1, n_tokens);
+    ds4_name(kv, "kv_norm", il);
+
+    ggml_tensor * kv_nope = ggml_view_3d(ctx, kv, d_nope, 1, n_tokens,
+                                         ggml_row_size(kv->type, d_head),
+                                         ggml_row_size(kv->type, d_head), 0);
+    ggml_tensor * kv_pe = ggml_view_3d(ctx, kv, d_rope, 1, n_tokens,
+                                       ggml_row_size(kv->type, d_head),
+                                       ggml_row_size(kv->type, d_head),
+                                       ggml_row_size(kv->type, d_nope));
+    kv_pe = ggml_rope_ext(ctx, kv_pe, inp_pos, nullptr, d_rope, rope_type, n_ctx_orig,
+                          freq_base, freq_scale, ext_factor, attn_factor, beta_fast, beta_slow);
+    ds4_name(kv_pe, "kv_pe", il);
+    kv = ggml_concat(ctx, kv_nope, kv_pe, 0);
+    ds4_name(kv, "kv", il);
+
+    // ---- the rotation, then MHA with sinks ----
+    q  = ds4_hadamard(ctx, q,  rot);
+    kv = ds4_hadamard(ctx, kv, rot);
+    ggml_build_forward_expand(gf, q);
+    ggml_build_forward_expand(gf, kv);
+
+    // The reference stores kv into the KV cache before attending, and that
+    // cache is F16 by default — so the scores are computed against an F16 key,
+    // not the F32 tensor just built. Round-tripping through F16 here is not a
+    // space optimisation, it is what makes this agree: without it every tensor
+    // through `kv` matched exactly and `attn_raw` onward did not.
+    //
+    // glm-dsa's KV cache is F16 for the same reason (models/glm_dsa/graph.h),
+    // which is how it reaches KL == 0.
+    ggml_tensor * kv16 = ggml_cast(ctx, kv, GGML_TYPE_F16);
+
+    ggml_tensor * qp = ggml_permute(ctx, q,    0, 2, 1, 3);
+    ggml_tensor * kp = ggml_permute(ctx, kv16, 0, 2, 1, 3);
+    ggml_tensor * vp = kp;   // the latent is both K and V
+
+    // Flash attention, not the explicit kq/softmax/kqv path — and again the
+    // choice is measured. llama.cpp resolves `Flash Attention enabled` at
+    // startup for this model (its log says so), which is why its dump goes
+    // straight from `kv` to `attn_raw` with no intermediates in between. The
+    // explicit path gave everything through `kv` bit-identical and `attn_raw`
+    // off by 4.4e-03: the same answer computed in a different order.
+    //
+    // The mask must be F16 for this op, where the explicit path wants F32.
+    ggml_tensor * out = ggml_flash_attn_ext(ctx, qp, kp, vp, kq_mask,
+                                            1.0f / sqrtf((float) d_head), 0.0f, 0.0f);
+    ggml_flash_attn_ext_add_sinks(out, L.attn_sinks);
+    ggml_flash_attn_ext_set_prec(out, GGML_PREC_F32);
+
+    out = ggml_reshape_2d(ctx, out, out->ne[0] * out->ne[1], out->ne[2] * out->ne[3]);
+    out = ds4_hadamard(ctx, out, rot);
+    ds4_name(out, "attn_raw", il);
+
+    // ---- undo the positional part, then the grouped-LoRA output ----
+    out = ggml_reshape_3d(ctx, out, d_head, n_head, n_tokens);
+    ggml_tensor * out_nope = ggml_view_3d(ctx, out, d_nope, n_head, n_tokens,
+                                          ggml_row_size(out->type, d_head),
+                                          ggml_row_size(out->type, d_head) * n_head, 0);
+    ggml_tensor * out_pe = ggml_view_3d(ctx, out, d_rope, n_head, n_tokens,
+                                        ggml_row_size(out->type, d_head),
+                                        ggml_row_size(out->type, d_head) * n_head,
+                                        ggml_row_size(out->type, d_nope));
+    out_pe = ggml_rope_ext_back(ctx, out_pe, inp_pos, nullptr, d_rope, rope_type, n_ctx_orig,
+                                freq_base, freq_scale, ext_factor, attn_factor, beta_fast, beta_slow);
+    out = ggml_concat(ctx, out_nope, out_pe, 0);
+    ds4_name(out, "attn_derope", il);
+
+    // wo_a is [4096, 8192] in the file but is used as
+    // [n_head*d_head/n_grp, o_lora_rank, n_grp] — llama.cpp reshapes it at load
+    // and only a comment says so. Doing it here keeps the loader honest about
+    // what is in the file.
+    ggml_tensor * wo_a = ggml_reshape_3d(ctx, L.attn_output_a, grp_dim, h.out_lora_rank, n_grp);
+
+    out = ggml_reshape_3d(ctx, out, grp_dim, n_grp, n_tokens);
+    out = ggml_permute(ctx, out, 0, 2, 1, 3);
+    ggml_tensor * oa = ggml_mul_mat(ctx, wo_a, out);
+    ds4_name(oa, "attn_wo_a", il);
+    oa = ggml_permute(ctx, oa, 0, 2, 1, 3);
+    oa = ggml_cont_2d(ctx, oa, h.out_lora_rank * n_grp, n_tokens);
+
+    out = ggml_mul_mat(ctx, L.attn_output_b, oa);
+    ds4_name(out, "attn_out", il);
+    return out;
+}
+
+// ---------------------------------------------------------------------------
 // How far the port goes. Everything up to this point has been checked against
 // llama.cpp tensor by tensor; past it, nothing has.
 enum ds4_stage {
     DS4_STAGE_HC_PRE = 0,   // through hc_attn_pre / attn_norm for layer 0
+    DS4_STAGE_ATTN   = 1,   // ... through attn_out / hc_attn_post for layer 0
 };
 
 // Build the trunk as far as `stage`. `tokens` is the prompt's ids.
@@ -257,7 +456,9 @@ enum ds4_stage {
 // Returns the last tensor built. Every named intermediate is marked as a graph
 // output so it survives to be read back and compared.
 static ggml_tensor * ds4_build_graph(ggml_context * ctx, ggml_cgraph * gf, const ds4_model & M,
-                                     ggml_tensor * inp_tokens, int32_t n_tokens, ds4_stage stage) {
+                                     ggml_tensor * inp_tokens, ggml_tensor * inp_pos,
+                                     ggml_tensor * kq_mask, ggml_tensor * rot,
+                                     int32_t n_tokens, ds4_stage stage) {
     const ds4_hparams & h = M.h;
 
     ggml_tensor * inp = ggml_get_rows(ctx, M.tok_embd, inp_tokens);
@@ -282,6 +483,15 @@ static ggml_tensor * ds4_build_graph(ggml_context * ctx, ggml_cgraph * gf, const
     if (stage == DS4_STAGE_HC_PRE) {
         ggml_build_forward_expand(gf, cur);
         return cur;
+    }
+
+    cur = ds4_build_attention_raw(ctx, gf, h, L, cur, inp_pos, kq_mask, rot, n_tokens, il);
+
+    inpL = ds4_hc_post(ctx, h, cur, inpL, post, comb, il);
+
+    if (stage == DS4_STAGE_ATTN) {
+        ggml_build_forward_expand(gf, inpL);
+        return inpL;
     }
 
     NANO_ABORT("deepseek4 trunk: stage %d is not ported yet", (int) stage);
