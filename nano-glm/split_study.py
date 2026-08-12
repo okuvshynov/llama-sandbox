@@ -129,7 +129,7 @@ def main():
     ap.add_argument("--server", default=os.path.join(here, "build-vk", "bin", "moe-server.exe"))
     ap.add_argument("--work", default=os.path.join(here, "results", "split-study"))
     ap.add_argument("--host", default="127.0.0.1")
-    ap.add_argument("--port", type=int, default=7861)
+    ap.add_argument("--port", type=int, default=5711)   # moe-server's own default
     ap.add_argument("--threads", type=int, default=16)
     ap.add_argument("--n-predict", type=int, default=32)
     ap.add_argument("--gpu-experts", type=int, default=240)

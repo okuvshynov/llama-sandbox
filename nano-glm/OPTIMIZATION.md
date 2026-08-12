@@ -3,6 +3,48 @@
 Work that would make remote MoE *faster*. None of it is on the critical path in
 `PLAN.md`, which is about making it *work*.
 
+## Where DeepSeek-V4-Flash stands today
+
+UD-Q8_K_XL, 150.7 GiB, on the Mac Pro (16 physical cores, four Vega II dies).
+`testdata-deepseek4/01_prose.bin`, 111 prompt + 32 generated, `-t 16`, one
+discarded warm-up and two measured passes. Measured at `906b965`, 2026-08-12.
+
+| | best configuration | t/s |
+|---|---|---|
+| **prefill** | routed experts on the four dies, 93.75% resident | **8.45** |
+| **decode** | all local, CPU only | **2.195** |
+
+**No single configuration wins both**, and that is the standing tension rather
+than an oversight: the split is 2.4x on prefill and 0.76x on decode, so which
+one to run depends on how much you generate per prompt token. On this workload's
+mix (111 + 32) the split wins on aggregate, 4.43 against 3.12 t/s.
+
+```powershell
+# best decode - all local, no server
+build\bin\nano-glm.exe -m <ds4.gguf> -i testdata-deepseek4\01_prose.bin `
+    -n 32 -t 16 -o results\out.bin
+
+# best prefill - routed experts over the dies. The server comes from the
+# separate Vulkan tree (build.ps1 -Vk) because every trunk binary aborts when a
+# GPU device is registered; leave it running and use a second shell for the
+# client. Expect ~90s to load and ~20s per die to upload.
+build-vk\bin\moe-server.exe -m <ds4.gguf> --gpu-experts 240 --gpu-devices 4 -t 16
+build\bin\nano-glm.exe -m <ds4.gguf> -i testdata-deepseek4\01_prose.bin `
+    -n 32 -t 16 --moe-addr 127.0.0.1:5711 -o results\out.bin
+
+# both of the above plus the forced-placement ladder, unattended
+python split_study.py --model <ds4.gguf>
+
+# llama.cpp on the same model, for scale
+.\bench_ds4.ps1 -Repack
+```
+
+Every run prints the phase table (`lib/phase_timer.h`) and, over RPC, the MoE
+call accounting, so a regression says *where* rather than only *that*. Two
+caveats on reading the table against llama.cpp's 22.16 pp / 3.73 tg: that is
+`llama-bench pp128/tg32` with `-lm none`, so neither the harness nor the load
+mode matches, and mmap-backed weights cost ~1.45x of prefill on their own.
+
 ## Why this is a separate list
 
 Every number below is measured on one machine, one model, one quantization, and
