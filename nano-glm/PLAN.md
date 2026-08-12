@@ -157,10 +157,11 @@ not at all.
 intermediates and `dump_inspect.py` compares them, so each tensor is checked the
 moment it is written rather than at the logits, where KL saturates
 (`OPTIMIZATION.md`). `apps/ds4-port` is the harness and goes away when the graph
-is complete. **Layer 0 is done: 53/53 tensors bit-identical** — both
+is complete. **Layers 0 and 1 are done: 106/106 tensors bit-identical** — both
 hyper-connection halves, all four norms, the q/kv construction, the attention
 core, the grouped-LoRA output, the router, hash routing, the routed experts,
-the shared expert and `l_last`.
+the shared expert and `l_last`. That is every layer of this shape:
+`compress_ratios` is `[0, 0, 4, 128, 4, 128, ...]`.
 
 Getting there required the reference to be built with `GGML_CPU_REPACK OFF`
 (`logit-kld/CMakeLists.txt`). llama.cpp repacks MXFP4 experts into `mxfp4_8x8`
@@ -172,10 +173,12 @@ what llama.cpp actually ships.
 
 **Next, in order:**
 
-- **The rest of the trunk.** Layer 1 (same shape as layer 0), then the
-  compressor layers (ratio 128), then the indexer layers (ratio 4) with the
-  lightning indexer and its own Hadamard rotation at order 128, then the head
-  (`hc_head`, `result_norm`, `result_output`).
+- **The rest of the trunk**, and the easy half is over. Layer 2 is a ratio-4
+  **indexer** layer: a KV compressor plus the lightning indexer, its top-k
+  mask, and the one Hadamard rotation this model really does apply (order 128 —
+  `attn_rot_k = 1, n_embd_head_k_all = 128`). Layer 3 is a ratio-128
+  compressor layer. They alternate from there. Then the head (`hc_head`,
+  `result_norm`, `result_output`).
 - **A golden set.** llama.cpp supports `LLM_ARCH_DEEPSEEK4`, so `gate.py
   llamacpp` can create one exactly as it did for glm-dsa. The verification
   methodology survives the second model unchanged, which was not guaranteed.

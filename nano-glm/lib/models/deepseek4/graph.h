@@ -29,9 +29,16 @@
 //   ffn_gate/up/swiglu, ffn_shexp, ffn_out       bit-identical
 //   l_last         bit-identical
 //
-// Layer 0 is therefore complete: 53/53 tensors at 0.0000e+00. Layer 1 shares
-// this shape (compress_ratio 0, hash-routed); the compressor and indexer layers
-// do not.
+// Layers 0 **and 1** are therefore complete: 106/106 tensors at 0.0000e+00.
+// `compress_ratios` is [0, 0, 4, 128, 4, 128, ...], so those two are every
+// layer of this shape; layer 2 brings the lightning indexer and layer 3 the
+// 128-wide KV compressor, and `ds4_build_graph` aborts on both.
+//
+// Layer 1 needed no new arithmetic — turning the single layer into a loop was
+// the whole change — but it is not a free result: it is the first layer whose
+// input is a computed layer output rather than the repeated embedding, so it
+// checks `l_last` and the whole layer-0 chain feeding it in a way that layer 0
+// alone could not.
 //
 // The attention core cost one wrong assumption, worth recording because the
 // shape of the mistake generalises. It was off by 4.0e-03 — ~F16 epsilon
@@ -601,21 +608,40 @@ static ggml_tensor * ds4_build_ffn_half(ggml_context * ctx, ggml_cgraph * gf,
 // ---------------------------------------------------------------------------
 // How far the port goes. Everything up to this point has been checked against
 // llama.cpp tensor by tensor; past it, nothing has.
+// `stage` says how far into the **last** layer built to go; everything before
+// it is built whole. That is what lets a comparison bisect: when layer N's
+// attention is suspect, build N+1 layers and stop at DS4_STAGE_ATTN.
 enum ds4_stage {
-    DS4_STAGE_HC_PRE = 0,   // through hc_attn_pre / attn_norm for layer 0
-    DS4_STAGE_ATTN   = 1,   // ... through attn_out / hc_attn_post for layer 0
-    DS4_STAGE_LAYER  = 2,   // ... through ffn_out / l_last: one whole layer
+    DS4_STAGE_HC_PRE = 0,   // through hc_attn_pre / attn_norm
+    DS4_STAGE_ATTN   = 1,   // ... through attn_out / hc_attn_post
+    DS4_STAGE_LAYER  = 2,   // ... through ffn_out / l_last: the whole layer
 };
 
-// Build the trunk as far as `stage`. `tokens` is the prompt's ids.
+// How many leading layers this file can build, read off the checkpoint rather
+// than hard-coded — `compress_ratios` is [0, 0, 4, 128, 4, 128, ...], so the
+// answer here is 2 and it becomes larger by itself when the compressor and
+// indexer layers are ported.
+static uint32_t ds4_ported_layers(const ds4_hparams & h) {
+    uint32_t n = 0;
+    while (n < h.n_layer && !h.has_compressor(n)) {
+        n++;
+    }
+    return n;
+}
+
+// Build `n_layers` leading layers, stopping at `stage` inside the last one.
 //
 // Returns the last tensor built. Every named intermediate is marked as a graph
 // output so it survives to be read back and compared.
 static ggml_tensor * ds4_build_graph(ggml_context * ctx, ggml_cgraph * gf, const ds4_model & M,
                                      ggml_tensor * inp_tokens, ggml_tensor * inp_pos,
                                      ggml_tensor * kq_mask,
-                                     int32_t n_tokens, ds4_stage stage) {
+                                     int32_t n_tokens, ds4_stage stage, uint32_t n_layers) {
     const ds4_hparams & h = M.h;
+
+    if (n_layers == 0 || n_layers > h.n_layer) {
+        NANO_ABORT("deepseek4 trunk: n_layers %u out of range (1..%u)", n_layers, h.n_layer);
+    }
 
     ggml_tensor * inp = ggml_get_rows(ctx, M.tok_embd, inp_tokens);
     ds4_name(inp, "inp_embd", -1);
@@ -625,37 +651,44 @@ static ggml_tensor * ds4_build_graph(ggml_context * ctx, ggml_cgraph * gf, const
     inpL = ggml_repeat_4d(ctx, inpL, h.n_embd, h.hc_mult, n_tokens, 1);
     ds4_name(inpL, "hc_init", -1);
 
-    const uint32_t il = 0;
-    const ds4_layer & L = M.layers[il];
+    for (uint32_t il = 0; il < n_layers; il++) {
+        // Abort rather than fall through to the raw-attention path: a layer
+        // with a compressor computes a different key sequence, and running it
+        // as though it did not would produce numbers rather than an error.
+        if (h.has_compressor(il)) {
+            NANO_ABORT("deepseek4 trunk: layer %u has compress_ratio %u "
+                       "(%s) and is not ported", il, h.compress_ratio[il],
+                       h.has_indexer(il) ? "lightning indexer" : "KV compressor");
+        }
 
-    ggml_tensor * post = nullptr;
-    ggml_tensor * comb = nullptr;
-    ggml_tensor * cur = ds4_hc_pre(ctx, gf, h, inpL, L.hc_attn_fn, L.hc_attn_scale,
-                                   L.hc_attn_base, &post, &comb, il);
-    ds4_name(cur, "hc_attn_pre", il);
+        const bool        last = (il + 1 == n_layers);
+        const ds4_layer & L    = M.layers[il];
 
-    cur = ds4_norm(ctx, h, cur, L.attn_norm, "attn_norm", il);
+        ggml_tensor * post = nullptr;
+        ggml_tensor * comb = nullptr;
+        ggml_tensor * cur = ds4_hc_pre(ctx, gf, h, inpL, L.hc_attn_fn, L.hc_attn_scale,
+                                       L.hc_attn_base, &post, &comb, il);
+        ds4_name(cur, "hc_attn_pre", il);
 
-    if (stage == DS4_STAGE_HC_PRE) {
-        ggml_build_forward_expand(gf, cur);
-        return cur;
+        cur = ds4_norm(ctx, h, cur, L.attn_norm, "attn_norm", il);
+
+        if (last && stage == DS4_STAGE_HC_PRE) {
+            ggml_build_forward_expand(gf, cur);
+            return cur;
+        }
+
+        cur = ds4_build_attention_raw(ctx, gf, h, L, cur, inp_pos, kq_mask, n_tokens, il);
+
+        inpL = ds4_hc_post(ctx, h, cur, inpL, post, comb, "hc_attn_post", il);
+
+        if (last && stage == DS4_STAGE_ATTN) {
+            ggml_build_forward_expand(gf, inpL);
+            return inpL;
+        }
+
+        inpL = ds4_build_ffn_half(ctx, gf, h, L, inpL, inp_tokens, n_tokens, il);
     }
 
-    cur = ds4_build_attention_raw(ctx, gf, h, L, cur, inp_pos, kq_mask, n_tokens, il);
-
-    inpL = ds4_hc_post(ctx, h, cur, inpL, post, comb, "hc_attn_post", il);
-
-    if (stage == DS4_STAGE_ATTN) {
-        ggml_build_forward_expand(gf, inpL);
-        return inpL;
-    }
-
-    inpL = ds4_build_ffn_half(ctx, gf, h, L, inpL, inp_tokens, n_tokens, il);
-
-    if (stage == DS4_STAGE_LAYER) {
-        ggml_build_forward_expand(gf, inpL);
-        return inpL;
-    }
-
-    NANO_ABORT("deepseek4 trunk: stage %d is not ported yet", (int) stage);
+    ggml_build_forward_expand(gf, inpL);
+    return inpL;
 }

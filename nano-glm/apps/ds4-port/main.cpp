@@ -44,6 +44,7 @@ struct port_params {
     std::string tokens_str;
     std::string out_path  = "ds4-port.ntd";
     int32_t     n_threads = physical_core_count();
+    int32_t     n_layers  = 0;   // 0 = every layer the graph can build
 };
 
 static std::vector<int32_t> parse_tokens(const std::string & s) {
@@ -109,15 +110,18 @@ int main(int argc, char ** argv) {
         else if (!strcmp(a, "-T") && i + 1 < argc) p.tokens_str = argv[++i];
         else if (!strcmp(a, "-o") && i + 1 < argc) p.out_path   = argv[++i];
         else if (!strcmp(a, "-t") && i + 1 < argc) p.n_threads  = atoi(argv[++i]);
+        else if (!strcmp(a, "-L") && i + 1 < argc) p.n_layers   = atoi(argv[++i]);
         else { p.model_path.clear(); break; }
     }
     if (p.model_path.empty() || p.tokens_str.empty()) {
         fprintf(stderr,
-            "Usage: ds4-port -m <first-shard.gguf> -T <id,id,...> [-o out.ntd] [-t threads]\n"
+            "Usage: ds4-port -m <first-shard.gguf> -T <id,id,...> [-o out.ntd] [-t threads] [-L layers]\n"
             "  Runs the deepseek4 trunk as far as it is ported and dumps every\n"
             "  named tensor, for comparison against logit-kld's `dump` of\n"
             "  llama.cpp. Token ids, not text: that keeps the tokenizer out of\n"
-            "  the comparison.\n");
+            "  the comparison.\n"
+            "  -L defaults to every layer the graph can build; pass fewer to\n"
+            "     bisect, since a layer's input is the previous layer's output.\n");
         return 1;
     }
 
@@ -126,8 +130,17 @@ int main(int argc, char ** argv) {
 
     ds4_model M;
     ds4_load_model(M, p.model_path);
+
+    const uint32_t n_ported = ds4_ported_layers(M.h);
+    if (p.n_layers <= 0) {
+        p.n_layers = (int32_t) n_ported;
+    } else if ((uint32_t) p.n_layers > n_ported) {
+        NANO_ABORT("-L %d exceeds the %u layers the graph can build", p.n_layers, n_ported);
+    }
+
     fprintf(stderr, "ds4-port: %s | %s\n", M.desc.c_str(), nano_build_line().c_str());
-    fprintf(stderr, "ds4-port: %d tokens, %d threads\n", n_tokens, p.n_threads);
+    fprintf(stderr, "ds4-port: %d tokens, %d threads, %d of %u ported layers\n",
+            n_tokens, p.n_threads, p.n_layers, n_ported);
 
     ggml_backend_t backend = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);
     if (!backend) NANO_ABORT("no CPU backend");
@@ -164,7 +177,7 @@ int main(int argc, char ** argv) {
     // llama.cpp only builds a Hadamard rotation for a quantized cache. One
     // comes back when the lightning-indexer layers do, at order 128.
     ggml_tensor * out = ds4_build_graph(ctx, gf, M, inp_tokens, inp_pos, kq_mask,
-                                        n_tokens, DS4_STAGE_LAYER);
+                                        n_tokens, DS4_STAGE_LAYER, (uint32_t) p.n_layers);
     ggml_build_forward_expand(gf, out);
 
     ggml_gallocr_t galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
