@@ -485,7 +485,7 @@ struct eval_ctx {
     // Always on; see lib/phase_timer.h. The point of collecting it here as well
     // as in deepseek4 is that this model *does* cache its graph, so its `build`
     // and `alloc` shares are what the other one's would fall to.
-    nano_phase_stats prof;
+    nano_phase_split prof;
 };
 
 // n_kv padding rule from llama_kv_cache::get_n_kv (n_pad=1 for this arch, min 256)
@@ -499,9 +499,10 @@ static void eval_chunk(const nano_model & M, nano_state & S, eval_ctx & E,
     const nano_hparams & h = M.h;
     const int32_t n_kv = pad_n_kv(n_past + n_tokens, S.kv_size);
 
-    nano_phase_timer T;
-    E.prof.n_chunks += 1;
-    E.prof.n_tokens += (uint64_t) n_tokens;
+    nano_phase_timer   T;
+    nano_phase_stats & P = E.prof.bucket(n_tokens);
+    P.n_chunks += 1;
+    P.n_tokens += (uint64_t) n_tokens;
 
     if (n_tokens != E.cur_n_tokens || n_kv != E.cur_n_kv) {
         if (E.ctx0) ggml_free(E.ctx0);
@@ -515,11 +516,11 @@ static void eval_chunk(const nano_model & M, nano_state & S, eval_ctx & E,
         E.gf   = ggml_new_graph_custom(E.ctx0, graph_size, false);
 
         E.io = build_graph(E.ctx0, E.gf, M, S, n_tokens, n_kv);
-        E.prof.build_us += T.lap();
+        P.build_us += T.lap();
 
         ggml_backend_sched_reset(S.sched);
         if (!ggml_backend_sched_alloc_graph(S.sched, E.gf)) NANO_ABORT("graph alloc failed");
-        E.prof.alloc_us += T.lap();
+        P.alloc_us += T.lap();
 
         E.cur_n_tokens = n_tokens;
         E.cur_n_kv     = n_kv;
@@ -559,16 +560,16 @@ static void eval_chunk(const nano_model & M, nano_state & S, eval_ctx & E,
         ggml_backend_tensor_set(io.mask_mla, E.mask_buf.data(), 0, E.mask_buf.size() * sizeof(ggml_fp16_t));
         ggml_backend_tensor_set(io.mask_lid, E.mask_buf.data(), 0, E.mask_buf.size() * sizeof(ggml_fp16_t));
     }
-    E.prof.input_us += T.lap();
+    P.input_us += T.lap();
 
     if (ggml_backend_sched_graph_compute(S.sched, gf) != GGML_STATUS_SUCCESS) {
         NANO_ABORT("graph compute failed");
     }
-    E.prof.compute_us += T.lap();
+    P.compute_us += T.lap();
 
     E.logits.resize((size_t) h.n_vocab * n_tokens);
     ggml_backend_tensor_get(io.logits, E.logits.data(), 0, E.logits.size() * sizeof(float));
-    E.prof.read_us += T.lap();
+    P.read_us += T.lap();
 
     // routing trace, if this is a -DNANO_EXPERT_TRACE build with --expert-log
     expert_trace_flush(n_past, n_tokens, tokens);

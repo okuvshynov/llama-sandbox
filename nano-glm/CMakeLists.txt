@@ -132,7 +132,19 @@ target_link_libraries(moe-server PRIVATE nano-lib)
 add_executable(nano-probe apps/nano-probe/main.cpp)
 target_link_libraries(nano-probe PRIVATE nano-lib)
 
+# The expert kernel with synthetic weights and no model at all. moe-server needs
+# ~3 minutes to load 150 GiB and fill four dies before it can be timed, which is
+# the wrong edit cycle for tuning a matmul. Built only in the Vulkan tree because
+# without a GPU there is nothing here to measure.
+if(NANO_VULKAN)
+    add_executable(moe-bench apps/moe-bench/main.cpp)
+    target_link_libraries(moe-bench PRIVATE nano-lib)
+endif()
+
 set(NANO_TARGETS moe-server nano-probe)
+if(NANO_VULKAN)
+    list(APPEND NANO_TARGETS moe-bench)
+endif()
 
 if(NOT NANO_VULKAN)
     # The validation harness: raw token ids in, an lkldtopk file out. Frozen

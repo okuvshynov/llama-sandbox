@@ -509,6 +509,84 @@ thread-per-device overlap working: the first CPU slots hide behind the dies'
 work and only become visible once the CPU's share exceeds theirs. Prefill runs
 ~0.66 s per slot over the range, too noisy at two passes to claim curvature.
 
+### A decode step, fully accounted — and the 8-pair cliff
+
+`lib/phase_timer.h` separates prefill from decode, `--moe-log` records the
+server's own stages per call (`moe_log_stats.py` reads it), and `moe-bench`
+times the expert kernel with synthetic weights and no model. Together they close
+a decode step. Per generated token, `01_prose`:
+
+| | local | split |
+|---|---|---|
+| client host-side (build/alloc/input/read/free) | 6.9 ms | 13.3 ms |
+| client compute | 436.7 ms | 576.1 ms |
+| — of which RPC, 40 calls x 2.08 ms | — | 83.3 ms |
+| **total** | **443.6** | **589.4** |
+
+and inside those 83.3 ms: **route 8.0, server compute 69.0, network+scheduling
+6.2**, parse and serialize ~0.
+
+**The network is not the problem.** 6.2 ms of 589. A free interconnect changes
+almost nothing, so the "40 sequential RPCs per token" framing this file has
+carried was aimed at the wrong term.
+
+**The trunk inflates by ~103 ms doing identical work.** Subtracting round trips
+leaves a 492.8 ms trunk in the split case, against a local *total* compute of
+436.7 ms that already includes >=41 ms of expert reads (40 layers x 6 experts x
+12.75 MB = 3.06 GB at 75.4 GB/s). So the split's decode penalty is
+**71% trunk inflation, 29% round trips**:
+
+```
+  589.4 - 443.6 = +145.8 ms
+     -41  expert work leaves the CPU
+     +83  round trips
+    +103  client trunk, same work
+```
+
+It is the *interaction*, not the second process. Running the client **locally
+while an idle server holds 150 GiB and 120 GiB of VRAM** gives 436.8 ms/token —
+if anything faster than the 443.6 with no server at all. So this does not go
+away on a second machine. The leading suspect is ggml's threadpool spinning all
+sixteen cores through each of the forty blocking calls; that is what step 9's
+`moe_send`/`moe_recv` overlap would remove, which promotes it from "the largest
+confirmed win, and small" to the largest lever on decode.
+
+**And the server's 69 ms of compute is mostly not the GPU.** `moe-bench` runs
+the same five-op graph `run_device_compact` builds, on one die with the pair
+count a die actually receives at decode:
+
+| pairs per die | per dispatch | GB/s |
+|---|---|---|
+| 1 | 373.6 us | 35.8 |
+| 2 | 451.6 us | 59.2 |
+| 4 | 599.1 us | 89.3 |
+| **8** | **857.0 us** | **124.3** |
+| **9** | **8780.4 us** | — |
+| 16 | 12400.6 us | 17.2 |
+| 166 (a 111-token prefill) | 78802.0 us | 28.2 |
+
+At decode a die gets 1-2 pairs, so the kernel costs 374-452 us x 40 layers =
+**15-18 ms per token against the 69 ms the server charges**. ~50 ms/token is
+server-side overhead around the dispatch — thread fan-out and join per layer,
+the gather into `gathered_x`, the scatter-add combine — and none of it has been
+measured yet.
+
+**The cliff is one line of llama.cpp.** `ggml_vk_use_mul_mat_vec_id` is
+`src2->ne[1] <= 8` (`ggml-vulkan.cpp:10607`); `src2` is the id tensor and its
+`ne[1]` is exactly the pair count. At 8 pairs Vulkan runs `mul_mat_vec_id`, at 9
+it switches to the tiled `mul_mat_id_q_f16`, and on these dies — which report
+`matrix cores: none`, so no coopmat path exists — the tiled kernel is **10.2x
+slower for one extra pair**.
+
+Prefill is entirely on the wrong side of it. A die handed 166 pairs takes
+78.8 ms; the same work as 21 dispatches of 8 would be 21 x 857 us = **18 ms, a
+4.4x**, and the server already has the pair list in hand to chunk it. That is
+the largest single number on this page and it needs no new kernel — only a cap
+on how many pairs go into one `mul_mat_id`.
+
+It also explains why the dies were only worth 1.30x on prefill: they were
+running their bad path for every prefill-sized batch.
+
 ### Where the other 40% is, and why it is mostly not the kernels
 
 The obvious suspect is `GGML_CPU_REPACK`, which nano-glm cannot use: it rewrites

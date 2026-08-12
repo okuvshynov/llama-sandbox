@@ -41,7 +41,7 @@ struct ds4_state {
     std::vector<uint8_t>     graph_buf;
     std::vector<ggml_fp16_t> mask_buf;
 
-    nano_phase_stats prof;   // always on; see lib/phase_timer.h
+    nano_phase_split prof;   // always on, prefill and decode apart; lib/phase_timer.h
 };
 
 static void ds4_init_state(ds4_state & S, const ds4_model & M, uint32_t kv_size,
@@ -118,9 +118,10 @@ static void ds4_eval_chunk(const ds4_model & M, ds4_state & S,
     const ds4_hparams & h = M.h;
     ds4_cache & C = S.cache;
 
-    nano_phase_timer T;
-    S.prof.n_chunks += 1;
-    S.prof.n_tokens += (uint64_t) n_tok;
+    nano_phase_timer   T;
+    nano_phase_stats & P = S.prof.bucket(n_tok);
+    P.n_chunks += 1;
+    P.n_tokens += (uint64_t) n_tok;
 
     const size_t n_nodes_max = 32768;
     const size_t buf_size = ggml_tensor_overhead() * n_nodes_max +
@@ -196,10 +197,10 @@ static void ds4_eval_chunk(const ds4_model & M, ds4_state & S,
     ggml_tensor * logits = ds4_build_graph(ctx, gf, M, C, inp_tokens, inp_pos, kq_mask, lin,
                                            out_ids, n_tok, DS4_STAGE_HEAD, h.n_layer);
     ggml_build_forward_expand(gf, logits);
-    S.prof.build_us += T.lap();
+    P.build_us += T.lap();
 
     if (!ggml_gallocr_alloc_graph(S.galloc, gf)) NANO_ABORT("deepseek4: graph alloc failed");
-    S.prof.alloc_us += T.lap();
+    P.alloc_us += T.lap();
 
     // An input the graph never referenced has no buffer, because gallocr only
     // allocates what the graph reaches — a chunk that closes no block does not
@@ -238,17 +239,17 @@ static void ds4_eval_chunk(const ds4_model & M, ds4_state & S,
         const int32_t last = n_tok - 1;
         set(out_ids, &last, sizeof(int32_t));
     }
-    S.prof.input_us += T.lap();
+    P.input_us += T.lap();
 
     if (ggml_backend_graph_compute(S.backend, gf) != GGML_STATUS_SUCCESS) {
         NANO_ABORT("deepseek4: graph compute failed");
     }
-    S.prof.compute_us += T.lap();
+    P.compute_us += T.lap();
 
     S.logits.resize((size_t) h.n_vocab * (all_logits ? n_tok : 1));
     ggml_backend_tensor_get(logits, S.logits.data(), 0, S.logits.size() * sizeof(float));
-    S.prof.read_us += T.lap();
+    P.read_us += T.lap();
 
     ggml_free(ctx);
-    S.prof.free_us += T.lap();
+    P.free_us += T.lap();
 }

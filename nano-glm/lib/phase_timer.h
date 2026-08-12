@@ -38,6 +38,16 @@
 // Read the *share*, not the absolute: a run pages 150 GiB in during its first
 // chunks, so the first prefill is not comparable to a warm decode step and the
 // per-phase percentages are what survive that.
+//
+// **Prefill and decode are counted separately**, and that is not a nicety. A
+// 111-token prefill and a 1-token decode step differ by more than a factor in
+// every phase, and one prompt-shaped run is ~78% prefill by wall time, so a
+// combined average is dominated by the chunk you are usually not asking about.
+// Aggregating them hid a 37 ms/chunk allocator cost that was ~3% of a run and
+// ~8% of a decode step, and it made "the client trunk costs the same with and
+// without the split" impossible to check — the check needs decode alone, and
+// when it was finally done the arithmetic came out negative, which is how the
+// loopback thread-contention question surfaced at all.
 
 #include <chrono>
 #include <cstdint>
@@ -75,14 +85,26 @@ struct nano_phase_timer {
     }
 };
 
-// One line per phase, absolute and as a share. `tag` prefixes each line so the
-// caller's own log prefix is preserved.
-static void nano_phase_report(FILE * f, const char * tag, const nano_phase_stats & p) {
+// Prefill and decode kept apart. A chunk of one token is a decode step;
+// anything wider is a prefill chunk. That rule misfiles a one-token prompt,
+// which is not a case anyone measures.
+struct nano_phase_split {
+    nano_phase_stats prefill;
+    nano_phase_stats decode;
+
+    nano_phase_stats & bucket(int64_t n_tok) { return n_tok == 1 ? decode : prefill; }
+};
+
+// One line per phase, absolute and as a share, for one bucket.
+static void nano_phase_report_one(FILE * f, const char * tag, const char * what,
+                                  const nano_phase_stats & p) {
     const uint64_t tot = p.total_us();
     if (!p.n_chunks || !tot) return;
 
-    fprintf(f, "%s: eval phases over %llu chunks / %llu tokens, %.2fs accounted\n",
-            tag, (unsigned long long) p.n_chunks, (unsigned long long) p.n_tokens, tot / 1e6);
+    fprintf(f, "%s: %s phases: %llu chunks / %llu tokens, %.2fs accounted, "
+               "%.1f ms/chunk\n",
+            tag, what, (unsigned long long) p.n_chunks, (unsigned long long) p.n_tokens,
+            tot / 1e6, tot / 1e3 / (double) p.n_chunks);
 
     struct { const char * name; uint64_t us; } rows[] = {
         { "build",   p.build_us   },
@@ -97,4 +119,9 @@ static void nano_phase_report(FILE * f, const char * tag, const nano_phase_stats
                 tag, r.name, r.us / 1e6, 100.0 * (double) r.us / (double) tot,
                 r.us / 1e3 / (double) p.n_chunks);
     }
+}
+
+static void nano_phase_report(FILE * f, const char * tag, const nano_phase_split & s) {
+    nano_phase_report_one(f, tag, "prefill", s.prefill);
+    nano_phase_report_one(f, tag, "decode ", s.decode);
 }

@@ -147,6 +147,38 @@ picked a resident expert read *exactly* 0, and the worst layers are the ones
 the split device did most work in. If either stops holding, distrust the run
 before distrusting the driver.
 
+## `moe-bench`: the expert kernel, without the model
+
+```bash
+build-vk\bin\moe-bench.exe --list
+build-vk\bin\moe-bench.exe --experts 60 --pairs 2 --iters 100     # decode
+build-vk\bin\moe-bench.exe --experts 60 --pairs 166               # 111-token prefill
+```
+
+`moe-server` needs ~3 minutes to load 150 GiB and fill four dies before it can
+be timed, which is the wrong edit cycle for a matmul. This allocates weights of
+the right shape and MXFP4 type, fills them synthetically, and runs the same five
+ops `run_device_compact` builds. Seconds, from nothing.
+
+`--pairs` is the (token, expert) pair count *one die* receives, because the
+server dispatches to its dies in parallel and a layer's wall time is the slowest
+one: 1-2 at decode, ~166 for a 111-token prompt over four dies.
+
+**The graph is copied, not shared.** If `run_device_compact` changes, this must
+change with it or it silently measures something else.
+
+## `moe_log_stats.py`: where an RPC step's time goes
+
+```bash
+nano-glm.exe ... --moe-addr 127.0.0.1:5711 --moe-log results\rpc.jsonl
+python moe_log_stats.py results\rpc.jsonl
+```
+
+Splits the per-call records by `n_tokens` — prefill calls carry the whole
+prompt, decode calls carry one row, and a mean over both describes neither — and
+reports the server's four stages plus `rtt` minus their sum, which is socket
+time and scheduling.
+
 ## `split_study.py`: the whole forced-split ladder, unattended
 
 ```bash
