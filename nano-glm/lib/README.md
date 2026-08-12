@@ -15,6 +15,7 @@ Everything in here is model-and-mechanism; nothing decides policy. Apps in
 | `unicode_ranges.h` | generated `\p{L}` / `\p{N}` tables — see `gen_unicode_ranges.py` |
 | `prompt_source.h` | prompt token ids from an lkldtopk file or a literal list |
 | `phase_timer.h` | where a chunk of evaluation goes: build / alloc / input / compute / read / free, always on |
+| `moe_compact_graph.h` | the five ops a device runs on a flat list of (token, expert) pairs, shared by `moe-server` and `moe-bench` |
 
 and one directory per architecture, holding everything that knows which model
 it is looking at:
@@ -48,9 +49,16 @@ Two tiers in `lib/`, and a third under `models/`:
   splitting, the tensor map), `build_info.h`, the protocol and client, the
   trace, `unicode_ranges.h`, `prompt_source.h`, `phase_timer.h`. Nothing here
   knows what a model is.
-- **shared contract** — `moe_shape.h`. Not ops, just the dimensions a client
-  and a backend must agree on, which is exactly what `moe_hello_response`
-  already carried over the wire.
+- **shared contract** — `moe_shape.h` and `moe_compact_graph.h`. The first is
+  dimensions only: what a client and a backend must agree on, which is exactly
+  what `moe_hello_response` already carried over the wire. The second *is* ops,
+  which this list used to say the tier contained none of — worth correcting
+  rather than quietly widening. What justifies it is narrow and was learned the
+  hard way: **after** routing, once a device holds a flat list of (token, expert)
+  pairs, both architectures do the same five ops on them, and keeping that
+  sequence in two hand-synced copies is what let deepseek4's SwiGLU clamp go
+  missing from the split path for four commits. The one thing they differ on is
+  a parameter, not a branch.
 - **one model** — everything under `models/<arch>/`: hparams and their asserts,
   tensor names, the routed-expert graph, the trunk graph, the KV layout, the
   chat format.
