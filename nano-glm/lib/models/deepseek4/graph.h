@@ -22,23 +22,26 @@
 //   qr, qr_norm    bit-identical
 //   q_norm, q_pe, q          bit-identical
 //   kv_norm, kv_pe, kv       bit-identical
-//   attn_raw ...   **NOT MATCHING** — 4.0e-03 absolute, ~7e-4 relative to the
-//                  tensor's scale. Everything feeding it is exact, so the gap
-//                  is inside the attention core and nowhere else.
-//
-//                  Two hypotheses tried and rejected: the KV cache dtype (an
-//                  F16 round-trip on the key moved it from 4.4e-03 to 4.0e-03
-//                  but did not close it) and fused-vs-explicit attention
-//                  (llama.cpp resolves "Flash Attention enabled" for this
-//                  model, so we use ggml_flash_attn_ext too — same result).
-//
-//                  ~7e-4 is F16 epsilon, so the live hypothesis is a remaining
-//                  precision difference: the sinks, the flash-attn internal
-//                  accumulation, or the Hadamard kernel selected by
-//                  GGML_HINT_SRC0_IS_HADAMARD. The next diagnostic is to run
-//                  without sinks and see whether the difference grows, which
-//                  says whether they are being applied at all.
+//   attn_raw, attn_derope, attn_wo_a, attn_out   bit-identical
+//   hc_attn_post   bit-identical
 //   ffn half       NOT YET
+//
+// The attention core cost one wrong assumption, worth recording because the
+// shape of the mistake generalises. It was off by 4.0e-03 — ~F16 epsilon
+// relative — with every tensor feeding it exact, which reads like a precision
+// difference and is not: the port applied a Hadamard rotation to q and k that
+// llama.cpp does not apply to this cache (see ds4_build_attention_raw). The
+// rotation is orthonormal and self-inverse, so it changes no mathematics and
+// only moves rounding; a wrong graph that is mathematically right hides in
+// exactly the band you would write off as precision. Two precision hypotheses
+// were tried and rejected before that, both correctly.
+//
+// What found it: dumping the reference's **unnamed** graph nodes. llama.cpp
+// names some of what it builds and the difference sat between two named
+// tensors, where a name-filtered dump cannot look. `dump --max-records 150`
+// (logit-kld) writes every node in graph order, named or not, and the node
+// feeding flash attention turned out to be "q-0 (view) (permuted)" — a view of
+// `q` with no matmul in between.
 //
 // Shapes for this checkpoint, since they make the code readable:
 //   n_embd 4096, hc 4, hc_dim 16384, hc_mix_dim (2+hc)*hc = 24
@@ -68,6 +71,23 @@ static void ds4_name(ggml_tensor * t, const char * base, int il) {
         ggml_set_name(t, base);
     }
     ggml_set_output(t);
+}
+
+// Name a tensor for the dump *safely*, copying it first if it is a view.
+//
+// A view marked GGML_TENSOR_FLAG_OUTPUT is not readable after the graph runs.
+// `ggml_gallocr_alloc_graph_impl` frees a view's **parent** as soon as the view
+// has no children left, and the OUTPUT flag it tests belongs to the node being
+// freed — the view's flag protects nothing (ggml-alloc.c, and the same trap
+// `run_router` hit in moe-server). A later op is then handed those bytes and
+// the dump reads whatever the op left behind. Copying gives the dump storage of
+// its own; the graph downstream keeps using the original view, so nothing about
+// the arithmetic changes.
+static void ds4_snapshot(ggml_context * ctx, ggml_cgraph * gf, ggml_tensor * t,
+                         const char * base, int il) {
+    ggml_tensor * s = t->view_src ? ggml_cont(ctx, t) : t;
+    ds4_name(s, base, il);
+    ggml_build_forward_expand(gf, s);
 }
 
 // ---------------------------------------------------------------------------
@@ -252,17 +272,27 @@ static ggml_tensor * ds4_hc_head(ggml_context * ctx, const ds4_hparams & h, ggml
 // ---------------------------------------------------------------------------
 // RMS norm with a weight, named the way llama.cpp names it: the unweighted
 // result is "norm", the weighted one takes the caller's name.
+//
+// `name == nullptr` leaves the weighted result unnamed, which is not fussiness:
+// llama.cpp labels the kv path's weighted norm nowhere, and a name we invent
+// shows up in the comparison as a tensor missing from the reference. The dump
+// is only a check if both sides emit the same set.
 static ggml_tensor * ds4_norm(ggml_context * ctx, const ds4_hparams & h, ggml_tensor * x,
                               ggml_tensor * w, const char * name, int il) {
     ggml_tensor * n = ggml_rms_norm(ctx, x, h.f_norm_rms_eps);
     ds4_name(n, "norm", il);
     ggml_tensor * out = ggml_mul(ctx, n, w);
-    ds4_name(out, name, il);
+    if (name) {
+        ds4_name(out, name, il);
+    }
     return out;
 }
 
 // ---------------------------------------------------------------------------
-// The Hadamard rotation applied to q and kv before attention, and undone after.
+// The Hadamard rotation. **Not used by this model's main attention** — see the
+// note in `ds4_build_attention_raw`. It is kept because the lightning indexer
+// does rotate, at order `indexer_head_size` (128) rather than `d_key`, and that
+// is the next thing here that will need it.
 //
 // Copied from models/glm_dsa/graph.h rather than shared: it is fifteen lines of
 // fixed mathematics, and lib/README.md argues for copying over abstracting at
@@ -311,7 +341,7 @@ static ggml_tensor * ds4_hadamard(ggml_context * ctx, ggml_tensor * cur, ggml_te
 static ggml_tensor * ds4_build_attention_raw(ggml_context * ctx, ggml_cgraph * gf,
                                              const ds4_hparams & h, const ds4_layer & L,
                                              ggml_tensor * cur, ggml_tensor * inp_pos,
-                                             ggml_tensor * kq_mask, ggml_tensor * rot,
+                                             ggml_tensor * kq_mask,
                                              int32_t n_tokens, uint32_t il) {
     const int64_t d_head = h.d_key;                    // 512
     const int64_t d_rope = h.rope_dim;                 // 64
@@ -354,12 +384,19 @@ static ggml_tensor * ds4_build_attention_raw(ggml_context * ctx, ggml_cgraph * g
     ds4_name(q_pe, "q_pe", il);
     q = ggml_concat(ctx, q_nope, q_pe, 0);
     ds4_name(q, "q", il);
+    // Fix the q path's place in the node order before starting kv. Both layers
+    // emit a tensor called "norm" and the comparison pairs repeated names by
+    // position, so emission order is part of the contract, not a detail.
+    ggml_build_forward_expand(gf, q);
 
     // ---- kv: one latent row per token, serving as both K and V ----
     ggml_tensor * kv = ggml_mul_mat(ctx, L.attn_kv, cur);
-    kv = ds4_norm(ctx, h, kv, L.attn_kv_a_norm, "kv_a_norm_out", il);
+    kv = ds4_norm(ctx, h, kv, L.attn_kv_a_norm, nullptr, il);
     kv = ggml_reshape_3d(ctx, kv, d_head, 1, n_tokens);
-    ds4_name(kv, "kv_norm", il);
+    // A view, and its parent is no longer an output now that the weighted norm
+    // is unnamed — so it needs a copy of its own to be readable. See
+    // ds4_snapshot.
+    ds4_snapshot(ctx, gf, kv, "kv_norm", il);
 
     ggml_tensor * kv_nope = ggml_view_3d(ctx, kv, d_nope, 1, n_tokens,
                                          ggml_row_size(kv->type, d_head),
@@ -374,9 +411,27 @@ static ggml_tensor * ds4_build_attention_raw(ggml_context * ctx, ggml_cgraph * g
     kv = ggml_concat(ctx, kv_nope, kv_pe, 0);
     ds4_name(kv, "kv", il);
 
-    // ---- the rotation, then MHA with sinks ----
-    q  = ds4_hadamard(ctx, q,  rot);
-    kv = ds4_hadamard(ctx, kv, rot);
+    // ---- MHA with sinks ----
+    //
+    // No Hadamard rotation here, and that was the whole of the 4e-03 gap this
+    // file used to record. llama.cpp rotates q and k only when the rotation
+    // tensor exists, and `llama_kv_cache::build_input_k_rot` only builds one
+    // when `attn_rot_k` is set — which needs a **quantized** KV cache
+    // (`ggml_is_quantized(type_k)`, llama-kv-cache.cpp:319). The default cache
+    // is F16, so for this model the reference log says `attn_rot_k = 0` for
+    // every 512-wide cache and the rotation is simply absent.
+    //
+    // The rotation is orthonormal and its own inverse, so applying it to q and
+    // k and undoing it on the output leaves the mathematics unchanged — which
+    // is exactly why this was invisible: every tensor around it stayed correct
+    // and only rounding moved, by ~F16 epsilon. What found it was dumping the
+    // reference's *unnamed* graph nodes (`dump --max-records`): the node
+    // feeding flash-attention is named "q-0 (view) (permuted)", a view of `q`
+    // itself with no matmul in between.
+    //
+    // The one cache that does rotate is the lightning indexer's, at order 128
+    // (`attn_rot_k = 1, n_embd_head_k_all = 128` in the same log), so
+    // `ds4_hadamard` comes back when the indexer layers do.
     ggml_build_forward_expand(gf, q);
     ggml_build_forward_expand(gf, kv);
 
@@ -394,12 +449,10 @@ static ggml_tensor * ds4_build_attention_raw(ggml_context * ctx, ggml_cgraph * g
     ggml_tensor * kp = ggml_permute(ctx, kv16, 0, 2, 1, 3);
     ggml_tensor * vp = kp;   // the latent is both K and V
 
-    // Flash attention, not the explicit kq/softmax/kqv path — and again the
-    // choice is measured. llama.cpp resolves `Flash Attention enabled` at
-    // startup for this model (its log says so), which is why its dump goes
-    // straight from `kv` to `attn_raw` with no intermediates in between. The
-    // explicit path gave everything through `kv` bit-identical and `attn_raw`
-    // off by 4.4e-03: the same answer computed in a different order.
+    // Flash attention, not the explicit kq/softmax/kqv path. llama.cpp resolves
+    // `Flash Attention enabled` at startup for this model, which is why its
+    // dump goes straight from `kv` to `attn_raw` with no `kq`/`kq_soft_max`
+    // between them — those are only named on the explicit path.
     //
     // The mask must be F16 for this op, where the explicit path wants F32.
     ggml_tensor * out = ggml_flash_attn_ext(ctx, qp, kp, vp, kq_mask,
@@ -408,8 +461,7 @@ static ggml_tensor * ds4_build_attention_raw(ggml_context * ctx, ggml_cgraph * g
     ggml_flash_attn_ext_set_prec(out, GGML_PREC_F32);
 
     out = ggml_reshape_2d(ctx, out, out->ne[0] * out->ne[1], out->ne[2] * out->ne[3]);
-    out = ds4_hadamard(ctx, out, rot);
-    ds4_name(out, "attn_raw", il);
+    ds4_snapshot(ctx, gf, out, "attn_raw", il);
 
     // ---- undo the positional part, then the grouped-LoRA output ----
     out = ggml_reshape_3d(ctx, out, d_head, n_head, n_tokens);
@@ -457,7 +509,7 @@ enum ds4_stage {
 // output so it survives to be read back and compared.
 static ggml_tensor * ds4_build_graph(ggml_context * ctx, ggml_cgraph * gf, const ds4_model & M,
                                      ggml_tensor * inp_tokens, ggml_tensor * inp_pos,
-                                     ggml_tensor * kq_mask, ggml_tensor * rot,
+                                     ggml_tensor * kq_mask,
                                      int32_t n_tokens, ds4_stage stage) {
     const ds4_hparams & h = M.h;
 
@@ -485,7 +537,7 @@ static ggml_tensor * ds4_build_graph(ggml_context * ctx, ggml_cgraph * gf, const
         return cur;
     }
 
-    cur = ds4_build_attention_raw(ctx, gf, h, L, cur, inp_pos, kq_mask, rot, n_tokens, il);
+    cur = ds4_build_attention_raw(ctx, gf, h, L, cur, inp_pos, kq_mask, n_tokens, il);
 
     inpL = ds4_hc_post(ctx, h, cur, inpL, post, comb, il);
 

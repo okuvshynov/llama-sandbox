@@ -17,7 +17,12 @@
 // mismatch is a diagnosis rather than a puzzle. `dump_inspect.py` reads it.
 //
 //   dump -m model.gguf -p "text" --layer 0 -o ref-l0.ntd
-//   dump -m model.gguf -p "text" --name attn_norm -o ref-norms.ntd
+//   dump -m model.gguf -T 671,6102 --name attn_norm -o ref-norms.ntd
+//   dump -m model.gguf -T 671,6102 --op FLASH_ATTN_EXT --max-records 1 -o fa.ntd
+//
+// Two filters, because llama.cpp names only some of what it builds. `--name`
+// and `--layer` reach the labelled tensors; `--op` reaches the rest, which is
+// what a port needs when the difference sits between two named tensors.
 //
 // A whole forward pass of every tensor is far too much to keep (one 4096x4x5
 // tensor is 320 KB and there are hundreds), so a filter is not a convenience:
@@ -55,12 +60,15 @@ static const char NTD_MAGIC[8] = { 'N','T','D','U','M','P','1','\0' };
 struct dump_params {
     std::string model_path;
     std::string prompt;
+    std::vector<int32_t> tokens;  // -T: exact ids, bypassing the tokenizer
     std::string out_path = "dump.ntd";
     std::string name_filter;      // substring match on the tensor name
+    std::string op_filter;        // exact match on ggml_op_name, e.g. FLASH_ATTN_EXT
     std::vector<int32_t> layers;  // empty = any; a negative entry = non-layer tensors
     int32_t     n_threads = (int32_t) physical_core_count();
     int32_t     n_ctx     = 4096;
     uint64_t    max_elem  = 4u * 1024 * 1024;  // per tensor, then truncate
+    uint32_t    max_records = 0;               // 0 = no limit
 };
 
 struct dump_state {
@@ -73,7 +81,17 @@ struct dump_state {
 
 // llama.cpp tags layer tensors as "name-il" (see llm_graph_context::cb).
 // Matching on that suffix is how `--layer` selects one layer's worth.
-static bool name_matches(const dump_params & p, const char * name) {
+//
+// `--op` is the filter for everything llama.cpp does *not* name. A graph has
+// thousands of unnamed nodes (ggml calls them "node_N"), so a name filter
+// cannot reach them — but an op filter can, and that is what it takes to see
+// an intermediate the reference never labelled. Ordering does the rest: nodes
+// arrive in graph order, so the first FLASH_ATTN_EXT is layer 0's.
+static bool tensor_matches(const dump_params & p, const ggml_tensor * t) {
+    const char * name = t->name;
+    if (!p.op_filter.empty() && p.op_filter != ggml_op_name(t->op)) {
+        return false;
+    }
     if (!p.name_filter.empty() && !strstr(name, p.name_filter.c_str())) {
         return false;
     }
@@ -104,7 +122,10 @@ static bool eval_cb(ggml_tensor * t, bool ask, void * user_data) {
     if (ask) {
         // Asked whether we want this one *before* it is computed. Saying no is
         // free; saying yes costs a device->host copy below.
-        return name_matches(*S.p, t->name);
+        if (S.p->max_records && S.n_records >= S.p->max_records) {
+            return false;
+        }
+        return tensor_matches(*S.p, t);
     }
 
     const int64_t n_elem_full = ggml_nelements(t);
@@ -169,6 +190,19 @@ static bool parse_args(int argc, char ** argv, dump_params & p) {
         else if (a == "-p"      && i + 1 < argc) p.prompt      = argv[++i];
         else if (a == "-o"      && i + 1 < argc) p.out_path    = argv[++i];
         else if (a == "--name"  && i + 1 < argc) p.name_filter = argv[++i];
+        else if (a == "--op"    && i + 1 < argc) p.op_filter   = argv[++i];
+        else if (a == "--max-records" && i + 1 < argc) p.max_records = (uint32_t) atoi(argv[++i]);
+        else if (a == "-T"      && i + 1 < argc) {
+            const std::string v = argv[++i];
+            size_t pos = 0;
+            while (pos < v.size()) {
+                const size_t c = v.find_first_of(", ", pos);
+                const std::string tok = v.substr(pos, c == std::string::npos ? std::string::npos : c - pos);
+                if (!tok.empty()) p.tokens.push_back(atoi(tok.c_str()));
+                if (c == std::string::npos) break;
+                pos = c + 1;
+            }
+        }
         else if (a == "--layer" && i + 1 < argc) {
             // Comma-separated, so "0,-1" takes one layer plus the tensors built
             // outside the layer loop — which is what a comparison needs.
@@ -187,15 +221,23 @@ static bool parse_args(int argc, char ** argv, dump_params & p) {
         else if (a == "--max-elem" && i + 1 < argc) p.max_elem = strtoull(argv[++i], nullptr, 10);
         else { p.model_path.clear(); break; }
     }
-    if (p.model_path.empty() || p.prompt.empty()) {
+    if (p.model_path.empty() || (p.prompt.empty() && p.tokens.empty())) {
         fprintf(stderr,
-            "Usage: dump -m <model.gguf> -p <prompt> [options]\n"
+            "Usage: dump -m <model.gguf> (-p <prompt> | -T <id,id,...>) [options]\n"
+            "  -T <ids>        exact token ids, bypassing the tokenizer. Prefer\n"
+            "                  this when comparing against a port: it removes one\n"
+            "                  variable, and it is what nano-glm's ds4-port takes\n"
             "  -o <path>       output (default dump.ntd)\n"
             "  --layer <list>  comma-separated layer indices, e.g. 0 or 0,1.\n"
             "                  For the tensors built outside the layer loop use\n"
             "                  --name: they carry no layer suffix, and neither do\n"
             "                  the thousands of unnamed ggml nodes\n"
             "  --name <sub>    only tensors whose name contains <sub>\n"
+            "  --op <OP>       only tensors produced by this op, e.g. FLASH_ATTN_EXT.\n"
+            "                  The way to reach an intermediate llama.cpp never\n"
+            "                  named; nodes arrive in graph order, so the first\n"
+            "                  match is layer 0's\n"
+            "  --max-records <n>  stop after n tensors (0 = no limit)\n"
             "  --max-elem <n>  truncate each tensor to n elements (default 4M)\n"
             "  -c <int>        context size (default 4096)\n"
             "  -t <int>        threads (default: physical cores)\n"
@@ -223,7 +265,12 @@ int main(int argc, char ** argv) {
     }
 
     const llama_vocab * vocab = llama_model_get_vocab(model);
-    std::vector<llama_token> tokens = common_tokenize(vocab, params.prompt, true, true);
+    std::vector<llama_token> tokens;
+    if (!params.tokens.empty()) {
+        tokens.assign(params.tokens.begin(), params.tokens.end());
+    } else {
+        tokens = common_tokenize(vocab, params.prompt, true, true);
+    }
     if (tokens.empty()) {
         fprintf(stderr, "dump: prompt tokenized to 0 tokens\n");
         llama_model_free(model);

@@ -310,6 +310,13 @@ every ASCII case passed and every non-ASCII one failed.
 - **Performance.** Nothing here is a benchmark, and gate timings are not
   comparable between runs: each test cold-starts through 583 GiB, and a single
   mmap-backed Windows timing is not worth reading into (repo `CLAUDE.md`).
+- **A port under construction.** `gate.py` needs a complete graph and a golden
+  set; a half-written one has neither, and its logits would saturate anyway
+  (`OPTIMIZATION.md`). While a model is being ported the check is per tensor:
+  `logit-kld`'s `dump` captures llama.cpp's intermediates and
+  `dump_inspect.py` compares them, driven by a throwaway harness
+  (`apps/ds4-port` for deepseek4). That is a scaffold, not a test — it goes
+  away when `gate.py llamacpp` can build a golden set for the model.
 
 ## Troubleshooting
 

@@ -192,6 +192,45 @@ over the generated range). The greedy check must hold for `collect` output and
 same-model rescores; pass `--no-greedy-check` for files rescored under a
 *different* model, where top-1 mismatches are data, not corruption.
 
+## `dump` — llama.cpp's intermediate tensors, for checking a port
+
+`collect`/`rescore` compare at the logits. That is the right granularity for
+comparing two *models*, and the wrong one for checking a *port*: on a deep model
+end-to-end KL saturates, so a subtly wrong kernel and a correct one produce the
+same number (`nano-glm/OPTIMIZATION.md`). `dump` captures llama.cpp's own
+intermediates for one forward pass, so a reimplementation can be checked tensor
+by tensor as it is written. `nano-glm/dump_inspect.py` reads and compares.
+
+```bash
+./build/bin/dump -m model.gguf -T 671,6102,294,8760,344 --layer 0 -o ref-l0.ntd
+python ../nano-glm/dump_inspect.py mine.ntd ref-l0.ntd --name -0
+```
+
+Prefer `-T` (raw token ids) over `-p` when comparing against a port: it removes
+the tokenizer from the comparison, and it is what `nano-glm/apps/ds4-port` takes.
+
+Two filters, because llama.cpp names only *some* of what it builds. `--layer`
+and `--name` reach the labelled tensors. Everything else is an anonymous ggml
+node, and a difference that sits between two named tensors is invisible to a
+name filter — which is exactly where deepseek4's attention port went wrong. For
+those:
+
+```bash
+# every node in graph order, named or not; the first ~150 cover layer 0
+./build/bin/dump -m model.gguf -T 671,6102 --max-records 150 -o allnodes.ntd
+./build/bin/dump -m model.gguf -T 671,6102 --op FLASH_ATTN_EXT --max-records 1 -o fa.ntd
+```
+
+Unnamed nodes print as `node_N`, or as a derivation of a named parent
+(`q-0 (view) (permuted)`) — which is itself the diagnosis when the reference
+turns out to feed attention a plain view where the port built a matmul. Pair
+those against a port's differently-named tensors with `dump_inspect.py
+--by-order` (and `--name-b`), since no name is shared.
+
+A filter is not a convenience: without one this writes every intermediate of
+every layer, which is gigabytes. `--max-elem` truncates individual tensors;
+`--max-records` stops the run.
+
 ## File format (`lkldtopk` v1)
 
 Little-endian, packed, magic `"lkldtopk"`. Strings are `uint32 len` + UTF-8 bytes.

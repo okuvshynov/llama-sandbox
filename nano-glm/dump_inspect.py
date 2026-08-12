@@ -82,6 +82,53 @@ def cmd_show(recs, name, limit):
             print("  ... %d more" % (len(r["data"]) - limit))
 
 
+def cmd_compare_by_order(a, b, tol):
+    """Pair the i-th record of each file, ignoring names.
+
+    For tensors llama.cpp never named: `dump --op FLASH_ATTN_EXT` gives them
+    ggml's auto-generated "node_N", which cannot line up with anything a port
+    calls them. Graph order can, as long as both sides are filtered down to the
+    same short list — so this is only honest on a handful of tensors whose
+    correspondence you have checked by shape.
+    """
+    n = min(len(a), len(b))
+    n_shape = 0
+    n_unpaired = abs(len(a) - len(b))
+    if len(a) != len(b):
+        print("!! %d vs %d records — comparing the first %d in order\n" % (len(a), len(b), n))
+    worst = None
+    print("%-20s %-20s %-18s %12s %12s" % ("A", "B", "shape", "max|a-b|", "max rel"))
+    for i in range(n):
+        r, o = a[i], b[i]
+        if r["ne"] != o["ne"]:
+            print("%-20s %-20s  SHAPE %s vs %s" % (r["name"], o["name"], list(r["ne"]), list(o["ne"])))
+            n_shape += 1
+            continue
+        amax = rmax = 0.0
+        for x, y in zip(r["data"], o["data"]):
+            d = abs(x - y)
+            if d > amax:
+                amax = d
+            scale = max(abs(x), abs(y))
+            if scale > 1e-30 and d / scale > rmax:
+                rmax = d / scale
+        shape = "x".join(str(d) for d in r["ne"] if d != 1) or "1"
+        flag = "" if amax <= tol else "   <-- above tol"
+        print("%-20s %-20s %-18s %12.4e %12.4e%s"
+              % (r["name"], o["name"], shape, amax, rmax, flag))
+        if worst is None or amax > worst[1]:
+            worst = (r["name"], amax, rmax)
+    print("\n%d compared, %d shape mismatches, %d unpaired" % (n - n_shape, n_shape, n_unpaired))
+    if worst:
+        print("worst: %s  max|a-b| %.4e  max rel %.4e" % worst)
+    # A shape mismatch or an unpaired record is a failure, not a silent pass:
+    # nothing was compared for it. Zero tensors compared is a failure too — a
+    # check that cannot fail is worse than no check.
+    if n_shape or n_unpaired or n == 0:
+        return 1
+    return 0 if (worst is None or worst[1] <= tol) else 1
+
+
 def cmd_compare(a, b, name_filter, tol):
     """Match by name and position, so a repeated name (llama.cpp reuses `norm`)
     still lines up as long as both sides emit it in the same order."""
@@ -145,6 +192,12 @@ def main():
     ap.add_argument("--limit", type=int, default=16, help="values to print with --show")
     ap.add_argument("--tol", type=float, default=0.0,
                     help="max abs difference treated as agreement (default 0: exact)")
+    ap.add_argument("--by-order", action="store_true",
+                    help="pair the i-th record of each file instead of matching names "
+                         "(for tensors llama.cpp never named — see --op in dump)")
+    ap.add_argument("--name-b", default=None,
+                    help="with --by-order: name filter for the second file, when the "
+                         "two sides call the same tensor different things")
     args = ap.parse_args()
 
     if len(args.files) == 1:
@@ -159,6 +212,11 @@ def main():
     a, b = read_dump(args.files[0]), read_dump(args.files[1])
     print("A %s: %d tensors\nB %s: %d tensors\n"
           % (args.files[0], len(a), args.files[1], len(b)))
+    if args.by_order:
+        keep = lambda recs, f: [r for r in recs if not f or f in r["name"]]
+        return cmd_compare_by_order(keep(a, args.name),
+                                    keep(b, args.name_b if args.name_b is not None else args.name),
+                                    args.tol)
     return cmd_compare(a, b, args.name, args.tol)
 
 

@@ -160,12 +160,10 @@ int main(int argc, char ** argv) {
     ggml_set_name(kq_mask, "kq_mask");
     ggml_set_input(kq_mask);
 
-    // The rotation applied to q/kv before attention and undone after.
-    ggml_tensor * rot = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, M.h.d_key, M.h.d_key);
-    ggml_set_name(rot, "k_rot");
-    ggml_set_input(rot);
-
-    ggml_tensor * out = ds4_build_graph(ctx, gf, M, inp_tokens, inp_pos, kq_mask, rot,
+    // No rotation input: this model's 512-wide attention caches are F16, and
+    // llama.cpp only builds a Hadamard rotation for a quantized cache. One
+    // comes back when the lightning-indexer layers do, at order 128.
+    ggml_tensor * out = ds4_build_graph(ctx, gf, M, inp_tokens, inp_pos, kq_mask,
                                         n_tokens, DS4_STAGE_ATTN);
     ggml_build_forward_expand(gf, out);
 
@@ -186,10 +184,6 @@ int main(int argc, char ** argv) {
         }
     }
     ggml_backend_tensor_set(kq_mask, mask.data(), 0, mask.size() * sizeof(ggml_fp16_t));
-
-    std::vector<float> had;
-    ds4_fill_hadamard(had, (int) M.h.d_key);
-    ggml_backend_tensor_set(rot, had.data(), 0, had.size() * sizeof(float));
 
     if (ggml_backend_graph_compute(backend, gf) != GGML_STATUS_SUCCESS) NANO_ABORT("compute failed");
 

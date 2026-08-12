@@ -153,13 +153,20 @@ Rather than grow the request, `moe_shape.n_dense_lead` reports 3 for this model
 client already honours it. It makes the trunk slightly bigger and the protocol
 not at all.
 
+**The trunk, tensor by tensor.** `logit-kld`'s `dump` captures llama.cpp's own
+intermediates and `dump_inspect.py` compares them, so each tensor is checked the
+moment it is written rather than at the logits, where KL saturates
+(`OPTIMIZATION.md`). `apps/ds4-port` is the harness and goes away when the graph
+is complete. Layer 0's attention half is done and **22/22 bit-identical**:
+hyper-connections (`hc_mixes` … `hc_comb`), both norms, the q and kv
+construction, the attention core, the grouped-LoRA output, and `hc_attn_post`.
+
 **Next, in order:**
 
-- **The trunk graph.** The large half, and larger than glm-dsa's was.
-  Hyper-connections replace the residual stream with 4 Sinkhorn-mixed streams
-  (20 iterations), so it is not a matter of swapping an attention kernel. Also
-  MLA with per-layer KV compressors (41 layers), attention sinks, yarn rope,
-  the DSA indexer on the even layers, and the hash routing above.
+- **The rest of the trunk.** Layer 0's FFN half (MoE with the hash routing
+  above, plus the shared expert), then layer 1, then the compressor layers
+  (ratio 128), then the indexer layers (ratio 4) with the lightning indexer and
+  its own Hadamard rotation at order 128.
 - **A golden set.** llama.cpp supports `LLM_ARCH_DEEPSEEK4`, so `gate.py
   llamacpp` can create one exactly as it did for glm-dsa. The verification
   methodology survives the second model unchanged, which was not guaranteed.
