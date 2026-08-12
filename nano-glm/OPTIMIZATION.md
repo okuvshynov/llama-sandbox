@@ -6,18 +6,42 @@ Work that would make remote MoE *faster*. None of it is on the critical path in
 ## Where DeepSeek-V4-Flash stands today
 
 UD-Q8_K_XL, 150.7 GiB, on the Mac Pro (16 physical cores, four Vega II dies).
+Two scoreboards, kept apart because they are measured by different harnesses and
+a single table would invite a ratio that is not there — see "Comparing the two"
+below.
+
+### 1. llama.cpp, best of what it can do on this model
+
+`llama-bench -t 16 -r 5 -p 128 -n 32 -lm none`. Measured at `132bcc2`.
+
+| | best configuration | t/s |
+|---|---|---|
+| **prefill** | CPU only, `GGML_CPU_REPACK=ON` — no GPU involved | **22.16** ± 1.44 |
+| **decode** | Vulkan, `-ngl 99 -ncmoe 24 -nopo 1 -ts 24/6/6/7` | **4.64** ± 0.02 |
+
+```powershell
+.\build_bench.ps1                 # the two CPU builds
+.\build_bench.ps1 -Vulkan         # and the Vulkan one
+.\bench_ds4.ps1 -Repack           # prefill winner is the repack-on row
+.\bench_ds4.ps1 -Vulkan           # the -ngl / -nopo / -ncmoe configurations
+```
+
+Two things not to over-read. The decode winner sits in a **3.6-4.6 t/s band**
+across the whole `-ncmoe` family whose ordering did not survive repeating one
+configuration on a second load (10% load-to-load), so treat 4.64 as the top of a
+band and not as a tuned optimum. And GPU offload buys *only* decode here: the
+best prefill with a GPU in it was 16.68 (`-ngl 32 -nopo 1`), 75% of the CPU-only
+figure, and every other GPU configuration was worse.
+
+### 2. nano-glm, best of what expert-parallel can do
+
 `testdata-deepseek4/01_prose.bin`, 111 prompt + 32 generated, `-t 16`, one
-discarded warm-up and two measured passes. Measured at `906b965`, 2026-08-12.
+discarded warm-up and two measured passes. Measured at `906b965`.
 
 | | best configuration | t/s |
 |---|---|---|
 | **prefill** | routed experts on the four dies, 93.75% resident | **8.45** |
-| **decode** | all local, CPU only | **2.195** |
-
-**No single configuration wins both**, and that is the standing tension rather
-than an oversight: the split is 2.4x on prefill and 0.76x on decode, so which
-one to run depends on how much you generate per prompt token. On this workload's
-mix (111 + 32) the split wins on aggregate, 4.43 against 3.12 t/s.
+| **decode** | all local, CPU only — no server | **2.195** |
 
 ```powershell
 # best decode - all local, no server
@@ -34,16 +58,30 @@ build\bin\nano-glm.exe -m <ds4.gguf> -i testdata-deepseek4\01_prose.bin `
 
 # both of the above plus the forced-placement ladder, unattended
 python split_study.py --model <ds4.gguf>
-
-# llama.cpp on the same model, for scale
-.\bench_ds4.ps1 -Repack
 ```
 
+**No single configuration wins both**, and that is the standing tension rather
+than an oversight: the split is 2.4x on prefill and 0.76x on decode, so which to
+run depends on how much you generate per prompt token. On this workload's mix
+(111 + 32) the split wins on aggregate, 4.43 against 3.12 t/s.
+
 Every run prints the phase table (`lib/phase_timer.h`) and, over RPC, the MoE
-call accounting, so a regression says *where* rather than only *that*. Two
-caveats on reading the table against llama.cpp's 22.16 pp / 3.73 tg: that is
-`llama-bench pp128/tg32` with `-lm none`, so neither the harness nor the load
-mode matches, and mmap-backed weights cost ~1.45x of prefill on their own.
+call accounting, so a regression says *where* rather than only *that*.
+
+### Comparing the two
+
+Not directly, from the tables above: llama-bench measures pp128/tg32 with
+weights in ordinary memory, nano-glm answers a 111-token prompt with weights
+mmapped, and the load mode alone is worth ~1.45x of prefill. Dividing one column
+by the other would fold a harness difference into an implementation claim.
+
+The like-for-like comparison exists and is further down this file: `rescore
+--sim-gen` runs llama.cpp over the *same token ids* in the same prefill-then-step
+shape, which is what `bench_ds4.ps1 -Split` measures. On 143 positions of
+`01_prose`, shipped llama.cpp does 21.0 s against nano-glm-plus-server's ~32 s —
+so **roughly 65%**, and the sections below decompose what the remaining gap is
+made of (kernels, weight residency, and a 1.9x that turned out to be in
+nano-glm's own local expert path rather than anywhere exotic).
 
 ## Why this is a separate list
 
