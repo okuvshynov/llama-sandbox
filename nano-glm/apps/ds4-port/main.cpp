@@ -53,6 +53,7 @@ static bool parse_stage(const char * s, ds4_stage & out) {
     if (!strcmp(s, "compress")) { out = DS4_STAGE_COMPRESS; return true; }
     if (!strcmp(s, "attn"))     { out = DS4_STAGE_ATTN;     return true; }
     if (!strcmp(s, "layer"))    { out = DS4_STAGE_LAYER;    return true; }
+    if (!strcmp(s, "head"))     { out = DS4_STAGE_HEAD;     return true; }
     return false;
 }
 
@@ -206,12 +207,16 @@ int main(int argc, char ** argv) {
     if (!backend) NANO_ABORT("no CPU backend");
     ggml_backend_cpu_set_n_threads(backend, p.n_threads);
 
-    std::vector<uint8_t> meta(ggml_tensor_overhead() * 8192 + ggml_graph_overhead_custom(8192, false));
+    // 43 layers at roughly 150 nodes each, plus the dump's own copies, so the
+    // 8192 that sufficed while only a few layers were ported does not.
+    const size_t n_nodes_max = 32768;
+    std::vector<uint8_t> meta(ggml_tensor_overhead() * n_nodes_max +
+                              ggml_graph_overhead_custom(n_nodes_max, false));
     ggml_init_params ip = { meta.size(), meta.data(), /*no_alloc =*/ true };
     ggml_context * ctx = ggml_init(ip);
     if (!ctx) NANO_ABORT("no graph context");
 
-    ggml_cgraph * gf = ggml_new_graph_custom(ctx, 8192, false);
+    ggml_cgraph * gf = ggml_new_graph_custom(ctx, n_nodes_max, false);
 
     ggml_tensor * inp_tokens = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, n_tokens);
     ggml_set_name(inp_tokens, "inp_tokens");
@@ -343,8 +348,18 @@ int main(int argc, char ** argv) {
         lin.rot = new_input(GGML_TYPE_F32, M.h.idx_key_len, M.h.idx_key_len, "lid_k_rot");
     }
 
+    // llama.cpp asks for logits at the last position only (its batch sets
+    // `logits = true` on that token alone), so the head runs on one row. This
+    // mirrors that; a head over every position would differ in shape.
+    ggml_tensor * out_ids = nullptr;
+    if (p.stage == DS4_STAGE_HEAD) {
+        out_ids = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, 1);
+        ggml_set_name(out_ids, "inp_out_ids");
+        ggml_set_input(out_ids);
+    }
+
     ggml_tensor * out = ds4_build_graph(ctx, gf, M, inp_tokens, inp_pos, kq_mask, lin,
-                                        n_tokens, p.stage, (uint32_t) p.n_layers);
+                                        out_ids, n_tokens, p.stage, (uint32_t) p.n_layers);
     ggml_build_forward_expand(gf, out);
 
     ggml_gallocr_t galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
@@ -402,6 +417,11 @@ int main(int argc, char ** argv) {
             ds4_fill_hadamard(had, (int) M.h.idx_key_len);
             set(lin.rot, had.data(), had.size() * sizeof(float));
         }
+    }
+
+    if (out_ids) {
+        const int32_t last = n_tokens - 1;
+        ggml_backend_tensor_set(out_ids, &last, 0, sizeof(int32_t));
     }
 
     if (ggml_backend_graph_compute(backend, gf) != GGML_STATUS_SUCCESS) NANO_ABORT("compute failed");

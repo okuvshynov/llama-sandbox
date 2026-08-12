@@ -176,6 +176,12 @@ Two of those were re-checked where their behaviour actually changes: layer 2 at
 selection genuinely drops 128 of them; layer 3 at 12 tokens, where no complete
 128-token block exists and llama.cpp falls back to plain raw attention.
 
+**The head is ported too** — `hc_head`, `result_norm`, `result_output` — so the
+graph produces logits and the whole 43-layer stack was compared in a single run
+at 12 tokens. `out_ids` is part of the contract rather than an optimisation:
+llama.cpp asks for logits at the last position only, so its head is
+`[n_embd, 1]` however long the prompt.
+
 Eleven tensors are excluded and cannot be otherwise — key views and mask
 concatenations shaped by llama.cpp's cache padding, whose tails hold whatever
 the buffer held. Everything downstream of them is compared and exact. See
@@ -183,9 +189,6 @@ the buffer held. Everything downstream of them is compared and exact. See
 
 **Next, in order:**
 
-- **The head** — `hc_head`, `result_norm`, `result_output` — and then the trunk
-  produces logits and the port can be judged end to end rather than tensor by
-  tensor.
 - **A real KV cache.** `ds4-port` supplies the compressor state analytically
   because the cache is empty and the whole prompt arrives at once. A running
   engine needs the state carried across chunks and across decode steps: the

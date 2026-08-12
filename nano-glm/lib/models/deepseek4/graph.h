@@ -47,9 +47,16 @@
 // exists — llama.cpp then leaves the compressed half out entirely and falls
 // back to plain raw attention, and so does this.
 //
-// What remains before the model runs end to end is the head (`hc_head`,
-// `result_norm`, `result_output`) and a real KV cache to replace the harness's
-// fresh-cache, single-prefill assumptions.
+// The head is ported too — `hc_head`, `result_norm`, `result_output` — so the
+// graph produces logits and the whole 43-layer stack has been compared in one
+// run at 12 tokens. `out_ids` is part of it, not an optimisation: llama.cpp
+// asks for logits at the last position only, so its head is [n_embd, 1] however
+// long the prompt is, and a head over every position would disagree in shape
+// before it disagreed in value.
+//
+// What remains is a real KV cache to replace the harness's fresh-cache,
+// single-prefill assumptions. The graph takes its compressor state as input
+// tensors precisely so that can be added without touching this file.
 //
 // **Eleven tensors cannot be compared at all**, and that is not a gap in the
 // port: the `csa_*_k` / `hca_*_k` key views and the mask concatenations are
@@ -1183,6 +1190,7 @@ enum ds4_stage {
     DS4_STAGE_COMPRESS = 1,   // ... through the two compressors (ratio-4 layers)
     DS4_STAGE_ATTN     = 2,   // ... through attn_out / hc_attn_post
     DS4_STAGE_LAYER    = 3,   // ... through ffn_out / l_last: the whole layer
+    DS4_STAGE_HEAD     = 4,   // ... and then the head, so the graph makes logits
 };
 
 static const char * ds4_stage_name(ds4_stage s) {
@@ -1191,8 +1199,46 @@ static const char * ds4_stage_name(ds4_stage s) {
         case DS4_STAGE_COMPRESS: return "compress";
         case DS4_STAGE_ATTN:     return "attn";
         case DS4_STAGE_LAYER:    return "layer";
+        case DS4_STAGE_HEAD:     return "head";
     }
     return "?";
+}
+
+// ---------------------------------------------------------------------------
+// The head: fold the hyper-connection streams back to one, norm, unembed.
+//
+// `out_ids` selects which positions produce logits, and it is not an
+// optimisation to be skipped — llama.cpp asks for logits at the last position
+// only, so its `hc_head` is [n_embd, 1] no matter how long the prompt is, and a
+// head computed for every position would disagree in shape before it disagreed
+// in value.
+static ggml_tensor * ds4_build_head(ggml_context * ctx, const ds4_model & M,
+                                    ggml_tensor * inpL, ggml_tensor * out_ids,
+                                    int32_t n_tokens) {
+    const ds4_hparams & h = M.h;
+
+    if (out_ids) {
+        ggml_tensor * flat = ggml_reshape_2d(ctx, inpL, h.hc_mult * h.n_embd, n_tokens);
+        flat = ggml_get_rows(ctx, flat, out_ids);
+        inpL = ggml_reshape_3d(ctx, flat, h.n_embd, h.hc_mult, out_ids->ne[0]);
+    }
+
+    ggml_tensor * cur = ds4_hc_head(ctx, h, inpL, M.out_hc_fn, M.out_hc_scale, M.out_hc_base);
+    ds4_name(cur, "hc_head", -1);
+
+    cur = ds4_norm(ctx, h, cur, M.output_norm, "result_norm", -1);
+
+    // The loader treats `output.weight` as optional because some checkpoints
+    // tie it to the embedding; llama.cpp requires it for this architecture, so
+    // an untied fallback here would be inventing behaviour rather than porting
+    // it. Say so instead.
+    if (!M.output) {
+        NANO_ABORT("deepseek4 head: this checkpoint has no output.weight, and a "
+                   "tied-embedding fallback is not what llama.cpp does here");
+    }
+    cur = ggml_mul_mat(ctx, M.output, cur);
+    ds4_name(cur, "result_output", -1);
+    return cur;
 }
 
 // How many leading layers this file can build, read off the checkpoint rather
@@ -1219,15 +1265,24 @@ static uint32_t ds4_ported_layers(const ds4_hparams & h) {
 static ggml_tensor * ds4_build_graph(ggml_context * ctx, ggml_cgraph * gf, const ds4_model & M,
                                      ggml_tensor * inp_tokens, ggml_tensor * inp_pos,
                                      ggml_tensor * kq_mask, const ds4_layer_inputs & in,
+                                     ggml_tensor * out_ids,
                                      int32_t n_tokens, ds4_stage stage, uint32_t n_layers) {
     const ds4_hparams & h = M.h;
 
     if (n_layers == 0 || n_layers > h.n_layer) {
         NANO_ABORT("deepseek4 trunk: n_layers %u out of range (1..%u)", n_layers, h.n_layer);
     }
+    // The head sits after every layer, so a partial stack would compare against
+    // a reference that does not exist. Refuse rather than produce a number.
+    if (stage == DS4_STAGE_HEAD && n_layers != h.n_layer) {
+        NANO_ABORT("deepseek4 trunk: stage 'head' needs all %u layers, got %u",
+                   h.n_layer, n_layers);
+    }
 
     ggml_tensor * inp = ggml_get_rows(ctx, M.tok_embd, inp_tokens);
-    ds4_name(inp, "inp_embd", -1);
+    // "embd", not "inp_embd": llama.cpp names it in `build_inp_embd` and the
+    // comparison is by name.
+    ds4_name(inp, "embd", -1);
 
     // The hc streams start as `hc` identical copies of the embedding.
     ggml_tensor * inpL = ggml_reshape_3d(ctx, inp, h.n_embd, 1, n_tokens);
@@ -1310,6 +1365,10 @@ static ggml_tensor * ds4_build_graph(ggml_context * ctx, ggml_cgraph * gf, const
         }
 
         inpL = ds4_build_ffn_half(ctx, gf, h, L, inpL, inp_tokens, n_tokens, il);
+    }
+
+    if (stage == DS4_STAGE_HEAD) {
+        inpL = ds4_build_head(ctx, M, inpL, out_ids, n_tokens);
     }
 
     ggml_build_forward_expand(gf, inpL);

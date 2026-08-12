@@ -145,13 +145,18 @@ def cmd_compare(a, b, name_filter, tol, exclude=()):
     """Match by name and position, so a repeated name (llama.cpp reuses `norm`)
     still lines up as long as both sides emit it in the same order.
 
-    `exclude` drops tensors from the comparison entirely. It exists for one
-    narrow case: a tensor whose *shape* is a property of the reference's KV
-    cache rather than of the computation. llama.cpp pads its caches (384 tokens
-    become 512 rows, 96 compressed blocks become 256) and the padding holds
-    whatever was in the buffer, so a cache view can never equal one sized to the
-    data no matter how correct the port is. Never reach for it because a tensor
-    disagrees — that is the tool working.
+    `exclude` drops tensors from the comparison entirely. Two narrow reasons,
+    both about a tensor having no cross-implementation identity — never because
+    it disagrees, which is the tool working:
+
+    1. Its *shape* is a property of the reference's KV cache rather than of the
+       computation. llama.cpp pads its caches (384 tokens become 512 rows, 96
+       compressed blocks become 256) and the padding holds whatever was in the
+       buffer, so a cache view can never equal one sized to the data.
+    2. It has no name. `dump` with no filter also writes ggml's anonymous nodes
+       as "node_N", and N counts nodes in one graph — two implementations that
+       agree perfectly will still number them differently. Exclude "node_" when
+       comparing against an unfiltered dump.
     """
     seen = {}
     idx_b = {}
@@ -234,8 +239,8 @@ def main():
                          "(for tensors llama.cpp never named — see --op in dump)")
     ap.add_argument("--exclude", default=None,
                     help="comma-separated substrings to drop from the comparison. Only for "
-                         "tensors whose shape follows the reference's KV-cache padding "
-                         "rather than the computation")
+                         "tensors with no cross-implementation identity: shapes that follow "
+                         "the reference's KV-cache padding, and ggml's anonymous \"node_N\"")
     ap.add_argument("--name-b", default=None,
                     help="with --by-order: name filter for the second file, when the "
                          "two sides call the same tensor different things")
