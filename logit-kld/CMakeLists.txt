@@ -36,7 +36,16 @@ set(GGML_METAL OFF CACHE BOOL "" FORCE)
 # Consequence worth stating: this makes the reference slower, so a *performance*
 # comparison against llama.cpp must be built without this line. Only the
 # correctness comparison wants it (nano-glm/PLAN.md step 14).
-set(GGML_CPU_REPACK OFF CACHE BOOL "" FORCE)
+#
+# ...and ON is what a *performance* comparison needs, because ON is what
+# llama.cpp ships. An option rather than an edit: the two builds have to be
+# identical in everything else for either number to mean anything, and an
+# edited CMakeLists is not a configuration anyone can point at afterwards.
+# Measured on DeepSeek-V4-Flash: repacking is worth +23% prefill and +11%
+# decode, which is the handicap nano-glm accepts by mmapping weights as they
+# sit in the file (nano-glm/OPTIMIZATION.md).
+option(LOGIT_KLD_CPU_REPACK "build the reference tools with llama.cpp's weight repacking" OFF)
+set(GGML_CPU_REPACK ${LOGIT_KLD_CPU_REPACK} CACHE BOOL "" FORCE)
 
 add_subdirectory(${LLAMA_CPP_DIR} ${CMAKE_CURRENT_BINARY_DIR}/llama.cpp)
 

@@ -151,7 +151,17 @@ layers. `lib/models/{glm_dsa,deepseek4}/`, the generic loader split into
 GLM-5.2 stayed byte-identical through all of it (`gate.py rpc`, 6/6), which was
 the other thing worth knowing.
 
-**What remains of this step is measurement, not code:** reasons 2 and 3 below.
+**Reason 2 is measured** and lives in `OPTIMIZATION.md`: at 93.75% expert
+residency the split is 2.2x on prefill and 0.76x on decode — the first
+offload measurement here to go *negative* on decode — netting 1.31x over the
+local path and 60% of shipped llama.cpp. The gap to llama.cpp decomposes into
+1.23x/1.11x of kernels nano-glm cannot use (weight repacking needs a second
+copy of the weights) and 1.45x/1.15x of *residency*, which it could: repacking
+incidentally moves the weights out of the file mapping, and nothing stops
+nano-glm loading rather than mmapping when the model fits.
+
+**Reason 3 is still open.** Thread overhead at high residency has not been
+separated from the rest.
 
 **Hash-routed layers stay on the client.** Layers 0-2 pick experts from a
 token-id lookup, and the wire protocol carries activations, not token ids.

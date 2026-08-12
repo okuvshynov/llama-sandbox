@@ -321,6 +321,90 @@ The trunk is strictly sequential — layer i+1 needs layer i's output — so one
 sequence never has more than one request in flight. Concurrency here only pays
 if the backend serves several independent sequences at once.
 
+## DeepSeek-V4-Flash: what the split costs, and where the gap to llama.cpp is
+
+PLAN.md step 14 chose this model for a regime GLM-5.2 cannot reach: 150.7 GiB,
+so its experts nearly fit on the four Vega dies. Measured at **93.75% expert
+residency** (240 of 256 experts per layer, 40 served layers, 119.5 GiB on the
+GPUs), one prompt of 111 tokens plus 32 generated, warm, two passes agreeing
+within 2%:
+
+| setup | prefill | decode | 143 positions | aggregate |
+|---|---|---|---|---|
+| llama.cpp **as shipped** (repack ON) | | | 21.0 s | **6.81 t/s** |
+| llama.cpp, repack OFF (nano-glm's kernels) | | | 35.4 s | 4.04 t/s |
+| nano-glm, all local | 3.8 t/s | 1.97 t/s | 45.4 s | 3.15 t/s |
+| nano-glm + moe-server, 93.75% on GPU | **8.3 t/s** | **1.50 t/s** | 34.7 s | **4.12 t/s** |
+
+**The split helps prefill and hurts decode.** Prefill 2.2x, decode 0.76x — the
+first time an offload measurement here has gone *negative* on decode. It is not
+a contradiction of the earlier 1.43x decode ceiling: that was GLM-5.2 at 22%
+residency, whose experts are 31.5 MB each. DeepSeek's are 12.75 MB, so the
+per-layer work shrank while the per-layer round trip did not, and 40 sequential
+RPCs per token now cost more than the GPU saves. Whether a real two-machine
+topology moves this either way is unmeasured: loopback has no network latency
+but does share CPU and memory bandwidth between the two ends.
+
+Net on this workload it is a 1.31x win over local — and still **60% of shipped
+llama.cpp**.
+
+### Where the other 40% is, and why it is mostly not the kernels
+
+The obvious suspect is `GGML_CPU_REPACK`, which nano-glm cannot use: it rewrites
+quantized weights into a blocked layout at load and runs a different GEMM.
+Turning it off costs llama.cpp 1.69x on the workload above, which looks like the
+whole story and is not. Repacking **allocates** its 140,352 MiB of converted
+weights, so it also moves them out of the file mapping into ordinary memory.
+Those are two effects and they separate cleanly — same binary, `llama-bench -r
+5`, only the load mode changing:
+
+| repack OFF | pp128 | tg32 |
+|---|---|---|
+| mmap | 12.41 ± 1.29 | 2.91 ± 0.02 |
+| `-lm none` (ordinary memory) | 17.99 ± 0.09 | 3.36 ± 0.02 |
+| **residency alone** | **1.45x** | **1.15x** |
+
+and then, both in ordinary memory, only the flag changing:
+
+| `-lm none` | pp128 | tg32 |
+|---|---|---|
+| repack OFF | 17.99 ± 0.09 | 3.36 ± 0.02 |
+| repack ON | 22.16 ± 1.44 | 3.73 ± 0.04 |
+| **kernels alone** | **1.23x** | **1.11x** |
+
+So for prefill the *larger* half of llama.cpp's advantage is not its kernels at
+all — it is that repacking incidentally stops the weights being mmap-backed.
+
+That matters because the two halves have different prices. The kernel half is
+closed to nano-glm by construction: a repacked layout is a second copy of the
+weights, which a 583 GiB model and a remote-expert design cannot afford. **The
+residency half is not.** Nothing stops nano-glm reading weights into ordinary
+memory when the model fits, and this machine has 768 GB against DeepSeek's 150.7
+GiB. `llama-bench --load-mode none` already showed the same effect on GLM-5.2
+(1.90 ± 0.08 steady against 1.04-1.84 mmap-backed) and it was filed there as a
+*measurement* fix; it is also a throughput one.
+
+Not proposed for building yet, and deliberately: it helps exactly the models
+small enough not to need this project, and Kimi-K3 at ~1.5 TB — the reason the
+experts live elsewhere — cannot use it at all. What it does is stop the gap to
+llama.cpp being attributed to the split.
+
+### Caveats on the numbers above
+
+- **Aggregate hides the split.** 4.12 vs 4.04 t/s reads as parity with
+  repack-off llama.cpp and is a 2.2x prefill win against a 24% decode loss. The
+  ratio of the two depends entirely on how many tokens are generated; at 111
+  prompt and 32 generated it lands near parity, and a longer generation would
+  make the split lose.
+- **One prompt, one length.** `01_prose` only. The prefill/decode balance is the
+  whole result, so a corpus sweep would say more than more repetitions of this.
+- **nano-glm rebuilds its graph every chunk**, including once per decode token —
+  ~6000 nodes for 43 layers, where glm-dsa caches by (n_tokens, n_kv).
+  `models/deepseek4/eval.h` says it is "left out until there is a measurement
+  saying it matters". This is the first measurement that could, and it does not
+  separate that cost from the rest; it remains a candidate for the local-path
+  gap, not a demonstrated cause.
+
 ## Housekeeping that is not optimization
 
 Small, unglamorous, and cheap to fold into whatever touches the file next:
