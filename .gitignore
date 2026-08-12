@@ -3,10 +3,16 @@ build*/
 *.bin
 *.gguf
 
-# ...except the gate's golden set: small (~1.5 MB), and the point of it is to
-# be the committed thing a change is compared against. nano-glm/gate.py
-# regenerates it with --update-golden.
+# ...except the gate's golden sets: small (~1.5 MB each), and the point of them
+# is to be the committed thing a change is compared against. nano-glm/gate.py
+# regenerates one with --update-golden --testdata <dir>.
+#
+# One line per model, and it has to be: a `*` in the directory position would
+# not match, because git cannot un-ignore a file inside a directory it never
+# descends into. Adding a model means adding a line here, or its golden set is
+# silently not a reference at all.
 !nano-glm/testdata/*.bin
+!nano-glm/testdata-deepseek4/*.bin
 .vscode/
 tags
 
