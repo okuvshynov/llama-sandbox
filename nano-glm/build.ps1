@@ -17,7 +17,7 @@
 #
 # -Vk is separate for a stronger reason: a Vulkan-enabled build registers the
 # Vega dies, and every trunk binary aborts when a GPU device is present
-# (lib/nano_graph.h). That tree therefore builds moe-server alone, and it is
+# (lib/models/glm_dsa/graph.h). That tree builds moe-server alone, and it is
 # paired with build\bin\nano-glm.exe as the client — see NANO_VULKAN in
 # CMakeLists.txt.
 

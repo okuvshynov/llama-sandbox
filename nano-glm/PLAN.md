@@ -387,7 +387,7 @@ changes shape (below).
    *Build tree done.* `build.ps1 -Vk` -> `build-vk\`, `NANO_VULKAN=ON` ->
    `GGML_VULKAN=ON`, and that tree builds **moe-server alone**: a Vulkan build
    registers the GPUs and every trunk binary aborts when a GPU device is
-   present (`lib/nano_graph.h`), so the server is the only binary that can hold
+   present (`lib/models/glm_dsa/graph.h`), so the server is the only binary that can hold
    one. It pairs with `build\bin\nano-glm.exe` as client, which keeps the
    client on exactly the numerics the golden set was made with. `vulkan` is now
    in the build fingerprint and in `NANO_REPRO_KEYS`, so a strict client

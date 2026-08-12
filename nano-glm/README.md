@@ -1,37 +1,53 @@
-# nano-glm — minimal CPU-only GLM-5.2 inference on bare ggml
+# nano-glm — minimal CPU-only MoE inference on bare ggml
 
 An experiment in going back to basics: llama.cpp grew from a single-file
 inference engine into a framework (142 model architectures, a KV-cache zoo,
 15+ accelerator backends, batch/memory abstractions). nano-glm asks how small
-a *single-model* engine gets if the compute layer is kept and the framework
-is dropped: it links only `ggml` (kernels, GGUF reader, backend scheduler)
-and reimplements the thin slice of llama.cpp that GLM-5.2 on CPU actually
-needs — shard loader, single-sequence KV cache, forward graph, greedy loop —
-in about a thousand lines.
+an engine gets if the compute layer is kept and the framework is dropped: it
+links only `ggml` (kernels, GGUF reader, backend scheduler) and reimplements
+the thin slice of llama.cpp that two large MoE models on CPU actually need —
+shard loader, single-sequence KV cache, forward graph, greedy loop.
+
+Two architectures, both bit-identical to llama.cpp:
+
+| | | |
+|---|---|---|
+| **GLM-5.2** | `glm-dsa`, UD-Q6_K, 582.88 GiB | MLA, DSA lightning indexer |
+| **DeepSeek-V4-Flash** | `deepseek4`, UD-Q8_K_XL, 150.7 GiB | hyper-connections, three KV compression ratios, hash-routed layers |
+
+The name is now a historical accident; the second model is what turned the
+tier boundaries in `lib/` from a guess into a measurement.
 
 Laid out as a library and the apps that drive it:
 
 ```
-lib/     the engine — model loader, trunk graph, routed-expert block, wire
-         protocol, remote-MoE client, tokenizer, fingerprint, routing trace
+lib/     the engine — GGUF store, per-architecture model/graph/cache, routed
+         expert block, wire protocol, remote-MoE client, tokenizer,
+         fingerprint, routing trace
 apps/    nano-glm     the validation harness: token ids in, lkldtopk out
          nano-chat    single-turn chat: text in, streamed text out
          nano-bench   throughput in a named residency regime
+         nano-probe   what a checkpoint contains and what it would cost to hold
          moe-server   the MoE backend: one activation in, one combined row out
+         ds4-port     temporary: the deepseek4 porting harness, per-tensor
+                      comparison against llama.cpp. Goes away when nothing
+                      needs it.
 ```
 
 The split is along the line the bit-exactness contract draws. `lib/` is
-mechanism; `apps/` is policy — what to read, what to emit, when to stop. Both
-apps build the routed block from one definition, so client and backend cannot
-drift apart.
+mechanism; `apps/` is policy — what to read, what to emit, when to stop. Client
+and backend build the routed block from one definition, so they cannot drift
+apart.
 
-`lib/` is not uniformly GLM-specific: the fingerprint, wire protocol, RPC
-client and routing trace know nothing about the model, `moe_block.h` is
-DeepSeek-lineage rather than glm-dsa, and everything that is genuinely
-one-model lives in `nano_model.h` and `nano_graph.h`.
-[lib/README.md](lib/README.md) has the file-by-file map, what a second model
-(`models/kimi_k3/`) would have to reimplement — the graph and the metadata,
-about 500 lines — and the constraint to respect before adding an app.
+`lib/` is in three tiers: the fingerprint, wire protocol, RPC client, GGUF
+store and routing trace know nothing about any model; `moe_shape.h` is the
+dimensions a client and a backend must agree on; and everything genuinely
+one-model lives under `models/<arch>/`. [lib/README.md](lib/README.md) has the
+file-by-file map and scores the predictions this layout was built on — the
+short version being that the "DeepSeek lineage" family tier was wishful (two
+models in that lineage still share no arithmetic), the KV cache was correctly
+predicted to be the thing a second model disturbs, and the ~500-line estimate
+for a second model was low by 4x.
 
 Correctness bar: **bit-identical logits** vs the llama.cpp-based `collect`
 baseline from `../logit-kld`, verified over the same prompts with
@@ -54,11 +70,11 @@ What is deliberately **not** here: tokenizer (raw token ids are the
 interface, same policy as logit-kld — take them from an existing lkldtopk
 file or pass a comma list), chat templates, samplers (greedy = stored top-1),
 batching across sequences, KV shifting/defrag, the NextN/MTP draft head, and
-every non-glm-dsa architecture.
+every architecture but the two above.
 
 Where this is heading: [PLAN.md](PLAN.md) — remote MoE evaluation. The routed
 experts move behind a network service on a machine that can hold them, the
-trunk runs wherever trunk work is fastest, and GLM-5.2 is the testbed for
+trunk runs wherever trunk work is fastest, and these two are the testbed for
 Kimi-K3-scale models that fit nowhere else. That plan is about making it
 *work*; anything whose purpose is speed lives in
 [OPTIMIZATION.md](OPTIMIZATION.md), where the measurements say what each idea
@@ -85,7 +101,8 @@ On Windows (MSVC), `build.ps1` wraps the same two commands — it locates
 ```
 
 `-Vk` is a separate tree because a Vulkan-enabled build registers the GPUs, and
-every trunk binary aborts when a GPU device is present (`lib/nano_graph.h`).
+every trunk binary aborts when a GPU device is present
+(`lib/models/glm_dsa/graph.h`).
 Only `moe-server` can hold one, so that tree builds only `moe-server` and it is
 paired with `build\bin\nano-glm.exe` as the client — the client then keeps
 exactly the numerics the golden set was made with. `moe-server --devices` lists
