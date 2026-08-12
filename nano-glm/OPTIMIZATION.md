@@ -569,19 +569,26 @@ count a die actually receives at decode:
 
 | pairs per die | per dispatch | GB/s |
 |---|---|---|
-| 1 | 373.6 us | 35.8 |
-| 2 | 451.6 us | 59.2 |
-| 4 | 599.1 us | 89.3 |
-| **8** | **857.0 us** | **124.3** |
-| **9** | **8780.4 us** | — |
-| 16 | 12400.6 us | 17.2 |
-| 166 (a 111-token prefill) | 78802.0 us | 28.2 |
+| 1 | 398.0 us | 33.6 |
+| 2 | 481.4 us | 55.5 |
+| 4 | 642.6 us | 83.2 |
+| **8** | **881.7 us** | **121.3** |
+| **9** | **8814.2 us** | 13.7 |
+| 16 | 12444.6 us | 17.2 |
+| 166 (a 111-token prefill) | 78832.6 us | 28.2 |
 
-At decode a die gets 1-2 pairs, so the kernel costs 374-452 us x 40 layers =
-**15-18 ms per token against the 69 ms the server charges**. ~50 ms/token is
+At decode a die gets 1-2 pairs, so the kernel costs 398-481 us x 40 layers =
+**16-19 ms per token against the 69 ms the server charges**. ~50 ms/token is
 server-side overhead around the dispatch — thread fan-out and join per layer,
 the gather into `gathered_x`, the scatter-add combine — and none of it has been
 measured yet.
+
+(These are ~8% above the first version of this table, which was measured before
+`moe-bench` shared its graph with the server and so ran without deepseek4's
+SwiGLU clamp. Two elementwise ops are two more GPU dispatches: 35-40 us per
+layer, small against the cliff and not small against a decode step. Worth
+keeping as a reminder that on a GPU an op's cost is bounded below by its
+dispatch, not by its arithmetic.)
 
 **The cliff is one line of llama.cpp.** `ggml_vk_use_mul_mat_vec_id` is
 `src2->ne[1] <= 8` (`ggml-vulkan.cpp:10607`); `src2` is the id tensor and its
@@ -591,8 +598,8 @@ it switches to the tiled `mul_mat_id_q_f16`, and on these dies — which report
 slower for one extra pair**.
 
 Prefill is entirely on the wrong side of it. A die handed 166 pairs takes
-78.8 ms; the same work as 21 dispatches of 8 would be 21 x 857 us = **18 ms, a
-4.4x**, and the server already has the pair list in hand to chunk it. That is
+78.8 ms; the same work as 21 dispatches of 8 would be 21 x 882 us = **18.5 ms, a
+4.3x**, and the server already has the pair list in hand to chunk it. That is
 the largest single number on this page and it needs no new kernel — only a cap
 on how many pairs go into one `mul_mat_id`.
 

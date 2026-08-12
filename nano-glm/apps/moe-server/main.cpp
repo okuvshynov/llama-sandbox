@@ -28,6 +28,7 @@
 #include "moe_proto.h"
 
 #include "build_info.h"
+#include "moe_compact_graph.h"
 #include "models/deepseek4/model.h"
 #include "models/deepseek4/moe_block.h"
 #include "models/glm_dsa/model.h"
@@ -569,36 +570,11 @@ static bool run_device_compact(moe_backend & B, moe_device & D, uint32_t layer,
 
     ggml_cgraph * gf = ggml_new_graph(ctx);
 
-    ggml_tensor * inp = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, h.n_embd, 1, m);
-    ggml_set_name(inp, "x");
-    ggml_set_input(inp);
-
-    ggml_tensor * ids = ggml_new_tensor_2d(ctx, GGML_TYPE_I32, 1, m);
-    ggml_set_name(ids, "ids");
-    ggml_set_input(ids);
-
-    ggml_tensor * wts = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, 1, 1, m);
-    ggml_set_name(wts, "weights");
-    ggml_set_input(wts);
-
-    ggml_tensor * up   = ggml_mul_mat_id(ctx, w_up,   inp, ids);
-    ggml_tensor * gate = ggml_mul_mat_id(ctx, w_gate, inp, ids);
-
-    // Same clamp, same order, as build_ds4_moe_experts: `up` symmetric, `gate`
-    // one-sided and *before* SiLU, which ggml_swiglu_split applies to its first
-    // argument. `ggml_clamp` writes through a view of its input, which is safe
-    // here for the reason it is safe there — nothing else reads `up` or `gate`.
-    const float limit = swiglu_limit_of(B, layer);
-    if (limit > 1e-6f) {
-        up   = ggml_clamp(ctx, up,   -limit,    limit);
-        gate = ggml_clamp(ctx, gate, -INFINITY, limit);
-    }
-
-    ggml_tensor * act  = ggml_swiglu_split(ctx, gate, up);
-    ggml_tensor * res  = ggml_mul_mat_id(ctx, w_down, act, ids);
-    res = ggml_mul(ctx, res, wts);
-    ggml_set_output(res);
-    ggml_build_forward_expand(gf, res);
+    // The five ops live in lib/moe_compact_graph.h, shared with moe-bench, so
+    // there is one definition rather than three hand-synced ones — see that
+    // file for why that is not a cosmetic preference.
+    const moe_compact_io io = build_moe_compact(ctx, gf, w_up, w_gate, w_down,
+                                                h.n_embd, m, swiglu_limit_of(B, layer));
 
     bool ok = ggml_gallocr_alloc_graph(D.galloc, gf);
     if (ok) {
@@ -608,14 +584,14 @@ static bool run_device_compact(moe_backend & B, moe_device & D, uint32_t layer,
                    x + (size_t) D.pair_token[j] * h.n_embd,
                    (size_t) h.n_embd * sizeof(float));
         }
-        ggml_backend_tensor_set(inp, D.gathered_x.data(),  0, (size_t) h.n_embd * m * sizeof(float));
-        ggml_backend_tensor_set(ids, D.pair_expert.data(), 0, (size_t) m * sizeof(int32_t));
-        ggml_backend_tensor_set(wts, D.pair_weight.data(), 0, (size_t) m * sizeof(float));
+        ggml_backend_tensor_set(io.x,   D.gathered_x.data(),  0, (size_t) h.n_embd * m * sizeof(float));
+        ggml_backend_tensor_set(io.ids, D.pair_expert.data(), 0, (size_t) m * sizeof(int32_t));
+        ggml_backend_tensor_set(io.wts, D.pair_weight.data(), 0, (size_t) m * sizeof(float));
         ok = ggml_backend_graph_compute(D.backend, gf) == GGML_STATUS_SUCCESS;
     }
     if (ok) {
         D.rows_out.resize((size_t) h.n_embd * m);
-        ggml_backend_tensor_get(res, D.rows_out.data(), 0,
+        ggml_backend_tensor_get(io.out, D.rows_out.data(), 0,
                                 (size_t) h.n_embd * m * sizeof(float));
     }
     ggml_free(ctx);

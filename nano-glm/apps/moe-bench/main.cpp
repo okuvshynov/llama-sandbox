@@ -8,16 +8,12 @@
 // right shape and type, fills them with synthetic bytes, and runs the same
 // graph `run_device_compact` runs — in seconds, from nothing.
 //
-// The graph is copied deliberately rather than shared, and that is the one
-// thing to watch: if `run_device_compact` changes, this must change with it or
-// it silently measures something else. It is five ops, reproduced here in the
-// same order:
-//
-//     up   = mul_mat_id(w_up,   x, ids)
-//     gate = mul_mat_id(w_gate, x, ids)
-//     act  = swiglu_split(gate, up)
-//     res  = mul_mat_id(w_down, act, ids)
-//     res  = mul(res, weights)
+// The graph is the *same definition* the server runs, not a copy of it:
+// `build_moe_compact` in lib/moe_compact_graph.h. The first version of this file
+// did copy it, with a comment warning that the two could drift — which was a bad
+// answer, since a silent divergence between two copies of exactly this sequence
+// is what the SwiGLU clamp bug was. A benchmark that can drift from the thing it
+// benchmarks measures nothing in particular.
 //
 // **One device.** The server dispatches to its dies from one thread each and
 // waits for all of them, so a layer's wall time is the slowest die, not the
@@ -34,6 +30,7 @@
 #include "models/deepseek4/graph.h"
 
 #include "cpu_topology.h"
+#include "moe_compact_graph.h"
 
 #include "ggml.h"
 #include "ggml-alloc.h"
@@ -57,6 +54,9 @@ struct bench_params {
     int     device    = 0;
     int     iters     = 200;
     int     n_layer   = 40;     // for the per-token extrapolation only
+    // deepseek4's SwiGLU clamp, because it is two more ops in the graph being
+    // timed. 0 gives glm-dsa's shape, which is the same sequence without them.
+    float   clamp     = 10.0f;
     bool    list      = false;
 };
 
@@ -70,6 +70,7 @@ static void usage() {
         "  --embd N           model n_embd (default 4096)\n"
         "  --ffn N            expert n_ff (default 2048)\n"
         "  --layers N         routed layers, for the per-token figure (default 40)\n"
+        "  --clamp F          SwiGLU clamp; deepseek4 is 10.0, glm-dsa 0\n"
         "  --iters N          timed iterations (default 200)\n\n"
         "decode is --pairs 1 or 2; a 111-token prefill over four dies is ~166.\n");
 }
@@ -103,6 +104,7 @@ int main(int argc, char ** argv) {
         else if (!strcmp(a, "--embd")    && i + 1 < argc)   p.n_embd   = atoll(argv[++i]);
         else if (!strcmp(a, "--ffn")     && i + 1 < argc)   p.n_ff     = atoll(argv[++i]);
         else if (!strcmp(a, "--layers")  && i + 1 < argc)   p.n_layer  = atoi(argv[++i]);
+        else if (!strcmp(a, "--clamp")   && i + 1 < argc)   p.clamp    = (float) atof(argv[++i]);
         else if (!strcmp(a, "--iters")   && i + 1 < argc)   p.iters    = atoi(argv[++i]);
         else { usage(); return 1; }
     }
@@ -185,32 +187,20 @@ int main(int argc, char ** argv) {
         ggml_context * ctx = ggml_init(ip);
         ggml_cgraph * gf = ggml_new_graph(ctx);
 
-        ggml_tensor * x   = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, p.n_embd, 1, p.n_pairs);
-        ggml_set_input(x);
-        ggml_tensor * ids = ggml_new_tensor_2d(ctx, GGML_TYPE_I32, 1, p.n_pairs);
-        ggml_set_input(ids);
-        ggml_tensor * wts = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, 1, 1, p.n_pairs);
-        ggml_set_input(wts);
-
-        ggml_tensor * up   = ggml_mul_mat_id(ctx, w_up,   x,   ids);
-        ggml_tensor * gate = ggml_mul_mat_id(ctx, w_gate, x,   ids);
-        ggml_tensor * act  = ggml_swiglu_split(ctx, gate, up);
-        ggml_tensor * res  = ggml_mul_mat_id(ctx, w_down, act, ids);
-        res = ggml_mul(ctx, res, wts);
-        ggml_set_output(res);
-        ggml_build_forward_expand(gf, res);
+        const moe_compact_io io = build_moe_compact(ctx, gf, w_up, w_gate, w_down,
+                                                    p.n_embd, p.n_pairs, p.clamp);
 
         if (!ggml_gallocr_alloc_graph(galloc, gf)) { fprintf(stderr, "moe-bench: alloc failed\n"); return 1; }
-        ggml_backend_tensor_set(x,   host_x.data(),   0, host_x.size()   * sizeof(float));
-        ggml_backend_tensor_set(ids, host_ids.data(), 0, host_ids.size() * sizeof(int32_t));
-        ggml_backend_tensor_set(wts, host_w.data(),   0, host_w.size()   * sizeof(float));
+        ggml_backend_tensor_set(io.x,   host_x.data(),   0, host_x.size()   * sizeof(float));
+        ggml_backend_tensor_set(io.ids, host_ids.data(), 0, host_ids.size() * sizeof(int32_t));
+        ggml_backend_tensor_set(io.wts, host_w.data(),   0, host_w.size()   * sizeof(float));
 
         if (ggml_backend_graph_compute(backend, gf) != GGML_STATUS_SUCCESS) {
             fprintf(stderr, "moe-bench: compute failed\n");
             return 1;
         }
         std::vector<float> out((size_t) p.n_embd * p.n_pairs);
-        ggml_backend_tensor_get(res, out.data(), 0, out.size() * sizeof(float));
+        ggml_backend_tensor_get(io.out, out.data(), 0, out.size() * sizeof(float));
 
         ggml_free(ctx);
         const double us = std::chrono::duration<double, std::micro>(clk::now() - t0).count();
