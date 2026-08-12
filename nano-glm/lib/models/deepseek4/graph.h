@@ -130,6 +130,7 @@
 #include "cache.h"
 #include "model.h"
 #include "moe_block.h"
+#include "moe_client.h"
 
 #include "ggml.h"
 
@@ -1255,8 +1256,21 @@ static ggml_tensor * ds4_build_ffn_half(ggml_context * ctx, ggml_cgraph * gf,
         selected = ggml_get_rows(ctx, L.ffn_tid2eid, inp_tokens);
     }
 
-    ggml_tensor * moe_out = build_ds4_moe_block(ctx, gf, h, il, L, cur, n_tokens,
-                                                selected, ds4_name);
+    // The routed experts, here or on the backend. A hash-routed layer cannot
+    // go: the wire carries activations and the lookup needs token ids, which is
+    // exactly what `moe_shape.n_dense_lead` reports to the server so it never
+    // expects a request for one.
+    ggml_tensor * moe_out;
+    if (g_moe.active() && !h.is_hash_routed(il)) {
+        g_rpc_ctxs.push_back({ il });
+        ggml_tensor * args[1] = { cur };
+        moe_out = ggml_custom_4d(ctx, GGML_TYPE_F32, h.n_embd, n_tokens, 1, 1,
+                                 args, 1, moe_rpc_cb, 1, &g_rpc_ctxs.back());
+        ggml_build_forward_expand(gf, moe_out);
+    } else {
+        moe_out = build_ds4_moe_block(ctx, gf, h, il, L, cur, n_tokens,
+                                      selected, ds4_name);
+    }
     // `snapshot` rather than `name`: the block's aggregate is a chain of adds
     // for n_expert_used > 1, but the bare view of the single expert when it is
     // 1 — and naming a view is not enough to keep it readable (ds4_snapshot).
@@ -1361,6 +1375,11 @@ static ggml_tensor * ds4_build_graph(ggml_context * ctx, ggml_cgraph * gf, const
                                      ggml_tensor * out_ids,
                                      int32_t n_tokens, ds4_stage stage, uint32_t n_layers) {
     const ds4_hparams & h = M.h;
+
+    // The previous graph is discarded on rebuild and its RPC nodes with it, so
+    // the contexts they point at must go too — `moe_rpc_cb` is handed the
+    // address stored in op_params one rebuild later.
+    g_rpc_ctxs.clear();
 
     if (n_layers == 0 || n_layers > h.n_layer) {
         NANO_ABORT("deepseek4 trunk: n_layers %u out of range (1..%u)", n_layers, h.n_layer);

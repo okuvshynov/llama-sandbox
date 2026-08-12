@@ -189,10 +189,6 @@ int main(int argc, char ** argv) {
     // Connect before the graph is built: build_graph checks g_moe.active() to
     // decide whether the routed block is a local subgraph or an RPC node.
     if (!params.moe_addr.empty()) {
-        // The remote-expert seam is wired into glm-dsa's graph only. The
-        // backend already speaks deepseek4 (moe-server dispatches on
-        // architecture); it is the client half that has no hook yet.
-        if (is_ds4) NANO_ABORT("--moe-addr is not wired for deepseek4 yet");
         const size_t colon = params.moe_addr.rfind(':');
         if (colon == std::string::npos) NANO_ABORT("--moe-addr must be host:port");
         const std::string host = params.moe_addr.substr(0, colon);
@@ -205,7 +201,13 @@ int main(int argc, char ** argv) {
         }
         g_moe.want_log = !params.moe_log.empty();
         fprintf(stderr, "nano-glm: routed experts via moe-server at %s\n", params.moe_addr.c_str());
-        moe_hello(moe_shape_of(M.h), M, params.moe_addr, params.moe_strict, params.model_path, params.n_threads);
+        if (is_ds4) {
+            moe_hello(ds4_moe_shape_of(M4.h), M4, params.moe_addr, params.moe_strict,
+                      params.model_path, params.n_threads);
+        } else {
+            moe_hello(moe_shape_of(M.h), M, params.moe_addr, params.moe_strict,
+                      params.model_path, params.n_threads);
+        }
     }
 
     // Before the first eval: the trace hooks itself into the graph as it is built.

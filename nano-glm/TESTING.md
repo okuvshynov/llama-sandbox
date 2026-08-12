@@ -365,9 +365,11 @@ positions, every one verified at KL == 0 against llama.cpp `rescore --sim-gen`.
 `rpc` passes byte-for-byte against it, so all three setups agree.
 
 **DeepSeek-V4-Flash UD-Q8_K_XL** (5 shards, 150.7 GiB),
-`testdata-deepseek4/`: 6 prompts, 793 positions, all at KL == 0. `rpc` is not
-wired yet — the client half of the remote-expert seam has no deepseek4 hook, so
-`nano-glm --moe-addr` aborts for it rather than misbehaving.
+`testdata-deepseek4/`: 6 prompts, 793 positions, all at KL == 0, and `rpc`
+passes byte-for-byte as well — so all three setups agree for this model too.
+Its hash-routed layers (0-2) stay on the client and the server is told so by
+`moe_shape.n_dense_lead`, which is the same mechanism glm-dsa's dense lead
+uses.
 
 Both on Windows / MSVC 19.50 / ggml `6a32c29a7` / 16 threads.
 

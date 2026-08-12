@@ -140,11 +140,18 @@ live in `OPTIMIZATION.md` under the same numbers.
    ~3-7% of a decode layer at 20% residency; whether that holds when the GPUs
    hold nearly everything is unmeasured.
 
-**Done:** `lib/models/{glm_dsa,deepseek4}/`, the generic loader split into
-`gguf_store.h`, `moe_shape.h` for the client/backend contract, the deepseek4
-hparams and loader, its MoE block, `moe-server` dispatching on architecture,
-and `nano-probe` / `gguf_peek.py` to see what a checkpoint actually contains.
-GLM-5.2 stayed byte-identical through all of it (`gate.py rpc`, 6/6).
+**The port is done.** Loader, MoE block, trunk graph at all three compression
+ratios, the lightning indexer, the head, the KV cache, prefill, chunked prefill
+and decode; `apps/nano-glm` drives it; the remote-expert seam carries its routed
+layers. `lib/models/{glm_dsa,deepseek4}/`, the generic loader split into
+`gguf_store.h`, `moe_shape.h` for the client/backend contract, `nano-probe` /
+`gguf_peek.py` to see what a checkpoint contains, and `logit-kld`'s `dump` plus
+`dump_inspect.py` for the per-tensor comparison that made it possible.
+
+GLM-5.2 stayed byte-identical through all of it (`gate.py rpc`, 6/6), which was
+the other thing worth knowing.
+
+**What remains of this step is measurement, not code:** reasons 2 and 3 below.
 
 **Hash-routed layers stay on the client.** Layers 0-2 pick experts from a
 token-id lookup, and the wire protocol carries activations, not token ids.
@@ -197,11 +204,11 @@ splitting the same way (`dump -ub`):
 all at 0.0000e+00. The chunked case is the one that matters: a ratio-128 block
 straddles the boundary and has to read its first 64 positions out of the ring.
 
-**And end to end**: `nano-glm` evaluates the model through `models/deepseek4/
-eval.h` and agrees with llama.cpp's `rescore --sim-gen` at **KL == 0**, 16/16
-top-1, over 12 prompt tokens plus 4 greedy steps. That is the first check of
-this port against an *independent implementation* rather than against a dump of
-llama.cpp's own intermediates.
+**And end to end, on all three setups.** `testdata-deepseek4/` holds a golden
+set of 6 prompts and 793 positions; `gate.py llamacpp` re-derives every one of
+them with llama.cpp at **KL == 0**, `gate.py aa` reproduces the bytes, and
+`gate.py rpc` reproduces them through `moe-server`. A↔B and B↔C both hold, so
+A↔C follows and **the port is complete**.
 
 Sizing it the way llama.cpp does also retired the eleven-name exclusion list
 these notes used to carry: those tensors are views of a *padded* cache, and the
