@@ -149,8 +149,20 @@ loopback and more over a real link. That is arithmetic from two measurements,
 not a measured speedup; `nano-bench` could settle it once it speaks
 `--moe-addr`.
 
-**The largest confirmed win on this list**, and small: one graph restructuring,
-no new subsystem. Must not change a bit — same corpus gate.
+**Re-ranked upward, and the reasoning above understates it.** The estimate
+prices this at the shared expert's own read — what the client gets to *do*
+during the round trip. The decode breakdown below says the round trip costs far
+more than it moves: the client's trunk runs 103 ms/token slower with a remote
+MoE than with a local one, doing identical work, which is more than the 83 ms of
+round trip itself and is not explained by anything in the RPC accounting. The
+leading suspect is precisely what this item removes — sixteen ggml workers
+spinning at a barrier through forty blocking calls per token. If that is the
+mechanism, the win is not "of order 15%" but most of a 26% trunk regression.
+
+Still one graph restructuring and no new subsystem, and it must not change a bit
+— same corpus gate. What it now also needs is a *measurement of the mechanism*
+before the fix: confirm the spin is where the time goes, rather than assuming it
+because it is the convenient answer.
 
 ### 3-adjacent. What GPU offload is actually worth — measured
 

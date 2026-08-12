@@ -29,6 +29,9 @@ apps/    nano-glm     the validation harness: token ids in, lkldtopk out
          nano-bench   throughput in a named residency regime
          nano-probe   what a checkpoint contains and what it would cost to hold
          moe-server   the MoE backend: one activation in, one combined row out
+         moe-bench    the backend's expert kernel with synthetic weights and no
+                      model at all, so tuning it is an edit cycle of seconds
+                      rather than the three minutes moe-server needs to load
          ds4-port     temporary: the deepseek4 porting harness, per-tensor
                       comparison against llama.cpp. Goes away when nothing
                       needs it.
