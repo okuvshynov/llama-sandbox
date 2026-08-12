@@ -25,6 +25,7 @@ it is looking at:
 | `models/glm_dsa/moe_block.h` | its routed-expert graph, as a router half and an expert half plus the composition the trunk calls |
 | `models/glm_dsa/chat.h` | GLM-5.2's single-turn chat format, as token ids |
 | `models/deepseek4/model.h` | DeepSeek-V4-Flash hparams, tensor names, loader |
+| `models/deepseek4/eval.h` | its runtime: backend, cache and one chunk of evaluation — the same shape as glm-dsa's `eval_chunk` |
 | `models/deepseek4/cache.h` | its KV state: raw and compressed key caches, the compressor rings, and the per-chunk index plans. No ggml ops — plain bookkeeping over positions and cells |
 | `models/deepseek4/moe_block.h` | its routed-expert graph, same two halves, plus hash routing and an optional naming hook |
 | `models/deepseek4/graph.h` | its trunk graph — hyper-connections, MLA attention at all three compression ratios, the lightning indexer, the FFN half, and the output head. Every layer, and it aborts past what has been checked |
@@ -72,7 +73,15 @@ is the *shape* — `n_expert`, `n_expert_used`, `n_ff_exp`, the scale and the
 norm flag — and not a line of arithmetic. That is now `moe_shape.h`, which is
 small and honest, and each architecture writes its own expert graph.
 
-The **seam** between the halves, on the other hand, held exactly. `moe-server`'s
+A second seam appeared where this section did not predict one, and it is
+worth naming because it is *not* in `lib/`: `apps/nano-glm` drives either model
+through four values and one function — vocabulary size, an end token, a
+description, and "evaluate these tokens at this position, give me logits". The
+greedy loop, the chunking and the file it writes are identical for both. That
+dispatch lives in one translation unit and nothing in `lib/` knows it exists,
+which is the difference between a seam and a framework.
+
+The **seam** between the MoE halves, on the other hand, held exactly. `moe-server`'s
 device machinery — host-side routing, per-device compaction, the combine — is
 written against `{ids, weights}` in and activations out, and deepseek4 dropped
 into it without the server learning anything about sqrt-softplus, clamped

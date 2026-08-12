@@ -18,12 +18,15 @@
 #include "cpu_topology.h"
 #include "expert_trace.h"
 #include "logits_file.h"
+#include "models/deepseek4/eval.h"
+#include "models/deepseek4/model.h"
 #include "models/glm_dsa/model.h"
 #include "prompt_source.h"
 #include "topk_utils.h"
 
 #include <algorithm>
 #include <chrono>
+#include <functional>
 #include <cinttypes>
 #include <cstdio>
 #include <cstdlib>
@@ -122,18 +125,74 @@ int main(int argc, char ** argv) {
                                                     label, "nano-glm");
     const int32_t n_prompt = (int32_t) prompt.size();
 
-    nano_model M;
+    // The four things this app needs from an architecture. Everything else it
+    // does — arguments, chunking, the greedy loop, the file it writes — is
+    // policy and identical for both models, so it is written once.
+    //
+    // This is a dispatch in one translation unit, not a framework: nothing in
+    // `lib/` knows it exists, and the two graphs share not one line. The seam
+    // is where lib/README.md predicted it would be if it appeared at all — the
+    // *decomposition*, not the arithmetic.
+    struct engine {
+        uint32_t    n_vocab = 0;
+        uint32_t    n_layer = 0;
+        uint32_t    n_embd  = 0;
+        int32_t     eos_id  = -1;
+        std::string desc;
+        // tokens, count, n_past, want-every-position -> logits [n_vocab * n_out]
+        std::function<const float * (const int32_t *, int32_t, int32_t, bool)> eval;
+    };
+
     const auto t_load_start = std::chrono::steady_clock::now();
-    load_model(M, params.model_path);
-    const nano_hparams & h = M.h;
+
+    std::string arch;
+    {
+        ggml_context * pctx = nullptr;
+        gguf_init_params pgp = { /*no_alloc =*/ true, /*ctx =*/ &pctx };
+        gguf_context * pg = gguf_init_from_file(params.model_path.c_str(), pgp);
+        if (!pg) NANO_ABORT("cannot read GGUF '%s'", params.model_path.c_str());
+        arch = kv_str_opt(pg, "general.architecture", "?");
+        gguf_free(pg);
+        ggml_free(pctx);
+    }
+    const bool is_ds4 = arch == "deepseek4";
+
+    nano_model M;
+    ds4_model  M4;
+    if (is_ds4) {
+        ds4_load_model(M4, params.model_path);
+    } else {
+        load_model(M, params.model_path);
+    }
+
+    engine E4;
+    if (is_ds4) {
+        E4.n_vocab = M4.h.n_vocab;
+        E4.n_layer = M4.h.n_layer;
+        E4.n_embd  = M4.h.n_embd;
+        E4.eos_id  = (int32_t) M4.h.eos_id;
+        E4.desc    = M4.desc;
+    } else {
+        E4.n_vocab = M.h.n_vocab;
+        E4.n_layer = M.h.n_layer;
+        E4.n_embd  = M.h.n_embd;
+        E4.eos_id  = (int32_t) M.h.eos_id;
+        E4.desc    = M.desc;
+    }
 
     for (int32_t t : prompt) {
-        if (t < 0 || (uint32_t) t >= h.n_vocab) NANO_ABORT("prompt token %d out of vocab range [0, %u)", t, h.n_vocab);
+        if (t < 0 || (uint32_t) t >= E4.n_vocab) {
+            NANO_ABORT("prompt token %d out of vocab range [0, %u)", t, E4.n_vocab);
+        }
     }
 
     // Connect before the graph is built: build_graph checks g_moe.active() to
     // decide whether the routed block is a local subgraph or an RPC node.
     if (!params.moe_addr.empty()) {
+        // The remote-expert seam is wired into glm-dsa's graph only. The
+        // backend already speaks deepseek4 (moe-server dispatches on
+        // architecture); it is the client half that has no hook yet.
+        if (is_ds4) NANO_ABORT("--moe-addr is not wired for deepseek4 yet");
         const size_t colon = params.moe_addr.rfind(':');
         if (colon == std::string::npos) NANO_ABORT("--moe-addr must be host:port");
         const std::string host = params.moe_addr.substr(0, colon);
@@ -151,6 +210,7 @@ int main(int argc, char ** argv) {
 
     // Before the first eval: the trace hooks itself into the graph as it is built.
     if (!params.expert_log.empty()) {
+        if (is_ds4) NANO_ABORT("--expert-log is not wired for deepseek4 yet");
         if (!expert_trace_built()) {
             NANO_ABORT("--expert-log needs a routing-trace build: .\\build.ps1 -Trace "
                        "(cmake -DNANO_EXPERT_TRACE=ON), then run build-trace\\bin\\nano-glm");
@@ -161,24 +221,41 @@ int main(int argc, char ** argv) {
             // sequence positions the protocol does not carry.
             NANO_ABORT("--expert-log requires the local MoE path (drop --moe-addr)");
         }
-        expert_trace_open(params.expert_log, moe_shape_of(h), M.desc, n_prompt);
+        expert_trace_open(params.expert_log, moe_shape_of(M.h), M.desc, n_prompt);
         fprintf(stderr, "nano-glm: routing trace -> %s\n", params.expert_log.c_str());
     }
 
     const uint32_t kv_size = std::max((uint32_t) params.n_ctx, (uint32_t) (n_prompt + params.n_predict));
+
     nano_state S;
-    init_state(S, M, kv_size, params.n_threads);
+    ds4_state  S4;
+    eval_ctx   Ectx;
+    if (is_ds4) {
+        ds4_init_state(S4, M4, kv_size, params.n_batch, params.n_threads);
+        E4.eval = [&](const int32_t * t, int32_t n, int32_t past, bool all) {
+            ds4_eval_chunk(M4, S4, t, n, past, all);
+            return S4.logits.data();
+        };
+    } else {
+        init_state(S, M, kv_size, params.n_threads);
+        E4.eval = [&](const int32_t * t, int32_t n, int32_t past, bool all) {
+            // glm-dsa always produces every position; `all` is the superset it
+            // already gives, and a single-position caller reads row n-1.
+            (void) all;
+            eval_chunk(M, S, Ectx, t, n, past);
+            return Ectx.logits.data();
+        };
+    }
     const auto t_load_end = std::chrono::steady_clock::now();
 
     fprintf(stderr, "nano-glm: %s\n", nano_build_line().c_str());
     fprintf(stderr, "nano-glm: %s | n_vocab=%u n_layer=%u n_embd=%u | n_prompt=%d n_predict=%d top_k=%d kv=%u threads=%d (%d physical / %d logical cores)\n",
-            M.desc.c_str(), h.n_vocab, h.n_layer, h.n_embd,
+            E4.desc.c_str(), E4.n_vocab, E4.n_layer, E4.n_embd,
             n_prompt, params.n_predict, params.top_k, kv_size, params.n_threads,
             physical_core_count(), (int) std::thread::hardware_concurrency());
     fprintf(stderr, "nano-glm: load+init %.1fs (mmap is lazy; first eval pages weights in)\n",
             std::chrono::duration<double>(t_load_end - t_load_start).count());
 
-    eval_ctx E;
     std::vector<int32_t>       tokens = prompt;
     std::vector<lkld_position> positions;
     positions.reserve(n_prompt + params.n_predict);
@@ -188,10 +265,10 @@ int main(int argc, char ** argv) {
     const auto t_prompt_start = std::chrono::steady_clock::now();
     for (int32_t start = 0; start < n_prompt; ) {
         const int32_t end = std::min(n_prompt, start + params.n_batch);
-        eval_chunk(M, S, E, prompt.data() + start, end - start, start);
+        const float * lg = E4.eval(prompt.data() + start, end - start, start, /*all =*/ true);
         for (int32_t i = 0; i < end - start; i++) {
-            positions.push_back(extract_topk_lse(E.logits.data() + (size_t) i * h.n_vocab,
-                                                 h.n_vocab, params.top_k, idx_buf));
+            positions.push_back(extract_topk_lse(lg + (size_t) i * E4.n_vocab,
+                                                 E4.n_vocab, params.top_k, idx_buf));
         }
         start = end;
     }
@@ -205,10 +282,10 @@ int main(int argc, char ** argv) {
         fprintf(stdout, "%d ", next);
         fflush(stdout);
 
-        eval_chunk(M, S, E, &next, 1, n_prompt + step);
-        positions.push_back(extract_topk_lse(E.logits.data(), h.n_vocab, params.top_k, idx_buf));
+        const float * lg = E4.eval(&next, 1, n_prompt + step, /*all =*/ false);
+        positions.push_back(extract_topk_lse(lg, E4.n_vocab, params.top_k, idx_buf));
 
-        if (next == h.eos_id) {
+        if (next == E4.eos_id) {
             stop_reason = "eos";
             break;
         }
@@ -221,9 +298,9 @@ int main(int argc, char ** argv) {
     const int32_t n_gen   = n_total - n_prompt;
 
     lkld_file out;
-    out.n_vocab    = (int32_t) h.n_vocab;
-    out.top_k      = std::min(params.top_k, (int32_t) h.n_vocab);
-    out.model_desc = params.model_path + " | " + M.desc;
+    out.n_vocab    = (int32_t) E4.n_vocab;
+    out.top_k      = std::min(params.top_k, (int32_t) E4.n_vocab);
+    out.model_desc = params.model_path + " | " + E4.desc;
     out.seqs.push_back({label, n_prompt, n_total, std::move(tokens), std::move(positions)});
 
     if (!lkld_write(params.output_path, out)) return 1;
@@ -247,7 +324,7 @@ int main(int argc, char ** argv) {
     if (!params.expert_log.empty()) {
         expert_trace_close();
         fprintf(stderr, "nano-glm: wrote %s (%" PRIu64 " positions x %u MoE layers)\n",
-                params.expert_log.c_str(), expert_trace_n_pos(), h.n_layer - h.n_dense_lead);
+                params.expert_log.c_str(), expert_trace_n_pos(), M.h.n_layer - M.h.n_dense_lead);
     }
 
     if (g_moe.active()) {

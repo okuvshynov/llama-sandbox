@@ -50,6 +50,7 @@ struct ds4_hparams {
     std::string arch;
 
     uint32_t n_vocab      = 0;
+    int32_t  eos_id       = -1;   // greedy generation stops here
     uint32_t n_layer      = 0;
     uint32_t n_embd       = 0;
     uint32_t n_ctx_train  = 0;
@@ -186,6 +187,10 @@ static ds4_hparams ds4_load_hparams(const gguf_context * g) {
     {
         const int64_t id = kv_id(g, "tokenizer.ggml.tokens", true);
         h.n_vocab = (uint32_t) gguf_get_arr_n(g, id);
+    }
+    {
+        const int64_t id = gguf_find_key(g, "tokenizer.ggml.eos_token_id");
+        if (id >= 0) h.eos_id = (int32_t) kv_u32(g, "tokenizer.ggml.eos_token_id");
     }
 
     // Cross-checks that would otherwise surface as a fluent wrong answer.

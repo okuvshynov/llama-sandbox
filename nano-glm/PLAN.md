@@ -197,6 +197,12 @@ splitting the same way (`dump -ub`):
 all at 0.0000e+00. The chunked case is the one that matters: a ratio-128 block
 straddles the boundary and has to read its first 64 positions out of the ring.
 
+**And end to end**: `nano-glm` evaluates the model through `models/deepseek4/
+eval.h` and agrees with llama.cpp's `rescore --sim-gen` at **KL == 0**, 16/16
+top-1, over 12 prompt tokens plus 4 greedy steps. That is the first check of
+this port against an *independent implementation* rather than against a dump of
+llama.cpp's own intermediates.
+
 Sizing it the way llama.cpp does also retired the eleven-name exclusion list
 these notes used to carry: those tensors are views of a *padded* cache, and the
 padding is unmatchable only if you decline to pad the same way. Coverage went
@@ -206,11 +212,12 @@ principle.
 
 **Next, in order:**
 
-- **A golden set** via `gate.py llamacpp`. The trunk is complete and verified
-  at prefill, multi-chunk prefill and decode, so the remaining question is
-  end-to-end logits over a corpus rather than tensors. Needs deepseek4 support
-  in `apps/nano-glm` (the frozen-interface harness), after which `ds4-port`
-  goes away.
+- **A golden set** via `gate.py llamacpp`. `apps/nano-glm` now drives deepseek4
+  and agrees with llama.cpp's `rescore --sim-gen` at **KL == 0** over a 16-position
+  sequence, which is the same independent check glm-dsa passes — so what is
+  left is a corpus and the gate's own plumbing (`testdata/` is per model:
+  new `prompts.json`, a fresh `--update-golden`), not correctness. `ds4-port`
+  goes away with it.
 - **The two measurements** this model was chosen for, once a trunk exists to
   drive the server end to end.
 
