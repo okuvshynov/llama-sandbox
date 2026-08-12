@@ -14,6 +14,7 @@ Everything in here is model-and-mechanism; nothing decides policy. Apps in
 | `vocab.h` | byte-level BPE: GGUF vocab and merges, the glm4 pre-tokenizer, encode/decode |
 | `unicode_ranges.h` | generated `\p{L}` / `\p{N}` tables — see `gen_unicode_ranges.py` |
 | `prompt_source.h` | prompt token ids from an lkldtopk file or a literal list |
+| `phase_timer.h` | where a chunk of evaluation goes: build / alloc / input / compute / read / free, always on |
 
 and one directory per architecture, holding everything that knows which model
 it is looking at:
@@ -45,8 +46,8 @@ Two tiers in `lib/`, and a third under `models/`:
 
 - **generic** — `gguf_store.h` (GGUF key helpers, `map_file_ro`, shard
   splitting, the tensor map), `build_info.h`, the protocol and client, the
-  trace, `unicode_ranges.h`, `prompt_source.h`. Nothing here knows what a model
-  is.
+  trace, `unicode_ranges.h`, `prompt_source.h`, `phase_timer.h`. Nothing here
+  knows what a model is.
 - **shared contract** — `moe_shape.h`. Not ops, just the dimensions a client
   and a backend must agree on, which is exactly what `moe_hello_response`
   already carried over the wire.

@@ -323,6 +323,11 @@ int main(int argc, char ** argv) {
     fprintf(stderr, "nano-glm: wrote %s (%d positions)\n", params.output_path.c_str(),
             (int32_t) out.seqs[0].positions.size());
 
+    // Always, not behind a flag: the phases are what say whether a shortfall is
+    // in the forward pass or in the host-side work around it, and that question
+    // comes up after a run rather than before it (lib/phase_timer.h).
+    nano_phase_report(stderr, "nano-glm", is_ds4 ? S4.prof : Ectx.prof);
+
     if (!params.expert_log.empty()) {
         expert_trace_close();
         fprintf(stderr, "nano-glm: wrote %s (%" PRIu64 " positions x %u MoE layers)\n",

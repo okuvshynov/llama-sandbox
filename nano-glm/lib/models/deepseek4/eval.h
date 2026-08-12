@@ -14,6 +14,7 @@
 #include "cache.h"
 #include "graph.h"
 #include "model.h"
+#include "phase_timer.h"
 
 #include "ggml.h"
 #include "ggml-alloc.h"
@@ -25,6 +26,13 @@
 
 struct ds4_state {
     ggml_backend_t backend = nullptr;
+    // Kept across chunks, not built per chunk. The graph still is — see
+    // `ds4_eval_chunk` — but the allocator holds the compute buffer, and
+    // releasing that buffer every chunk cost 37 ms against 9 ms to allocate it.
+    // `ggml_gallocr_reserve` only reallocates when the new graph needs *more*
+    // than the current buffer, so after the first (largest) chunk a decode step
+    // reuses it and pays neither.
+    ggml_gallocr_t galloc  = nullptr;
     ds4_cache      cache;
     int32_t        n_ubatch = 512;   // the reserve the compressor plans pad to
     int32_t        n_threads = 1;
@@ -32,6 +40,8 @@ struct ds4_state {
     std::vector<float>       logits;   // [n_vocab * n_outputs] of the last chunk
     std::vector<uint8_t>     graph_buf;
     std::vector<ggml_fp16_t> mask_buf;
+
+    nano_phase_stats prof;   // always on; see lib/phase_timer.h
 };
 
 static void ds4_init_state(ds4_state & S, const ds4_model & M, uint32_t kv_size,
@@ -39,6 +49,8 @@ static void ds4_init_state(ds4_state & S, const ds4_model & M, uint32_t kv_size,
     S.backend = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);
     if (!S.backend) NANO_ABORT("no CPU backend");
     ggml_backend_cpu_set_n_threads(S.backend, n_threads);
+    S.galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(S.backend));
+    if (!S.galloc) NANO_ABORT("deepseek4: no graph allocator");
 
     S.n_ubatch  = n_ubatch;
     S.n_threads = n_threads;
@@ -47,6 +59,8 @@ static void ds4_init_state(ds4_state & S, const ds4_model & M, uint32_t kv_size,
 
 static void ds4_free_state(ds4_state & S) {
     ds4_cache_free(S.cache);
+    if (S.galloc) ggml_gallocr_free(S.galloc);
+    S.galloc = nullptr;
     if (S.backend) ggml_backend_free(S.backend);
     S.backend = nullptr;
 }
@@ -68,14 +82,45 @@ static inline int32_t ds4_pad_n_kv(int32_t used, uint32_t size) {
 // is not the same graph as no gather at all.
 //
 // The graph is rebuilt per chunk. glm-dsa's `eval_chunk` caches it by
-// (n_tokens, n_kv) and this could too; it is left out until there is a
-// measurement saying it matters, because the rebuild is host-side work against
-// a forward pass that touches 150 GiB.
+// (n_tokens, n_kv) and this deliberately does not, and `S.prof` is the
+// measurement that says it need not: **building the ~6000-node graph is 0.4% of
+// a run** (5.7 ms against a 1452 ms chunk). Caching it here would also be harder
+// than in glm-dsa, because the shape depends on the compressor plans as well as
+// on (n_tokens, n_kv) — a ratio-4 block closes on one decode step in four, and
+// the index inputs change size when it does.
+//
+// The *allocator* was a different story and is why `S.galloc` now outlives the
+// chunk. Constructing and destroying it per chunk cost 9 ms to allocate and
+// **37 ms to free** — four times the allocation it undid, and the largest
+// host-side cost in the profile.
+//
+// It also cost about as much again *inside* `ggml_backend_graph_compute`, which
+// is the part no phase timer could have attributed. A/B of the two binaries,
+// alternating, three runs each on `01_prose` (111 prompt + 32 generated):
+//
+//     per chunk        alloc+free      compute        decode
+//     per-chunk galloc   41.1 ms      1401.7 ms    1.947 tok/s
+//     kept in state       3.0 ms      1356.6 ms    2.217 tok/s   +13.9%
+//
+// `compute` is 45 ms/chunk lower with the allocator reused, with no overlap
+// between the two sets of three — releasing the buffer every chunk means the
+// next chunk soft-faults it back in on first touch, and those faults land in
+// the forward pass rather than in the free. So the direct cost and the
+// second-order one are roughly equal, and only the A/B could see the second.
+//
+// The general point, since the first version of this comment guessed wrong in
+// both directions: the expensive host-side thing was not the one that looked
+// expensive. 6000 nodes of graph construction sounds costly and is not; freeing
+// a compute buffer sounds free and is not.
 static void ds4_eval_chunk(const ds4_model & M, ds4_state & S,
                            const int32_t * tokens, int32_t n_tok, int32_t n_past,
                            bool all_logits) {
     const ds4_hparams & h = M.h;
     ds4_cache & C = S.cache;
+
+    nano_phase_timer T;
+    S.prof.n_chunks += 1;
+    S.prof.n_tokens += (uint64_t) n_tok;
 
     const size_t n_nodes_max = 32768;
     const size_t buf_size = ggml_tensor_overhead() * n_nodes_max +
@@ -151,9 +196,10 @@ static void ds4_eval_chunk(const ds4_model & M, ds4_state & S,
     ggml_tensor * logits = ds4_build_graph(ctx, gf, M, C, inp_tokens, inp_pos, kq_mask, lin,
                                            out_ids, n_tok, DS4_STAGE_HEAD, h.n_layer);
     ggml_build_forward_expand(gf, logits);
+    S.prof.build_us += T.lap();
 
-    ggml_gallocr_t galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(S.backend));
-    if (!ggml_gallocr_alloc_graph(galloc, gf)) NANO_ABORT("deepseek4: graph alloc failed");
+    if (!ggml_gallocr_alloc_graph(S.galloc, gf)) NANO_ABORT("deepseek4: graph alloc failed");
+    S.prof.alloc_us += T.lap();
 
     // An input the graph never referenced has no buffer, because gallocr only
     // allocates what the graph reaches — a chunk that closes no block does not
@@ -192,14 +238,17 @@ static void ds4_eval_chunk(const ds4_model & M, ds4_state & S,
         const int32_t last = n_tok - 1;
         set(out_ids, &last, sizeof(int32_t));
     }
+    S.prof.input_us += T.lap();
 
     if (ggml_backend_graph_compute(S.backend, gf) != GGML_STATUS_SUCCESS) {
         NANO_ABORT("deepseek4: graph compute failed");
     }
+    S.prof.compute_us += T.lap();
 
     S.logits.resize((size_t) h.n_vocab * (all_logits ? n_tok : 1));
     ggml_backend_tensor_get(logits, S.logits.data(), 0, S.logits.size() * sizeof(float));
+    S.prof.read_us += T.lap();
 
-    ggml_gallocr_free(galloc);
     ggml_free(ctx);
+    S.prof.free_us += T.lap();
 }

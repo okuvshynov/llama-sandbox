@@ -398,12 +398,42 @@ llama.cpp being attributed to the split.
   make the split lose.
 - **One prompt, one length.** `01_prose` only. The prefill/decode balance is the
   whole result, so a corpus sweep would say more than more repetitions of this.
-- **nano-glm rebuilds its graph every chunk**, including once per decode token —
-  ~6000 nodes for 43 layers, where glm-dsa caches by (n_tokens, n_kv).
-  `models/deepseek4/eval.h` says it is "left out until there is a measurement
-  saying it matters". This is the first measurement that could, and it does not
-  separate that cost from the rest; it remains a candidate for the local-path
-  gap, not a demonstrated cause.
+- ~~**nano-glm rebuilds its graph every chunk**~~ — **settled, and it was not the
+  cause.** `lib/phase_timer.h` splits a chunk into build / alloc / input /
+  compute / read / free, always on, and building the ~6000-node graph is **0.4%**
+  of a run (5.7 ms against a 1452 ms chunk). Caching it would buy nothing, and
+  it is harder here than in glm-dsa anyway: the shape depends on the compressor
+  plans as well as on (n_tokens, n_kv), because a ratio-4 block closes on one
+  decode step in four.
+
+  What the same profile did find is the reverse of the guess. **`free` was
+  37 ms/chunk** — the largest host-side cost and four times the 9 ms `alloc` it
+  undid — because `ggml_gallocr` was constructed and destroyed per chunk,
+  releasing the compute buffer only to re-commit it. Keeping the allocator in
+  `ds4_state` removes it. Two binaries from one tree differing in that alone,
+  run **alternately, three times each** on `01_prose` (111 prompt + 32
+  generated):
+
+  | | alloc+free | compute | prefill | decode |
+  |---|---|---|---|---|
+  | `ggml_gallocr` per chunk | 1.356 s | 46.26 s | 3.5 t/s | 1.947 t/s |
+  | kept in `ds4_state` | 0.099 s | **44.77 s** | 3.6 t/s | **2.217 t/s** |
+  | | | | | **+13.9%** |
+
+  All six outputs byte-identical to the golden set, and no overlap between the
+  two sets of three on any column.
+
+  **Half of the win is somewhere no phase timer could have attributed it.**
+  `compute` is 45 ms/chunk lower with the allocator reused, against 38 ms/chunk
+  of `alloc`+`free` removed directly. Releasing the compute buffer every chunk
+  means the next chunk soft-faults it back in on first touch, and those faults
+  land inside `ggml_backend_graph_compute`. The phase table could only show the
+  direct half; the A/B was needed for the rest, which is an argument for keeping
+  both tools rather than either.
+
+  Worth keeping as a general lesson: **the expensive host-side thing was not the
+  one that looked expensive.** 6000 nodes of graph construction sounds costly and
+  is not; freeing a compute buffer sounds free and is not.
 
 ### llama.cpp's own GPU offload on the same model, and the flag that decides it
 
