@@ -231,6 +231,18 @@ A filter is not a convenience: without one this writes every intermediate of
 every layer, which is gigabytes. `--max-elem` truncates individual tensors;
 `--max-records` stops the run.
 
+**`--max-elem` is a correctness knob, not just a size one.** It truncates a
+record's data and leaves its `ne` intact, so a truncated tensor and a full one
+still agree on shape. `dump_inspect.py` reports that as `PARTIAL` and fails —
+it used to compare the overlap and call it a pass, which declared a 12.6M-element
+tensor identical on the strength of its first 4M. Raise it for any long
+sequence: three layers at 384 tokens is 1.5 GB with `--max-elem 100000000`, and
+that is the price of a comparison that covers what it claims to.
+
+`-T @path` reads ids from a file, which is how a few thousand of them fit on a
+Windows command line. A leading UTF-8 BOM is stripped: PowerShell's `>` writes
+one and `atoi` would otherwise turn it into a silent token id 0.
+
 ## File format (`lkldtopk` v1)
 
 Little-endian, packed, magic `"lkldtopk"`. Strings are `uint32 len` + UTF-8 bytes.

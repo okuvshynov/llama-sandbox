@@ -193,10 +193,34 @@ static bool parse_args(int argc, char ** argv, dump_params & p) {
         else if (a == "--op"    && i + 1 < argc) p.op_filter   = argv[++i];
         else if (a == "--max-records" && i + 1 < argc) p.max_records = (uint32_t) atoi(argv[++i]);
         else if (a == "-T"      && i + 1 < argc) {
-            const std::string v = argv[++i];
+            std::string v = argv[++i];
+            // "@path" reads the ids from a file. A few thousand ids do not fit
+            // comfortably on a Windows command line, and the sequences that
+            // make a compressed-KV comparison mean anything are that long.
+            if (!v.empty() && v[0] == '@') {
+                FILE * tf = fopen(v.c_str() + 1, "rb");
+                if (!tf) {
+                    fprintf(stderr, "dump: cannot read token file '%s'\n", v.c_str() + 1);
+                    p.model_path.clear();
+                    break;
+                }
+                std::string all;
+                char buf[4096];
+                size_t n;
+                while ((n = fread(buf, 1, sizeof(buf), tf)) > 0) all.append(buf, n);
+                fclose(tf);
+                // Strip a UTF-8 BOM. PowerShell's `>` writes one, and `atoi`
+                // turns the three bytes into a silent 0 — a valid token id, so
+                // the run succeeds with the wrong first token.
+                if (all.size() >= 3 && (unsigned char) all[0] == 0xEF &&
+                    (unsigned char) all[1] == 0xBB && (unsigned char) all[2] == 0xBF) {
+                    all.erase(0, 3);
+                }
+                v = all;
+            }
             size_t pos = 0;
             while (pos < v.size()) {
-                const size_t c = v.find_first_of(", ", pos);
+                const size_t c = v.find_first_of(", \t\r\n", pos);
                 const std::string tok = v.substr(pos, c == std::string::npos ? std::string::npos : c - pos);
                 if (!tok.empty()) p.tokens.push_back(atoi(tok.c_str()));
                 if (c == std::string::npos) break;
@@ -226,7 +250,9 @@ static bool parse_args(int argc, char ** argv, dump_params & p) {
             "Usage: dump -m <model.gguf> (-p <prompt> | -T <id,id,...>) [options]\n"
             "  -T <ids>        exact token ids, bypassing the tokenizer. Prefer\n"
             "                  this when comparing against a port: it removes one\n"
-            "                  variable, and it is what nano-glm's ds4-port takes\n"
+            "                  variable, and it is what nano-glm's ds4-port takes.\n"
+            "                  \"-T @path\" reads them from a file, which is how a\n"
+            "                  few thousand of them fit\n"
             "  -o <path>       output (default dump.ntd)\n"
             "  --layer <list>  comma-separated layer indices, e.g. 0 or 0,1.\n"
             "                  For the tensors built outside the layer loop use\n"

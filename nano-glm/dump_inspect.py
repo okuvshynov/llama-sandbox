@@ -47,6 +47,13 @@ def read_dump(path):
     return out
 
 
+def _n_elem(ne):
+    n = 1
+    for d in ne:
+        n *= d
+    return n
+
+
 def moments(v):
     n = len(v)
     if n == 0:
@@ -104,6 +111,11 @@ def cmd_compare_by_order(a, b, tol):
             print("%-20s %-20s  SHAPE %s vs %s" % (r["name"], o["name"], list(r["ne"]), list(o["ne"])))
             n_shape += 1
             continue
+        if len(r["data"]) != len(o["data"]):   # see cmd_compare: a partial check is not a pass
+            print("%-20s %-20s  PARTIAL %d vs %d elements of %d"
+                  % (r["name"], o["name"], len(r["data"]), len(o["data"]), _n_elem(r["ne"])))
+            n_shape += 1
+            continue
         amax = rmax = 0.0
         for x, y in zip(r["data"], o["data"]):
             d = abs(x - y)
@@ -141,7 +153,7 @@ def cmd_compare(a, b, name_filter, tol):
 
     seen = {}
     worst = None
-    n_cmp = n_missing = n_shape = 0
+    n_cmp = n_missing = n_shape = n_trunc = 0
     print("%-34s %-20s %12s %12s" % ("tensor", "shape", "max|a-b|", "max rel"))
     for r in a:
         k = (r["name"], seen.get(r["name"], 0))
@@ -156,6 +168,17 @@ def cmd_compare(a, b, name_filter, tol):
         if r["ne"] != o["ne"]:
             print("%-34s  SHAPE %s vs %s" % (r["name"], list(r["ne"]), list(o["ne"])))
             n_shape += 1
+            continue
+        # `dump --max-elem` truncates a record's data while leaving `ne` intact,
+        # so two records can agree on shape and carry different amounts of it.
+        # Comparing the overlap and calling that a pass is how a tensor gets
+        # declared identical on the strength of its first third: at 384 tokens
+        # the 4M default cut `attn_raw` exactly where a sliding-window mask
+        # starts to differ from a causal one. A partial check is not a pass.
+        if len(r["data"]) != len(o["data"]):
+            print("%-34s  PARTIAL %d vs %d elements of %d — raise dump --max-elem"
+                  % (r["name"], len(r["data"]), len(o["data"]), _n_elem(r["ne"])))
+            n_trunc += 1
             continue
 
         amax = 0.0
@@ -176,12 +199,14 @@ def cmd_compare(a, b, name_filter, tol):
         if worst is None or amax > worst[1]:
             worst = (r["name"], amax, rmax)
 
-    print("\n%d compared, %d missing, %d shape mismatches" % (n_cmp, n_missing, n_shape))
+    print("\n%d compared, %d missing, %d shape mismatches, %d truncated"
+          % (n_cmp, n_missing, n_shape, n_trunc))
     if worst:
         print("worst: %s  max|a-b| %.4e  max rel %.4e" % worst)
     print("\nRead the max, not a mean: one wrong element is what a mis-indexed\n"
           "view produces, and an average over 4096 values hides it.")
-    return 0 if (n_missing == 0 and n_shape == 0 and (worst is None or worst[1] <= tol)) else 1
+    return 0 if (n_missing == 0 and n_shape == 0 and n_trunc == 0
+                 and (worst is None or worst[1] <= tol)) else 1
 
 
 def main():

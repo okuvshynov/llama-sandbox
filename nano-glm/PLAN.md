@@ -158,16 +158,20 @@ intermediates and `dump_inspect.py` compares them, so each tensor is checked the
 moment it is written rather than at the logits, where KL saturates
 (`OPTIMIZATION.md`). `apps/ds4-port` is the harness and goes away when the graph
 is complete. **Layers 0 and 1 are done, plus layer 2's two KV compressors:
-134/134 tensors bit-identical** over a 12-token prompt — both hyper-connection
+134/134 tensors bit-identical** over a 384-token prompt — both hyper-connection
 halves, all four norms, the q/kv construction, the attention core, the
 grouped-LoRA output, the router, hash routing, the routed experts, the shared
 expert, `l_last`, and then the overlap compression that folds every 4 tokens
 into one key for both the attention and the indexer.
 
 Layers 0-1 are every layer of the simple shape: `compress_ratios` is
-`[0, 0, 4, 128, 4, 128, ...]`. Twelve tokens rather than five because five make
-a single compressed block, and one block cannot distinguish a block index from
-a block's first token position.
+`[0, 0, 4, 128, 4, 128, ...]`. The prompt length is itself part of the check:
+five tokens make one compressed block, and one block cannot distinguish a block
+index from a block's first token position; under 128 tokens the sliding window
+never bites, so a plain causal mask passes. 384 tokens give 96 blocks and three
+window widths. Note that a dump at that length needs an explicit
+`--max-elem` — the 4M default truncates `attn_raw` at exactly token 128, and
+`dump_inspect.py` used to compare the overlap and call it a pass.
 
 Getting there required the reference to be built with `GGML_CPU_REPACK OFF`
 (`logit-kld/CMakeLists.txt`). llama.cpp repacks MXFP4 experts into `mxfp4_8x8`

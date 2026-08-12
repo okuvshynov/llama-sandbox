@@ -30,7 +30,9 @@
 //   l_last         bit-identical
 //
 // Layers 0 **and 1** are therefore complete, and so are layer 2's two KV
-// compressors: 134/134 tensors at 0.0000e+00 over a 12-token prompt.
+// compressors: 134/134 tensors at 0.0000e+00 over a **384-token** prompt —
+// 96 compressed blocks, and three times the 128-wide sliding window, so the
+// window's band is exercised rather than assumed.
 // `compress_ratios` is [0, 0, 4, 128, 4, 128, ...], so layers 0-1 are every
 // layer of the simple shape; layer 2 adds a compressor and the lightning
 // indexer, layer 3 a compressor alone, and `ds4_build_graph` still aborts on
@@ -40,10 +42,13 @@
 // lid_score_masked, lid_top_k, csa_top_k_mask) and the attention that
 // concatenates the raw and compressed key sequences.
 //
-// Twelve tokens rather than five, deliberately. Five make a single compressed
-// block, and a single block cannot distinguish the block *index* from the
-// block's *first token position* — both are 0 — which is exactly the parameter
-// that was wrong here. Three blocks tell them apart.
+// The sequence length is part of what is being checked, and has twice been
+// what a mistake hid behind. Five tokens make a single compressed block, and
+// one block cannot distinguish a block *index* from the block's *first token
+// position* — both are 0, and rope at 0 is the identity — which is exactly the
+// parameter that was wrong here. Below 128 tokens the sliding window never
+// bites, so a plain causal mask passes. Neither is visible in the comparison's
+// output; both need a longer prompt to become visible at all.
 //
 // Layer 1 needed no new arithmetic — turning the single layer into a loop was
 // the whole change — but it is not a free result: it is the first layer whose

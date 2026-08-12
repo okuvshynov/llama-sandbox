@@ -56,6 +56,31 @@ static bool parse_stage(const char * s, ds4_stage & out) {
     return false;
 }
 
+// "@path" reads the ids from a file. A few thousand ids do not fit comfortably
+// on a Windows command line, and the sequences that make a compressed-KV
+// comparison mean anything are that long.
+static std::string tokens_text(const std::string & arg) {
+    if (arg.empty() || arg[0] != '@') {
+        return arg;
+    }
+    FILE * f = fopen(arg.c_str() + 1, "rb");
+    if (!f) NANO_ABORT("cannot read token file '%s'", arg.c_str() + 1);
+    std::string all;
+    char buf[4096];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), f)) > 0) all.append(buf, n);
+    fclose(f);
+    // Strip a UTF-8 BOM. PowerShell's `>` writes one; `strtol` then rejects the
+    // first token here while `atoi` silently turns it into 0 in logit-kld's
+    // `dump`, so the two tools would disagree about the prompt rather than
+    // about the model.
+    if (all.size() >= 3 && (unsigned char) all[0] == 0xEF &&
+        (unsigned char) all[1] == 0xBB && (unsigned char) all[2] == 0xBF) {
+        all.erase(0, 3);
+    }
+    return all;
+}
+
 static std::vector<int32_t> parse_tokens(const std::string & s) {
     std::vector<int32_t> out;
     const char * p = s.c_str();
@@ -65,7 +90,7 @@ static std::vector<int32_t> parse_tokens(const std::string & s) {
         if (end == p) NANO_ABORT("bad token list near '%s'", p);
         out.push_back((int32_t) v);
         p = end;
-        while (*p == ',' || *p == ' ') p++;
+        while (*p == ',' || *p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
     }
     return out;
 }
@@ -127,7 +152,7 @@ int main(int argc, char ** argv) {
     }
     if (p.model_path.empty() || p.tokens_str.empty()) {
         fprintf(stderr,
-            "Usage: ds4-port -m <first-shard.gguf> -T <id,id,...> [-o out.ntd] [-t threads] [-L layers]\n"
+            "Usage: ds4-port -m <first-shard.gguf> -T <id,id,...|@file> [-o out.ntd] [-t threads] [-L layers]\n"
             "  Runs the deepseek4 trunk as far as it is ported and dumps every\n"
             "  named tensor, for comparison against logit-kld's `dump` of\n"
             "  llama.cpp. Token ids, not text: that keeps the tokenizer out of\n"
@@ -140,7 +165,7 @@ int main(int argc, char ** argv) {
         return 1;
     }
 
-    const std::vector<int32_t> tokens = parse_tokens(p.tokens_str);
+    const std::vector<int32_t> tokens = parse_tokens(tokens_text(p.tokens_str));
     const int32_t n_tokens = (int32_t) tokens.size();
 
     ds4_model M;
@@ -180,13 +205,6 @@ int main(int argc, char ** argv) {
     ggml_set_name(inp_pos, "inp_pos");
     ggml_set_input(inp_pos);
 
-    // One prefill from position 0, so the mask is plainly causal. The model's
-    // 128-wide sliding window does not bite at these lengths; when it does,
-    // this harness needs it and the assert below is the reminder.
-    if (n_tokens > (int32_t) M.h.sliding_window) {
-        NANO_ABORT("%d tokens exceeds the %u sliding window; the mask here is causal only",
-                   n_tokens, M.h.sliding_window);
-    }
     // F16: ggml_flash_attn_ext requires it, where the explicit path wants F32.
     ggml_tensor * kq_mask = ggml_new_tensor_2d(ctx, GGML_TYPE_F16, n_tokens, n_tokens);
     ggml_set_name(kq_mask, "kq_mask");
@@ -275,11 +293,21 @@ int main(int argc, char ** argv) {
     for (int32_t i = 0; i < n_tokens; i++) pos[i] = i;
     ggml_backend_tensor_set(inp_pos, pos.data(), 0, n_tokens * sizeof(int32_t));
 
-    // mask[j, i] is the bias added to the score of key j for query i.
+    // mask[j, i] is the bias added to the score of key j for query i: causal,
+    // and banded by the sliding window.
+    //
+    // Every layer of this model attends inside a 128-wide window
+    // (`set_swa_pattern(0)`, so every layer is SWA), and llama.cpp masks key p0
+    // for query p1 when `p1 - p0 >= n_swa` (llama_hparams::is_masked_swa,
+    // LLAMA_SWA_TYPE_STANDARD). Below 128 tokens the band never bites, which is
+    // why a plain causal mask was right until the sequence got long enough to
+    // make the compressed keys worth checking.
+    const int32_t n_swa = (int32_t) M.h.sliding_window;
     std::vector<ggml_fp16_t> mask((size_t) n_tokens * n_tokens);
     for (int32_t i = 0; i < n_tokens; i++) {
         for (int32_t j = 0; j < n_tokens; j++) {
-            mask[(size_t) i * n_tokens + j] = ggml_fp32_to_fp16(j <= i ? 0.0f : -INFINITY);
+            const bool keep = j <= i && (i - j) < n_swa;
+            mask[(size_t) i * n_tokens + j] = ggml_fp32_to_fp16(keep ? 0.0f : -INFINITY);
         }
     }
     ggml_backend_tensor_set(kq_mask, mask.data(), 0, mask.size() * sizeof(ggml_fp16_t));
