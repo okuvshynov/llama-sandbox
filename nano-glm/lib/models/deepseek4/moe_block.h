@@ -61,6 +61,27 @@ static inline void ds4_cb_call(ds4_cb cb, ggml_tensor * t, const char * name, in
     }
 }
 
+// Name a tensor that a later **in-place** op will write through.
+//
+// `ggml_clamp` returns a view of its input (ggml.c: `ggml_view_tensor(ctx, a)`)
+// and writes into it, so the pre-clamp tensor's memory holds post-clamp values
+// once the graph has run. llama.cpp never notices: its dump reads through an
+// eval callback the moment each node is computed, before the clamp runs. This
+// harness reads after the whole graph, so it needs a copy of its own.
+//
+// It cost four layers to find, because a clamp only changes values past its
+// limit: `ffn_moe_gate` agreed exactly through layer 4 and differed in two
+// elements of layer 5, both of which were above 10.0.
+static inline void ds4_cb_call_pre_inplace(ds4_cb cb, ggml_context * ctx0, ggml_cgraph * gf,
+                                           ggml_tensor * t, const char * name, int il) {
+    if (!cb) {
+        return;
+    }
+    ggml_tensor * snap = ggml_cont(ctx0, t);
+    cb(snap, name, il);
+    ggml_build_forward_expand(gf, snap);
+}
+
 // x: [n_embd, n_tokens] post-ffn_norm activation.
 //
 // `selected_experts_in` supplies the expert ids instead of ranking them here.
@@ -116,7 +137,7 @@ static ds4_routing build_ds4_moe_router(ggml_context * ctx0, ggml_cgraph * gf,
     if (h.expert_norm) {
         weights = ggml_reshape_2d(ctx0, weights, h.n_expert_used, n_tokens);
         ggml_tensor * weights_sum = ggml_sum_rows(ctx0, weights);
-        ds4_cb_call(cb, weights_sum, "ffn_moe_weights_sum", (int) il);
+        ds4_cb_call_pre_inplace(cb, ctx0, gf, weights_sum, "ffn_moe_weights_sum", (int) il);
         // 2^-14, the smallest positive *normal* fp16, floors the top-k sum so a
         // token whose experts all score ~0 cannot divide to inf. Copied from
         // llama.cpp verbatim and load-bearing for bit-exactness.
@@ -155,9 +176,9 @@ static ggml_tensor * build_ds4_moe_experts(ggml_context * ctx0, ggml_cgraph * gf
     ggml_tensor * moe_x = ggml_reshape_3d(ctx0, x, h.n_embd, 1, n_tokens);
 
     ggml_tensor * up   = ggml_mul_mat_id(ctx0, L.ffn_up_exps,   moe_x, selected_experts);
-    ds4_cb_call(cb, up, "ffn_moe_up", il);
+    ds4_cb_call_pre_inplace(cb, ctx0, gf, up, "ffn_moe_up", il);
     ggml_tensor * gate = ggml_mul_mat_id(ctx0, L.ffn_gate_exps, moe_x, selected_experts);
-    ds4_cb_call(cb, gate, "ffn_moe_gate", il);
+    ds4_cb_call_pre_inplace(cb, ctx0, gf, gate, "ffn_moe_gate", il);
 
     // The clamp, in deepseek4's order: `up` symmetric, `gate` one-sided and
     // *before* SiLU (ggml_swiglu_split applies silu to its first argument).

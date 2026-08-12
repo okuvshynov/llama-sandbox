@@ -29,24 +29,37 @@
 //   ffn_gate/up/swiglu, ffn_shexp, ffn_out       bit-identical
 //   l_last         bit-identical
 //
-// Layers 0, 1 **and 2** are therefore complete: 184/184 tensors at 0.0000e+00
-// over a 384-token prompt, and layer 2 again at **2560 tokens** (47/47), where
-// its 640 compressed blocks exceed `indexer_top_k` and the indexer's selection
-// actually drops 128 of them.
-// `compress_ratios` is [0, 0, 4, 128, 4, 128, ...], so layers 0-1 are every
-// layer of the simple shape, layer 2 is the first ratio-4 (compressor plus
-// lightning indexer) and layer 3 the first ratio-128 (compressor alone).
-// `ds4_build_graph` still aborts on everything past what has been checked.
+// **Every layer of the trunk is ported**: `compress_ratios` holds only 0, 4 and
+// 128, and all three are handled. Verified at 384 tokens, layer by layer,
+// against llama.cpp — 394 tensors at 0.0000e+00 over layers 0-5, which covers
+// every combination the model contains:
 //
-// **Seven of layer 2's tensors cannot be compared at all**, and that is not a
-// gap in the port: `csa_raw_k`, `csa_comp_k`, `csa_k_all`, `csa_lid_kq_mask`,
-// `lid_score_masked`, `lid_top_k` and `csa_top_k_mask` are shaped by
-// llama.cpp's KV-cache *padding* (384 tokens become 512 rows, 96 blocks become
-// 256) and the padded tail holds whatever was in the buffer. A view sized to
-// the data can never equal one sized to the cache. It costs nothing, because
-// everything downstream of them — `attn_csa_lid` onward — is compared and
-// exact, and a wrong selection or a wrong mask would land there.
-// `dump_inspect.py --exclude` names them rather than passing them silently.
+//   layer 0, 1   ratio 0    raw attention,        hash-routed FFN
+//   layer 2      ratio 4    compressor + indexer, hash-routed FFN
+//   layer 3      ratio 128  compressor,           routed FFN (bias + argsort)
+//   layer 4      ratio 4    compressor + indexer, routed FFN
+//   layer 5      ratio 128  compressor,           routed FFN
+//
+// Layer 2 was checked again at 2560 tokens (47/47), where its 640 compressed
+// blocks exceed `indexer_top_k` and the indexer's selection genuinely drops
+// 128 of them; below that length the top-k takes everything and cannot fail.
+// Layer 3 was checked again at 12 tokens, where no complete 128-token block
+// exists — llama.cpp then leaves the compressed half out entirely and falls
+// back to plain raw attention, and so does this.
+//
+// What remains before the model runs end to end is the head (`hc_head`,
+// `result_norm`, `result_output`) and a real KV cache to replace the harness's
+// fresh-cache, single-prefill assumptions.
+//
+// **Eleven tensors cannot be compared at all**, and that is not a gap in the
+// port: the `csa_*_k` / `hca_*_k` key views and the mask concatenations are
+// shaped by llama.cpp's KV-cache *padding* (384 tokens become 512 rows, 96
+// blocks become 256) and the padded tail holds whatever was in the buffer. A
+// view sized to the data can never equal one sized to the cache. It costs
+// nothing, because everything downstream of them — `attn_csa_lid` / `attn_hca`
+// onward — is compared and exact, and a wrong selection or a wrong mask would
+// land there. `dump_inspect.py --exclude` names them rather than passing them
+// silently.
 //
 // The sequence length is part of what is being checked, and has twice been
 // what a mistake hid behind. Five tokens make a single compressed block, and
@@ -128,6 +141,15 @@ static void ds4_name(ggml_tensor * t, const char * base, int il) {
 // the dump reads whatever the op left behind. Copying gives the dump storage of
 // its own; the graph downstream keeps using the original view, so nothing about
 // the arithmetic changes.
+// Always copy, for a tensor a later in-place op will write through — see
+// ds4_cb_call_pre_inplace in moe_block.h.
+static void ds4_snapshot_copy(ggml_context * ctx, ggml_cgraph * gf, ggml_tensor * t,
+                              const char * base, int il) {
+    ggml_tensor * s = ggml_cont(ctx, t);
+    ds4_name(s, base, il);
+    ggml_build_forward_expand(gf, s);
+}
+
 static void ds4_snapshot(ggml_context * ctx, ggml_cgraph * gf, ggml_tensor * t,
                          const char * base, int il) {
     ggml_tensor * s = t->view_src ? ggml_cont(ctx, t) : t;
@@ -469,10 +491,16 @@ static ggml_tensor * ds4_append_zero_row(ggml_context * ctx, ggml_tensor * t, bo
 // cache; here they are graph inputs so the cache can be written later without
 // touching the graph.
 struct ds4_comp_inputs {
-    ggml_tensor * base_kv    = nullptr;  // f32 [2*n_embd_head, n_base] carried state
-    ggml_tensor * base_score = nullptr;  // f32 [2*n_embd_head, n_base]
-    ggml_tensor * read_idxs  = nullptr;  // i32 [2*ratio*n_blocks]
+    ggml_tensor * base_kv    = nullptr;  // f32 [coff*n_embd_head, n_base] carried state
+    ggml_tensor * base_score = nullptr;  // f32 [coff*n_embd_head, n_base]
+    ggml_tensor * read_idxs  = nullptr;  // i32 [coff*ratio*n_blocks]
     ggml_tensor * comp_pos   = nullptr;  // i32 [n_blocks] rope position per block
+    ggml_tensor * ape_pos    = nullptr;  // i32 [n_tokens] slot within the block
+    // Which compressed blocks a token may see: block j is visible to the token
+    // at position p when `j < (p + 1)/ratio`, i.e. every block whose tokens all
+    // lie at or before it. f16 — the indexer op requires it and so does flash
+    // attention.
+    ggml_tensor * mask       = nullptr;  // f16 [n_blocks, n_tokens]
 };
 
 static ggml_tensor * ds4_build_compressed_kv(ggml_context * ctx, ggml_cgraph * gf,
@@ -554,17 +582,15 @@ static ggml_tensor * ds4_build_compressed_kv(ggml_context * ctx, ggml_cgraph * g
 // and the cache; keeping them as inputs here means a real cache can be written
 // later without the graph changing.
 struct ds4_layer_inputs {
-    ds4_comp_inputs csa;                 // the attention's compressor
-    ds4_comp_inputs lid;                 // the lightning indexer's
-    ggml_tensor *   ape_pos = nullptr;   // i32 [n_tokens], slot within the block
-    ggml_tensor *   rot     = nullptr;   // f32 [idx_key_len, idx_key_len] Hadamard
-    // Which compressed blocks a token may see: block j is visible to the token
-    // at position p when `j < (p + 1)/ratio`, i.e. every block whose tokens all
-    // lie at or before it. f16 both times — the indexer op requires it and so
-    // does flash attention. llama.cpp keeps one per cache; they carry the same
-    // values here because both caches compress at the same ratio.
-    ggml_tensor *   lid_mask = nullptr;  // f16 [n_blocks, n_tokens]
-    ggml_tensor *   csa_mask = nullptr;  // f16 [n_blocks, n_tokens]
+    // One per cache, because they do not share a ratio: `csa` and `lid` are the
+    // ratio-4 layers' attention and indexer compressors, `hca` the ratio-128
+    // layers' single compressor. `csa` and `lid` carry equal values, `hca`
+    // does not — a different modulus for the slot, a different block width for
+    // the mask, and a state ring of `ratio` rows rather than `2*ratio`.
+    ds4_comp_inputs csa;
+    ds4_comp_inputs lid;
+    ds4_comp_inputs hca;
+    ggml_tensor *   rot = nullptr;       // f32 [idx_key_len, idx_key_len] Hadamard
 };
 
 struct ds4_compressed {
@@ -591,7 +617,7 @@ static ds4_compressed ds4_build_compressors(ggml_context * ctx, ggml_cgraph * gf
     // The learned per-slot bias: which position within its block a token is
     // sitting at. `cmp_ape` is [2*d_key, ratio], so this is a gather, not a
     // matmul.
-    csa_score = ggml_add(ctx, csa_score, ggml_get_rows(ctx, L.cmp_ape, in.ape_pos));
+    csa_score = ggml_add(ctx, csa_score, ggml_get_rows(ctx, L.cmp_ape, in.csa.ape_pos));
     ds4_name(csa_score, "csa_state_score_ape", il);
 
     out.csa_k = ds4_build_compressed_kv(ctx, gf, h, in.csa, csa_kv, csa_score,
@@ -609,7 +635,7 @@ static ds4_compressed ds4_build_compressors(ggml_context * ctx, ggml_cgraph * gf
     ggml_tensor * lid_score = ggml_mul_mat(ctx, L.idx_cmp_gate, cur);
     ds4_name(lid_score, "lid_state_score", il);
 
-    lid_score = ggml_add(ctx, lid_score, ggml_get_rows(ctx, L.idx_cmp_ape, in.ape_pos));
+    lid_score = ggml_add(ctx, lid_score, ggml_get_rows(ctx, L.idx_cmp_ape, in.lid.ape_pos));
     ds4_name(lid_score, "lid_state_score_ape", il);
 
     ggml_tensor * lid_k = ds4_build_compressed_kv(ctx, gf, h, in.lid, lid_kv, lid_score,
@@ -707,6 +733,83 @@ static ds4_qkv ds4_build_qkv(ggml_context * ctx, ggml_cgraph * gf,
     ggml_build_forward_expand(gf, q);
     ggml_build_forward_expand(gf, kv);
     return { qr, q, kv };
+}
+
+// ---------------------------------------------------------------------------
+// The ratio-128 compressor. Same idea as the ratio-4 one and a *different*
+// function in llama.cpp too (`build_hca_compressed_kv_from_state`), because
+// these blocks do not overlap: a block folds its own `ratio` tokens and
+// nothing else. So the projection is `n_embd_head` wide rather than twice it,
+// the gather reads `ratio` rows per block rather than `2*ratio`, there is no
+// prev/cur split, and no pad row is needed — every index points at a real
+// token.
+static ggml_tensor * ds4_build_compressed_kv_plain(ggml_context * ctx, ggml_cgraph * gf,
+                                                   const ds4_hparams & h,
+                                                   const ds4_comp_inputs & in,
+                                                   ggml_tensor * cur_kv, ggml_tensor * cur_score,
+                                                   ggml_tensor * norm_w, int64_t ratio,
+                                                   int64_t n_embd_head, const char * name,
+                                                   uint32_t il) {
+    const int64_t d_rope   = h.rope_dim;
+    const int64_t d_nope   = n_embd_head - d_rope;
+    const int64_t n_blocks = in.comp_pos->ne[0];
+
+    ggml_tensor * kv_state    = ggml_concat(ctx, in.base_kv,    cur_kv,    1);
+    ggml_tensor * score_state = ggml_concat(ctx, in.base_score, cur_score, 1);
+
+    ggml_tensor * kv = ggml_get_rows(ctx, kv_state, in.read_idxs);
+    kv = ggml_reshape_3d(ctx, kv, n_embd_head, ratio, n_blocks);
+    ds4_snapshot(ctx, gf, kv, name, il);
+
+    ggml_tensor * score = ggml_get_rows(ctx, score_state, in.read_idxs);
+    score = ggml_reshape_3d(ctx, score, n_embd_head, ratio, n_blocks);
+    ds4_snapshot(ctx, gf, score, name, il);
+
+    ggml_tensor * values = ggml_cont(ctx, ggml_permute(ctx, kv,    1, 0, 2, 3));
+    ggml_tensor * scores = ggml_cont(ctx, ggml_permute(ctx, score, 1, 0, 2, 3));
+
+    ggml_tensor * weights = ggml_soft_max(ctx, scores);
+    ggml_tensor * comp = ggml_mul(ctx, values, weights);
+    comp = ggml_sum_rows(ctx, comp);
+    comp = ggml_cont(ctx, ggml_permute(ctx, comp, 1, 0, 2, 3));
+    ds4_name(comp, name, il);
+
+    comp = ds4_norm(ctx, h, comp, norm_w, name, il);
+
+    ggml_tensor * comp_nope = ggml_view_3d(ctx, comp, d_nope, 1, n_blocks,
+                                           ggml_row_size(comp->type, n_embd_head),
+                                           ggml_row_size(comp->type, n_embd_head), 0);
+    ggml_tensor * comp_pe = ggml_view_3d(ctx, comp, d_rope, 1, n_blocks,
+                                         ggml_row_size(comp->type, n_embd_head),
+                                         ggml_row_size(comp->type, n_embd_head),
+                                         ggml_row_size(comp->type, d_nope));
+    const ds4_rope rope = ds4_rope_of(h, il);
+    comp_pe = ds4_rope_ext(ctx, comp_pe, in.comp_pos, d_rope, rope);
+    ds4_name(comp_pe, name, il);
+
+    comp = ggml_concat(ctx, comp_nope, comp_pe, 0);
+    ds4_name(comp, name, il);
+
+    return comp;
+}
+
+// The ratio-128 layer's compressor, named as llama.cpp names it.
+static ggml_tensor * ds4_build_hca_compressor(ggml_context * ctx, ggml_cgraph * gf,
+                                              const ds4_hparams & h, const ds4_layer & L,
+                                              const ds4_layer_inputs & in,
+                                              ggml_tensor * cur, uint32_t il) {
+    ggml_tensor * kv = ggml_mul_mat(ctx, L.cmp_kv, cur);
+    ds4_name(kv, "hca_state_kv", il);
+
+    ggml_tensor * score = ggml_mul_mat(ctx, L.cmp_gate, cur);
+    ds4_name(score, "hca_state_score", il);
+
+    score = ggml_add(ctx, score, ggml_get_rows(ctx, L.cmp_ape, in.hca.ape_pos));
+    ds4_name(score, "hca_state_score_ape", il);
+
+    return ds4_build_compressed_kv_plain(ctx, gf, h, in.hca, kv, score, L.cmp_norm,
+                                         (int64_t) h.compress_ratio[il], h.d_key,
+                                         "hca_state_compress", il);
 }
 
 // ---------------------------------------------------------------------------
@@ -823,7 +926,7 @@ static ggml_tensor * ds4_build_indexer(ggml_context * ctx, const ds4_hparams & h
     weights = ggml_scale(ctx, weights, 1.0f / sqrtf((float) (d_idx * n_idx)));
     ds4_name(weights, "lid_weights", il);
 
-    ggml_tensor * score = ggml_lightning_indexer(ctx, q, lid_k, weights, in.lid_mask);
+    ggml_tensor * score = ggml_lightning_indexer(ctx, q, lid_k, weights, in.lid.mask);
     ds4_name(score, "lid_score_masked", il);
     return score;
 }
@@ -868,7 +971,7 @@ static ggml_tensor * ds4_build_attention_csa_lid(ggml_context * ctx, ggml_cgraph
                                                 inp_pos, n_tokens, il);
 
     // `min` because the model may hold fewer blocks than it would select.
-    const int64_t n_csa   = in.csa_mask->ne[0];
+    const int64_t n_csa   = in.csa.mask->ne[0];
     const int64_t n_top_k = n_csa < (int64_t) h.idx_top_k ? n_csa : (int64_t) h.idx_top_k;
 
     ggml_tensor * top_k = ggml_cont(ctx, ggml_top_k(ctx, top_k_src, (int) n_top_k));
@@ -882,7 +985,7 @@ static ggml_tensor * ds4_build_attention_csa_lid(ggml_context * ctx, ggml_cgraph
     ggml_tensor * k_all = ggml_concat(ctx, raw_k, comp_k, 2);
     ds4_name(k_all, "csa_k_all", il);
 
-    ggml_tensor * csa_mask = ds4_build_top_k_mask(ctx, in.csa_mask, top_k, il);
+    ggml_tensor * csa_mask = ds4_build_top_k_mask(ctx, in.csa.mask, top_k, il);
     ggml_tensor * mask_all = ggml_concat(ctx, kq_mask, csa_mask, 0);
     ds4_name(mask_all, "csa_lid_kq_mask", il);
 
@@ -896,6 +999,40 @@ static ggml_tensor * ds4_build_attention_csa_lid(ggml_context * ctx, ggml_cgraph
 
     out = ggml_reshape_2d(ctx, out, out->ne[0] * out->ne[1], out->ne[2] * out->ne[3]);
     ds4_snapshot(ctx, gf, out, "attn_csa_lid", il);
+    return out;
+}
+
+// The ratio-128 attention: the same two-sequence shape as the ratio-4 one with
+// the indexer removed. Every compressed block its mask allows is attended,
+// because 128-token blocks are 32x coarser and there are correspondingly few.
+static ggml_tensor * ds4_build_attention_hca(ggml_context * ctx, ggml_cgraph * gf,
+                                             const ds4_hparams & h, const ds4_layer & L,
+                                             const ds4_layer_inputs & in, const ds4_qkv & x,
+                                             ggml_tensor * comp_k, ggml_tensor * kq_mask,
+                                             uint32_t il) {
+    const int64_t d_head = h.d_key;
+
+    ggml_tensor * raw_k = ggml_cast(ctx, x.kv, GGML_TYPE_F16);
+    ds4_name(raw_k, "hca_raw_k", il);
+    ggml_tensor * hca_k = ggml_cast(ctx, comp_k, GGML_TYPE_F16);
+    ds4_name(hca_k, "hca_comp_k", il);
+
+    ggml_tensor * k_all = ggml_concat(ctx, raw_k, hca_k, 2);
+    ds4_name(k_all, "hca_k_all", il);
+
+    ggml_tensor * mask_all = ggml_concat(ctx, kq_mask, in.hca.mask, 0);
+    ds4_name(mask_all, "hca_kq_mask", il);
+
+    ggml_tensor * qp = ggml_permute(ctx, x.q,   0, 2, 1, 3);
+    ggml_tensor * kp = ggml_permute(ctx, k_all, 0, 2, 1, 3);
+
+    ggml_tensor * out = ggml_flash_attn_ext(ctx, qp, kp, kp, mask_all,
+                                            1.0f / sqrtf((float) d_head), 0.0f, 0.0f);
+    ggml_flash_attn_ext_add_sinks(out, L.attn_sinks);
+    ggml_flash_attn_ext_set_prec(out, GGML_PREC_F32);
+
+    out = ggml_reshape_2d(ctx, out, out->ne[0] * out->ne[1], out->ne[2] * out->ne[3]);
+    ds4_snapshot(ctx, gf, out, "attn_hca", il);
     return out;
 }
 
@@ -961,13 +1098,17 @@ static ggml_tensor * ds4_build_attn_out(ggml_context * ctx, const ds4_hparams & 
 // accidental swap would go unnoticed here and not in the next checkpoint).
 // The clamp order is deepseek4's, as in the routed block: `up` symmetric,
 // `gate` one-sided and *before* the SiLU.
-static ggml_tensor * ds4_build_shared_expert(ggml_context * ctx, const ds4_layer & L,
-                                             ggml_tensor * cur, float limit, uint32_t il) {
+static ggml_tensor * ds4_build_shared_expert(ggml_context * ctx, ggml_cgraph * gf,
+                                             const ds4_layer & L, ggml_tensor * cur,
+                                             float limit, uint32_t il) {
+    // Both named through a copy: `ggml_clamp` below writes through a view of
+    // its input, so naming these directly would dump post-clamp values. See
+    // ds4_cb_call_pre_inplace in moe_block.h for the full story.
     ggml_tensor * up = ggml_mul_mat(ctx, L.ffn_up_shexp, cur);
-    ds4_name(up, "ffn_up", il);
+    ds4_snapshot_copy(ctx, gf, up, "ffn_up", il);
 
     ggml_tensor * gate = ggml_mul_mat(ctx, L.ffn_gate_shexp, cur);
-    ds4_name(gate, "ffn_gate", il);
+    ds4_snapshot_copy(ctx, gf, gate, "ffn_gate", il);
 
     if (limit > 1e-6f) {
         up = ggml_clamp(ctx, up, -limit, limit);
@@ -1022,7 +1163,7 @@ static ggml_tensor * ds4_build_ffn_half(ggml_context * ctx, ggml_cgraph * gf,
     // 1 — and naming a view is not enough to keep it readable (ds4_snapshot).
     ds4_snapshot(ctx, gf, moe_out, "ffn_moe_out", il);
 
-    ggml_tensor * shexp = ds4_build_shared_expert(ctx, L, cur, h.swiglu_clamp_shexp[il], il);
+    ggml_tensor * shexp = ds4_build_shared_expert(ctx, gf, L, cur, h.swiglu_clamp_shexp[il], il);
     ds4_name(shexp, "ffn_shexp", il);
 
     cur = ggml_add(ctx, moe_out, shexp);
@@ -1055,12 +1196,17 @@ static const char * ds4_stage_name(ds4_stage s) {
 }
 
 // How many leading layers this file can build, read off the checkpoint rather
-// than hard-coded — `compress_ratios` is [0, 0, 4, 128, 4, 128, ...], so the
-// answer here is 3 (no compressor, no compressor, ratio-4) and it becomes
-// larger by itself when the ratio-128 layers are ported.
+// than hard-coded. All three ratios this checkpoint uses are handled, so for
+// `[0, 0, 4, 128, 4, 128, ...]` the answer is every layer — but the loop stays
+// because a checkpoint with a ratio nobody has ported should stop here rather
+// than at an assert deep in the graph.
 static uint32_t ds4_ported_layers(const ds4_hparams & h) {
     uint32_t n = 0;
-    while (n < h.n_layer && (!h.has_compressor(n) || h.has_indexer(n))) {
+    while (n < h.n_layer) {
+        const uint32_t r = h.compress_ratio[n];
+        if (r != 0 && r != 4 && r != 128) {
+            break;
+        }
         n++;
     }
     return n;
@@ -1105,16 +1251,34 @@ static ggml_tensor * ds4_build_graph(ggml_context * ctx, ggml_cgraph * gf, const
             return cur;
         }
 
-        // A ratio-128 layer computes a different key sequence again, so it must
-        // not fall through to either ported path — that would produce numbers
-        // rather than an error.
         if (h.has_compressor(il) && !h.has_indexer(il)) {
-            NANO_ABORT("deepseek4 trunk: layer %u has compress_ratio %u "
-                       "(KV compressor, no indexer) and is not ported",
-                       il, h.compress_ratio[il]);
-        }
+            // A ratio-128 layer. With fewer than `ratio` tokens behind it there
+            // is no complete block, and llama.cpp then leaves `inp_hca.kq_mask`
+            // null and takes the plain raw-attention path — so a short prompt
+            // makes this layer look exactly like layer 0. Following that is not
+            // an optimisation: the compressed half genuinely does not exist.
+            const bool has_blocks = in.hca.comp_pos != nullptr;
 
-        if (h.has_indexer(il)) {
+            ggml_tensor * comp_k = nullptr;
+            if (has_blocks) {
+                comp_k = ds4_build_hca_compressor(ctx, gf, h, L, in, cur, il);
+                ggml_build_forward_expand(gf, comp_k);
+            }
+
+            if (last && stage == DS4_STAGE_COMPRESS) {
+                if (!has_blocks) {
+                    NANO_ABORT("deepseek4 trunk: layer %u has no complete "
+                               "%u-token block, so stage 'compress' has nothing "
+                               "to build", il, h.compress_ratio[il]);
+                }
+                return comp_k;
+            }
+
+            const ds4_qkv x = ds4_build_qkv(ctx, gf, h, L, cur, inp_pos, n_tokens, il);
+            cur = has_blocks
+                ? ds4_build_attention_hca(ctx, gf, h, L, in, x, comp_k, kq_mask, il)
+                : ds4_build_attention_raw(ctx, gf, h, L, x, kq_mask, n_tokens, il);
+        } else if (h.has_indexer(il)) {
             // The compressors run before q/kv, which is the order llama.cpp's
             // graph ends up executing them in even though it builds q first.
             const ds4_compressed c = ds4_build_compressors(ctx, gf, h, L, in, cur, il);

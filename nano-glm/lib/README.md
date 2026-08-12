@@ -26,7 +26,7 @@ it is looking at:
 | `models/glm_dsa/chat.h` | GLM-5.2's single-turn chat format, as token ids |
 | `models/deepseek4/model.h` | DeepSeek-V4-Flash hparams, tensor names, loader |
 | `models/deepseek4/moe_block.h` | its routed-expert graph, same two halves, plus hash routing and an optional naming hook |
-| `models/deepseek4/graph.h` | its trunk graph — hyper-connections, MLA attention, the FFN half. Under construction; aborts past the stage that has been checked |
+| `models/deepseek4/graph.h` | its trunk graph — hyper-connections, MLA attention at all three compression ratios, the lightning indexer, the FFN half. Every layer; still no head, and it aborts past what has been checked |
 
 Include the model's `graph.h` first in any app: it reaches `moe_proto.h`, and
 winsock2.h has to precede the windows.h that `gguf_store.h` pulls in.

@@ -157,50 +157,41 @@ not at all.
 intermediates and `dump_inspect.py` compares them, so each tensor is checked the
 moment it is written rather than at the logits, where KL saturates
 (`OPTIMIZATION.md`). `apps/ds4-port` is the harness and goes away when the graph
-is complete. **Layers 0, 1 and 2 are done: 184/184 tensors bit-identical** over
-a 384-token prompt — both hyper-connection halves, all four norms, the q/kv
-construction, the attention core, the grouped-LoRA output, the router, hash
-routing, the routed experts, the shared expert, `l_last`, the overlap
-compression that folds every 4 tokens into one key for both the attention and
-the indexer, the DSA lightning indexer itself, and the attention over the
-concatenated raw and compressed key sequences.
+is complete. **Every layer of the trunk is ported.** `compress_ratios` holds
+only 0, 4 and 128 and all three are handled, so `ds4_ported_layers` now reports
+all 43. Verified layer by layer against llama.cpp at 384 tokens — **394 tensors
+at 0.0000e+00 across layers 0-5**, which is every combination the model
+contains:
 
-Layer 2 was checked **again at 2560 tokens** (47/47), where its 640 compressed
-blocks exceed `indexer_top_k = 512` and the indexer's selection genuinely drops
-128 of them. Below that length the top-k selects everything and cannot fail.
+| layer | ratio | attention | FFN routing |
+|---|---|---|---|
+| 0, 1 | 0 | raw | hash (`tid2eid`) |
+| 2 | 4 | compressor + lightning indexer | hash |
+| 3 | 128 | compressor | router (bias + argsort) |
+| 4 | 4 | compressor + indexer | router |
+| 5 | 128 | compressor | router |
 
-Seven of layer 2's tensors are excluded from the comparison and cannot be
-otherwise: they are shaped by llama.cpp's KV-cache padding and their tails hold
-whatever the buffer held. Everything downstream of them is compared and exact —
-see `dump_inspect.py --exclude` and `models/deepseek4/graph.h`.
+Two of those were re-checked where their behaviour actually changes: layer 2 at
+2560 tokens, where 640 compressed blocks exceed `indexer_top_k = 512` and the
+selection genuinely drops 128 of them; layer 3 at 12 tokens, where no complete
+128-token block exists and llama.cpp falls back to plain raw attention.
 
-Layers 0-1 are every layer of the simple shape: `compress_ratios` is
-`[0, 0, 4, 128, 4, 128, ...]`. The prompt length is itself part of the check:
-five tokens make one compressed block, and one block cannot distinguish a block
-index from a block's first token position; under 128 tokens the sliding window
-never bites, so a plain causal mask passes. 384 tokens give 96 blocks and three
-window widths. Note that a dump at that length needs an explicit
-`--max-elem` — the 4M default truncates `attn_raw` at exactly token 128, and
-`dump_inspect.py` used to compare the overlap and call it a pass.
-
-Getting there required the reference to be built with `GGML_CPU_REPACK OFF`
-(`logit-kld/CMakeLists.txt`). llama.cpp repacks MXFP4 experts into `mxfp4_8x8`
-at load and runs a different GEMM; nano-glm mmaps weights as they sit in the
-file and cannot follow. It never came up with GLM-5.2 because Q6_K only repacks
-under NEON. Note for step 11 and for the measurements below: a *performance*
-comparison against llama.cpp must use a repack-enabled build, since that is
-what llama.cpp actually ships.
+Eleven tensors are excluded and cannot be otherwise — key views and mask
+concatenations shaped by llama.cpp's cache padding, whose tails hold whatever
+the buffer held. Everything downstream of them is compared and exact. See
+`dump_inspect.py --exclude`.
 
 **Next, in order:**
 
-- **Layer 3**, a ratio-128 compressor layer: the same compressor at a different
-  ratio, no indexer, and llama.cpp's `build_hca_attention` rather than
-  `build_csa_lid_attention` — no top-k, so the whole compressed sequence is
-  visible. Note `build_hca_compressed_kv_from_state` is a *different* function
-  from the overlap one already ported: ratio-128 blocks do not overlap, so it
-  reads `ratio` rows rather than `2*ratio` and there is no prev/cur split.
-  Layers alternate 4/128 from there, so this is the last new attention shape.
-- Then the head (`hc_head`, `result_norm`, `result_output`).
+- **The head** — `hc_head`, `result_norm`, `result_output` — and then the trunk
+  produces logits and the port can be judged end to end rather than tensor by
+  tensor.
+- **A real KV cache.** `ds4-port` supplies the compressor state analytically
+  because the cache is empty and the whole prompt arrives at once. A running
+  engine needs the state carried across chunks and across decode steps: the
+  ring of `2*ratio` (or `ratio`) rows, the read/write index plans, and the
+  padded mask widths. This is the largest piece left and the one the harness
+  has been deliberately deferring.
 - **A golden set.** llama.cpp supports `LLM_ARCH_DEEPSEEK4`, so `gate.py
   llamacpp` can create one exactly as it did for glm-dsa. The verification
   methodology survives the second model unchanged, which was not guaranteed.

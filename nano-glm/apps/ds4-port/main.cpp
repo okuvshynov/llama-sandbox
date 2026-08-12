@@ -228,47 +228,85 @@ int main(int argc, char ** argv) {
 
     // ---- compressor state, for the one case this harness covers ----
     //
-    // A ratio-4 layer folds every 4 tokens into one compressed key, and each
-    // block also reads the *previous* block's tokens. In a real eval the
-    // previous ones come out of the carried state; here the cache is empty and
-    // the whole prompt arrives at once, so the state is analytic: zeros, and
-    // block 0's history is the pad row.
+    // A compressor layer folds every `ratio` tokens into one key. The ratio-4
+    // layers overlap — each block also reads the previous block's tokens — and
+    // the ratio-128 layers do not. In a real eval the earlier tokens come out
+    // of the carried state; here the cache is empty and the whole prompt
+    // arrives at once, so the state is analytic: zeros, and an overlapping
+    // block 0 reads the pad row.
     //
-    // This is exactly the restriction the harness already lives under (one
-    // prefill from position 0, inside the sliding window). It is also the
-    // reason `n_blocks` and the index arrays are built here rather than in the
-    // graph: a real KV cache computes the same tensors from real state, and
-    // the graph should not have to change when it does.
-    const int32_t ratio    = 4;
-    const int32_t n_base   = 2 * ratio;              // rows llama.cpp carries
-    const int32_t n_blocks = n_tokens / ratio;       // complete blocks only
-    const int32_t n_read   = ratio * n_blocks;
+    // This is the restriction the harness already lives under (one prefill from
+    // position 0). It is also why the index arrays are built here rather than
+    // in the graph: a real KV cache computes the same tensors from real state,
+    // and the graph should not change when it does.
+    struct comp_plan {
+        int32_t ratio    = 0;
+        bool    overlap  = false;
+        int32_t n_base   = 0;   // rows llama.cpp carries: 2*ratio if overlapping
+        int32_t n_blocks = 0;   // complete blocks only
+        std::vector<int32_t>     read_idxs;
+        std::vector<int32_t>     comp_pos;
+        std::vector<int32_t>     ape_pos;
+        std::vector<ggml_fp16_t> mask;
+    };
 
-    // Row i of the concatenated [base | current] tensor, plus one pad row that
-    // `ds4_append_zero_row` puts at the end. Block b reads its own `ratio`
-    // tokens and the previous block's; block 0 has no previous, so it reads the
-    // pad row, which is zero for values and -inf for scores.
-    std::vector<int32_t> read_idxs((size_t) 2 * n_read);
-    for (int32_t b = 0; b < n_blocks; b++) {
-        for (int32_t j = 0; j < ratio; j++) {
-            const int32_t prev = b == 0 ? n_base + n_tokens          // the pad row
-                                        : n_base + (b - 1) * ratio + j;
-            read_idxs[(size_t) b * ratio + j]          = prev;
-            read_idxs[(size_t) n_read + b * ratio + j] = n_base + b * ratio + j;
+    auto plan_for = [&](int32_t ratio, bool overlap) {
+        comp_plan c;
+        c.ratio    = ratio;
+        c.overlap  = overlap;
+        c.n_base   = overlap ? 2 * ratio : ratio;
+        c.n_blocks = n_tokens / ratio;
+        if (c.n_blocks == 0) {
+            return c;
         }
-    }
+        const int32_t n_read = ratio * c.n_blocks;
 
-    // The rope position of a compressed key is the position of the **first
-    // token of its block**, not the block index: llama.cpp pushes
-    // `source_start = pos + 1 - ratio` for the token that closes the block
-    // (llama-kv-cache-dsv4.cpp:527). Both are 0 for block 0, so a prompt short
-    // enough for a single block cannot tell them apart — which is why this is
-    // checked at 12 tokens and not 5.
-    std::vector<int32_t> comp_pos((size_t) n_blocks);
-    for (int32_t b = 0; b < n_blocks; b++) comp_pos[b] = b * ratio;
+        // Row i of the concatenated [base | current] tensor. An overlapping
+        // compressor also gets a pad row at the end (`ds4_append_zero_row`),
+        // which block 0 reads because it has no previous block; a
+        // non-overlapping one needs no pad because every index is a real token.
+        c.read_idxs.resize((size_t) (overlap ? 2 : 1) * n_read);
+        for (int32_t b = 0; b < c.n_blocks; b++) {
+            for (int32_t j = 0; j < ratio; j++) {
+                const int32_t cur_row = c.n_base + b * ratio + j;
+                if (overlap) {
+                    const int32_t prev = b == 0 ? c.n_base + n_tokens   // the pad row
+                                                : c.n_base + (b - 1) * ratio + j;
+                    c.read_idxs[(size_t) b * ratio + j]          = prev;
+                    c.read_idxs[(size_t) n_read + b * ratio + j] = cur_row;
+                } else {
+                    c.read_idxs[(size_t) b * ratio + j] = cur_row;
+                }
+            }
+        }
 
-    std::vector<int32_t> ape_pos((size_t) n_tokens);
-    for (int32_t i = 0; i < n_tokens; i++) ape_pos[i] = i % ratio;
+        // The rope position of a compressed key is the position of the **first
+        // token of its block**, not the block index: llama.cpp pushes
+        // `source_start = pos + 1 - ratio` for the token that closes the block
+        // (llama-kv-cache-dsv4.cpp:527). Both are 0 for block 0, so a prompt
+        // with a single block cannot tell them apart.
+        c.comp_pos.resize((size_t) c.n_blocks);
+        for (int32_t b = 0; b < c.n_blocks; b++) c.comp_pos[b] = b * ratio;
+
+        c.ape_pos.resize((size_t) n_tokens);
+        for (int32_t i = 0; i < n_tokens; i++) c.ape_pos[i] = i % ratio;
+
+        // Block j is visible to the token at position i once all of its tokens
+        // are at or before i — llama.cpp's `n_visible = (pos + 1)/ratio`
+        // (llama-kv-cache-dsv4.cpp:499), turned into a mask row.
+        c.mask.resize((size_t) c.n_blocks * n_tokens);
+        for (int32_t i = 0; i < n_tokens; i++) {
+            const int32_t n_visible = (i + 1) / ratio;
+            for (int32_t j = 0; j < c.n_blocks; j++) {
+                c.mask[(size_t) i * c.n_blocks + j] =
+                    ggml_fp32_to_fp16(j < n_visible ? 0.0f : -INFINITY);
+            }
+        }
+        return c;
+    };
+
+    const comp_plan p_csa = plan_for(4, true);
+    const comp_plan p_hca = plan_for(128, false);
 
     auto new_input = [&](ggml_type type, int64_t ne0, int64_t ne1, const char * name) {
         ggml_tensor * t = ggml_new_tensor_2d(ctx, type, ne0, ne1);
@@ -277,30 +315,32 @@ int main(int argc, char ** argv) {
         return t;
     };
 
+    // `width` is the projection width the compressor works at: twice the head
+    // for the overlapping ones, because the two halves serve the two roles.
+    auto declare = [&](ds4_comp_inputs & d, const comp_plan & c, int64_t width,
+                       const char * tag) {
+        if (c.n_blocks == 0) {
+            return;
+        }
+        char nm[64];
+        auto nmk = [&](const char * suffix) {
+            snprintf(nm, sizeof(nm), "%s_%s", tag, suffix);
+            return nm;
+        };
+        d.base_kv    = new_input(GGML_TYPE_F32, width, c.n_base, nmk("base_kv"));
+        d.base_score = new_input(GGML_TYPE_F32, width, c.n_base, nmk("base_score"));
+        d.read_idxs  = new_input(GGML_TYPE_I32, (int64_t) c.read_idxs.size(), 1, nmk("read_idxs"));
+        d.comp_pos   = new_input(GGML_TYPE_I32, c.n_blocks, 1, nmk("comp_pos"));
+        d.ape_pos    = new_input(GGML_TYPE_I32, n_tokens, 1, nmk("ape_pos"));
+        d.mask       = new_input(GGML_TYPE_F16, c.n_blocks, n_tokens, nmk("kq_mask"));
+    };
+
     ds4_layer_inputs lin;
-    if (n_blocks > 0) {
-        lin.csa.base_kv    = new_input(GGML_TYPE_F32, 2 * M.h.d_key, n_base, "csa_base_kv");
-        lin.csa.base_score = new_input(GGML_TYPE_F32, 2 * M.h.d_key, n_base, "csa_base_score");
-        lin.csa.read_idxs  = new_input(GGML_TYPE_I32, 2 * n_read, 1, "csa_read_idxs");
-        lin.csa.comp_pos   = new_input(GGML_TYPE_I32, n_blocks, 1, "csa_comp_pos");
-
-        lin.lid.base_kv    = new_input(GGML_TYPE_F32, 2 * M.h.idx_key_len, n_base, "lid_base_kv");
-        lin.lid.base_score = new_input(GGML_TYPE_F32, 2 * M.h.idx_key_len, n_base, "lid_base_score");
-        lin.lid.read_idxs  = new_input(GGML_TYPE_I32, 2 * n_read, 1, "lid_read_idxs");
-        lin.lid.comp_pos   = new_input(GGML_TYPE_I32, n_blocks, 1, "lid_comp_pos");
-
-        lin.ape_pos = new_input(GGML_TYPE_I32, n_tokens, 1, "ape_pos");
-        lin.rot     = new_input(GGML_TYPE_F32, M.h.idx_key_len, M.h.idx_key_len, "lid_k_rot");
-
-        // llama.cpp keeps a separate mask per compressed cache; they carry the
-        // same values because both compress at the same ratio, but they stay
-        // two tensors here so the shapes can diverge when a real cache pads
-        // them differently.
-        lin.lid_mask = new_input(GGML_TYPE_F16, n_blocks, n_tokens, "lid_kq_mask");
-        lin.csa_mask = new_input(GGML_TYPE_F16, n_blocks, n_tokens, "csa_kq_mask");
-    } else if (p.stage == DS4_STAGE_COMPRESS) {
-        NANO_ABORT("%d tokens make no complete %d-token block; a compressor "
-                   "layer needs at least %d", n_tokens, ratio, ratio);
+    declare(lin.csa, p_csa, 2 * M.h.d_key,       "csa");
+    declare(lin.lid, p_csa, 2 * M.h.idx_key_len, "lid");
+    declare(lin.hca, p_hca, M.h.d_key,           "hca");
+    if (p_csa.n_blocks > 0) {
+        lin.rot = new_input(GGML_TYPE_F32, M.h.idx_key_len, M.h.idx_key_len, "lid_k_rot");
     }
 
     ggml_tensor * out = ds4_build_graph(ctx, gf, M, inp_tokens, inp_pos, kq_mask, lin,
@@ -335,42 +375,33 @@ int main(int argc, char ** argv) {
     }
     ggml_backend_tensor_set(kq_mask, mask.data(), 0, mask.size() * sizeof(ggml_fp16_t));
 
-    if (n_blocks > 0) {
-        const std::vector<float> zeros_csa((size_t) 2 * M.h.d_key * n_base, 0.0f);
-        const std::vector<float> zeros_lid((size_t) 2 * M.h.idx_key_len * n_base, 0.0f);
+    {
         auto set = [](ggml_tensor * t, const void * d, size_t n) {
-            ggml_backend_tensor_set(t, d, 0, n);
+            if (t) ggml_backend_tensor_set(t, d, 0, n);
         };
-        set(lin.csa.base_kv,    zeros_csa.data(), zeros_csa.size() * sizeof(float));
-        set(lin.csa.base_score, zeros_csa.data(), zeros_csa.size() * sizeof(float));
-        set(lin.lid.base_kv,    zeros_lid.data(), zeros_lid.size() * sizeof(float));
-        set(lin.lid.base_score, zeros_lid.data(), zeros_lid.size() * sizeof(float));
-
-        set(lin.csa.read_idxs, read_idxs.data(), read_idxs.size() * sizeof(int32_t));
-        set(lin.lid.read_idxs, read_idxs.data(), read_idxs.size() * sizeof(int32_t));
-        set(lin.csa.comp_pos,  comp_pos.data(),  comp_pos.size()  * sizeof(int32_t));
-        set(lin.lid.comp_pos,  comp_pos.data(),  comp_pos.size()  * sizeof(int32_t));
-        set(lin.ape_pos,       ape_pos.data(),   ape_pos.size()   * sizeof(int32_t));
-
-        // Order 128, not d_key: the indexer's cache is the only one that
-        // rotates.
-        std::vector<float> had;
-        ds4_fill_hadamard(had, (int) M.h.idx_key_len);
-        set(lin.rot, had.data(), had.size() * sizeof(float));
-
-        // Block j is visible to the token at position i once all four of its
-        // tokens are at or before i — llama.cpp's `n_visible = (pos + 1)/ratio`
-        // (llama-kv-cache-dsv4.cpp:499), turned into a mask row.
-        std::vector<ggml_fp16_t> cmask((size_t) n_blocks * n_tokens);
-        for (int32_t i = 0; i < n_tokens; i++) {
-            const int32_t n_visible = (i + 1) / ratio;
-            for (int32_t j = 0; j < n_blocks; j++) {
-                cmask[(size_t) i * n_blocks + j] =
-                    ggml_fp32_to_fp16(j < n_visible ? 0.0f : -INFINITY);
+        auto upload = [&](const ds4_comp_inputs & d, const comp_plan & c, int64_t width) {
+            if (c.n_blocks == 0) {
+                return;
             }
+            const std::vector<float> zeros((size_t) width * c.n_base, 0.0f);
+            set(d.base_kv,    zeros.data(), zeros.size() * sizeof(float));
+            set(d.base_score, zeros.data(), zeros.size() * sizeof(float));
+            set(d.read_idxs, c.read_idxs.data(), c.read_idxs.size() * sizeof(int32_t));
+            set(d.comp_pos,  c.comp_pos.data(),  c.comp_pos.size()  * sizeof(int32_t));
+            set(d.ape_pos,   c.ape_pos.data(),   c.ape_pos.size()   * sizeof(int32_t));
+            set(d.mask,      c.mask.data(),      c.mask.size()      * sizeof(ggml_fp16_t));
+        };
+        upload(lin.csa, p_csa, 2 * M.h.d_key);
+        upload(lin.lid, p_csa, 2 * M.h.idx_key_len);
+        upload(lin.hca, p_hca, M.h.d_key);
+
+        if (lin.rot) {
+            // Order 128, not d_key: the indexer's cache is the only one that
+            // rotates.
+            std::vector<float> had;
+            ds4_fill_hadamard(had, (int) M.h.idx_key_len);
+            set(lin.rot, had.data(), had.size() * sizeof(float));
         }
-        set(lin.lid_mask, cmask.data(), cmask.size() * sizeof(ggml_fp16_t));
-        set(lin.csa_mask, cmask.data(), cmask.size() * sizeof(ggml_fp16_t));
     }
 
     if (ggml_backend_graph_compute(backend, gf) != GGML_STATUS_SUCCESS) NANO_ABORT("compute failed");
