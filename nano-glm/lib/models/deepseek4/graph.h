@@ -58,15 +58,21 @@
 // single-prefill assumptions. The graph takes its compressor state as input
 // tensors precisely so that can be added without touching this file.
 //
-// **Eleven tensors cannot be compared at all**, and that is not a gap in the
-// port: the `csa_*_k` / `hca_*_k` key views and the mask concatenations are
-// shaped by llama.cpp's KV-cache *padding* (384 tokens become 512 rows, 96
-// blocks become 256) and the padded tail holds whatever was in the buffer. A
-// view sized to the data can never equal one sized to the cache. It costs
-// nothing, because everything downstream of them — `attn_csa_lid` / `attn_hca`
-// onward — is compared and exact, and a wrong selection or a wrong mask would
-// land there. `dump_inspect.py --exclude` names them rather than passing them
-// silently.
+// **The KV cache is real.** `cache.h` holds the raw sliding-window keys, the
+// compressed keys of both kinds, and the compressor rings that carry a
+// half-finished block across a chunk boundary; the index plans that drive them
+// are computed there too, from (n_past, n_tokens). The graph reads and writes
+// them through `ds4_commit_raw` and `ds4_comp_commit`. A single chunk from an
+// empty cache is still bit-identical, which is the check that the plumbing
+// changed nothing.
+//
+// Sizing the cache the way llama.cpp does — `get_n_kv`'s "at least 256,
+// rounded up to 256, capped by the cache", and a compressed cache with the same
+// 256 floor so the cap does not bite — also made the eleven tensors this file
+// used to call uncomparable compare exactly. They are views of a *padded*
+// cache, and the padding is only unmatchable if you decline to pad the same
+// way. 416 tensors over layers 0-5 with `node_` the only exclusion left, which
+// is unreachable in principle: ggml numbers anonymous nodes per graph.
 //
 // The sequence length is part of what is being checked, and has twice been
 // what a mistake hid behind. Five tokens make a single compressed block, and
@@ -113,6 +119,7 @@
 //   n_head 64, d_key 512, rope_dim 64  => nope 448
 //   o_groups 8, o_lora_rank 1024
 
+#include "cache.h"
 #include "model.h"
 #include "moe_block.h"
 
@@ -498,16 +505,27 @@ static ggml_tensor * ds4_append_zero_row(ggml_context * ctx, ggml_tensor * t, bo
 // cache; here they are graph inputs so the cache can be written later without
 // touching the graph.
 struct ds4_comp_inputs {
-    ggml_tensor * base_kv    = nullptr;  // f32 [coff*n_embd_head, n_base] carried state
+    // The carried ring, read as the "base" rows the fold gathers from and
+    // written back at the end of the chunk. Views of `ds4_cache`'s tensors in a
+    // real eval; the harness can still hand over plain zeroed inputs, which is
+    // what a fresh cache amounts to.
+    ggml_tensor * base_kv    = nullptr;  // f32 [coff*n_embd_head, n_base]
     ggml_tensor * base_score = nullptr;  // f32 [coff*n_embd_head, n_base]
-    ggml_tensor * read_idxs  = nullptr;  // i32 [coff*ratio*n_blocks]
-    ggml_tensor * comp_pos   = nullptr;  // i32 [n_blocks] rope position per block
-    ggml_tensor * ape_pos    = nullptr;  // i32 [n_tokens] slot within the block
-    // Which compressed blocks a token may see: block j is visible to the token
-    // at position p when `j < (p + 1)/ratio`, i.e. every block whose tokens all
+
+    // The chunk's plan (ds4_plan_comp).
+    ggml_tensor * read_idxs   = nullptr; // i32 [(overlap?2:1)*ratio*n_blocks]
+    ggml_tensor * comp_pos    = nullptr; // i32 [n_blocks] rope position per block
+    ggml_tensor * ape_pos     = nullptr; // i32 [n_tokens] slot within the block
+    ggml_tensor * write_idxs  = nullptr; // i64 [n_blocks] cells to fold into
+    ggml_tensor * persist_src = nullptr; // i32 rows of this chunk to keep
+    ggml_tensor * persist_dst = nullptr; // i64 ring rows to keep them in
+
+    // Which compressed cells a token may see: cell j is visible to the token at
+    // position p when `j < (p + 1)/ratio`, i.e. every block whose tokens all
     // lie at or before it. f16 — the indexer op requires it and so does flash
     // attention.
-    ggml_tensor * mask       = nullptr;  // f16 [n_blocks, n_tokens]
+    ggml_tensor * mask    = nullptr;     // f16 [n_kv, n_tokens]
+    ggml_tensor * cache_k = nullptr;     // f16 [width, n_cells] compressed keys
 };
 
 static ggml_tensor * ds4_build_compressed_kv(ggml_context * ctx, ggml_cgraph * gf,
@@ -584,6 +602,43 @@ static ggml_tensor * ds4_build_compressed_kv(ggml_context * ctx, ggml_cgraph * g
     return comp;
 }
 
+// Fold this chunk's closed blocks into the compressed cache, persist the raw
+// projections into the ring, and hand back the window of cells the chunk may
+// read.
+//
+// Order is load-bearing and not obvious: the fold gathers from
+// [ring | this chunk], and the persist overwrites the ring. Both touch the same
+// buffer, ggml tracks no write-after-read hazard, and the only thing keeping
+// them apart is that the gather is expanded into the graph first. llama.cpp
+// relies on exactly the same ordering.
+static ggml_tensor * ds4_comp_commit(ggml_context * ctx, ggml_cgraph * gf,
+                                     const ds4_comp_inputs & in, ggml_tensor * comp,
+                                     ggml_tensor * cur_kv, ggml_tensor * cur_score,
+                                     int64_t width) {
+    // The visible window is exactly what the mask covers, so it needs no
+    // separate parameter and cannot disagree with one.
+    const int64_t n_kv = in.mask->ne[0];
+    if (comp) {
+        // A chunk that closes no block writes nothing; the cache keeps what
+        // earlier chunks put there.
+        ggml_tensor * flat = ggml_reshape_2d(ctx, comp, width, comp->ne[2]);
+        ggml_build_forward_expand(gf, ggml_set_rows(ctx, in.cache_k, flat, in.write_idxs));
+    }
+
+    if (in.persist_src) {
+        ggml_build_forward_expand(gf,
+            ggml_set_rows(ctx, in.base_kv,
+                          ggml_get_rows(ctx, cur_kv, in.persist_src), in.persist_dst));
+        ggml_build_forward_expand(gf,
+            ggml_set_rows(ctx, in.base_score,
+                          ggml_get_rows(ctx, cur_score, in.persist_src), in.persist_dst));
+    }
+
+    return ggml_view_3d(ctx, in.cache_k, width, 1, n_kv,
+                        ggml_row_size(in.cache_k->type, width),
+                        ggml_row_size(in.cache_k->type, width), 0);
+}
+
 // Everything a compressor layer needs from outside the graph. In llama.cpp
 // these are `llm_graph_input_dsv4`'s fields, filled on the host from the ubatch
 // and the cache; keeping them as inputs here means a real cache can be written
@@ -597,8 +652,24 @@ struct ds4_layer_inputs {
     ds4_comp_inputs csa;
     ds4_comp_inputs lid;
     ds4_comp_inputs hca;
-    ggml_tensor *   rot = nullptr;       // f32 [idx_key_len, idx_key_len] Hadamard
+    ggml_tensor *   rot    = nullptr;    // f32 [idx_key_len, idx_key_len] Hadamard
+    // The raw sliding-window cache. `k_raw` is per layer and filled in by the
+    // layer loop; `k_idxs` is the same for every layer, one cell per token.
+    ggml_tensor *   k_raw  = nullptr;    // f16 [d_key, kv_size]
+    ggml_tensor *   k_idxs = nullptr;    // i64 [n_tokens]
 };
+
+// Store this chunk's raw keys and hand back the window the chunk may read.
+static ggml_tensor * ds4_commit_raw(ggml_context * ctx, ggml_cgraph * gf,
+                                    const ds4_layer_inputs & in, ggml_tensor * kv,
+                                    int64_t d_key, int64_t n_kv) {
+    ggml_tensor * flat = ggml_reshape_2d(ctx, kv, d_key, kv->ne[2]);
+    ggml_build_forward_expand(gf, ggml_set_rows(ctx, in.k_raw, flat, in.k_idxs));
+
+    return ggml_view_3d(ctx, in.k_raw, d_key, 1, n_kv,
+                        ggml_row_size(in.k_raw->type, d_key),
+                        ggml_row_size(in.k_raw->type, d_key), 0);
+}
 
 struct ds4_compressed {
     ggml_tensor * csa_k = nullptr;   // [d_key,       1, n_blocks]
@@ -627,8 +698,12 @@ static ds4_compressed ds4_build_compressors(ggml_context * ctx, ggml_cgraph * gf
     csa_score = ggml_add(ctx, csa_score, ggml_get_rows(ctx, L.cmp_ape, in.csa.ape_pos));
     ds4_name(csa_score, "csa_state_score_ape", il);
 
-    out.csa_k = ds4_build_compressed_kv(ctx, gf, h, in.csa, csa_kv, csa_score,
-                                        L.cmp_norm, h.d_key, "csa_state_compress", il);
+    ggml_tensor * csa_comp = in.csa.comp_pos != nullptr
+        ? ds4_build_compressed_kv(ctx, gf, h, in.csa, csa_kv, csa_score,
+                                  L.cmp_norm, h.d_key, "csa_state_compress", il)
+        : nullptr;
+    out.csa_k = ds4_comp_commit(ctx, gf, in.csa, csa_comp, csa_kv, csa_score,
+                                h.d_key);
     // Finish this compressor before starting the next. llama.cpp expands its
     // cache write here for the same reason, and without it the indexer's chain
     // lands in front of this one's tail — both layers emit a tensor called
@@ -645,18 +720,23 @@ static ds4_compressed ds4_build_compressors(ggml_context * ctx, ggml_cgraph * gf
     lid_score = ggml_add(ctx, lid_score, ggml_get_rows(ctx, L.idx_cmp_ape, in.lid.ape_pos));
     ds4_name(lid_score, "lid_state_score_ape", il);
 
-    ggml_tensor * lid_k = ds4_build_compressed_kv(ctx, gf, h, in.lid, lid_kv, lid_score,
-                                                  L.idx_cmp_norm, h.idx_key_len,
-                                                  "lid_state_compress", il);
+    ggml_tensor * lid_k = in.lid.comp_pos != nullptr
+        ? ds4_build_compressed_kv(ctx, gf, h, in.lid, lid_kv, lid_score,
+                                  L.idx_cmp_norm, h.idx_key_len,
+                                  "lid_state_compress", il)
+        : nullptr;
 
     // The one rotation this model really applies. `attn_rot_k` needs a
     // quantized cache, and the indexer's is the only one that qualifies — the
     // reference log reads `attn_rot_k = 1, n_embd_head_k_all = 128` for it and
     // 0 for all three 512-wide caches. Getting this backwards cost a day; see
     // the header.
-    lid_k = ds4_hadamard(ctx, lid_k, in.rot);
-    ds4_snapshot(ctx, gf, lid_k, "lid_state_compress_rot", il);
-    out.lid_k = lid_k;
+    if (lid_k) {
+        lid_k = ds4_hadamard(ctx, lid_k, in.rot);
+        ds4_snapshot(ctx, gf, lid_k, "lid_state_compress_rot", il);
+    }
+    out.lid_k = ds4_comp_commit(ctx, gf, in.lid, lid_k, lid_kv, lid_score,
+                                h.idx_key_len);
 
     return out;
 }
@@ -814,9 +894,12 @@ static ggml_tensor * ds4_build_hca_compressor(ggml_context * ctx, ggml_cgraph * 
     score = ggml_add(ctx, score, ggml_get_rows(ctx, L.cmp_ape, in.hca.ape_pos));
     ds4_name(score, "hca_state_score_ape", il);
 
-    return ds4_build_compressed_kv_plain(ctx, gf, h, in.hca, kv, score, L.cmp_norm,
-                                         (int64_t) h.compress_ratio[il], h.d_key,
-                                         "hca_state_compress", il);
+    ggml_tensor * comp = in.hca.comp_pos != nullptr
+        ? ds4_build_compressed_kv_plain(ctx, gf, h, in.hca, kv, score, L.cmp_norm,
+                                        (int64_t) h.compress_ratio[il], h.d_key,
+                                        "hca_state_compress", il)
+        : nullptr;
+    return ds4_comp_commit(ctx, gf, in.hca, comp, kv, score, h.d_key);
 }
 
 // ---------------------------------------------------------------------------
@@ -824,11 +907,11 @@ static ggml_tensor * ds4_build_hca_compressor(ggml_context * ctx, ggml_cgraph * 
 // and no lightning indexer, so the key sequence is just this chunk.
 static ggml_tensor * ds4_build_attention_raw(ggml_context * ctx, ggml_cgraph * gf,
                                              const ds4_hparams & h, const ds4_layer & L,
-                                             const ds4_qkv & x, ggml_tensor * kq_mask,
+                                             const ds4_qkv & x, ggml_tensor * raw_k,
+                                             ggml_tensor * kq_mask,
                                              int32_t n_tokens, uint32_t il) {
     const int64_t d_head = h.d_key;
-    ggml_tensor * q  = x.q;
-    ggml_tensor * kv = x.kv;
+    ggml_tensor * q = x.q;
     (void) n_tokens;
 
     // ---- MHA with sinks ----
@@ -853,20 +936,13 @@ static ggml_tensor * ds4_build_attention_raw(ggml_context * ctx, ggml_cgraph * g
     // (`attn_rot_k = 1, n_embd_head_k_all = 128` in the same log), so
     // `ds4_hadamard` comes back when the indexer layers do.
     ggml_build_forward_expand(gf, q);
-    ggml_build_forward_expand(gf, kv);
 
-    // The reference stores kv into the KV cache before attending, and that
-    // cache is F16 by default — so the scores are computed against an F16 key,
-    // not the F32 tensor just built. Round-tripping through F16 here is not a
-    // space optimisation, it is what makes this agree: without it every tensor
-    // through `kv` matched exactly and `attn_raw` onward did not.
-    //
-    // glm-dsa's KV cache is F16 for the same reason (models/glm_dsa/graph.h),
-    // which is how it reaches KL == 0.
-    ggml_tensor * kv16 = ggml_cast(ctx, kv, GGML_TYPE_F16);
-
-    ggml_tensor * qp = ggml_permute(ctx, q,    0, 2, 1, 3);
-    ggml_tensor * kp = ggml_permute(ctx, kv16, 0, 2, 1, 3);
+    // `raw_k` is a window into the F16 cache, not the F32 tensor just built,
+    // and that is what makes this agree: the reference attends against a stored
+    // key, so the scores are computed on rounded values. Before there was a
+    // cache here, the port had to imitate it with an explicit cast.
+    ggml_tensor * qp = ggml_permute(ctx, q,     0, 2, 1, 3);
+    ggml_tensor * kp = ggml_permute(ctx, raw_k, 0, 2, 1, 3);
     ggml_tensor * vp = kp;   // the latent is both K and V
 
     // Flash attention, not the explicit kq/softmax/kqv path. llama.cpp resolves
@@ -966,14 +1042,15 @@ static ggml_tensor * ds4_build_attention_csa_lid(ggml_context * ctx, ggml_cgraph
                                                  const ds4_hparams & h, const ds4_layer & L,
                                                  const ds4_layer_inputs & in,
                                                  const ds4_qkv & x, const ds4_compressed & c,
-                                                 ggml_tensor * cur, ggml_tensor * inp_pos,
+                                                 ggml_tensor * raw_k, ggml_tensor * cur,
+                                                 ggml_tensor * inp_pos,
                                                  ggml_tensor * kq_mask, int32_t n_tokens,
                                                  uint32_t il) {
     const int64_t d_head = h.d_key;
 
     // The indexer's keys are the rotated compressed ones, read back from an F16
     // cache in the reference — so they are rounded before it scores them.
-    ggml_tensor * lid_k = ggml_cast(ctx, c.lid_k, GGML_TYPE_F16);
+    ggml_tensor * lid_k = c.lid_k;   // already f16, straight from the cache
     ggml_tensor * top_k_src = ds4_build_indexer(ctx, h, L, in, x.qr, cur, lid_k,
                                                 inp_pos, n_tokens, il);
 
@@ -984,9 +1061,8 @@ static ggml_tensor * ds4_build_attention_csa_lid(ggml_context * ctx, ggml_cgraph
     ggml_tensor * top_k = ggml_cont(ctx, ggml_top_k(ctx, top_k_src, (int) n_top_k));
     ds4_name(top_k, "lid_top_k", il);
 
-    ggml_tensor * raw_k  = ggml_cast(ctx, x.kv,  GGML_TYPE_F16);
     ds4_name(raw_k, "csa_raw_k", il);
-    ggml_tensor * comp_k = ggml_cast(ctx, c.csa_k, GGML_TYPE_F16);
+    ggml_tensor * comp_k = c.csa_k;   // already f16, straight from the cache
     ds4_name(comp_k, "csa_comp_k", il);
 
     ggml_tensor * k_all = ggml_concat(ctx, raw_k, comp_k, 2);
@@ -1015,13 +1091,12 @@ static ggml_tensor * ds4_build_attention_csa_lid(ggml_context * ctx, ggml_cgraph
 static ggml_tensor * ds4_build_attention_hca(ggml_context * ctx, ggml_cgraph * gf,
                                              const ds4_hparams & h, const ds4_layer & L,
                                              const ds4_layer_inputs & in, const ds4_qkv & x,
-                                             ggml_tensor * comp_k, ggml_tensor * kq_mask,
-                                             uint32_t il) {
+                                             ggml_tensor * raw_k, ggml_tensor * comp_k,
+                                             ggml_tensor * kq_mask, uint32_t il) {
     const int64_t d_head = h.d_key;
 
-    ggml_tensor * raw_k = ggml_cast(ctx, x.kv, GGML_TYPE_F16);
     ds4_name(raw_k, "hca_raw_k", il);
-    ggml_tensor * hca_k = ggml_cast(ctx, comp_k, GGML_TYPE_F16);
+    ggml_tensor * hca_k = comp_k;     // already f16, straight from the cache
     ds4_name(hca_k, "hca_comp_k", il);
 
     ggml_tensor * k_all = ggml_concat(ctx, raw_k, hca_k, 2);
@@ -1263,6 +1338,7 @@ static uint32_t ds4_ported_layers(const ds4_hparams & h) {
 // Returns the last tensor built. Every named intermediate is marked as a graph
 // output so it survives to be read back and compared.
 static ggml_tensor * ds4_build_graph(ggml_context * ctx, ggml_cgraph * gf, const ds4_model & M,
+                                     const ds4_cache & C,
                                      ggml_tensor * inp_tokens, ggml_tensor * inp_pos,
                                      ggml_tensor * kq_mask, const ds4_layer_inputs & in,
                                      ggml_tensor * out_ids,
@@ -1306,53 +1382,86 @@ static ggml_tensor * ds4_build_graph(ggml_context * ctx, ggml_cgraph * gf, const
             return cur;
         }
 
+        // Per-layer cache tensors. The chunk plans in `in` are shared by every
+        // layer of a ratio; only these differ.
+        ds4_layer_inputs li = in;
+        li.k_raw = C.k_raw[il];
+        li.csa.cache_k    = C.k_csa[il];
+        li.csa.base_kv    = C.s_csa_kv[il];
+        li.csa.base_score = C.s_csa_score[il];
+        li.lid.cache_k    = C.k_lid[il];
+        li.lid.base_kv    = C.s_lid_kv[il];
+        li.lid.base_score = C.s_lid_score[il];
+        li.hca.cache_k    = C.k_hca[il];
+        li.hca.base_kv    = C.s_hca_kv[il];
+        li.hca.base_score = C.s_hca_score[il];
+
+        // Two different questions, easily conflated. `folds` asks whether *this
+        // chunk* closes a block and so has something to compress; `n_kv` asks
+        // how many compressed cells exist to attend over, which is a property
+        // of everything seen so far. A decode step folds nothing three times out
+        // of four and still attends over hundreds of cells.
         if (h.has_compressor(il) && !h.has_indexer(il)) {
-            // A ratio-128 layer. With fewer than `ratio` tokens behind it there
-            // is no complete block, and llama.cpp then leaves `inp_hca.kq_mask`
-            // null and takes the plain raw-attention path — so a short prompt
-            // makes this layer look exactly like layer 0. Following that is not
-            // an optimisation: the compressed half genuinely does not exist.
-            const bool has_blocks = in.hca.comp_pos != nullptr;
+            const int64_t n_kv_hca = li.hca.mask ? li.hca.mask->ne[0] : 0;
 
             ggml_tensor * comp_k = nullptr;
-            if (has_blocks) {
-                comp_k = ds4_build_hca_compressor(ctx, gf, h, L, in, cur, il);
+            if (n_kv_hca > 0) {
+                comp_k = ds4_build_hca_compressor(ctx, gf, h, L, li, cur, il);
                 ggml_build_forward_expand(gf, comp_k);
             }
 
             if (last && stage == DS4_STAGE_COMPRESS) {
-                if (!has_blocks) {
+                if (!comp_k) {
                     NANO_ABORT("deepseek4 trunk: layer %u has no complete "
-                               "%u-token block, so stage 'compress' has nothing "
-                               "to build", il, h.compress_ratio[il]);
+                               "%u-token block yet, so stage 'compress' has "
+                               "nothing to build", il, h.compress_ratio[il]);
                 }
                 return comp_k;
             }
 
             const ds4_qkv x = ds4_build_qkv(ctx, gf, h, L, cur, inp_pos, n_tokens, il);
-            cur = has_blocks
-                ? ds4_build_attention_hca(ctx, gf, h, L, in, x, comp_k, kq_mask, il)
-                : ds4_build_attention_raw(ctx, gf, h, L, x, kq_mask, n_tokens, il);
+            ggml_tensor * raw_k = ds4_commit_raw(ctx, gf, li, x.kv, h.d_key, kq_mask->ne[0]);
+            // With no compressed cell yet, llama.cpp leaves `inp_hca.kq_mask`
+            // null and the compressed half of the attention simply does not
+            // exist — the layer runs plain raw attention. Following that is not
+            // an optimisation.
+            cur = comp_k
+                ? ds4_build_attention_hca(ctx, gf, h, L, li, x, raw_k, comp_k, kq_mask, il)
+                : ds4_build_attention_raw(ctx, gf, h, L, x, raw_k, kq_mask, n_tokens, il);
         } else if (h.has_indexer(il)) {
             // The compressors run before q/kv, which is the order llama.cpp's
             // graph ends up executing them in even though it builds q first.
-            const ds4_compressed c = ds4_build_compressors(ctx, gf, h, L, in, cur, il);
-            ggml_build_forward_expand(gf, c.lid_k);
+            const int64_t n_kv_csa = li.csa.mask ? li.csa.mask->ne[0] : 0;
+
+            ds4_compressed c = {};
+            if (n_kv_csa > 0) {
+                c = ds4_build_compressors(ctx, gf, h, L, li, cur, il);
+                ggml_build_forward_expand(gf, c.lid_k);
+            }
 
             if (last && stage == DS4_STAGE_COMPRESS) {
+                if (!c.lid_k) {
+                    NANO_ABORT("deepseek4 trunk: layer %u has no complete "
+                               "%u-token block yet, so stage 'compress' has "
+                               "nothing to build", il, h.compress_ratio[il]);
+                }
                 return c.lid_k;
             }
 
             const ds4_qkv x = ds4_build_qkv(ctx, gf, h, L, cur, inp_pos, n_tokens, il);
-            cur = ds4_build_attention_csa_lid(ctx, gf, h, L, in, x, c, cur, inp_pos,
-                                              kq_mask, n_tokens, il);
+            ggml_tensor * raw_k = ds4_commit_raw(ctx, gf, li, x.kv, h.d_key, kq_mask->ne[0]);
+            cur = c.csa_k
+                ? ds4_build_attention_csa_lid(ctx, gf, h, L, li, x, c, raw_k, cur,
+                                              inp_pos, kq_mask, n_tokens, il)
+                : ds4_build_attention_raw(ctx, gf, h, L, x, raw_k, kq_mask, n_tokens, il);
         } else {
             if (last && stage == DS4_STAGE_COMPRESS) {
                 NANO_ABORT("deepseek4 trunk: layer %u has no compressor, so "
                            "stage 'compress' has nothing to build", il);
             }
             const ds4_qkv x = ds4_build_qkv(ctx, gf, h, L, cur, inp_pos, n_tokens, il);
-            cur = ds4_build_attention_raw(ctx, gf, h, L, x, kq_mask, n_tokens, il);
+            ggml_tensor * raw_k = ds4_commit_raw(ctx, gf, li, x.kv, h.d_key, kq_mask->ne[0]);
+            cur = ds4_build_attention_raw(ctx, gf, h, L, x, raw_k, kq_mask, n_tokens, il);
         }
 
         cur = ds4_build_attn_out(ctx, h, L, cur, inp_pos, n_tokens, il);

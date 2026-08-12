@@ -33,6 +33,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <algorithm>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -45,6 +46,7 @@ struct port_params {
     std::string out_path  = "ds4-port.ntd";
     int32_t     n_threads = physical_core_count();
     int32_t     n_layers  = 0;   // 0 = every layer the graph can build
+    int32_t     n_ctx     = 4096;  // cache cells; matches dump's default
     ds4_stage   stage     = DS4_STAGE_LAYER;
 };
 
@@ -162,6 +164,7 @@ int main(int argc, char ** argv) {
         else if (!strcmp(a, "-o") && i + 1 < argc) p.out_path   = argv[++i];
         else if (!strcmp(a, "-t") && i + 1 < argc) p.n_threads  = atoi(argv[++i]);
         else if (!strcmp(a, "-L") && i + 1 < argc) p.n_layers   = atoi(argv[++i]);
+        else if (!strcmp(a, "-c") && i + 1 < argc) p.n_ctx      = atoi(argv[++i]);
         else if (!strcmp(a, "--stage") && i + 1 < argc) {
             if (!parse_stage(argv[++i], p.stage)) { p.model_path.clear(); break; }
         }
@@ -227,91 +230,43 @@ int main(int argc, char ** argv) {
     ggml_set_input(inp_pos);
 
     // F16: ggml_flash_attn_ext requires it, where the explicit path wants F32.
-    ggml_tensor * kq_mask = ggml_new_tensor_2d(ctx, GGML_TYPE_F16, n_tokens, n_tokens);
-    ggml_set_name(kq_mask, "kq_mask");
-    ggml_set_input(kq_mask);
+    // Declared after the cache so its width is the padded cell count.
 
-    // ---- compressor state, for the one case this harness covers ----
+    // ---- KV cache and this chunk's plans ----
     //
-    // A compressor layer folds every `ratio` tokens into one key. The ratio-4
-    // layers overlap — each block also reads the previous block's tokens — and
-    // the ratio-128 layers do not. In a real eval the earlier tokens come out
-    // of the carried state; here the cache is empty and the whole prompt
-    // arrives at once, so the state is analytic: zeros, and an overlapping
-    // block 0 reads the pad row.
-    //
-    // This is the restriction the harness already lives under (one prefill from
-    // position 0). It is also why the index arrays are built here rather than
-    // in the graph: a real KV cache computes the same tensors from real state,
-    // and the graph should not change when it does.
-    struct comp_plan {
-        int32_t ratio    = 0;
-        bool    overlap  = false;
-        int32_t n_base   = 0;   // rows llama.cpp carries: 2*ratio if overlapping
-        int32_t n_blocks = 0;   // complete blocks only
-        std::vector<int32_t>     read_idxs;
-        std::vector<int32_t>     comp_pos;
-        std::vector<int32_t>     ape_pos;
-        std::vector<ggml_fp16_t> mask;
+    // The harness still runs one chunk from an empty cache, which is what makes
+    // the comparison against a single llama.cpp decode meaningful. What changed
+    // is that the state is now *real*: zeroed cache tensors and index plans
+    // computed from (n_past, n_tokens) by `cache.h`, rather than the analytic
+    // shortcuts this file used to carry. A second chunk needs only a loop.
+    const int32_t n_past = 0;
+
+    ds4_cache C;
+    // The cache is sized to a *context*, not to this chunk. That matters for
+    // more than capacity: `get_n_kv` caps its padding at the cache size, so a
+    // cache sized to the prompt would quietly hand the graph an unpadded
+    // window and stop the key views matching the reference's shapes.
+    if (p.n_ctx < n_tokens) NANO_ABORT("-c %d is smaller than the %d tokens", p.n_ctx, n_tokens);
+    ds4_cache_init(C, M.h, (uint32_t) p.n_ctx);
+
+    // llama.cpp's `get_n_kv`: at least 256 cells, rounded up to 256, capped by
+    // the cache. Matching it is not cosmetic — it is what makes the key views
+    // and masks the same shape as the reference's.
+    auto pad_n_kv = [](int32_t used, uint32_t size) {
+        return (int32_t) std::min<int64_t>(size, std::max<int64_t>(256, GGML_PAD(used, 256)));
     };
+    const int32_t n_kv_raw = pad_n_kv(n_past + n_tokens, C.kv_size);
+    const int32_t n_kv_csa = pad_n_kv((n_past + n_tokens) / 4,   C.csa_size);
+    const int32_t n_kv_hca = pad_n_kv((n_past + n_tokens) / 128, C.hca_size);
 
-    auto plan_for = [&](int32_t ratio, bool overlap) {
-        comp_plan c;
-        c.ratio    = ratio;
-        c.overlap  = overlap;
-        c.n_base   = overlap ? 2 * ratio : ratio;
-        c.n_blocks = n_tokens / ratio;
-        if (c.n_blocks == 0) {
-            return c;
-        }
-        const int32_t n_read = ratio * c.n_blocks;
+    const ds4_comp_plan p_csa = ds4_plan_comp(4,   true,  n_past, n_tokens, n_kv_csa);
+    const ds4_comp_plan p_hca = ds4_plan_comp(128, false, n_past, n_tokens, n_kv_hca);
 
-        // Row i of the concatenated [base | current] tensor. An overlapping
-        // compressor also gets a pad row at the end (`ds4_append_zero_row`),
-        // which block 0 reads because it has no previous block; a
-        // non-overlapping one needs no pad because every index is a real token.
-        c.read_idxs.resize((size_t) (overlap ? 2 : 1) * n_read);
-        for (int32_t b = 0; b < c.n_blocks; b++) {
-            for (int32_t j = 0; j < ratio; j++) {
-                const int32_t cur_row = c.n_base + b * ratio + j;
-                if (overlap) {
-                    const int32_t prev = b == 0 ? c.n_base + n_tokens   // the pad row
-                                                : c.n_base + (b - 1) * ratio + j;
-                    c.read_idxs[(size_t) b * ratio + j]          = prev;
-                    c.read_idxs[(size_t) n_read + b * ratio + j] = cur_row;
-                } else {
-                    c.read_idxs[(size_t) b * ratio + j] = cur_row;
-                }
-            }
-        }
+    std::vector<ggml_fp16_t> raw_mask;
+    ds4_plan_raw_mask(raw_mask, n_kv_raw, n_past, n_tokens, (int32_t) M.h.sliding_window);
 
-        // The rope position of a compressed key is the position of the **first
-        // token of its block**, not the block index: llama.cpp pushes
-        // `source_start = pos + 1 - ratio` for the token that closes the block
-        // (llama-kv-cache-dsv4.cpp:527). Both are 0 for block 0, so a prompt
-        // with a single block cannot tell them apart.
-        c.comp_pos.resize((size_t) c.n_blocks);
-        for (int32_t b = 0; b < c.n_blocks; b++) c.comp_pos[b] = b * ratio;
-
-        c.ape_pos.resize((size_t) n_tokens);
-        for (int32_t i = 0; i < n_tokens; i++) c.ape_pos[i] = i % ratio;
-
-        // Block j is visible to the token at position i once all of its tokens
-        // are at or before i — llama.cpp's `n_visible = (pos + 1)/ratio`
-        // (llama-kv-cache-dsv4.cpp:499), turned into a mask row.
-        c.mask.resize((size_t) c.n_blocks * n_tokens);
-        for (int32_t i = 0; i < n_tokens; i++) {
-            const int32_t n_visible = (i + 1) / ratio;
-            for (int32_t j = 0; j < c.n_blocks; j++) {
-                c.mask[(size_t) i * c.n_blocks + j] =
-                    ggml_fp32_to_fp16(j < n_visible ? 0.0f : -INFINITY);
-            }
-        }
-        return c;
-    };
-
-    const comp_plan p_csa = plan_for(4, true);
-    const comp_plan p_hca = plan_for(128, false);
+    std::vector<int64_t> k_idxs((size_t) n_tokens);
+    for (int32_t i = 0; i < n_tokens; i++) k_idxs[i] = n_past + i;
 
     auto new_input = [&](ggml_type type, int64_t ne0, int64_t ne1, const char * name) {
         ggml_tensor * t = ggml_new_tensor_2d(ctx, type, ne0, ne1);
@@ -320,33 +275,43 @@ int main(int argc, char ** argv) {
         return t;
     };
 
-    // `width` is the projection width the compressor works at: twice the head
-    // for the overlapping ones, because the two halves serve the two roles.
-    auto declare = [&](ds4_comp_inputs & d, const comp_plan & c, int64_t width,
-                       const char * tag) {
-        if (c.n_blocks == 0) {
-            return;
-        }
+    // Declare and upload in one place: every one of these is a plain array the
+    // host already computed, and splitting the two halves apart is how they
+    // drift.
+    auto feed = [&](ds4_comp_inputs & d, const ds4_comp_plan & pl, const char * tag) {
         char nm[64];
         auto nmk = [&](const char * suffix) {
             snprintf(nm, sizeof(nm), "%s_%s", tag, suffix);
             return nm;
         };
-        d.base_kv    = new_input(GGML_TYPE_F32, width, c.n_base, nmk("base_kv"));
-        d.base_score = new_input(GGML_TYPE_F32, width, c.n_base, nmk("base_score"));
-        d.read_idxs  = new_input(GGML_TYPE_I32, (int64_t) c.read_idxs.size(), 1, nmk("read_idxs"));
-        d.comp_pos   = new_input(GGML_TYPE_I32, c.n_blocks, 1, nmk("comp_pos"));
-        d.ape_pos    = new_input(GGML_TYPE_I32, n_tokens, 1, nmk("ape_pos"));
-        d.mask       = new_input(GGML_TYPE_F16, c.n_blocks, n_tokens, nmk("kq_mask"));
+        auto put_i32 = [&](const std::vector<int32_t> & v, const char * suffix) {
+            if (v.empty()) return (ggml_tensor *) nullptr;
+            ggml_tensor * t = new_input(GGML_TYPE_I32, (int64_t) v.size(), 1, nmk(suffix));
+            return t;
+        };
+        auto put_i64 = [&](const std::vector<int64_t> & v, const char * suffix) {
+            if (v.empty()) return (ggml_tensor *) nullptr;
+            ggml_tensor * t = new_input(GGML_TYPE_I64, (int64_t) v.size(), 1, nmk(suffix));
+            return t;
+        };
+        d.read_idxs   = put_i32(pl.read_idxs,   "read_idxs");
+        d.comp_pos    = put_i32(pl.write_pos,   "comp_pos");
+        d.ape_pos     = put_i32(pl.ape_pos,     "ape_pos");
+        d.write_idxs  = put_i64(pl.write_idxs,  "write_idxs");
+        d.persist_src = put_i32(pl.persist_src, "persist_src");
+        d.persist_dst = put_i64(pl.persist_dst, "persist_dst");
+        d.mask        = new_input(GGML_TYPE_F16, pl.n_kv, n_tokens, nmk("kq_mask"));
     };
 
     ds4_layer_inputs lin;
-    declare(lin.csa, p_csa, 2 * M.h.d_key,       "csa");
-    declare(lin.lid, p_csa, 2 * M.h.idx_key_len, "lid");
-    declare(lin.hca, p_hca, M.h.d_key,           "hca");
-    if (p_csa.n_blocks > 0) {
-        lin.rot = new_input(GGML_TYPE_F32, M.h.idx_key_len, M.h.idx_key_len, "lid_k_rot");
-    }
+    feed(lin.csa, p_csa, "csa");
+    feed(lin.lid, p_csa, "lid");
+    feed(lin.hca, p_hca, "hca");
+    lin.rot    = new_input(GGML_TYPE_F32, M.h.idx_key_len, M.h.idx_key_len, "lid_k_rot");
+    lin.k_idxs = new_input(GGML_TYPE_I64, n_tokens, 1, "k_idxs");
+
+    // F16: ggml_flash_attn_ext requires it, where the explicit path wants F32.
+    ggml_tensor * kq_mask = new_input(GGML_TYPE_F16, n_kv_raw, n_tokens, "kq_mask");
 
     // llama.cpp asks for logits at the last position only (its batch sets
     // `logits = true` on that token alone), so the head runs on one row. This
@@ -358,7 +323,7 @@ int main(int argc, char ** argv) {
         ggml_set_input(out_ids);
     }
 
-    ggml_tensor * out = ds4_build_graph(ctx, gf, M, inp_tokens, inp_pos, kq_mask, lin,
+    ggml_tensor * out = ds4_build_graph(ctx, gf, M, C, inp_tokens, inp_pos, kq_mask, lin,
                                         out_ids, n_tokens, p.stage, (uint32_t) p.n_layers);
     ggml_build_forward_expand(gf, out);
 
@@ -371,52 +336,31 @@ int main(int argc, char ** argv) {
     for (int32_t i = 0; i < n_tokens; i++) pos[i] = i;
     ggml_backend_tensor_set(inp_pos, pos.data(), 0, n_tokens * sizeof(int32_t));
 
-    // mask[j, i] is the bias added to the score of key j for query i: causal,
-    // and banded by the sliding window.
-    //
-    // Every layer of this model attends inside a 128-wide window
-    // (`set_swa_pattern(0)`, so every layer is SWA), and llama.cpp masks key p0
-    // for query p1 when `p1 - p0 >= n_swa` (llama_hparams::is_masked_swa,
-    // LLAMA_SWA_TYPE_STANDARD). Below 128 tokens the band never bites, which is
-    // why a plain causal mask was right until the sequence got long enough to
-    // make the compressed keys worth checking.
-    const int32_t n_swa = (int32_t) M.h.sliding_window;
-    std::vector<ggml_fp16_t> mask((size_t) n_tokens * n_tokens);
-    for (int32_t i = 0; i < n_tokens; i++) {
-        for (int32_t j = 0; j < n_tokens; j++) {
-            const bool keep = j <= i && (i - j) < n_swa;
-            mask[(size_t) i * n_tokens + j] = ggml_fp32_to_fp16(keep ? 0.0f : -INFINITY);
-        }
-    }
-    ggml_backend_tensor_set(kq_mask, mask.data(), 0, mask.size() * sizeof(ggml_fp16_t));
+    ggml_backend_tensor_set(kq_mask, raw_mask.data(), 0, raw_mask.size() * sizeof(ggml_fp16_t));
+    ggml_backend_tensor_set(lin.k_idxs, k_idxs.data(), 0, k_idxs.size() * sizeof(int64_t));
 
     {
         auto set = [](ggml_tensor * t, const void * d, size_t n) {
             if (t) ggml_backend_tensor_set(t, d, 0, n);
         };
-        auto upload = [&](const ds4_comp_inputs & d, const comp_plan & c, int64_t width) {
-            if (c.n_blocks == 0) {
-                return;
-            }
-            const std::vector<float> zeros((size_t) width * c.n_base, 0.0f);
-            set(d.base_kv,    zeros.data(), zeros.size() * sizeof(float));
-            set(d.base_score, zeros.data(), zeros.size() * sizeof(float));
-            set(d.read_idxs, c.read_idxs.data(), c.read_idxs.size() * sizeof(int32_t));
-            set(d.comp_pos,  c.comp_pos.data(),  c.comp_pos.size()  * sizeof(int32_t));
-            set(d.ape_pos,   c.ape_pos.data(),   c.ape_pos.size()   * sizeof(int32_t));
-            set(d.mask,      c.mask.data(),      c.mask.size()      * sizeof(ggml_fp16_t));
+        auto upload = [&](const ds4_comp_inputs & d, const ds4_comp_plan & pl) {
+            set(d.read_idxs,   pl.read_idxs.data(),   pl.read_idxs.size()   * sizeof(int32_t));
+            set(d.comp_pos,    pl.write_pos.data(),   pl.write_pos.size()   * sizeof(int32_t));
+            set(d.ape_pos,     pl.ape_pos.data(),     pl.ape_pos.size()     * sizeof(int32_t));
+            set(d.write_idxs,  pl.write_idxs.data(),  pl.write_idxs.size()  * sizeof(int64_t));
+            set(d.persist_src, pl.persist_src.data(), pl.persist_src.size() * sizeof(int32_t));
+            set(d.persist_dst, pl.persist_dst.data(), pl.persist_dst.size() * sizeof(int64_t));
+            set(d.mask,        pl.mask.data(),        pl.mask.size()        * sizeof(ggml_fp16_t));
         };
-        upload(lin.csa, p_csa, 2 * M.h.d_key);
-        upload(lin.lid, p_csa, 2 * M.h.idx_key_len);
-        upload(lin.hca, p_hca, M.h.d_key);
+        upload(lin.csa, p_csa);
+        upload(lin.lid, p_csa);
+        upload(lin.hca, p_hca);
 
-        if (lin.rot) {
-            // Order 128, not d_key: the indexer's cache is the only one that
-            // rotates.
-            std::vector<float> had;
-            ds4_fill_hadamard(had, (int) M.h.idx_key_len);
-            set(lin.rot, had.data(), had.size() * sizeof(float));
-        }
+        // Order 128, not d_key: the indexer's cache is the only one that
+        // rotates.
+        std::vector<float> had;
+        ds4_fill_hadamard(had, (int) M.h.idx_key_len);
+        ggml_backend_tensor_set(lin.rot, had.data(), 0, had.size() * sizeof(float));
     }
 
     if (out_ids) {

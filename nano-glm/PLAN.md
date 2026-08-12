@@ -182,19 +182,28 @@ at 12 tokens. `out_ids` is part of the contract rather than an optimisation:
 llama.cpp asks for logits at the last position only, so its head is
 `[n_embd, 1]` however long the prompt.
 
-Eleven tensors are excluded and cannot be otherwise — key views and mask
-concatenations shaped by llama.cpp's cache padding, whose tails hold whatever
-the buffer held. Everything downstream of them is compared and exact. See
-`dump_inspect.py --exclude`.
+**The KV cache is real** (`models/deepseek4/cache.h`): raw sliding-window keys,
+both kinds of compressed keys, and the compressor rings that carry a
+half-finished block across a chunk boundary, with the index plans computed from
+(n_past, n_tokens). A single chunk from an empty cache stays bit-identical,
+which is what says the plumbing changed nothing.
+
+Sizing it the way llama.cpp does also retired the eleven-name exclusion list
+these notes used to carry: those tensors are views of a *padded* cache, and the
+padding is unmatchable only if you decline to pad the same way. Coverage went
+from 394 tensors to **416** over layers 0-5, with `node_` the only exclusion
+left — ggml numbers anonymous nodes per graph, so that one is unreachable in
+principle.
 
 **Next, in order:**
 
-- **A real KV cache.** `ds4-port` supplies the compressor state analytically
-  because the cache is empty and the whole prompt arrives at once. A running
-  engine needs the state carried across chunks and across decode steps: the
-  ring of `2*ratio` (or `ratio`) rows, the read/write index plans, and the
-  padded mask widths. This is the largest piece left and the one the harness
-  has been deliberately deferring.
+- **Multi-chunk and decode.** The cache exists and is verified for one chunk
+  from empty; what is untested is `n_past > 0` — a block whose tokens straddle
+  a chunk boundary, a ring row read back after being persisted, and a decode
+  step that folds nothing but attends over hundreds of compressed cells. The
+  plans in `cache.h` are written for it (`ds4_state_source_idx` already reaches
+  into the ring); the harness needs a chunk loop and `logit-kld`'s `dump` needs
+  a `-ub` so llama.cpp splits the same way.
 - **A golden set.** llama.cpp supports `LLM_ARCH_DEEPSEEK4`, so `gate.py
   llamacpp` can create one exactly as it did for glm-dsa. The verification
   methodology survives the second model unchanged, which was not guaranteed.

@@ -25,8 +25,9 @@ it is looking at:
 | `models/glm_dsa/moe_block.h` | its routed-expert graph, as a router half and an expert half plus the composition the trunk calls |
 | `models/glm_dsa/chat.h` | GLM-5.2's single-turn chat format, as token ids |
 | `models/deepseek4/model.h` | DeepSeek-V4-Flash hparams, tensor names, loader |
+| `models/deepseek4/cache.h` | its KV state: raw and compressed key caches, the compressor rings, and the per-chunk index plans. No ggml ops — plain bookkeeping over positions and cells |
 | `models/deepseek4/moe_block.h` | its routed-expert graph, same two halves, plus hash routing and an optional naming hook |
-| `models/deepseek4/graph.h` | its trunk graph — hyper-connections, MLA attention at all three compression ratios, the lightning indexer, the FFN half. Every layer; still no head, and it aborts past what has been checked |
+| `models/deepseek4/graph.h` | its trunk graph — hyper-connections, MLA attention at all three compression ratios, the lightning indexer, the FFN half, and the output head. Every layer, and it aborts past what has been checked |
 
 Include the model's `graph.h` first in any app: it reaches `moe_proto.h`, and
 winsock2.h has to precede the windows.h that `gguf_store.h` pulls in.
@@ -98,12 +99,13 @@ because that is all a pre-tokenizer is. Both `load_vocab` checks are hard
 aborts precisely so an unported combination cannot be mistaken for a working
 one.
 
-**On the cost estimate:** the old text guessed ~500 lines. Hparams, tensor
-names and the loader alone came to ~330 for deepseek4, and the trunk graph is
-the larger half and not yet written — hyper-connections replace the residual
-stream with four Sinkhorn-mixed streams, so it is not a matter of swapping an
-attention kernel. Expect the estimate to be right for a model in the same
-shape as one already ported, and low for one that is not.
+**On the cost estimate:** the old text guessed ~500 lines. The finished
+deepseek4 module is roughly 2000 — ~330 for hparams, tensor names and the
+loader, ~1400 for the trunk graph and head, ~270 for the KV state — against
+~900 for glm-dsa. The gap is not sloppiness, it is that the two models differ
+in more than a kernel: four Sinkhorn-mixed residual streams, three compression
+ratios, a lightning indexer, hash routing. Expect ~500 for a model shaped like
+one already ported, and 3-4x that for one that is not.
 
 **Copy, do not abstract.** Two `build_graph`s that share a few `ggml_mul_mat`
 calls are two functions; a `build_graph` behind an interface that both models
@@ -122,11 +124,16 @@ code path in the server, or moving the router back to the client and paying
 `n_expert_used` rows per request instead of one. Decide that before writing the
 graph, not after.
 
-**Attention shape.** `nano_state` hardcodes two caches with MLA and
-lightning-indexer geometry. A model with plain MHA/GQA, or without a sparse
-indexer, needs a different cache — that is the one piece of `lib/` outside the
-third tier that a second model is likely to disturb, and the honest fix is to
-move the cache description into the model module rather than to parameterise it.
+**Attention shape.** This section used to predict that the KV cache would be
+the one piece of `lib/` outside the third tier that a second model disturbs,
+and that the honest fix would be to move the cache description into the model
+module rather than parameterise it. Both halves held. deepseek4 needed four
+kinds of state where glm-dsa needs two, with rings that carry a half-finished
+compressed block across a chunk boundary; none of it generalises, and it lives
+in `models/deepseek4/cache.h` with no attempt to share. The seam that did
+survive is smaller and more useful than a shared cache would have been: the
+*plans* are plain arrays of positions and cell indices, so the file has no ggml
+in it and can be read as bookkeeping.
 
 ### Also per-model, outside the code
 
