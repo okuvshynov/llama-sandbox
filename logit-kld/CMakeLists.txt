@@ -20,6 +20,24 @@ set(LLAMA_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
 # offload at batch sizes >= 32 silently produces NaN logits with ngl=0.
 set(GGML_METAL OFF CACHE BOOL "" FORCE)
 
+# Reference *kernels*, not the fastest ones. GGML_CPU_REPACK (ON by default)
+# rewrites quantized weights into a blocked layout at load and runs a different
+# GEMM against them, which is a different summation order and therefore
+# different numbers. nano-glm mmaps its weights as they sit in the file — a
+# 583 GiB model cannot afford a converted second copy, and neither can the
+# remote-expert design — so it can never match a repacked reference.
+#
+# This did not surface until DeepSeek-V4-Flash because the repack table is
+# per-type *and* per-ISA: GLM-5.2's Q6_K only repacks under NEON, so on this
+# x86 machine nothing was ever converted and the golden set was unaffected.
+# Deepseek4's MXFP4 experts repack under AVX2, which is present here — 140 GiB
+# of `mxfp4_8x8`, and a ~1e-6 disagreement in every routed-expert matmul.
+#
+# Consequence worth stating: this makes the reference slower, so a *performance*
+# comparison against llama.cpp must be built without this line. Only the
+# correctness comparison wants it (nano-glm/PLAN.md step 14).
+set(GGML_CPU_REPACK OFF CACHE BOOL "" FORCE)
+
 add_subdirectory(${LLAMA_CPP_DIR} ${CMAKE_CURRENT_BINARY_DIR}/llama.cpp)
 
 find_package(Threads REQUIRED)

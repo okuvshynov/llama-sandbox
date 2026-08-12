@@ -25,6 +25,8 @@ it is looking at:
 | `models/glm_dsa/moe_block.h` | its routed-expert graph, as a router half and an expert half plus the composition the trunk calls |
 | `models/glm_dsa/chat.h` | GLM-5.2's single-turn chat format, as token ids |
 | `models/deepseek4/model.h` | DeepSeek-V4-Flash hparams, tensor names, loader |
+| `models/deepseek4/moe_block.h` | its routed-expert graph, same two halves, plus hash routing and an optional naming hook |
+| `models/deepseek4/graph.h` | its trunk graph — hyper-connections, MLA attention, the FFN half. Under construction; aborts past the stage that has been checked |
 
 Include the model's `graph.h` first in any app: it reaches `moe_proto.h`, and
 winsock2.h has to precede the windows.h that `gguf_store.h` pulls in.
@@ -68,6 +70,14 @@ So the family tier was wishful: what is genuinely shared between two MoE models
 is the *shape* — `n_expert`, `n_expert_used`, `n_ff_exp`, the scale and the
 norm flag — and not a line of arithmetic. That is now `moe_shape.h`, which is
 small and honest, and each architecture writes its own expert graph.
+
+The **seam** between the halves, on the other hand, held exactly. `moe-server`'s
+device machinery — host-side routing, per-device compaction, the combine — is
+written against `{ids, weights}` in and activations out, and deepseek4 dropped
+into it without the server learning anything about sqrt-softplus, clamped
+SwiGLU or hash routing. Two architectures whose arithmetic shares nothing still
+share their *decomposition*, which is the tier boundary that turned out to be
+real.
 
 **One latent bug surfaced**, which is the usual dividend of a second case:
 `load_shard` built a CPU buffer for every shard including metadata-only ones,

@@ -164,7 +164,7 @@ int main(int argc, char ** argv) {
     // llama.cpp only builds a Hadamard rotation for a quantized cache. One
     // comes back when the lightning-indexer layers do, at order 128.
     ggml_tensor * out = ds4_build_graph(ctx, gf, M, inp_tokens, inp_pos, kq_mask,
-                                        n_tokens, DS4_STAGE_ATTN);
+                                        n_tokens, DS4_STAGE_LAYER);
     ggml_build_forward_expand(gf, out);
 
     ggml_gallocr_t galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));

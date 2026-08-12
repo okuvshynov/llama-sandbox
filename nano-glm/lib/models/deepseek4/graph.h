@@ -24,7 +24,14 @@
 //   kv_norm, kv_pe, kv       bit-identical
 //   attn_raw, attn_derope, attn_wo_a, attn_out   bit-identical
 //   hc_attn_post   bit-identical
-//   ffn half       NOT YET
+//   hc_ffn_pre, ffn_norm                         bit-identical
+//   ffn_moe_* (router, hash routing, experts)    bit-identical
+//   ffn_gate/up/swiglu, ffn_shexp, ffn_out       bit-identical
+//   l_last         bit-identical
+//
+// Layer 0 is therefore complete: 53/53 tensors at 0.0000e+00. Layer 1 shares
+// this shape (compress_ratio 0, hash-routed); the compressor and indexer layers
+// do not.
 //
 // The attention core cost one wrong assumption, worth recording because the
 // shape of the mistake generalises. It was off by 4.0e-03 — ~F16 epsilon
@@ -42,6 +49,15 @@
 // (logit-kld) writes every node in graph order, named or not, and the node
 // feeding flash attention turned out to be "q-0 (view) (permuted)" — a view of
 // `q` with no matmul in between.
+//
+// The FFN half cost one more, and it was not in the graph at all: llama.cpp
+// **repacks** MXFP4 expert weights into `mxfp4_8x8` at load and runs a
+// different GEMM against them, which put ~1e-6 on every routed-expert matmul
+// while the router, the shared expert and every plain matmul stayed exact.
+// nano-glm mmaps weights as they sit in the file and cannot follow, so the
+// reference is now built with `GGML_CPU_REPACK OFF` (logit-kld/CMakeLists.txt,
+// which explains why this never surfaced with GLM-5.2). The tell was the
+// *pattern*: exactly the `mul_mat_id` tensors wrong and nothing else.
 //
 // Shapes for this checkpoint, since they make the code readable:
 //   n_embd 4096, hc 4, hc_dim 16384, hc_mix_dim (2+hc)*hc = 24
@@ -226,9 +242,12 @@ static ggml_tensor * ds4_hc_pre(ggml_context * ctx, ggml_cgraph * gf, const ds4_
 // Write a layer's output back into the hc streams: each destination stream is
 // the layer output scaled by its `post` weight, plus a comb-weighted mixture of
 // the incoming streams.
+// The name is the caller's because llama.cpp's differs by half: the attention
+// half's result is "hc_attn_post", the FFN half's is "l_last".
 static ggml_tensor * ds4_hc_post(ggml_context * ctx, const ds4_hparams & h,
                                  ggml_tensor * x, ggml_tensor * residual,
-                                 ggml_tensor * post, ggml_tensor * comb, int il) {
+                                 ggml_tensor * post, ggml_tensor * comb,
+                                 const char * name, int il) {
     const int64_t hc = h.hc_mult;
     const int64_t nt = x->ne[1];
 
@@ -247,7 +266,7 @@ static ggml_tensor * ds4_hc_post(ggml_context * ctx, const ds4_hparams & h,
         cur = ggml_reshape_3d(ctx, cur, h.n_embd, 1, nt);
         out = out ? ggml_concat(ctx, out, cur, 1) : cur;
     }
-    ds4_name(out, il < 0 ? "hc_post_out" : "hc_attn_post", il);
+    ds4_name(out, name, il);
     return out;
 }
 
@@ -496,11 +515,96 @@ static ggml_tensor * ds4_build_attention_raw(ggml_context * ctx, ggml_cgraph * g
 }
 
 // ---------------------------------------------------------------------------
+// The shared expert: an ordinary SwiGLU FFN over the same post-`ffn_norm`
+// activation the routed experts see, summed with them. Every layer has one.
+//
+// It stays on the trunk rather than going to the backend with the routed
+// experts — it is one dense pair of [4096, 2048] matmuls, not a lookup, so
+// there is nothing to distribute.
+//
+// Its clamp limit is `swiglu_clamp_shexp`, a *different* array from the routed
+// experts' `swiglu_clamp_exp` (they happen to be equal in this checkpoint, and
+// llama.cpp falls back to the routed one when the key is absent, so an
+// accidental swap would go unnoticed here and not in the next checkpoint).
+// The clamp order is deepseek4's, as in the routed block: `up` symmetric,
+// `gate` one-sided and *before* the SiLU.
+static ggml_tensor * ds4_build_shared_expert(ggml_context * ctx, const ds4_layer & L,
+                                             ggml_tensor * cur, float limit, uint32_t il) {
+    ggml_tensor * up = ggml_mul_mat(ctx, L.ffn_up_shexp, cur);
+    ds4_name(up, "ffn_up", il);
+
+    ggml_tensor * gate = ggml_mul_mat(ctx, L.ffn_gate_shexp, cur);
+    ds4_name(gate, "ffn_gate", il);
+
+    if (limit > 1e-6f) {
+        up = ggml_clamp(ctx, up, -limit, limit);
+        ds4_name(up, "ffn_up_clamped", il);
+        gate = ggml_clamp(ctx, gate, -INFINITY, limit);
+        ds4_name(gate, "ffn_gate_clamped", il);
+    }
+
+    ggml_tensor * act = ggml_swiglu_split(ctx, gate, up);
+    ds4_name(act, limit > 1e-6f ? "ffn_swiglu_limited" : "ffn_swiglu", il);
+
+    // llama.cpp leaves the down projection unnamed and the caller names the
+    // result "ffn_shexp".
+    return ggml_mul_mat(ctx, L.ffn_down_shexp, act);
+}
+
+// ---------------------------------------------------------------------------
+// The FFN half of a layer: its own hyper-connection mixture, a norm, the routed
+// experts plus the shared one, and the write back into the streams.
+static ggml_tensor * ds4_build_ffn_half(ggml_context * ctx, ggml_cgraph * gf,
+                                        const ds4_hparams & h, const ds4_layer & L,
+                                        ggml_tensor * inpL, ggml_tensor * inp_tokens,
+                                        int32_t n_tokens, uint32_t il) {
+    ggml_tensor * post = nullptr;
+    ggml_tensor * comb = nullptr;
+
+    ggml_tensor * residual = inpL;
+    ggml_tensor * cur = ds4_hc_pre(ctx, gf, h, inpL, L.hc_ffn_fn, L.hc_ffn_scale,
+                                   L.hc_ffn_base, &post, &comb, il);
+    ds4_name(cur, "hc_ffn_pre", il);
+
+    ggml_build_forward_expand(gf, residual);
+    ggml_build_forward_expand(gf, post);
+    ggml_build_forward_expand(gf, comb);
+
+    cur = ds4_norm(ctx, h, cur, L.ffn_norm, "ffn_norm", il);
+
+    // Hash routing: the first `n_hash_layer` layers do not rank experts, they
+    // look them up by token id. `ffn_gate_tid2eid` is [n_expert_used, n_vocab]
+    // of i32, so one `get_rows` with the prompt's ids *is* the whole routing
+    // decision — and it is why these layers cannot go to the backend, which is
+    // sent activations and never sees a token id.
+    ggml_tensor * selected = nullptr;
+    if (h.is_hash_routed(il)) {
+        selected = ggml_get_rows(ctx, L.ffn_tid2eid, inp_tokens);
+    }
+
+    ggml_tensor * moe_out = build_ds4_moe_block(ctx, gf, h, il, L, cur, n_tokens,
+                                                selected, ds4_name);
+    // `snapshot` rather than `name`: the block's aggregate is a chain of adds
+    // for n_expert_used > 1, but the bare view of the single expert when it is
+    // 1 — and naming a view is not enough to keep it readable (ds4_snapshot).
+    ds4_snapshot(ctx, gf, moe_out, "ffn_moe_out", il);
+
+    ggml_tensor * shexp = ds4_build_shared_expert(ctx, L, cur, h.swiglu_clamp_shexp[il], il);
+    ds4_name(shexp, "ffn_shexp", il);
+
+    cur = ggml_add(ctx, moe_out, shexp);
+    ds4_name(cur, "ffn_out", il);
+
+    return ds4_hc_post(ctx, h, cur, residual, post, comb, "l_last", il);
+}
+
+// ---------------------------------------------------------------------------
 // How far the port goes. Everything up to this point has been checked against
 // llama.cpp tensor by tensor; past it, nothing has.
 enum ds4_stage {
     DS4_STAGE_HC_PRE = 0,   // through hc_attn_pre / attn_norm for layer 0
     DS4_STAGE_ATTN   = 1,   // ... through attn_out / hc_attn_post for layer 0
+    DS4_STAGE_LAYER  = 2,   // ... through ffn_out / l_last: one whole layer
 };
 
 // Build the trunk as far as `stage`. `tokens` is the prompt's ids.
@@ -539,9 +643,16 @@ static ggml_tensor * ds4_build_graph(ggml_context * ctx, ggml_cgraph * gf, const
 
     cur = ds4_build_attention_raw(ctx, gf, h, L, cur, inp_pos, kq_mask, n_tokens, il);
 
-    inpL = ds4_hc_post(ctx, h, cur, inpL, post, comb, il);
+    inpL = ds4_hc_post(ctx, h, cur, inpL, post, comb, "hc_attn_post", il);
 
     if (stage == DS4_STAGE_ATTN) {
+        ggml_build_forward_expand(gf, inpL);
+        return inpL;
+    }
+
+    inpL = ds4_build_ffn_half(ctx, gf, h, L, inpL, inp_tokens, n_tokens, il);
+
+    if (stage == DS4_STAGE_LAYER) {
         ggml_build_forward_expand(gf, inpL);
         return inpL;
     }

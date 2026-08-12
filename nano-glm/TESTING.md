@@ -335,6 +335,14 @@ configuration before the code. Thread count, batch shape and toolchain all move
 logits; `CLAUDE.md` has the measurements. The gate refuses precisely to stop
 this from being a debugging session.
 
+**Only the expert matmuls differ, by ~1e-6** — llama.cpp repacked the weights.
+`GGML_CPU_REPACK` is ON by default and rewrites some quant types into a blocked
+layout with its own GEMM; nano-glm mmaps weights as they sit in the file and
+cannot match one. Whether it engages depends on the quant type *and* the ISA,
+so a model that has always agreed proves nothing about the next one. Check with
+`grep "repack: repack tensor"` on the reference log; `logit-kld/CMakeLists.txt`
+forces it off and says why.
+
 ## Current status
 
 Golden set: 6 prompts, 761 positions, every one verified at KL == 0 against
