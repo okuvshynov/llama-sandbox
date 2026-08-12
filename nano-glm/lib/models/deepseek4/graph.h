@@ -29,10 +29,21 @@
 //   ffn_gate/up/swiglu, ffn_shexp, ffn_out       bit-identical
 //   l_last         bit-identical
 //
-// Layers 0 **and 1** are therefore complete: 106/106 tensors at 0.0000e+00.
-// `compress_ratios` is [0, 0, 4, 128, 4, 128, ...], so those two are every
-// layer of this shape; layer 2 brings the lightning indexer and layer 3 the
-// 128-wide KV compressor, and `ds4_build_graph` aborts on both.
+// Layers 0 **and 1** are therefore complete, and so are layer 2's two KV
+// compressors: 134/134 tensors at 0.0000e+00 over a 12-token prompt.
+// `compress_ratios` is [0, 0, 4, 128, 4, 128, ...], so layers 0-1 are every
+// layer of the simple shape; layer 2 adds a compressor and the lightning
+// indexer, layer 3 a compressor alone, and `ds4_build_graph` still aborts on
+// everything past what has been checked.
+//
+// Layer 2, remaining: the indexer itself (lid_q/_pe/_rot, lid_weights,
+// lid_score_masked, lid_top_k, csa_top_k_mask) and the attention that
+// concatenates the raw and compressed key sequences.
+//
+// Twelve tokens rather than five, deliberately. Five make a single compressed
+// block, and a single block cannot distinguish the block *index* from the
+// block's *first token position* — both are 0 — which is exactly the parameter
+// that was wrong here. Three blocks tell them apart.
 //
 // Layer 1 needed no new arithmetic — turning the single layer into a loop was
 // the whole change — but it is not a free result: it is the first layer whose
@@ -356,6 +367,250 @@ static ggml_tensor * ds4_hadamard(ggml_context * ctx, ggml_tensor * cur, ggml_te
 }
 
 // ---------------------------------------------------------------------------
+// Rope, which this model runs in two regimes.
+//
+// A layer *with* a compressor ropes at the compressor's own base (160000) with
+// the checkpoint's yarn parameters. A layer without one collapses every yarn
+// knob and ropes at the training base (10000, scale 1). llama.cpp calls the
+// distinction `use_compress_rope` and drives it from `compress_ratios[il]`, so
+// it is a property of the layer, not of the tensor being roped — the compressed
+// block, q_pe and kv_pe of a compressor layer all use the same set.
+struct ds4_rope {
+    float   freq_base;
+    float   freq_scale;
+    float   ext_factor;
+    float   attn_factor;
+    float   beta_fast;
+    float   beta_slow;
+    int32_t n_ctx_orig;
+    int     type;
+};
+
+// llama.cpp's `dsv4_rope_attn_factor`. Note it does *not* use the context's
+// `yarn_attn_factor`, which llama.cpp separately resolves to 1.0 here; this
+// model computes its own and it is 1/(1 + 0.1*ln 16) = 0.78293.
+static float ds4_rope_attn_factor(float freq_scale, float ext_factor) {
+    if (ext_factor == 0.0f) {
+        return 1.0f;
+    }
+    return 1.0f / (1.0f + 0.1f * logf(1.0f / freq_scale));
+}
+
+static ds4_rope ds4_rope_of(const ds4_hparams & h, uint32_t il) {
+    ds4_rope r = {};
+    r.type = 0;   // LLAMA_ROPE_TYPE_NORM, as glm-dsa
+    if (h.has_compressor(il)) {
+        r.freq_base  = h.rope_compress_freq_base;
+        r.freq_scale = 1.0f / h.rope_yarn_factor;
+        // llama.cpp leaves cparams.yarn_ext_factor unset, which it then
+        // resolves to 1.0 for a yarn checkpoint (llama-context.cpp:190).
+        r.ext_factor = 1.0f;
+        r.beta_fast  = h.rope_yarn_beta_fast;
+        r.beta_slow  = h.rope_yarn_beta_slow;
+        r.n_ctx_orig = (int32_t) h.rope_yarn_orig_ctx;
+    } else {
+        r.freq_base  = h.rope_freq_base;
+        r.freq_scale = 1.0f;
+        r.ext_factor = 0.0f;
+        r.beta_fast  = 0.0f;
+        r.beta_slow  = 0.0f;
+        r.n_ctx_orig = 0;
+    }
+    r.attn_factor = ds4_rope_attn_factor(r.freq_scale, r.ext_factor);
+    return r;
+}
+
+static ggml_tensor * ds4_rope_ext(ggml_context * ctx, ggml_tensor * t, ggml_tensor * pos,
+                                  int64_t d_rope, const ds4_rope & r) {
+    return ggml_rope_ext(ctx, t, pos, nullptr, (int) d_rope, r.type, r.n_ctx_orig,
+                         r.freq_base, r.freq_scale, r.ext_factor, r.attn_factor,
+                         r.beta_fast, r.beta_slow);
+}
+
+// ---------------------------------------------------------------------------
+// The KV compressor, shared by the attention path and the lightning indexer.
+//
+// Every `ratio` tokens are folded into one key. The fold is a softmax-weighted
+// average, and the weights come from a second projection of the same
+// activation (`*_compressor_gate`) plus a learned per-slot bias
+// (`*_compressor_ape`) — so the model chooses which of the tokens in a block
+// the compressed key should look like.
+//
+// "Overlap" is the part worth reading twice: each block attends over `2*ratio`
+// slots, the previous block's tokens *and* its own. The projection is
+// `2*n_embd_head` wide and the two halves are used for the two roles — the
+// first half for a token acting as somebody else's history, the second for a
+// token in its own block. That is why `read_idxs` gathers `2*ratio*n_blocks`
+// rows and the two views take opposite halves.
+
+// llama.cpp's `dsv4_append_zero_row`: one extra row so an index can mean
+// "nothing here". Zero for values, -inf for scores, which the softmax then
+// drops.
+static ggml_tensor * ds4_append_zero_row(ggml_context * ctx, ggml_tensor * t, bool neg_inf) {
+    ggml_tensor * row = ggml_view_1d(ctx, t, t->ne[0], 0);
+    row = neg_inf ? ggml_scale_bias(ctx, row, 0.0f, -INFINITY) : ggml_scale(ctx, row, 0.0f);
+    row = ggml_reshape_2d(ctx, row, t->ne[0], 1);
+    return ggml_concat(ctx, t, row, 1);
+}
+
+// What the harness has to supply for one compressor. In llama.cpp these come
+// from `llm_graph_input_dsv4`, computed on the host from the ubatch and the
+// cache; here they are graph inputs so the cache can be written later without
+// touching the graph.
+struct ds4_comp_inputs {
+    ggml_tensor * base_kv    = nullptr;  // f32 [2*n_embd_head, n_base] carried state
+    ggml_tensor * base_score = nullptr;  // f32 [2*n_embd_head, n_base]
+    ggml_tensor * read_idxs  = nullptr;  // i32 [2*ratio*n_blocks]
+    ggml_tensor * comp_pos   = nullptr;  // i32 [n_blocks] rope position per block
+};
+
+static ggml_tensor * ds4_build_compressed_kv(ggml_context * ctx, ggml_cgraph * gf,
+                                             const ds4_hparams & h, const ds4_comp_inputs & in,
+                                             ggml_tensor * cur_kv, ggml_tensor * cur_score,
+                                             ggml_tensor * norm_w, int64_t n_embd_head,
+                                             const char * name, uint32_t il) {
+    const int64_t ratio    = 4;   // DSV4_CSA_RATIO; the 128-ratio layers take another path
+    const int64_t d_rope   = h.rope_dim;
+    const int64_t d_nope   = n_embd_head - d_rope;
+    const int64_t n_blocks = in.comp_pos->ne[0];
+    const int64_t n_read   = ratio * n_blocks;
+
+    ggml_tensor * kv_state    = ggml_concat(ctx, in.base_kv,    cur_kv,    1);
+    ggml_tensor * score_state = ggml_concat(ctx, in.base_score, cur_score, 1);
+
+    kv_state    = ds4_append_zero_row(ctx, kv_state,    false);
+    score_state = ds4_append_zero_row(ctx, score_state, true);
+
+    ggml_tensor * kv_rows    = ggml_get_rows(ctx, kv_state,    in.read_idxs);
+    ggml_tensor * score_rows = ggml_get_rows(ctx, score_state, in.read_idxs);
+
+    // First half of the first n_read gathered rows...
+    ggml_tensor * kv_prev = ggml_cont(ctx,
+        ggml_view_2d(ctx, kv_rows, n_embd_head, n_read, kv_rows->nb[1], 0));
+    kv_prev = ggml_reshape_3d(ctx, kv_prev, n_embd_head, ratio, n_blocks);
+    ds4_snapshot(ctx, gf, kv_prev, name, il);
+
+    ggml_tensor * score_prev = ggml_cont(ctx,
+        ggml_view_2d(ctx, score_rows, n_embd_head, n_read, score_rows->nb[1], 0));
+    score_prev = ggml_reshape_3d(ctx, score_prev, n_embd_head, ratio, n_blocks);
+    ds4_snapshot(ctx, gf, score_prev, name, il);
+
+    // ...second half of the last n_read. The extra row_size offset is what
+    // selects the other half of the projection, not a different token.
+    ggml_tensor * kv_cur = ggml_cont(ctx,
+        ggml_view_2d(ctx, kv_rows, n_embd_head, n_read, kv_rows->nb[1],
+                     n_read * kv_rows->nb[1] + ggml_row_size(kv_rows->type, n_embd_head)));
+    kv_cur = ggml_reshape_3d(ctx, kv_cur, n_embd_head, ratio, n_blocks);
+
+    ggml_tensor * score_cur = ggml_cont(ctx,
+        ggml_view_2d(ctx, score_rows, n_embd_head, n_read, score_rows->nb[1],
+                     n_read * score_rows->nb[1] + ggml_row_size(score_rows->type, n_embd_head)));
+    score_cur = ggml_reshape_3d(ctx, score_cur, n_embd_head, ratio, n_blocks);
+
+    ggml_tensor * values = ggml_concat(ctx, kv_prev,    kv_cur,    1);
+    ggml_tensor * scores = ggml_concat(ctx, score_prev, score_cur, 1);
+
+    values = ggml_cont(ctx, ggml_permute(ctx, values, 1, 0, 2, 3));
+    scores = ggml_cont(ctx, ggml_permute(ctx, scores, 1, 0, 2, 3));
+
+    ggml_tensor * weights = ggml_soft_max(ctx, scores);
+    ggml_tensor * comp = ggml_mul(ctx, values, weights);
+    comp = ggml_sum_rows(ctx, comp);
+    comp = ggml_cont(ctx, ggml_permute(ctx, comp, 1, 0, 2, 3));
+    ds4_name(comp, name, il);
+
+    comp = ds4_norm(ctx, h, comp, norm_w, name, il);
+
+    ggml_tensor * comp_nope = ggml_view_3d(ctx, comp, d_nope, 1, n_blocks,
+                                           ggml_row_size(comp->type, n_embd_head),
+                                           ggml_row_size(comp->type, n_embd_head), 0);
+    ggml_tensor * comp_pe = ggml_view_3d(ctx, comp, d_rope, 1, n_blocks,
+                                         ggml_row_size(comp->type, n_embd_head),
+                                         ggml_row_size(comp->type, n_embd_head),
+                                         ggml_row_size(comp->type, d_nope));
+    const ds4_rope rope = ds4_rope_of(h, il);
+    comp_pe = ds4_rope_ext(ctx, comp_pe, in.comp_pos, d_rope, rope);
+    ds4_name(comp_pe, name, il);
+
+    comp = ggml_concat(ctx, comp_nope, comp_pe, 0);
+    ds4_name(comp, name, il);
+
+    return comp;
+}
+
+// Everything a compressor layer needs from outside the graph. In llama.cpp
+// these are `llm_graph_input_dsv4`'s fields, filled on the host from the ubatch
+// and the cache; keeping them as inputs here means a real cache can be written
+// later without the graph changing.
+struct ds4_layer_inputs {
+    ds4_comp_inputs csa;                 // the attention's compressor
+    ds4_comp_inputs lid;                 // the lightning indexer's
+    ggml_tensor *   ape_pos = nullptr;   // i32 [n_tokens], slot within the block
+    ggml_tensor *   rot     = nullptr;   // f32 [idx_key_len, idx_key_len] Hadamard
+};
+
+struct ds4_compressed {
+    ggml_tensor * csa_k = nullptr;   // [d_key,       1, n_blocks]
+    ggml_tensor * lid_k = nullptr;   // [idx_key_len, 1, n_blocks], rotated
+};
+
+// The two compressors a ratio-4 layer runs: one producing the attention's
+// compressed keys, one the indexer's. Identical shape, different widths, and
+// only the indexer's output is rotated.
+static ds4_compressed ds4_build_compressors(ggml_context * ctx, ggml_cgraph * gf,
+                                            const ds4_hparams & h, const ds4_layer & L,
+                                            const ds4_layer_inputs & in,
+                                            ggml_tensor * cur, uint32_t il) {
+    ds4_compressed out;
+
+    // ---- the attention's compressor ----
+    ggml_tensor * csa_kv = ggml_mul_mat(ctx, L.cmp_kv, cur);
+    ds4_name(csa_kv, "csa_state_kv", il);
+
+    ggml_tensor * csa_score = ggml_mul_mat(ctx, L.cmp_gate, cur);
+    ds4_name(csa_score, "csa_state_score", il);
+
+    // The learned per-slot bias: which position within its block a token is
+    // sitting at. `cmp_ape` is [2*d_key, ratio], so this is a gather, not a
+    // matmul.
+    csa_score = ggml_add(ctx, csa_score, ggml_get_rows(ctx, L.cmp_ape, in.ape_pos));
+    ds4_name(csa_score, "csa_state_score_ape", il);
+
+    out.csa_k = ds4_build_compressed_kv(ctx, gf, h, in.csa, csa_kv, csa_score,
+                                        L.cmp_norm, h.d_key, "csa_state_compress", il);
+    // Finish this compressor before starting the next. llama.cpp expands its
+    // cache write here for the same reason, and without it the indexer's chain
+    // lands in front of this one's tail — both layers emit a tensor called
+    // "norm", and the comparison pairs repeated names by position.
+    ggml_build_forward_expand(gf, out.csa_k);
+
+    // ---- the indexer's compressor: same shape, 128 wide, and rotated ----
+    ggml_tensor * lid_kv = ggml_mul_mat(ctx, L.idx_cmp_kv, cur);
+    ds4_name(lid_kv, "lid_state_kv", il);
+
+    ggml_tensor * lid_score = ggml_mul_mat(ctx, L.idx_cmp_gate, cur);
+    ds4_name(lid_score, "lid_state_score", il);
+
+    lid_score = ggml_add(ctx, lid_score, ggml_get_rows(ctx, L.idx_cmp_ape, in.ape_pos));
+    ds4_name(lid_score, "lid_state_score_ape", il);
+
+    ggml_tensor * lid_k = ds4_build_compressed_kv(ctx, gf, h, in.lid, lid_kv, lid_score,
+                                                  L.idx_cmp_norm, h.idx_key_len,
+                                                  "lid_state_compress", il);
+
+    // The one rotation this model really applies. `attn_rot_k` needs a
+    // quantized cache, and the indexer's is the only one that qualifies — the
+    // reference log reads `attn_rot_k = 1, n_embd_head_k_all = 128` for it and
+    // 0 for all three 512-wide caches. Getting this backwards cost a day; see
+    // the header.
+    lid_k = ds4_hadamard(ctx, lid_k, in.rot);
+    ds4_snapshot(ctx, gf, lid_k, "lid_state_compress_rot", il);
+    out.lid_k = lid_k;
+
+    return out;
+}
+
+// ---------------------------------------------------------------------------
 // Attention, layer-0 shape only: `attn_raw`, i.e. no KV compressor and no
 // lightning indexer. That is the path a layer with `compress_ratio == 0` takes,
 // which is layers 0 and 1.
@@ -376,16 +631,9 @@ static ggml_tensor * ds4_build_attention_raw(ggml_context * ctx, ggml_cgraph * g
     const int64_t n_grp  = h.out_group_count;          // 8
     const int64_t grp_dim = (n_head / n_grp) * d_head; // 8*512 = 4096
 
-    // Layer 0 has no compressor, so rope runs unscaled: llama.cpp's
-    // `use_compress_rope` is false and every yarn parameter collapses.
-    const float   freq_base   = h.rope_freq_base;
-    const float   freq_scale  = 1.0f;
-    const float   ext_factor  = 0.0f;
-    const float   attn_factor = 1.0f;   // dsv4_rope_attn_factor(_, 0) == 1
-    const float   beta_fast   = 0.0f;
-    const float   beta_slow   = 0.0f;
-    const int32_t n_ctx_orig  = 0;
-    const int     rope_type   = 0;      // LLAMA_ROPE_TYPE_NORM, as glm-dsa
+    // A layer without a compressor ropes unscaled — `ds4_rope_of` collapses
+    // every yarn knob for it.
+    const ds4_rope rope = ds4_rope_of(h, il);
 
     // ---- q: a LoRA, a weighted norm, an expansion, then a *plain* norm ----
     ggml_tensor * qr = ggml_mul_mat(ctx, L.attn_q_a, cur);
@@ -405,8 +653,7 @@ static ggml_tensor * ds4_build_attention_raw(ggml_context * ctx, ggml_cgraph * g
                                       ggml_row_size(q->type, d_head),
                                       ggml_row_size(q->type, d_head) * n_head,
                                       ggml_row_size(q->type, d_nope));
-    q_pe = ggml_rope_ext(ctx, q_pe, inp_pos, nullptr, d_rope, rope_type, n_ctx_orig,
-                         freq_base, freq_scale, ext_factor, attn_factor, beta_fast, beta_slow);
+    q_pe = ds4_rope_ext(ctx, q_pe, inp_pos, d_rope, rope);
     ds4_name(q_pe, "q_pe", il);
     q = ggml_concat(ctx, q_nope, q_pe, 0);
     ds4_name(q, "q", il);
@@ -431,8 +678,7 @@ static ggml_tensor * ds4_build_attention_raw(ggml_context * ctx, ggml_cgraph * g
                                        ggml_row_size(kv->type, d_head),
                                        ggml_row_size(kv->type, d_head),
                                        ggml_row_size(kv->type, d_nope));
-    kv_pe = ggml_rope_ext(ctx, kv_pe, inp_pos, nullptr, d_rope, rope_type, n_ctx_orig,
-                          freq_base, freq_scale, ext_factor, attn_factor, beta_fast, beta_slow);
+    kv_pe = ds4_rope_ext(ctx, kv_pe, inp_pos, d_rope, rope);
     ds4_name(kv_pe, "kv_pe", il);
     kv = ggml_concat(ctx, kv_nope, kv_pe, 0);
     ds4_name(kv, "kv", il);
@@ -498,8 +744,9 @@ static ggml_tensor * ds4_build_attention_raw(ggml_context * ctx, ggml_cgraph * g
                                         ggml_row_size(out->type, d_head),
                                         ggml_row_size(out->type, d_head) * n_head,
                                         ggml_row_size(out->type, d_nope));
-    out_pe = ggml_rope_ext_back(ctx, out_pe, inp_pos, nullptr, d_rope, rope_type, n_ctx_orig,
-                                freq_base, freq_scale, ext_factor, attn_factor, beta_fast, beta_slow);
+    out_pe = ggml_rope_ext_back(ctx, out_pe, inp_pos, nullptr, (int) d_rope, rope.type,
+                                rope.n_ctx_orig, rope.freq_base, rope.freq_scale,
+                                rope.ext_factor, rope.attn_factor, rope.beta_fast, rope.beta_slow);
     out = ggml_concat(ctx, out_nope, out_pe, 0);
     ds4_name(out, "attn_derope", il);
 
@@ -612,10 +859,21 @@ static ggml_tensor * ds4_build_ffn_half(ggml_context * ctx, ggml_cgraph * gf,
 // it is built whole. That is what lets a comparison bisect: when layer N's
 // attention is suspect, build N+1 layers and stop at DS4_STAGE_ATTN.
 enum ds4_stage {
-    DS4_STAGE_HC_PRE = 0,   // through hc_attn_pre / attn_norm
-    DS4_STAGE_ATTN   = 1,   // ... through attn_out / hc_attn_post
-    DS4_STAGE_LAYER  = 2,   // ... through ffn_out / l_last: the whole layer
+    DS4_STAGE_HC_PRE   = 0,   // through hc_attn_pre / attn_norm
+    DS4_STAGE_COMPRESS = 1,   // ... through the two compressors (ratio-4 layers)
+    DS4_STAGE_ATTN     = 2,   // ... through attn_out / hc_attn_post
+    DS4_STAGE_LAYER    = 3,   // ... through ffn_out / l_last: the whole layer
 };
+
+static const char * ds4_stage_name(ds4_stage s) {
+    switch (s) {
+        case DS4_STAGE_HC_PRE:   return "hc_pre";
+        case DS4_STAGE_COMPRESS: return "compress";
+        case DS4_STAGE_ATTN:     return "attn";
+        case DS4_STAGE_LAYER:    return "layer";
+    }
+    return "?";
+}
 
 // How many leading layers this file can build, read off the checkpoint rather
 // than hard-coded — `compress_ratios` is [0, 0, 4, 128, 4, 128, ...], so the
@@ -635,7 +893,7 @@ static uint32_t ds4_ported_layers(const ds4_hparams & h) {
 // output so it survives to be read back and compared.
 static ggml_tensor * ds4_build_graph(ggml_context * ctx, ggml_cgraph * gf, const ds4_model & M,
                                      ggml_tensor * inp_tokens, ggml_tensor * inp_pos,
-                                     ggml_tensor * kq_mask,
+                                     ggml_tensor * kq_mask, const ds4_layer_inputs & in,
                                      int32_t n_tokens, ds4_stage stage, uint32_t n_layers) {
     const ds4_hparams & h = M.h;
 
@@ -652,15 +910,6 @@ static ggml_tensor * ds4_build_graph(ggml_context * ctx, ggml_cgraph * gf, const
     ds4_name(inpL, "hc_init", -1);
 
     for (uint32_t il = 0; il < n_layers; il++) {
-        // Abort rather than fall through to the raw-attention path: a layer
-        // with a compressor computes a different key sequence, and running it
-        // as though it did not would produce numbers rather than an error.
-        if (h.has_compressor(il)) {
-            NANO_ABORT("deepseek4 trunk: layer %u has compress_ratio %u "
-                       "(%s) and is not ported", il, h.compress_ratio[il],
-                       h.has_indexer(il) ? "lightning indexer" : "KV compressor");
-        }
-
         const bool        last = (il + 1 == n_layers);
         const ds4_layer & L    = M.layers[il];
 
@@ -675,6 +924,29 @@ static ggml_tensor * ds4_build_graph(ggml_context * ctx, ggml_cgraph * gf, const
         if (last && stage == DS4_STAGE_HC_PRE) {
             ggml_build_forward_expand(gf, cur);
             return cur;
+        }
+
+        // A compressor layer computes a different key sequence, so it must not
+        // fall through to the raw-attention path — that would produce numbers
+        // rather than an error. What *is* ported for a ratio-4 layer is its two
+        // compressors, and only as the final layer of the build.
+        if (h.has_compressor(il)) {
+            if (!h.has_indexer(il)) {
+                NANO_ABORT("deepseek4 trunk: layer %u has compress_ratio %u "
+                           "(KV compressor, no indexer) and is not ported",
+                           il, h.compress_ratio[il]);
+            }
+            if (!last || stage != DS4_STAGE_COMPRESS) {
+                NANO_ABORT("deepseek4 trunk: layer %u is ratio-4; only its "
+                           "compressors are ported, so it must be the last "
+                           "layer built and the stage must be 'compress' "
+                           "(got '%s', layer %u of %u)",
+                           il, ds4_stage_name(stage), il + 1, n_layers);
+            }
+            const ds4_compressed c = ds4_build_compressors(ctx, gf, h, L, in, cur, il);
+            ggml_build_forward_expand(gf, c.csa_k);
+            ggml_build_forward_expand(gf, c.lid_k);
+            return c.lid_k;
         }
 
         cur = ds4_build_attention_raw(ctx, gf, h, L, cur, inp_pos, kq_mask, n_tokens, il);

@@ -45,7 +45,16 @@ struct port_params {
     std::string out_path  = "ds4-port.ntd";
     int32_t     n_threads = physical_core_count();
     int32_t     n_layers  = 0;   // 0 = every layer the graph can build
+    ds4_stage   stage     = DS4_STAGE_LAYER;
 };
+
+static bool parse_stage(const char * s, ds4_stage & out) {
+    if (!strcmp(s, "hc_pre"))   { out = DS4_STAGE_HC_PRE;   return true; }
+    if (!strcmp(s, "compress")) { out = DS4_STAGE_COMPRESS; return true; }
+    if (!strcmp(s, "attn"))     { out = DS4_STAGE_ATTN;     return true; }
+    if (!strcmp(s, "layer"))    { out = DS4_STAGE_LAYER;    return true; }
+    return false;
+}
 
 static std::vector<int32_t> parse_tokens(const std::string & s) {
     std::vector<int32_t> out;
@@ -111,6 +120,9 @@ int main(int argc, char ** argv) {
         else if (!strcmp(a, "-o") && i + 1 < argc) p.out_path   = argv[++i];
         else if (!strcmp(a, "-t") && i + 1 < argc) p.n_threads  = atoi(argv[++i]);
         else if (!strcmp(a, "-L") && i + 1 < argc) p.n_layers   = atoi(argv[++i]);
+        else if (!strcmp(a, "--stage") && i + 1 < argc) {
+            if (!parse_stage(argv[++i], p.stage)) { p.model_path.clear(); break; }
+        }
         else { p.model_path.clear(); break; }
     }
     if (p.model_path.empty() || p.tokens_str.empty()) {
@@ -121,7 +133,10 @@ int main(int argc, char ** argv) {
             "  llama.cpp. Token ids, not text: that keeps the tokenizer out of\n"
             "  the comparison.\n"
             "  -L defaults to every layer the graph can build; pass fewer to\n"
-            "     bisect, since a layer's input is the previous layer's output.\n");
+            "     bisect, since a layer's input is the previous layer's output.\n"
+            "  --stage hc_pre|compress|attn|layer  how far into the LAST layer\n"
+            "     to build (default layer). 'compress' is how a ratio-4 layer is\n"
+            "     reached while only its compressors are ported.\n");
         return 1;
     }
 
@@ -134,13 +149,17 @@ int main(int argc, char ** argv) {
     const uint32_t n_ported = ds4_ported_layers(M.h);
     if (p.n_layers <= 0) {
         p.n_layers = (int32_t) n_ported;
-    } else if ((uint32_t) p.n_layers > n_ported) {
-        NANO_ABORT("-L %d exceeds the %u layers the graph can build", p.n_layers, n_ported);
+    } else if ((uint32_t) p.n_layers > M.h.n_layer) {
+        NANO_ABORT("-L %d exceeds the model's %u layers", p.n_layers, M.h.n_layer);
     }
+    // Beyond the range check the graph is the authority on what it can build:
+    // it knows which stages a partially-ported layer supports, and duplicating
+    // that policy here is how the two drift apart.
 
     fprintf(stderr, "ds4-port: %s | %s\n", M.desc.c_str(), nano_build_line().c_str());
-    fprintf(stderr, "ds4-port: %d tokens, %d threads, %d of %u ported layers\n",
-            n_tokens, p.n_threads, p.n_layers, n_ported);
+    fprintf(stderr, "ds4-port: %d tokens, %d threads, %d layers to stage '%s' "
+                    "(%u fully ported)\n",
+            n_tokens, p.n_threads, p.n_layers, ds4_stage_name(p.stage), n_ported);
 
     ggml_backend_t backend = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);
     if (!backend) NANO_ABORT("no CPU backend");
@@ -173,11 +192,78 @@ int main(int argc, char ** argv) {
     ggml_set_name(kq_mask, "kq_mask");
     ggml_set_input(kq_mask);
 
-    // No rotation input: this model's 512-wide attention caches are F16, and
-    // llama.cpp only builds a Hadamard rotation for a quantized cache. One
-    // comes back when the lightning-indexer layers do, at order 128.
-    ggml_tensor * out = ds4_build_graph(ctx, gf, M, inp_tokens, inp_pos, kq_mask,
-                                        n_tokens, DS4_STAGE_LAYER, (uint32_t) p.n_layers);
+    // ---- compressor state, for the one case this harness covers ----
+    //
+    // A ratio-4 layer folds every 4 tokens into one compressed key, and each
+    // block also reads the *previous* block's tokens. In a real eval the
+    // previous ones come out of the carried state; here the cache is empty and
+    // the whole prompt arrives at once, so the state is analytic: zeros, and
+    // block 0's history is the pad row.
+    //
+    // This is exactly the restriction the harness already lives under (one
+    // prefill from position 0, inside the sliding window). It is also the
+    // reason `n_blocks` and the index arrays are built here rather than in the
+    // graph: a real KV cache computes the same tensors from real state, and
+    // the graph should not have to change when it does.
+    const int32_t ratio    = 4;
+    const int32_t n_base   = 2 * ratio;              // rows llama.cpp carries
+    const int32_t n_blocks = n_tokens / ratio;       // complete blocks only
+    const int32_t n_read   = ratio * n_blocks;
+
+    // Row i of the concatenated [base | current] tensor, plus one pad row that
+    // `ds4_append_zero_row` puts at the end. Block b reads its own `ratio`
+    // tokens and the previous block's; block 0 has no previous, so it reads the
+    // pad row, which is zero for values and -inf for scores.
+    std::vector<int32_t> read_idxs((size_t) 2 * n_read);
+    for (int32_t b = 0; b < n_blocks; b++) {
+        for (int32_t j = 0; j < ratio; j++) {
+            const int32_t prev = b == 0 ? n_base + n_tokens          // the pad row
+                                        : n_base + (b - 1) * ratio + j;
+            read_idxs[(size_t) b * ratio + j]          = prev;
+            read_idxs[(size_t) n_read + b * ratio + j] = n_base + b * ratio + j;
+        }
+    }
+
+    // The rope position of a compressed key is the position of the **first
+    // token of its block**, not the block index: llama.cpp pushes
+    // `source_start = pos + 1 - ratio` for the token that closes the block
+    // (llama-kv-cache-dsv4.cpp:527). Both are 0 for block 0, so a prompt short
+    // enough for a single block cannot tell them apart — which is why this is
+    // checked at 12 tokens and not 5.
+    std::vector<int32_t> comp_pos((size_t) n_blocks);
+    for (int32_t b = 0; b < n_blocks; b++) comp_pos[b] = b * ratio;
+
+    std::vector<int32_t> ape_pos((size_t) n_tokens);
+    for (int32_t i = 0; i < n_tokens; i++) ape_pos[i] = i % ratio;
+
+    auto new_input = [&](ggml_type type, int64_t ne0, int64_t ne1, const char * name) {
+        ggml_tensor * t = ggml_new_tensor_2d(ctx, type, ne0, ne1);
+        ggml_set_name(t, name);
+        ggml_set_input(t);
+        return t;
+    };
+
+    ds4_layer_inputs lin;
+    if (n_blocks > 0) {
+        lin.csa.base_kv    = new_input(GGML_TYPE_F32, 2 * M.h.d_key, n_base, "csa_base_kv");
+        lin.csa.base_score = new_input(GGML_TYPE_F32, 2 * M.h.d_key, n_base, "csa_base_score");
+        lin.csa.read_idxs  = new_input(GGML_TYPE_I32, 2 * n_read, 1, "csa_read_idxs");
+        lin.csa.comp_pos   = new_input(GGML_TYPE_I32, n_blocks, 1, "csa_comp_pos");
+
+        lin.lid.base_kv    = new_input(GGML_TYPE_F32, 2 * M.h.idx_key_len, n_base, "lid_base_kv");
+        lin.lid.base_score = new_input(GGML_TYPE_F32, 2 * M.h.idx_key_len, n_base, "lid_base_score");
+        lin.lid.read_idxs  = new_input(GGML_TYPE_I32, 2 * n_read, 1, "lid_read_idxs");
+        lin.lid.comp_pos   = new_input(GGML_TYPE_I32, n_blocks, 1, "lid_comp_pos");
+
+        lin.ape_pos = new_input(GGML_TYPE_I32, n_tokens, 1, "ape_pos");
+        lin.rot     = new_input(GGML_TYPE_F32, M.h.idx_key_len, M.h.idx_key_len, "lid_k_rot");
+    } else if (p.stage == DS4_STAGE_COMPRESS) {
+        NANO_ABORT("%d tokens make no complete %d-token block; a compressor "
+                   "layer needs at least %d", n_tokens, ratio, ratio);
+    }
+
+    ggml_tensor * out = ds4_build_graph(ctx, gf, M, inp_tokens, inp_pos, kq_mask, lin,
+                                        n_tokens, p.stage, (uint32_t) p.n_layers);
     ggml_build_forward_expand(gf, out);
 
     ggml_gallocr_t galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
@@ -197,6 +283,30 @@ int main(int argc, char ** argv) {
         }
     }
     ggml_backend_tensor_set(kq_mask, mask.data(), 0, mask.size() * sizeof(ggml_fp16_t));
+
+    if (n_blocks > 0) {
+        const std::vector<float> zeros_csa((size_t) 2 * M.h.d_key * n_base, 0.0f);
+        const std::vector<float> zeros_lid((size_t) 2 * M.h.idx_key_len * n_base, 0.0f);
+        auto set = [](ggml_tensor * t, const void * d, size_t n) {
+            ggml_backend_tensor_set(t, d, 0, n);
+        };
+        set(lin.csa.base_kv,    zeros_csa.data(), zeros_csa.size() * sizeof(float));
+        set(lin.csa.base_score, zeros_csa.data(), zeros_csa.size() * sizeof(float));
+        set(lin.lid.base_kv,    zeros_lid.data(), zeros_lid.size() * sizeof(float));
+        set(lin.lid.base_score, zeros_lid.data(), zeros_lid.size() * sizeof(float));
+
+        set(lin.csa.read_idxs, read_idxs.data(), read_idxs.size() * sizeof(int32_t));
+        set(lin.lid.read_idxs, read_idxs.data(), read_idxs.size() * sizeof(int32_t));
+        set(lin.csa.comp_pos,  comp_pos.data(),  comp_pos.size()  * sizeof(int32_t));
+        set(lin.lid.comp_pos,  comp_pos.data(),  comp_pos.size()  * sizeof(int32_t));
+        set(lin.ape_pos,       ape_pos.data(),   ape_pos.size()   * sizeof(int32_t));
+
+        // Order 128, not d_key: the indexer's cache is the only one that
+        // rotates.
+        std::vector<float> had;
+        ds4_fill_hadamard(had, (int) M.h.idx_key_len);
+        set(lin.rot, had.data(), had.size() * sizeof(float));
+    }
 
     if (ggml_backend_graph_compute(backend, gf) != GGML_STATUS_SUCCESS) NANO_ABORT("compute failed");
 
