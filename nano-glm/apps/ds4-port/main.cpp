@@ -97,7 +97,12 @@ static std::vector<int32_t> parse_tokens(const std::string & s) {
 
 // One record, matching dump.cpp's format exactly: name, source type, ne[4],
 // element count, then f32 data.
-static void write_record(FILE * f, ggml_tensor * t, std::vector<float> & scratch) {
+// Returns false if nothing was written, which the caller must not count: the
+// record count sits in the header and a reader trusts it, so an over-count
+// makes the file unparseable rather than short. That is exactly what happened
+// when layer 2 introduced the first F16 named tensors (the compressed keys and
+// the masks) and this function skipped them while `main` counted them anyway.
+static bool write_record(FILE * f, ggml_tensor * t, std::vector<float> & scratch) {
     const uint64_t n_elem = (uint64_t) ggml_nelements(t);
     scratch.resize((size_t) n_elem);
 
@@ -108,8 +113,18 @@ static void write_record(FILE * f, ggml_tensor * t, std::vector<float> & scratch
         ggml_backend_tensor_get(t, tmp.data(), 0, n_elem * sizeof(int32_t));
         for (uint64_t i = 0; i < n_elem; i++) scratch[i] = (float) tmp[i];
     } else {
-        fprintf(stderr, "ds4-port: %s has type %s, not dumped\n", t->name, ggml_type_name(t->type));
-        return;
+        // Everything else through ggml's own type traits, as logit-kld's `dump`
+        // does — so a reader never has to know what F16 is, and the two files
+        // stay comparable.
+        const ggml_type_traits * tr = ggml_get_type_traits(t->type);
+        if (!tr || !tr->to_float) {
+            fprintf(stderr, "ds4-port: %s has type %s with no to_float; skipped\n",
+                    t->name, ggml_type_name(t->type));
+            return false;
+        }
+        std::vector<uint8_t> raw(ggml_nbytes(t));
+        ggml_backend_tensor_get(t, raw.data(), 0, raw.size());
+        tr->to_float(raw.data(), scratch.data(), (int64_t) n_elem);
     }
 
     // llama.cpp tags names "<base>-<il>"; ours already do, so they match.
@@ -134,6 +149,7 @@ static void write_record(FILE * f, ggml_tensor * t, std::vector<float> & scratch
     printf("%-34s %-7s [%5" PRId64 " %4" PRId64 " %4" PRId64 " %2" PRId64 "]  sum %+.6e  max|.| %.6e%s\n",
            t->name, ggml_type_name(t->type), t->ne[0], t->ne[1], t->ne[2], t->ne[3],
            sum, amax, bad ? "   <-- NaN/inf" : "");
+    return true;
 }
 
 int main(int argc, char ** argv) {
@@ -275,6 +291,13 @@ int main(int argc, char ** argv) {
 
         lin.ape_pos = new_input(GGML_TYPE_I32, n_tokens, 1, "ape_pos");
         lin.rot     = new_input(GGML_TYPE_F32, M.h.idx_key_len, M.h.idx_key_len, "lid_k_rot");
+
+        // llama.cpp keeps a separate mask per compressed cache; they carry the
+        // same values because both compress at the same ratio, but they stay
+        // two tensors here so the shapes can diverge when a real cache pads
+        // them differently.
+        lin.lid_mask = new_input(GGML_TYPE_F16, n_blocks, n_tokens, "lid_kq_mask");
+        lin.csa_mask = new_input(GGML_TYPE_F16, n_blocks, n_tokens, "csa_kq_mask");
     } else if (p.stage == DS4_STAGE_COMPRESS) {
         NANO_ABORT("%d tokens make no complete %d-token block; a compressor "
                    "layer needs at least %d", n_tokens, ratio, ratio);
@@ -334,6 +357,20 @@ int main(int argc, char ** argv) {
         std::vector<float> had;
         ds4_fill_hadamard(had, (int) M.h.idx_key_len);
         set(lin.rot, had.data(), had.size() * sizeof(float));
+
+        // Block j is visible to the token at position i once all four of its
+        // tokens are at or before i — llama.cpp's `n_visible = (pos + 1)/ratio`
+        // (llama-kv-cache-dsv4.cpp:499), turned into a mask row.
+        std::vector<ggml_fp16_t> cmask((size_t) n_blocks * n_tokens);
+        for (int32_t i = 0; i < n_tokens; i++) {
+            const int32_t n_visible = (i + 1) / ratio;
+            for (int32_t j = 0; j < n_blocks; j++) {
+                cmask[(size_t) i * n_blocks + j] =
+                    ggml_fp32_to_fp16(j < n_visible ? 0.0f : -INFINITY);
+            }
+        }
+        set(lin.lid_mask, cmask.data(), cmask.size() * sizeof(ggml_fp16_t));
+        set(lin.csa_mask, cmask.data(), cmask.size() * sizeof(ggml_fp16_t));
     }
 
     if (ggml_backend_graph_compute(backend, gf) != GGML_STATUS_SUCCESS) NANO_ABORT("compute failed");
@@ -352,8 +389,9 @@ int main(int argc, char ** argv) {
     for (int i = 0; i < ggml_graph_n_nodes(gf); i++) {
         ggml_tensor * t = ggml_graph_node(gf, i);
         if (!(t->flags & GGML_TENSOR_FLAG_OUTPUT) || t->name[0] == '\0') continue;
-        write_record(f, t, scratch);
-        n_records++;
+        if (write_record(f, t, scratch)) {
+            n_records++;
+        }
     }
 
     fseek(f, (long) sizeof(NTD_MAGIC), SEEK_SET);

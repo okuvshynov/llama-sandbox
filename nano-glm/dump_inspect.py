@@ -141,9 +141,18 @@ def cmd_compare_by_order(a, b, tol):
     return 0 if (worst is None or worst[1] <= tol) else 1
 
 
-def cmd_compare(a, b, name_filter, tol):
+def cmd_compare(a, b, name_filter, tol, exclude=()):
     """Match by name and position, so a repeated name (llama.cpp reuses `norm`)
-    still lines up as long as both sides emit it in the same order."""
+    still lines up as long as both sides emit it in the same order.
+
+    `exclude` drops tensors from the comparison entirely. It exists for one
+    narrow case: a tensor whose *shape* is a property of the reference's KV
+    cache rather than of the computation. llama.cpp pads its caches (384 tokens
+    become 512 rows, 96 compressed blocks become 256) and the padding holds
+    whatever was in the buffer, so a cache view can never equal one sized to the
+    data no matter how correct the port is. Never reach for it because a tensor
+    disagrees — that is the tool working.
+    """
     seen = {}
     idx_b = {}
     for r in b:
@@ -153,12 +162,15 @@ def cmd_compare(a, b, name_filter, tol):
 
     seen = {}
     worst = None
-    n_cmp = n_missing = n_shape = n_trunc = 0
+    n_cmp = n_missing = n_shape = n_trunc = n_excl = 0
     print("%-34s %-20s %12s %12s" % ("tensor", "shape", "max|a-b|", "max rel"))
     for r in a:
         k = (r["name"], seen.get(r["name"], 0))
         seen[r["name"]] = seen.get(r["name"], 0) + 1
         if name_filter and name_filter not in r["name"]:
+            continue
+        if any(x in r["name"] for x in exclude):
+            n_excl += 1
             continue
         o = idx_b.get(k)
         if o is None:
@@ -220,6 +232,10 @@ def main():
     ap.add_argument("--by-order", action="store_true",
                     help="pair the i-th record of each file instead of matching names "
                          "(for tensors llama.cpp never named — see --op in dump)")
+    ap.add_argument("--exclude", default=None,
+                    help="comma-separated substrings to drop from the comparison. Only for "
+                         "tensors whose shape follows the reference's KV-cache padding "
+                         "rather than the computation")
     ap.add_argument("--name-b", default=None,
                     help="with --by-order: name filter for the second file, when the "
                          "two sides call the same tensor different things")
@@ -242,7 +258,8 @@ def main():
         return cmd_compare_by_order(keep(a, args.name),
                                     keep(b, args.name_b if args.name_b is not None else args.name),
                                     args.tol)
-    return cmd_compare(a, b, args.name, args.tol)
+    excl = tuple(x for x in (args.exclude or "").split(",") if x)
+    return cmd_compare(a, b, args.name, args.tol, excl)
 
 
 if __name__ == "__main__":

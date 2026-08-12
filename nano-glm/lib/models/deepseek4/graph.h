@@ -29,18 +29,24 @@
 //   ffn_gate/up/swiglu, ffn_shexp, ffn_out       bit-identical
 //   l_last         bit-identical
 //
-// Layers 0 **and 1** are therefore complete, and so are layer 2's two KV
-// compressors: 134/134 tensors at 0.0000e+00 over a **384-token** prompt —
-// 96 compressed blocks, and three times the 128-wide sliding window, so the
-// window's band is exercised rather than assumed.
+// Layers 0, 1 **and 2** are therefore complete: 184/184 tensors at 0.0000e+00
+// over a 384-token prompt, and layer 2 again at **2560 tokens** (47/47), where
+// its 640 compressed blocks exceed `indexer_top_k` and the indexer's selection
+// actually drops 128 of them.
 // `compress_ratios` is [0, 0, 4, 128, 4, 128, ...], so layers 0-1 are every
-// layer of the simple shape; layer 2 adds a compressor and the lightning
-// indexer, layer 3 a compressor alone, and `ds4_build_graph` still aborts on
-// everything past what has been checked.
+// layer of the simple shape, layer 2 is the first ratio-4 (compressor plus
+// lightning indexer) and layer 3 the first ratio-128 (compressor alone).
+// `ds4_build_graph` still aborts on everything past what has been checked.
 //
-// Layer 2, remaining: the indexer itself (lid_q/_pe/_rot, lid_weights,
-// lid_score_masked, lid_top_k, csa_top_k_mask) and the attention that
-// concatenates the raw and compressed key sequences.
+// **Seven of layer 2's tensors cannot be compared at all**, and that is not a
+// gap in the port: `csa_raw_k`, `csa_comp_k`, `csa_k_all`, `csa_lid_kq_mask`,
+// `lid_score_masked`, `lid_top_k` and `csa_top_k_mask` are shaped by
+// llama.cpp's KV-cache *padding* (384 tokens become 512 rows, 96 blocks become
+// 256) and the padded tail holds whatever was in the buffer. A view sized to
+// the data can never equal one sized to the cache. It costs nothing, because
+// everything downstream of them — `attn_csa_lid` onward — is compared and
+// exact, and a wrong selection or a wrong mask would land there.
+// `dump_inspect.py --exclude` names them rather than passing them silently.
 //
 // The sequence length is part of what is being checked, and has twice been
 // what a mistake hid behind. Five tokens make a single compressed block, and
@@ -552,6 +558,13 @@ struct ds4_layer_inputs {
     ds4_comp_inputs lid;                 // the lightning indexer's
     ggml_tensor *   ape_pos = nullptr;   // i32 [n_tokens], slot within the block
     ggml_tensor *   rot     = nullptr;   // f32 [idx_key_len, idx_key_len] Hadamard
+    // Which compressed blocks a token may see: block j is visible to the token
+    // at position p when `j < (p + 1)/ratio`, i.e. every block whose tokens all
+    // lie at or before it. f16 both times — the indexer op requires it and so
+    // does flash attention. llama.cpp keeps one per cache; they carry the same
+    // values here because both caches compress at the same ratio.
+    ggml_tensor *   lid_mask = nullptr;  // f16 [n_blocks, n_tokens]
+    ggml_tensor *   csa_mask = nullptr;  // f16 [n_blocks, n_tokens]
 };
 
 struct ds4_compressed {
@@ -624,20 +637,23 @@ static ds4_compressed ds4_build_compressors(ggml_context * ctx, ggml_cgraph * gf
 // cache; the porting harness passes the current chunk, which is the same thing
 // for a single prefill from position 0 — and it keeps a cache out of the first
 // comparison.
-static ggml_tensor * ds4_build_attention_raw(ggml_context * ctx, ggml_cgraph * gf,
-                                             const ds4_hparams & h, const ds4_layer & L,
-                                             ggml_tensor * cur, ggml_tensor * inp_pos,
-                                             ggml_tensor * kq_mask,
-                                             int32_t n_tokens, uint32_t il) {
+// q, kv and the LoRA rank they come from. Shared by every layer kind: only
+// what happens *between* kv and the output differs.
+struct ds4_qkv {
+    ggml_tensor * qr = nullptr;   // [q_lora_rank, n_tokens], the indexer needs it too
+    ggml_tensor * q  = nullptr;   // [d_key, n_head, n_tokens]
+    ggml_tensor * kv = nullptr;   // [d_key, 1, n_tokens]
+};
+
+static ds4_qkv ds4_build_qkv(ggml_context * ctx, ggml_cgraph * gf,
+                             const ds4_hparams & h, const ds4_layer & L,
+                             ggml_tensor * cur, ggml_tensor * inp_pos,
+                             int32_t n_tokens, uint32_t il) {
     const int64_t d_head = h.d_key;                    // 512
     const int64_t d_rope = h.rope_dim;                 // 64
     const int64_t d_nope = d_head - d_rope;            // 448
     const int64_t n_head = h.n_head;                   // 64
-    const int64_t n_grp  = h.out_group_count;          // 8
-    const int64_t grp_dim = (n_head / n_grp) * d_head; // 8*512 = 4096
 
-    // A layer without a compressor ropes unscaled — `ds4_rope_of` collapses
-    // every yarn knob for it.
     const ds4_rope rope = ds4_rope_of(h, il);
 
     // ---- q: a LoRA, a weighted norm, an expansion, then a *plain* norm ----
@@ -687,6 +703,23 @@ static ggml_tensor * ds4_build_attention_raw(ggml_context * ctx, ggml_cgraph * g
     ds4_name(kv_pe, "kv_pe", il);
     kv = ggml_concat(ctx, kv_nope, kv_pe, 0);
     ds4_name(kv, "kv", il);
+
+    ggml_build_forward_expand(gf, q);
+    ggml_build_forward_expand(gf, kv);
+    return { qr, q, kv };
+}
+
+// ---------------------------------------------------------------------------
+// Attention, the shape layers 0 and 1 take: `attn_raw`, i.e. no KV compressor
+// and no lightning indexer, so the key sequence is just this chunk.
+static ggml_tensor * ds4_build_attention_raw(ggml_context * ctx, ggml_cgraph * gf,
+                                             const ds4_hparams & h, const ds4_layer & L,
+                                             const ds4_qkv & x, ggml_tensor * kq_mask,
+                                             int32_t n_tokens, uint32_t il) {
+    const int64_t d_head = h.d_key;
+    ggml_tensor * q  = x.q;
+    ggml_tensor * kv = x.kv;
+    (void) n_tokens;
 
     // ---- MHA with sinks ----
     //
@@ -739,8 +772,149 @@ static ggml_tensor * ds4_build_attention_raw(ggml_context * ctx, ggml_cgraph * g
 
     out = ggml_reshape_2d(ctx, out, out->ne[0] * out->ne[1], out->ne[2] * out->ne[3]);
     ds4_snapshot(ctx, gf, out, "attn_raw", il);
+    return out;
+}
 
-    // ---- undo the positional part, then the grouped-LoRA output ----
+// ---------------------------------------------------------------------------
+// The DSA lightning indexer, and the attention that uses it.
+//
+// A ratio-4 layer attends over two key sequences at once: the raw keys of the
+// last `sliding_window` tokens, and the compressed keys of every complete block
+// before that. The compressed half can be long, so a small side network — the
+// indexer — scores the blocks and only the best `indexer_top_k` are unmasked.
+//
+// The indexer is an attention in miniature: its own 128-wide q from the same
+// LoRA rank, its own compressed keys, and a per-head weight so heads can be
+// weighted rather than averaged. Its output is one score per (block, token).
+
+// The score for every compressed block, already masked.
+static ggml_tensor * ds4_build_indexer(ggml_context * ctx, const ds4_hparams & h,
+                                       const ds4_layer & L, const ds4_layer_inputs & in,
+                                       ggml_tensor * qr, ggml_tensor * cur,
+                                       ggml_tensor * lid_k, ggml_tensor * inp_pos,
+                                       int32_t n_tokens, uint32_t il) {
+    const int64_t d_idx  = h.idx_key_len;              // 128
+    const int64_t d_rope = h.rope_dim;                 // 64
+    const int64_t d_nope = d_idx - d_rope;             // 64
+    const int64_t n_idx  = h.idx_n_head;               // 64
+
+    const ds4_rope rope = ds4_rope_of(h, il);
+
+    ggml_tensor * q = ggml_mul_mat(ctx, L.idx_attn_q_b, qr);
+    q = ggml_reshape_3d(ctx, q, d_idx, n_idx, n_tokens);
+    ds4_name(q, "lid_q", il);
+
+    ggml_tensor * q_nope = ggml_view_3d(ctx, q, d_nope, n_idx, n_tokens,
+                                        ggml_row_size(q->type, d_idx),
+                                        ggml_row_size(q->type, d_idx) * n_idx, 0);
+    ggml_tensor * q_pe = ggml_view_3d(ctx, q, d_rope, n_idx, n_tokens,
+                                      ggml_row_size(q->type, d_idx),
+                                      ggml_row_size(q->type, d_idx) * n_idx,
+                                      ggml_row_size(q->type, d_nope));
+    q_pe = ds4_rope_ext(ctx, q_pe, inp_pos, d_rope, rope);
+    ds4_name(q_pe, "lid_q_pe", il);
+
+    q = ggml_concat(ctx, q_nope, q_pe, 0);
+    q = ds4_hadamard(ctx, q, in.rot);
+    ds4_name(q, "lid_q_rot", il);
+
+    // Prescaled, as the op's contract requires: it does not scale internally.
+    ggml_tensor * weights = ggml_mul_mat(ctx, L.idx_proj, cur);
+    weights = ggml_scale(ctx, weights, 1.0f / sqrtf((float) (d_idx * n_idx)));
+    ds4_name(weights, "lid_weights", il);
+
+    ggml_tensor * score = ggml_lightning_indexer(ctx, q, lid_k, weights, in.lid_mask);
+    ds4_name(score, "lid_score_masked", il);
+    return score;
+}
+
+// -inf everywhere except the top-k blocks, then the visibility mask added back
+// on top — so a block that was selected but is not yet visible stays masked.
+// llama.cpp's `build_top_k_mask`.
+static ggml_tensor * ds4_build_top_k_mask(ggml_context * ctx, ggml_tensor * kq_mask,
+                                          ggml_tensor * top_k, uint32_t il) {
+    ggml_tensor * all = ggml_fill(ctx, kq_mask, -INFINITY);
+    all = ggml_view_4d(ctx, all, 1, all->ne[0], all->ne[1], all->ne[3],
+                       all->nb[0], all->nb[1], all->nb[2], 0);
+
+    ggml_tensor * idx = ggml_view_4d(ctx, top_k, top_k->ne[0], top_k->ne[1], top_k->ne[3], 1,
+                                     top_k->nb[1], top_k->nb[2], top_k->ne[3] * top_k->nb[3], 0);
+
+    ggml_tensor * zeros = ggml_new_tensor_4d(ctx, GGML_TYPE_F16, 1,
+                                             idx->ne[0], idx->ne[1], idx->ne[2]);
+    zeros = ggml_fill(ctx, zeros, 0.0f);
+
+    ggml_tensor * out = ggml_set_rows(ctx, all, zeros, idx);
+    out = ggml_view_4d(ctx, out, out->ne[1], out->ne[2], 1, out->ne[3],
+                       out->nb[2], out->nb[3], out->nb[3], 0);
+    out = ggml_add(ctx, out, kq_mask);
+    ds4_name(out, "csa_top_k_mask", il);
+    return out;
+}
+
+static ggml_tensor * ds4_build_attention_csa_lid(ggml_context * ctx, ggml_cgraph * gf,
+                                                 const ds4_hparams & h, const ds4_layer & L,
+                                                 const ds4_layer_inputs & in,
+                                                 const ds4_qkv & x, const ds4_compressed & c,
+                                                 ggml_tensor * cur, ggml_tensor * inp_pos,
+                                                 ggml_tensor * kq_mask, int32_t n_tokens,
+                                                 uint32_t il) {
+    const int64_t d_head = h.d_key;
+
+    // The indexer's keys are the rotated compressed ones, read back from an F16
+    // cache in the reference — so they are rounded before it scores them.
+    ggml_tensor * lid_k = ggml_cast(ctx, c.lid_k, GGML_TYPE_F16);
+    ggml_tensor * top_k_src = ds4_build_indexer(ctx, h, L, in, x.qr, cur, lid_k,
+                                                inp_pos, n_tokens, il);
+
+    // `min` because the model may hold fewer blocks than it would select.
+    const int64_t n_csa   = in.csa_mask->ne[0];
+    const int64_t n_top_k = n_csa < (int64_t) h.idx_top_k ? n_csa : (int64_t) h.idx_top_k;
+
+    ggml_tensor * top_k = ggml_cont(ctx, ggml_top_k(ctx, top_k_src, (int) n_top_k));
+    ds4_name(top_k, "lid_top_k", il);
+
+    ggml_tensor * raw_k  = ggml_cast(ctx, x.kv,  GGML_TYPE_F16);
+    ds4_name(raw_k, "csa_raw_k", il);
+    ggml_tensor * comp_k = ggml_cast(ctx, c.csa_k, GGML_TYPE_F16);
+    ds4_name(comp_k, "csa_comp_k", il);
+
+    ggml_tensor * k_all = ggml_concat(ctx, raw_k, comp_k, 2);
+    ds4_name(k_all, "csa_k_all", il);
+
+    ggml_tensor * csa_mask = ds4_build_top_k_mask(ctx, in.csa_mask, top_k, il);
+    ggml_tensor * mask_all = ggml_concat(ctx, kq_mask, csa_mask, 0);
+    ds4_name(mask_all, "csa_lid_kq_mask", il);
+
+    ggml_tensor * qp = ggml_permute(ctx, x.q,   0, 2, 1, 3);
+    ggml_tensor * kp = ggml_permute(ctx, k_all, 0, 2, 1, 3);
+
+    ggml_tensor * out = ggml_flash_attn_ext(ctx, qp, kp, kp, mask_all,
+                                            1.0f / sqrtf((float) d_head), 0.0f, 0.0f);
+    ggml_flash_attn_ext_add_sinks(out, L.attn_sinks);
+    ggml_flash_attn_ext_set_prec(out, GGML_PREC_F32);
+
+    out = ggml_reshape_2d(ctx, out, out->ne[0] * out->ne[1], out->ne[2] * out->ne[3]);
+    ds4_snapshot(ctx, gf, out, "attn_csa_lid", il);
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+// Undo the positional part of the attention output, then the grouped-LoRA
+// output projection. Identical for every layer kind, which is why the three
+// attention cores return the same [n_head*d_key, n_tokens] shape.
+static ggml_tensor * ds4_build_attn_out(ggml_context * ctx, const ds4_hparams & h,
+                                        const ds4_layer & L, ggml_tensor * out,
+                                        ggml_tensor * inp_pos, int32_t n_tokens, uint32_t il) {
+    const int64_t d_head  = h.d_key;
+    const int64_t d_rope  = h.rope_dim;
+    const int64_t d_nope  = d_head - d_rope;
+    const int64_t n_head  = h.n_head;
+    const int64_t n_grp   = h.out_group_count;
+    const int64_t grp_dim = (n_head / n_grp) * d_head;
+
+    const ds4_rope rope = ds4_rope_of(h, il);
+
     out = ggml_reshape_3d(ctx, out, d_head, n_head, n_tokens);
     ggml_tensor * out_nope = ggml_view_3d(ctx, out, d_nope, n_head, n_tokens,
                                           ggml_row_size(out->type, d_head),
@@ -882,11 +1056,11 @@ static const char * ds4_stage_name(ds4_stage s) {
 
 // How many leading layers this file can build, read off the checkpoint rather
 // than hard-coded — `compress_ratios` is [0, 0, 4, 128, 4, 128, ...], so the
-// answer here is 2 and it becomes larger by itself when the compressor and
-// indexer layers are ported.
+// answer here is 3 (no compressor, no compressor, ratio-4) and it becomes
+// larger by itself when the ratio-128 layers are ported.
 static uint32_t ds4_ported_layers(const ds4_hparams & h) {
     uint32_t n = 0;
-    while (n < h.n_layer && !h.has_compressor(n)) {
+    while (n < h.n_layer && (!h.has_compressor(n) || h.has_indexer(n))) {
         n++;
     }
     return n;
@@ -931,30 +1105,38 @@ static ggml_tensor * ds4_build_graph(ggml_context * ctx, ggml_cgraph * gf, const
             return cur;
         }
 
-        // A compressor layer computes a different key sequence, so it must not
-        // fall through to the raw-attention path — that would produce numbers
-        // rather than an error. What *is* ported for a ratio-4 layer is its two
-        // compressors, and only as the final layer of the build.
-        if (h.has_compressor(il)) {
-            if (!h.has_indexer(il)) {
-                NANO_ABORT("deepseek4 trunk: layer %u has compress_ratio %u "
-                           "(KV compressor, no indexer) and is not ported",
-                           il, h.compress_ratio[il]);
-            }
-            if (!last || stage != DS4_STAGE_COMPRESS) {
-                NANO_ABORT("deepseek4 trunk: layer %u is ratio-4; only its "
-                           "compressors are ported, so it must be the last "
-                           "layer built and the stage must be 'compress' "
-                           "(got '%s', layer %u of %u)",
-                           il, ds4_stage_name(stage), il + 1, n_layers);
-            }
-            const ds4_compressed c = ds4_build_compressors(ctx, gf, h, L, in, cur, il);
-            ggml_build_forward_expand(gf, c.csa_k);
-            ggml_build_forward_expand(gf, c.lid_k);
-            return c.lid_k;
+        // A ratio-128 layer computes a different key sequence again, so it must
+        // not fall through to either ported path — that would produce numbers
+        // rather than an error.
+        if (h.has_compressor(il) && !h.has_indexer(il)) {
+            NANO_ABORT("deepseek4 trunk: layer %u has compress_ratio %u "
+                       "(KV compressor, no indexer) and is not ported",
+                       il, h.compress_ratio[il]);
         }
 
-        cur = ds4_build_attention_raw(ctx, gf, h, L, cur, inp_pos, kq_mask, n_tokens, il);
+        if (h.has_indexer(il)) {
+            // The compressors run before q/kv, which is the order llama.cpp's
+            // graph ends up executing them in even though it builds q first.
+            const ds4_compressed c = ds4_build_compressors(ctx, gf, h, L, in, cur, il);
+            ggml_build_forward_expand(gf, c.lid_k);
+
+            if (last && stage == DS4_STAGE_COMPRESS) {
+                return c.lid_k;
+            }
+
+            const ds4_qkv x = ds4_build_qkv(ctx, gf, h, L, cur, inp_pos, n_tokens, il);
+            cur = ds4_build_attention_csa_lid(ctx, gf, h, L, in, x, c, cur, inp_pos,
+                                              kq_mask, n_tokens, il);
+        } else {
+            if (last && stage == DS4_STAGE_COMPRESS) {
+                NANO_ABORT("deepseek4 trunk: layer %u has no compressor, so "
+                           "stage 'compress' has nothing to build", il);
+            }
+            const ds4_qkv x = ds4_build_qkv(ctx, gf, h, L, cur, inp_pos, n_tokens, il);
+            cur = ds4_build_attention_raw(ctx, gf, h, L, x, kq_mask, n_tokens, il);
+        }
+
+        cur = ds4_build_attn_out(ctx, h, L, cur, inp_pos, n_tokens, il);
 
         inpL = ds4_hc_post(ctx, h, cur, inpL, post, comb, "hc_attn_post", il);
 
