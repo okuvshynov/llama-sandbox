@@ -405,6 +405,139 @@ llama.cpp being attributed to the split.
   separate that cost from the rest; it remains a candidate for the local-path
   gap, not a demonstrated cause.
 
+### llama.cpp's own GPU offload on the same model, and the flag that decides it
+
+The section above measures nano-glm's split — routed experts behind a socket,
+one dispatch per layer — against llama.cpp running everything on the CPU. The
+obvious control was never run: **what does llama.cpp do with these four GPUs?**
+It has a Vulkan backend and 124.7 GiB of free VRAM (four dies, 31.17 GiB each)
+to point at a 150.7 GiB model, so five sixths of it could be resident.
+
+`build_bench.ps1 -Vulkan` builds a third llama-bench differing from the repack-ON
+one only in `GGML_VULKAN`; `bench_ds4.ps1 -Vulkan` runs the configurations. All
+`-lm none -t 16 -r 5 -p 128 -n 32`, on the four Vega II dies:
+
+| configuration | VRAM | splits @bs128 | pp128 | tg32 |
+|---|---|---|---|---|
+| CPU-only build, repack ON | — | — | **22.16** ± 1.44 | 3.73 ± 0.04 |
+| CPU-only build, repack OFF | — | — | 17.99 ± 0.09 | 3.36 ± 0.02 |
+| `-ngl 0` | 0 | 1780 | 5.37 ± 0.14 | 3.39 ± 0.02 |
+| `-ngl 12` | 39.1 GiB | 968 | 9.07 ± 0.37 | 2.39 ± 0.02 |
+| `-ngl 24` | 80.6 GiB | 602 | 10.64 ± 0.63 | 2.58 ± 0.02 |
+| `-ngl 32` | 108.3 GiB | 358 | 11.87 ± 0.45 | 3.12 ± 0.01 |
+| `-ngl 34`, `-ngl 36` | — | — | OOM during load | |
+| `-ngl 0 -nopo 1` | 0 | — | 17.96 ± 0.14 | 3.41 ± 0.02 |
+| `-ngl 32 -nopo 1` | 108.3 GiB | 10 | 16.68 ± 0.59 | 3.08 ± 0.04 |
+| `-ncmoe 43` | 12.7 GiB | 169 | 8.55 ± 0.36 | 4.24 ± 0.02 |
+| `-ncmoe 43 -nopo 1` | 12.7 GiB | 94 | 15.91 ± 0.49 | 4.20 ± 0.02 |
+| `-ncmoe 36 -nopo 1` | 35.0 GiB | 80 | 15.37 ± 0.31 | 4.46 ± 0.04 |
+| `-ncmoe 30 -nopo 1 -ts 30/3/3/7` | 55.4 GiB | 68 | 11.58 ± 0.14 | 3.58 ± 0.02 |
+| — same flags, second load | 55.4 GiB | 68 | 11.08 ± 0.05 | 3.94 ± 0.06 |
+| `-ncmoe 24 -nopo 1 -ts 24/6/6/7` | 75.0 GiB | 56 | 14.54 ± 0.28 | 4.64 ± 0.02 |
+| `-ncmoe 19 -nopo 1 -ts 19/8/8/8` | 95.2 GiB | 46 | 15.05 ± 0.35 | 3.65 ± 0.02 |
+
+**Read the `-ncmoe` rows as a band, not an ordering.** The repeated row is there
+because the ordering looked meaningful and is not: the same configuration,
+same flags, same buffer allocation to the MiB and the same 68 splits, decoded at
+3.58 ± 0.02 on one load and 3.94 ± 0.06 on the next. **10% load-to-load, against
+within-run sds of 2-6%.** `-lm none` was adopted to kill exactly this kind of
+variance and it only kills it *within* an invocation; every other row here is a
+single load, so differences below ~10% between them are not evidence. The
+`-ncmoe` family lands somewhere in **3.6-4.6 t/s** and which member is best was
+not determined — note that the largest VRAM configuration measured (`-ncmoe 19`,
+95.2 GiB, near the ceiling) is *not* the fastest, which is the same
+"adding dies buys capacity, not speed" result as the forced-split study above.
+
+What survives that caveat is everything the rest of this section rests on: the
+`-ngl` family (2.4-3.1) and the `-ncmoe` family (3.6-4.6) do not overlap, and
+the `op_offload` effect is a factor of 3.3.
+
+Four things come out of it, in rough order of how much they cost to learn.
+
+**1. `op_offload` costs 3.3x of prefill with nothing offloaded, and one flag
+recovers all of it.** `-ngl 0` on the Vulkan binary prefills at 5.37 t/s against
+the CPU-only build's 17.99 — same source, same flags but `GGML_VULKAN`, no layer
+deliberately on a GPU. `-nopo 1` restores it exactly: 17.96 ± 0.14. The
+mechanism is two lines. `ggml-backend.cpp:959` offers any op whose **weights sit
+in a host buffer** to a higher-priority backend, and
+`ggml-vulkan.cpp:18511` accepts once the op's batch reaches
+`op_offload_min_batch_size` (default 32, `GGML_OP_OFFLOAD_MIN_BATCH`). DeepSeek-V4
+has two ops Vulkan cannot run at all — `DSV4_HC_COMB` on every layer,
+`LIGHTNING_INDEXER` on the ratio-4 layers, both present in CPU, CUDA and Metal —
+so every accepted op is dragged straight back and prefill shatters into 1780
+graph splits. Decode, at batch 1, is below the threshold and untouched: 1 split,
+3.39 t/s. This is the same scheduler policy the repo `CLAUDE.md` records for
+Metal on this machine, where it produced NaN logits rather than a slowdown.
+
+Two consequences worth separating. The split count is the *diagnostic* — it
+tracked prefill inversely across every configuration measured, 1780 splits to
+5.37 t/s and 10 splits to 16.68 — and the reason `bench_ds4.ps1` now records it
+beside each timing. And a Vulkan-enabled build is **not** a superset of a CPU-only
+one: merely registering the backend is a large regression on a model with
+CPU-only ops, whatever `-ngl` says.
+
+**2. `-ngl` is the wrong knob for this architecture.** 108.3 GiB of weights on
+the GPUs (`-ngl 32`) decodes *worse* than 12.7 GiB (`-ncmoe 43`): 3.12 against
+4.24. Every `-ngl` value tested decodes worse than `-ngl 0`. The reason is the
+model's shape — 3.19 of the 3.46 GiB per layer is routed experts — combined with
+the finding two sections up that a decode-step expert dispatch is too small to
+pay for itself, while a 128-token one is. `-ngl` cannot express "attention yes,
+experts no"; `-ncmoe` can, and `-ngl 99 -ncmoe 43` puts every layer's attention
+on the GPU for a tenth of the VRAM.
+
+**3. Nothing beats the CPU at prefill; decode gains roughly 1.1-1.2x.** The best
+prefill measured is `-ngl 32 -nopo 1` at 16.68, still 0.75x of the CPU-only
+repack-ON build, and no configuration came close to 22.16. Decode is the only
+place the GPUs pay: the `-ncmoe` band is 3.6-4.6 against 3.73, so **about
+1.0-1.24x** with the load-to-load spread included. The two halves point opposite
+ways, so the answer depends on the workload:
+
+```
+CPU-only:                   P/22.16 + G/3.73
+-ncmoe, decode at 4.64:     P/14.54 + G/4.64     faster once  G > 0.45 x P
+-ncmoe, decode at 4.00:     P/15.37 + G/4.00     faster once  G > 1.10 x P
+```
+
+So the GPUs win once you generate somewhere between half and one token per
+prompt token, and the width of that range is the load-to-load variance, not a
+modelling choice. On `01_prose` (111 prompt, 32 generated) the ratio is 0.29 and
+the CPU wins under either. On a chat-shaped 20-prompt/200-generated it inverts
+under both. That is the same prefill-versus-decode tension the split measurement
+has, arrived at from a completely different direction, which is mild evidence it
+is a property of the model rather than of either implementation.
+
+**4. `-ncmoe` and multi-GPU layer splitting interact badly.** `-ncmoe 30`, `24`,
+`20` and `12` all abort during load while `-ncmoe 36` fits in 35.0 GiB of 124.7.
+The `-v` log says why: llama.cpp splits *layers* across devices evenly, but
+`-ncmoe` makes per-layer size wildly uneven (3.46 GiB carrying its experts, 0.27
+without), so at `-ncmoe 36` all seven expert-carrying layers landed on Vulkan3
+(26.02 GiB) while Vulkan0-2 held 2.98 GiB each. `-ts` moves the boundaries to
+compensate and the aborting configurations then load — note it is
+**slash**-separated (`-ts 30/3/3/7`), because llama-bench reads a comma as "run
+this configuration once per value", so `-ts 30,3,3,7` silently becomes four
+single-device runs that put everything on Vulkan0 and fails with an OOM naming
+the device you meant to leave empty.
+
+Worth saying plainly that this only buys the *ability* to use the VRAM, not a
+result: `-ncmoe 19 -ts 19/8/8/8` reaches 95.2 GiB resident, the most this model
+can use here, and decodes at 3.65 — below the 75 GiB and 35 GiB configurations.
+
+**None of this can happen to nano-glm**, and the reason is structural rather
+than lucky. `models/deepseek4/eval.h` computes on a single CPU backend with
+`ggml_backend_graph_compute` — there is no `ggml_backend_sched`, so there is no
+`op_offload` heuristic and no device transition to pay for. `models/glm_dsa`
+does build a scheduler, and *aborts* if any GPU device is present. The GPU is
+reached only through `moe-server`, as one explicit dispatch per layer carrying
+work chosen by the router. This measurement is the case for that design: given
+the same hardware and a far larger VRAM budget, the general-purpose scheduler
+reaches 0.75x prefill and 1.0-1.24x decode, where the targeted split reaches
+2.2x and 0.76x. Note the two disagree about *which half* the GPU helps, and
+they are not measuring the same thing — llama-bench's pp128/tg32 against a 111+32
+workload — so the honest reading is that neither approach makes this model fast
+on this hardware, and each is bounded by a different thing: the scheduler by
+graph splits and dispatch granularity, the split by 40 sequential RPCs per
+token.
+
 ## Housekeeping that is not optimization
 
 Small, unglamorous, and cheap to fold into whatever touches the file next:
