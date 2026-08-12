@@ -58,13 +58,21 @@
 // single-prefill assumptions. The graph takes its compressor state as input
 // tensors precisely so that can be added without touching this file.
 //
-// **The KV cache is real.** `cache.h` holds the raw sliding-window keys, the
-// compressed keys of both kinds, and the compressor rings that carry a
-// half-finished block across a chunk boundary; the index plans that drive them
-// are computed there too, from (n_past, n_tokens). The graph reads and writes
-// them through `ds4_commit_raw` and `ds4_comp_commit`. A single chunk from an
-// empty cache is still bit-identical, which is the check that the plumbing
-// changed nothing.
+// **The KV cache is real, and exercised at n_past > 0.** `cache.h` holds the
+// raw sliding-window keys, the compressed keys of both kinds, and the
+// compressor rings that carry a half-finished block across a chunk boundary;
+// the index plans that drive them are computed there, from (n_past, n_tokens).
+// The graph reads and writes them through `ds4_commit_raw` and
+// `ds4_comp_commit`. Verified against llama.cpp splitting the same way
+// (`dump -ub`) as one prefill (416 tensors), two chunks of 192 (520), and
+// twelve single-token steps (2955), all at 0.0000e+00.
+//
+// Three conditions the layer loop keeps apart, because collapsing any two of
+// them is wrong in a way only decode reveals: the ring is persisted *always*, a
+// block is folded only when this chunk closes one, and the compressed half of
+// the attention exists only once some block has ever closed. Below that, the
+// layer runs plain raw attention — which is the first three steps of every
+// ratio-4 decode.
 //
 // Sizing the cache the way llama.cpp does — `get_n_kv`'s "at least 256,
 // rounded up to 256, capped by the cache", and a compressed cache with the same
@@ -616,8 +624,9 @@ static ggml_tensor * ds4_comp_commit(ggml_context * ctx, ggml_cgraph * gf,
                                      ggml_tensor * cur_kv, ggml_tensor * cur_score,
                                      int64_t width) {
     // The visible window is exactly what the mask covers, so it needs no
-    // separate parameter and cannot disagree with one.
-    const int64_t n_kv = in.mask->ne[0];
+    // separate parameter and cannot disagree with one. No mask means no
+    // compressed cell has ever been written, and the caller must fall back.
+    const int64_t n_kv = in.mask ? in.mask->ne[0] : 0;
     if (comp) {
         // A chunk that closes no block writes nothing; the cache keeps what
         // earlier chunks put there.
@@ -634,6 +643,9 @@ static ggml_tensor * ds4_comp_commit(ggml_context * ctx, ggml_cgraph * gf,
                           ggml_get_rows(ctx, cur_score, in.persist_src), in.persist_dst));
     }
 
+    if (n_kv == 0) {
+        return nullptr;
+    }
     return ggml_view_3d(ctx, in.cache_k, width, 1, n_kv,
                         ggml_row_size(in.cache_k->type, width),
                         ggml_row_size(in.cache_k->type, width), 0);
@@ -708,7 +720,12 @@ static ds4_compressed ds4_build_compressors(ggml_context * ctx, ggml_cgraph * gf
     // cache write here for the same reason, and without it the indexer's chain
     // lands in front of this one's tail — both layers emit a tensor called
     // "norm", and the comparison pairs repeated names by position.
-    ggml_build_forward_expand(gf, out.csa_k);
+    //
+    // Null until a block has closed, and the ordering does not matter then
+    // because there is no tail to order.
+    if (out.csa_k) {
+        ggml_build_forward_expand(gf, out.csa_k);
+    }
 
     // ---- the indexer's compressor: same shape, 128 wide, and rotated ----
     ggml_tensor * lid_kv = ggml_mul_mat(ctx, L.idx_cmp_kv, cur);
@@ -1402,11 +1419,8 @@ static ggml_tensor * ds4_build_graph(ggml_context * ctx, ggml_cgraph * gf, const
         // of everything seen so far. A decode step folds nothing three times out
         // of four and still attends over hundreds of cells.
         if (h.has_compressor(il) && !h.has_indexer(il)) {
-            const int64_t n_kv_hca = li.hca.mask ? li.hca.mask->ne[0] : 0;
-
-            ggml_tensor * comp_k = nullptr;
-            if (n_kv_hca > 0) {
-                comp_k = ds4_build_hca_compressor(ctx, gf, h, L, li, cur, il);
+            ggml_tensor * comp_k = ds4_build_hca_compressor(ctx, gf, h, L, li, cur, il);
+            if (comp_k) {
                 ggml_build_forward_expand(gf, comp_k);
             }
 
@@ -1431,11 +1445,8 @@ static ggml_tensor * ds4_build_graph(ggml_context * ctx, ggml_cgraph * gf, const
         } else if (h.has_indexer(il)) {
             // The compressors run before q/kv, which is the order llama.cpp's
             // graph ends up executing them in even though it builds q first.
-            const int64_t n_kv_csa = li.csa.mask ? li.csa.mask->ne[0] : 0;
-
-            ds4_compressed c = {};
-            if (n_kv_csa > 0) {
-                c = ds4_build_compressors(ctx, gf, h, L, li, cur, il);
+            const ds4_compressed c = ds4_build_compressors(ctx, gf, h, L, li, cur, il);
+            if (c.lid_k) {
                 ggml_build_forward_expand(gf, c.lid_k);
             }
 

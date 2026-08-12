@@ -67,6 +67,7 @@ struct dump_params {
     std::vector<int32_t> layers;  // empty = any; a negative entry = non-layer tensors
     int32_t     n_threads = (int32_t) physical_core_count();
     int32_t     n_ctx     = 4096;
+    int32_t     n_ubatch  = 0;      // 0 = the whole prompt in one go
     uint64_t    max_elem  = 4u * 1024 * 1024;  // per tensor, then truncate
     uint32_t    max_records = 0;               // 0 = no limit
 };
@@ -242,6 +243,7 @@ static bool parse_args(int argc, char ** argv, dump_params & p) {
         }
         else if (a == "-t"      && i + 1 < argc) p.n_threads   = atoi(argv[++i]);
         else if (a == "-c"      && i + 1 < argc) p.n_ctx       = atoi(argv[++i]);
+        else if (a == "-ub"     && i + 1 < argc) p.n_ubatch    = atoi(argv[++i]);
         else if (a == "--max-elem" && i + 1 < argc) p.max_elem = strtoull(argv[++i], nullptr, 10);
         else { p.model_path.clear(); break; }
     }
@@ -266,6 +268,10 @@ static bool parse_args(int argc, char ** argv, dump_params & p) {
             "  --max-records <n>  stop after n tensors (0 = no limit)\n"
             "  --max-elem <n>  truncate each tensor to n elements (default 4M)\n"
             "  -c <int>        context size (default 4096)\n"
+            "  -ub <int>       split the prompt into ubatches of this many tokens.\n"
+            "                  The eval callback fires once per ubatch, so the dump\n"
+            "                  holds one set of tensors per chunk — which is how a\n"
+            "                  port's KV cache gets checked at n_past > 0\n"
             "  -t <int>        threads (default: physical cores)\n"
             "\n"
             "Captures ONE forward pass over the prompt — no generation. Without a\n"
@@ -318,7 +324,7 @@ int main(int argc, char ** argv) {
     llama_context_params ctx_params = llama_context_default_params();
     ctx_params.n_ctx           = std::max(params.n_ctx, (int32_t) tokens.size());
     ctx_params.n_batch         = (uint32_t) tokens.size();
-    ctx_params.n_ubatch        = (uint32_t) tokens.size();
+    ctx_params.n_ubatch        = (uint32_t) (params.n_ubatch > 0 ? params.n_ubatch : (int32_t) tokens.size());
     ctx_params.n_threads       = params.n_threads;
     ctx_params.n_threads_batch = params.n_threads;
     // The whole point. Note llama.cpp disables graph reuse when a callback is

@@ -182,11 +182,20 @@ at 12 tokens. `out_ids` is part of the contract rather than an optimisation:
 llama.cpp asks for logits at the last position only, so its head is
 `[n_embd, 1]` however long the prompt.
 
-**The KV cache is real** (`models/deepseek4/cache.h`): raw sliding-window keys,
-both kinds of compressed keys, and the compressor rings that carry a
-half-finished block across a chunk boundary, with the index plans computed from
-(n_past, n_tokens). A single chunk from an empty cache stays bit-identical,
-which is what says the plumbing changed nothing.
+**The KV cache is real and exercised at n_past > 0** (`models/deepseek4/cache.h`):
+raw sliding-window keys, both kinds of compressed keys, and the compressor rings
+that carry a half-finished block across a chunk boundary, with the index plans
+computed from (n_past, n_tokens). Three shapes are verified against llama.cpp
+splitting the same way (`dump -ub`):
+
+| | tokens | chunks | tensors |
+|---|---|---|---|
+| one prefill | 384 | 1 | 416 over layers 0-5 |
+| chunked prefill | 384 | 2 x 192 | 520 over layers 0-3 |
+| decode | 12 | 12 x 1 | 2955 over layers 0-3 |
+
+all at 0.0000e+00. The chunked case is the one that matters: a ratio-128 block
+straddles the boundary and has to read its first 64 positions out of the ring.
 
 Sizing it the way llama.cpp does also retired the eleven-name exclusion list
 these notes used to carry: those tensors are views of a *padded* cache, and the
@@ -197,16 +206,11 @@ principle.
 
 **Next, in order:**
 
-- **Multi-chunk and decode.** The cache exists and is verified for one chunk
-  from empty; what is untested is `n_past > 0` — a block whose tokens straddle
-  a chunk boundary, a ring row read back after being persisted, and a decode
-  step that folds nothing but attends over hundreds of compressed cells. The
-  plans in `cache.h` are written for it (`ds4_state_source_idx` already reaches
-  into the ring); the harness needs a chunk loop and `logit-kld`'s `dump` needs
-  a `-ub` so llama.cpp splits the same way.
-- **A golden set.** llama.cpp supports `LLM_ARCH_DEEPSEEK4`, so `gate.py
-  llamacpp` can create one exactly as it did for glm-dsa. The verification
-  methodology survives the second model unchanged, which was not guaranteed.
+- **A golden set** via `gate.py llamacpp`. The trunk is complete and verified
+  at prefill, multi-chunk prefill and decode, so the remaining question is
+  end-to-end logits over a corpus rather than tensors. Needs deepseek4 support
+  in `apps/nano-glm` (the frozen-interface harness), after which `ds4-port`
+  goes away.
 - **The two measurements** this model was chosen for, once a trunk exists to
   drive the server end to end.
 

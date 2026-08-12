@@ -81,7 +81,8 @@ static inline int32_t ds4_state_source_idx(const ds4_comp_plan & p, int32_t q,
 // `n_kv_cells` is the width the graph will give the compressed cache view, and
 // bounds `n_kv`; the mask hides everything past what this chunk can see.
 static ds4_comp_plan ds4_plan_comp(uint32_t ratio, bool overlap, int32_t n_past,
-                                   int32_t n_tokens, int32_t n_kv_cells) {
+                                   int32_t n_tokens, int32_t n_kv_cells,
+                                   int32_t n_cells, int32_t n_blocks_reserve) {
     ds4_comp_plan p;
     p.ratio   = ratio;
     p.overlap = overlap;
@@ -91,6 +92,7 @@ static ds4_comp_plan ds4_plan_comp(uint32_t ratio, bool overlap, int32_t n_past,
 
     // A block closes at the token whose position satisfies (pos + 1) % ratio.
     // llama-kv-cache-dsv4.cpp:519.
+    std::vector<int32_t> starts;    // -1 marks a dummy
     for (int32_t i = 0; i < n_tokens; i++) {
         const int32_t pos = n_past + i;
         if ((pos + 1) % r != 0) {
@@ -99,35 +101,49 @@ static ds4_comp_plan ds4_plan_comp(uint32_t ratio, bool overlap, int32_t n_past,
         const int32_t source_start = pos + 1 - r;
         p.write_idxs.push_back(pos / r);
         p.write_pos .push_back(source_start);
+        starts.push_back(source_start);
         p.n_blocks++;
+    }
+
+    // **Dummy blocks**, and they are not an optimisation to skip: llama.cpp
+    // pads an overlapping compressor's block count up to the reserve plan's so
+    // the graph has the same shape for every ubatch of a given size
+    // (llama-kv-cache-dsv4.cpp:546). A dummy folds the current token with
+    // itself, writes to the last cache cell — which no mask ever makes visible
+    // — and is thrown away. Leaving them out changes no arithmetic and every
+    // tensor: a decode step at ratio 4 folds nothing three times in four, so
+    // the reference emits a compressor's worth of tensors that the port does
+    // not, and a per-tensor comparison shifts out of alignment and reports
+    // nonsense. Only the ratio-4 caches are padded; the ratio-128 one is not,
+    // which is why it agreed before this existed.
+    if (overlap) {
+        const int32_t last = ds4_state_source_idx(p, n_past + n_tokens - 1, n_past, n_tokens);
+        while (p.n_blocks < n_blocks_reserve) {
+            p.write_idxs.push_back(n_cells - 1);
+            p.write_pos .push_back(0);
+            starts.push_back(-1 - last);   // encodes "repeat row `last`"
+            p.n_blocks++;
+        }
     }
 
     // Reads: for an overlapping compressor all the previous blocks' rows first,
     // then all the current ones, because the graph takes the first half of one
     // group and the second half of the other. llama-kv-cache-dsv4.cpp:531-541.
+    auto rows_for = [&](int32_t start, bool prev) {
+        for (int32_t j = 0; j < r; j++) {
+            if (start < 0) {
+                p.read_idxs.push_back(-1 - start);     // a dummy: one row, r times
+            } else {
+                const int32_t q = prev ? start - r + j : start + j;
+                p.read_idxs.push_back(ds4_state_source_idx(p, q, n_past, n_tokens));
+            }
+        }
+    };
     if (overlap) {
-        for (int32_t b = 0; b < p.n_blocks; b++) {
-            const int32_t source_start = p.write_pos[b];
-            for (int32_t j = 0; j < r; j++) {
-                p.read_idxs.push_back(
-                    ds4_state_source_idx(p, source_start - r + j, n_past, n_tokens));
-            }
-        }
-        for (int32_t b = 0; b < p.n_blocks; b++) {
-            const int32_t source_start = p.write_pos[b];
-            for (int32_t j = 0; j < r; j++) {
-                p.read_idxs.push_back(
-                    ds4_state_source_idx(p, source_start + j, n_past, n_tokens));
-            }
-        }
+        for (int32_t b = 0; b < p.n_blocks; b++) rows_for(starts[b], true);
+        for (int32_t b = 0; b < p.n_blocks; b++) rows_for(starts[b], false);
     } else {
-        for (int32_t b = 0; b < p.n_blocks; b++) {
-            const int32_t source_start = p.write_pos[b];
-            for (int32_t j = 0; j < r; j++) {
-                p.read_idxs.push_back(
-                    ds4_state_source_idx(p, source_start + j, n_past, n_tokens));
-            }
-        }
+        for (int32_t b = 0; b < p.n_blocks; b++) rows_for(starts[b], false);
     }
 
     p.ape_pos.resize((size_t) n_tokens);

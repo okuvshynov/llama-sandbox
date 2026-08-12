@@ -47,6 +47,7 @@ struct port_params {
     int32_t     n_threads = physical_core_count();
     int32_t     n_layers  = 0;   // 0 = every layer the graph can build
     int32_t     n_ctx     = 4096;  // cache cells; matches dump's default
+    int32_t     n_ubatch  = 0;     // 0 = the whole prompt in one chunk
     ds4_stage   stage     = DS4_STAGE_LAYER;
 };
 
@@ -165,6 +166,7 @@ int main(int argc, char ** argv) {
         else if (!strcmp(a, "-t") && i + 1 < argc) p.n_threads  = atoi(argv[++i]);
         else if (!strcmp(a, "-L") && i + 1 < argc) p.n_layers   = atoi(argv[++i]);
         else if (!strcmp(a, "-c") && i + 1 < argc) p.n_ctx      = atoi(argv[++i]);
+        else if (!strcmp(a, "-ub") && i + 1 < argc) p.n_ubatch  = atoi(argv[++i]);
         else if (!strcmp(a, "--stage") && i + 1 < argc) {
             if (!parse_stage(argv[++i], p.stage)) { p.model_path.clear(); break; }
         }
@@ -210,139 +212,149 @@ int main(int argc, char ** argv) {
     if (!backend) NANO_ABORT("no CPU backend");
     ggml_backend_cpu_set_n_threads(backend, p.n_threads);
 
-    // 43 layers at roughly 150 nodes each, plus the dump's own copies, so the
-    // 8192 that sufficed while only a few layers were ported does not.
-    const size_t n_nodes_max = 32768;
-    std::vector<uint8_t> meta(ggml_tensor_overhead() * n_nodes_max +
-                              ggml_graph_overhead_custom(n_nodes_max, false));
-    ggml_init_params ip = { meta.size(), meta.data(), /*no_alloc =*/ true };
-    ggml_context * ctx = ggml_init(ip);
-    if (!ctx) NANO_ABORT("no graph context");
-
-    ggml_cgraph * gf = ggml_new_graph_custom(ctx, n_nodes_max, false);
-
-    ggml_tensor * inp_tokens = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, n_tokens);
-    ggml_set_name(inp_tokens, "inp_tokens");
-    ggml_set_input(inp_tokens);
-
-    ggml_tensor * inp_pos = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, n_tokens);
-    ggml_set_name(inp_pos, "inp_pos");
-    ggml_set_input(inp_pos);
-
-    // F16: ggml_flash_attn_ext requires it, where the explicit path wants F32.
-    // Declared after the cache so its width is the padded cell count.
-
-    // ---- KV cache and this chunk's plans ----
-    //
-    // The harness still runs one chunk from an empty cache, which is what makes
-    // the comparison against a single llama.cpp decode meaningful. What changed
-    // is that the state is now *real*: zeroed cache tensors and index plans
-    // computed from (n_past, n_tokens) by `cache.h`, rather than the analytic
-    // shortcuts this file used to carry. A second chunk needs only a loop.
-    const int32_t n_past = 0;
-
-    ds4_cache C;
-    // The cache is sized to a *context*, not to this chunk. That matters for
-    // more than capacity: `get_n_kv` caps its padding at the cache size, so a
-    // cache sized to the prompt would quietly hand the graph an unpadded
-    // window and stop the key views matching the reference's shapes.
+    // The cache is sized to a *context*, not to a chunk. That matters for more
+    // than capacity: `get_n_kv` caps its padding at the cache size, so a cache
+    // sized to the prompt would quietly hand the graph an unpadded window and
+    // stop the key views matching the reference shapes.
     if (p.n_ctx < n_tokens) NANO_ABORT("-c %d is smaller than the %d tokens", p.n_ctx, n_tokens);
+    ds4_cache C;
     ds4_cache_init(C, M.h, (uint32_t) p.n_ctx);
 
-    // llama.cpp's `get_n_kv`: at least 256 cells, rounded up to 256, capped by
-    // the cache. Matching it is not cosmetic — it is what makes the key views
-    // and masks the same shape as the reference's.
-    auto pad_n_kv = [](int32_t used, uint32_t size) {
-        return (int32_t) std::min<int64_t>(size, std::max<int64_t>(256, GGML_PAD(used, 256)));
-    };
-    const int32_t n_kv_raw = pad_n_kv(n_past + n_tokens, C.kv_size);
-    const int32_t n_kv_csa = pad_n_kv((n_past + n_tokens) / 4,   C.csa_size);
-    const int32_t n_kv_hca = pad_n_kv((n_past + n_tokens) / 128, C.hca_size);
+    FILE * f = fopen(p.out_path.c_str(), "wb");
+    if (!f) NANO_ABORT("cannot write '%s'", p.out_path.c_str());
+    uint32_t n_records = 0;
+    fwrite(NTD_MAGIC, 1, sizeof(NTD_MAGIC), f);
+    fwrite(&n_records, sizeof(n_records), 1, f);
 
-    const ds4_comp_plan p_csa = ds4_plan_comp(4,   true,  n_past, n_tokens, n_kv_csa);
-    const ds4_comp_plan p_hca = ds4_plan_comp(128, false, n_past, n_tokens, n_kv_hca);
+    std::vector<float> scratch;
+    const int32_t chunk_size = p.n_ubatch > 0 ? p.n_ubatch : n_tokens;
 
-    std::vector<ggml_fp16_t> raw_mask;
-    ds4_plan_raw_mask(raw_mask, n_kv_raw, n_past, n_tokens, (int32_t) M.h.sliding_window);
+    // One chunk: build a graph for (n_past, n_tok), run it, append every named
+    // tensor. The cache lives outside this and is what carries state forward,
+    // so calling it twice is the whole of multi-chunk prefill.
+    //
+    // The graph is rebuilt per chunk rather than reused: its shapes depend on
+    // both n_tok and the padded window, and llama.cpp rebuilds for the same
+    // reason. A production engine would cache by (n_tok, n_kv) as glm-dsa's
+    // `eval_chunk` does; a porting harness gains nothing from it.
+    auto run_chunk = [&](int32_t n_past, const int32_t * chunk, int32_t n_tok) {
+        const size_t n_nodes_max = 32768;
+        std::vector<uint8_t> meta(ggml_tensor_overhead() * n_nodes_max +
+                                  ggml_graph_overhead_custom(n_nodes_max, false));
+        ggml_init_params ip = { meta.size(), meta.data(), /*no_alloc =*/ true };
+        ggml_context * ctx = ggml_init(ip);
+        if (!ctx) NANO_ABORT("no graph context");
 
-    std::vector<int64_t> k_idxs((size_t) n_tokens);
-    for (int32_t i = 0; i < n_tokens; i++) k_idxs[i] = n_past + i;
+        ggml_cgraph * gf = ggml_new_graph_custom(ctx, n_nodes_max, false);
 
-    auto new_input = [&](ggml_type type, int64_t ne0, int64_t ne1, const char * name) {
-        ggml_tensor * t = ggml_new_tensor_2d(ctx, type, ne0, ne1);
-        ggml_set_name(t, name);
-        ggml_set_input(t);
-        return t;
-    };
-
-    // Declare and upload in one place: every one of these is a plain array the
-    // host already computed, and splitting the two halves apart is how they
-    // drift.
-    auto feed = [&](ds4_comp_inputs & d, const ds4_comp_plan & pl, const char * tag) {
-        char nm[64];
-        auto nmk = [&](const char * suffix) {
-            snprintf(nm, sizeof(nm), "%s_%s", tag, suffix);
-            return nm;
-        };
-        auto put_i32 = [&](const std::vector<int32_t> & v, const char * suffix) {
-            if (v.empty()) return (ggml_tensor *) nullptr;
-            ggml_tensor * t = new_input(GGML_TYPE_I32, (int64_t) v.size(), 1, nmk(suffix));
+        auto new_input = [&](ggml_type type, int64_t ne0, int64_t ne1, const char * name) {
+            ggml_tensor * t = ggml_new_tensor_2d(ctx, type, ne0, ne1);
+            ggml_set_name(t, name);
+            ggml_set_input(t);
             return t;
         };
-        auto put_i64 = [&](const std::vector<int64_t> & v, const char * suffix) {
-            if (v.empty()) return (ggml_tensor *) nullptr;
-            ggml_tensor * t = new_input(GGML_TYPE_I64, (int64_t) v.size(), 1, nmk(suffix));
-            return t;
+
+        // llama.cpp's `get_n_kv`: at least 256 cells, rounded up to 256, capped
+        // by the cache. Matching it is not cosmetic — it is what makes the key
+        // views and masks the same shape as the reference's.
+        auto pad_n_kv = [](int32_t used, uint32_t size) {
+            return (int32_t) std::min<int64_t>(size, std::max<int64_t>(256, GGML_PAD(used, 256)));
         };
-        d.read_idxs   = put_i32(pl.read_idxs,   "read_idxs");
-        d.comp_pos    = put_i32(pl.write_pos,   "comp_pos");
-        d.ape_pos     = put_i32(pl.ape_pos,     "ape_pos");
-        d.write_idxs  = put_i64(pl.write_idxs,  "write_idxs");
-        d.persist_src = put_i32(pl.persist_src, "persist_src");
-        d.persist_dst = put_i64(pl.persist_dst, "persist_dst");
-        d.mask        = new_input(GGML_TYPE_F16, pl.n_kv, n_tokens, nmk("kq_mask"));
-    };
+        const int32_t n_used   = n_past + n_tok;
+        const int32_t n_kv_raw = pad_n_kv(n_used, C.kv_size);
+        // Zero until a block has actually closed, and the padding floor must not
+        // hide that: llama.cpp leaves the compressed mask null while no block
+        // exists, and the layer then runs plain raw attention. Padding first
+        // would make every layer take the compressed path from token 0.
+        const int32_t n_kv_csa = n_used / 4   > 0 ? pad_n_kv(n_used / 4,   C.csa_size) : 0;
+        const int32_t n_kv_hca = n_used / 128 > 0 ? pad_n_kv(n_used / 128, C.hca_size) : 0;
 
-    ds4_layer_inputs lin;
-    feed(lin.csa, p_csa, "csa");
-    feed(lin.lid, p_csa, "lid");
-    feed(lin.hca, p_hca, "hca");
-    lin.rot    = new_input(GGML_TYPE_F32, M.h.idx_key_len, M.h.idx_key_len, "lid_k_rot");
-    lin.k_idxs = new_input(GGML_TYPE_I64, n_tokens, 1, "k_idxs");
+        // The reserve count is set by the *configured* chunk size, not by this
+        // chunk's length, because that is what llama.cpp reserves the graph for.
+        const int32_t reserve = (chunk_size + 3) / 4;
+        const ds4_comp_plan p_csa = ds4_plan_comp(4,   true,  n_past, n_tok, n_kv_csa,
+                                                  (int32_t) C.csa_size, reserve);
+        const ds4_comp_plan p_hca = ds4_plan_comp(128, false, n_past, n_tok, n_kv_hca,
+                                                  (int32_t) C.hca_size, 0);
 
-    // F16: ggml_flash_attn_ext requires it, where the explicit path wants F32.
-    ggml_tensor * kq_mask = new_input(GGML_TYPE_F16, n_kv_raw, n_tokens, "kq_mask");
+        std::vector<ggml_fp16_t> raw_mask;
+        ds4_plan_raw_mask(raw_mask, n_kv_raw, n_past, n_tok, (int32_t) M.h.sliding_window);
 
-    // llama.cpp asks for logits at the last position only (its batch sets
-    // `logits = true` on that token alone), so the head runs on one row. This
-    // mirrors that; a head over every position would differ in shape.
-    ggml_tensor * out_ids = nullptr;
-    if (p.stage == DS4_STAGE_HEAD) {
-        out_ids = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, 1);
-        ggml_set_name(out_ids, "inp_out_ids");
-        ggml_set_input(out_ids);
-    }
+        std::vector<int64_t> k_idxs((size_t) n_tok);
+        for (int32_t i = 0; i < n_tok; i++) k_idxs[i] = n_past + i;
 
-    ggml_tensor * out = ds4_build_graph(ctx, gf, M, C, inp_tokens, inp_pos, kq_mask, lin,
-                                        out_ids, n_tokens, p.stage, (uint32_t) p.n_layers);
-    ggml_build_forward_expand(gf, out);
+        ggml_tensor * inp_tokens = new_input(GGML_TYPE_I32, n_tok, 1, "inp_tokens");
+        ggml_tensor * inp_pos    = new_input(GGML_TYPE_I32, n_tok, 1, "inp_pos");
 
-    ggml_gallocr_t galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
-    if (!ggml_gallocr_alloc_graph(galloc, gf)) NANO_ABORT("graph alloc failed");
+        auto declare = [&](ds4_comp_inputs & d, const ds4_comp_plan & pl, const char * tag) {
+            char nm[64];
+            auto nmk = [&](const char * suffix) {
+                snprintf(nm, sizeof(nm), "%s_%s", tag, suffix);
+                return nm;
+            };
+            auto i32v = [&](const std::vector<int32_t> & v, const char * suf) {
+                return v.empty() ? (ggml_tensor *) nullptr
+                                 : new_input(GGML_TYPE_I32, (int64_t) v.size(), 1, nmk(suf));
+            };
+            auto i64v = [&](const std::vector<int64_t> & v, const char * suf) {
+                return v.empty() ? (ggml_tensor *) nullptr
+                                 : new_input(GGML_TYPE_I64, (int64_t) v.size(), 1, nmk(suf));
+            };
+            d.read_idxs   = i32v(pl.read_idxs,   "read_idxs");
+            d.comp_pos    = i32v(pl.write_pos,   "comp_pos");
+            d.ape_pos     = i32v(pl.ape_pos,     "ape_pos");
+            d.write_idxs  = i64v(pl.write_idxs,  "write_idxs");
+            d.persist_src = i32v(pl.persist_src, "persist_src");
+            d.persist_dst = i64v(pl.persist_dst, "persist_dst");
+            // No mask when nothing has been compressed yet — that is what
+            // tells the graph to skip the compressed half entirely.
+            d.mask        = pl.n_kv > 0
+                          ? new_input(GGML_TYPE_F16, pl.n_kv, n_tok, nmk("kq_mask"))
+                          : nullptr;
+        };
 
-    ggml_backend_tensor_set(inp_tokens, tokens.data(), 0, n_tokens * sizeof(int32_t));
+        ds4_layer_inputs lin;
+        declare(lin.csa, p_csa, "csa");
+        declare(lin.lid, p_csa, "lid");
+        declare(lin.hca, p_hca, "hca");
+        lin.rot    = new_input(GGML_TYPE_F32, M.h.idx_key_len, M.h.idx_key_len, "lid_k_rot");
+        lin.k_idxs = new_input(GGML_TYPE_I64, n_tok, 1, "k_idxs");
 
-    std::vector<int32_t> pos(n_tokens);
-    for (int32_t i = 0; i < n_tokens; i++) pos[i] = i;
-    ggml_backend_tensor_set(inp_pos, pos.data(), 0, n_tokens * sizeof(int32_t));
+        // F16: ggml_flash_attn_ext requires it, where the explicit path wants F32.
+        ggml_tensor * kq_mask = new_input(GGML_TYPE_F16, n_kv_raw, n_tok, "kq_mask");
 
-    ggml_backend_tensor_set(kq_mask, raw_mask.data(), 0, raw_mask.size() * sizeof(ggml_fp16_t));
-    ggml_backend_tensor_set(lin.k_idxs, k_idxs.data(), 0, k_idxs.size() * sizeof(int64_t));
+        // llama.cpp asks for logits at the last position only, so the head runs
+        // on one row. A head over every position would differ in shape.
+        ggml_tensor * out_ids = nullptr;
+        if (p.stage == DS4_STAGE_HEAD) {
+            out_ids = new_input(GGML_TYPE_I32, 1, 1, "inp_out_ids");
+        }
 
-    {
+        ggml_tensor * out = ds4_build_graph(ctx, gf, M, C, inp_tokens, inp_pos, kq_mask, lin,
+                                            out_ids, n_tok, p.stage, (uint32_t) p.n_layers);
+        ggml_build_forward_expand(gf, out);
+
+        ggml_gallocr_t galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
+        if (!ggml_gallocr_alloc_graph(galloc, gf)) NANO_ABORT("graph alloc failed");
+
+        // An input the graph never referenced has no buffer, because gallocr
+        // only allocates what the graph reaches. That is not a hazard to route
+        // around, it is the correct question to ask: a chunk that closes no
+        // block does not rotate anything, so `lid_k_rot` is genuinely unused
+        // and filling it would be meaningless. An input the graph *does* use is
+        // always allocated, so this cannot silently skip something needed.
         auto set = [](ggml_tensor * t, const void * d, size_t n) {
-            if (t) ggml_backend_tensor_set(t, d, 0, n);
+            if (t && t->buffer) ggml_backend_tensor_set(t, d, 0, n);
         };
+
+        set(inp_tokens, chunk, n_tok * sizeof(int32_t));
+        {
+            std::vector<int32_t> pos((size_t) n_tok);
+            for (int32_t i = 0; i < n_tok; i++) pos[i] = n_past + i;
+            set(inp_pos, pos.data(), pos.size() * sizeof(int32_t));
+        }
+        set(kq_mask, raw_mask.data(), raw_mask.size() * sizeof(ggml_fp16_t));
+        set(lin.k_idxs, k_idxs.data(), k_idxs.size() * sizeof(int64_t));
         auto upload = [&](const ds4_comp_inputs & d, const ds4_comp_plan & pl) {
             set(d.read_idxs,   pl.read_idxs.data(),   pl.read_idxs.size()   * sizeof(int32_t));
             set(d.comp_pos,    pl.write_pos.data(),   pl.write_pos.size()   * sizeof(int32_t));
@@ -356,43 +368,47 @@ int main(int argc, char ** argv) {
         upload(lin.lid, p_csa);
         upload(lin.hca, p_hca);
 
-        // Order 128, not d_key: the indexer's cache is the only one that
-        // rotates.
+        // Order 128, not d_key: the indexer's cache is the only one that rotates.
         std::vector<float> had;
         ds4_fill_hadamard(had, (int) M.h.idx_key_len);
-        ggml_backend_tensor_set(lin.rot, had.data(), 0, had.size() * sizeof(float));
-    }
+        set(lin.rot, had.data(), had.size() * sizeof(float));
 
-    if (out_ids) {
-        const int32_t last = n_tokens - 1;
-        ggml_backend_tensor_set(out_ids, &last, 0, sizeof(int32_t));
-    }
-
-    if (ggml_backend_graph_compute(backend, gf) != GGML_STATUS_SUCCESS) NANO_ABORT("compute failed");
-
-    FILE * f = fopen(p.out_path.c_str(), "wb");
-    if (!f) NANO_ABORT("cannot write '%s'", p.out_path.c_str());
-    uint32_t n_records = 0;
-    fwrite(NTD_MAGIC, 1, sizeof(NTD_MAGIC), f);
-    fwrite(&n_records, sizeof(n_records), 1, f);
-
-    // Walk the graph in build order, so repeated names ("norm" appears several
-    // times a layer) land in the same order llama.cpp emitted them — which is
-    // how dump_inspect.py pairs them up.
-    std::vector<float> scratch;
-    printf("\n");
-    for (int i = 0; i < ggml_graph_n_nodes(gf); i++) {
-        ggml_tensor * t = ggml_graph_node(gf, i);
-        if (!(t->flags & GGML_TENSOR_FLAG_OUTPUT) || t->name[0] == '\0') continue;
-        if (write_record(f, t, scratch)) {
-            n_records++;
+        if (out_ids) {
+            const int32_t last = n_tok - 1;
+            set(out_ids, &last, sizeof(int32_t));
         }
+
+        if (ggml_backend_graph_compute(backend, gf) != GGML_STATUS_SUCCESS) {
+            NANO_ABORT("compute failed");
+        }
+
+        // Walk in build order, so repeated names ("norm" appears several times a
+        // layer) land in the order llama.cpp emitted them — which is how
+        // dump_inspect.py pairs them up, chunk by chunk as well as within one.
+        for (int i = 0; i < ggml_graph_n_nodes(gf); i++) {
+            ggml_tensor * t = ggml_graph_node(gf, i);
+            if (!(t->flags & GGML_TENSOR_FLAG_OUTPUT) || t->name[0] == '\0') continue;
+            if (write_record(f, t, scratch)) {
+                n_records++;
+            }
+        }
+
+        ggml_gallocr_free(galloc);
+        ggml_free(ctx);
+    };
+
+    for (int32_t off = 0; off < n_tokens; off += chunk_size) {
+        const int32_t n_tok = std::min(chunk_size, n_tokens - off);
+        fprintf(stderr, "ds4-port: chunk at %d, %d tokens\n", off, n_tok);
+        printf("\n");
+        run_chunk(off, tokens.data() + off, n_tok);
     }
 
     fseek(f, (long) sizeof(NTD_MAGIC), SEEK_SET);
     fwrite(&n_records, sizeof(n_records), 1, f);
     fclose(f);
 
+    ds4_cache_free(C);
     printf("\nds4-port: wrote %s (%u tensors)\n", p.out_path.c_str(), n_records);
     return 0;
 }
