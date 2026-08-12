@@ -233,6 +233,23 @@ static expert_w experts_of(const moe_backend & B, uint32_t il) {
     return { L.ffn_up_exps, L.ffn_gate_exps, L.ffn_down_exps };
 }
 
+// The per-layer SwiGLU clamp, or 0 for an architecture that does not clamp.
+// deepseek4 clamps at `swiglu_clamp_exp[il]` (10.0 throughout this checkpoint);
+// glm-dsa does not clamp at all. Zero for "none" matches the `limit > 1e-6f`
+// test `build_ds4_moe_experts` already uses, so the two paths agree by
+// construction rather than by coincidence.
+//
+// This exists because the compacted path is arch-neutral and so was silently
+// dropping the clamp: `run_device_compact` built mul_mat_id -> swiglu_split
+// with nothing in between, which is right for glm-dsa and wrong for deepseek4.
+// `gate.py rpc` did not catch it because it starts a server with no
+// `--gpu-experts`, so every expert lives on device 0 and takes the *other*
+// path — the one that calls `build_ds4_moe_experts` and does clamp. Only a
+// split configuration reaches the bug, and only `--compare` looks there.
+static float swiglu_limit_of(const moe_backend & B, uint32_t il) {
+    return B.arch == MOE_ARCH_DEEPSEEK4 ? B.ds4.h.swiglu_clamp_exp[il] : 0.0f;
+}
+
 // ---- the router half ------------------------------------------------------
 //
 // Runs the router and reads its decision back to the host. This read-back is
@@ -566,6 +583,17 @@ static bool run_device_compact(moe_backend & B, moe_device & D, uint32_t layer,
 
     ggml_tensor * up   = ggml_mul_mat_id(ctx, w_up,   inp, ids);
     ggml_tensor * gate = ggml_mul_mat_id(ctx, w_gate, inp, ids);
+
+    // Same clamp, same order, as build_ds4_moe_experts: `up` symmetric, `gate`
+    // one-sided and *before* SiLU, which ggml_swiglu_split applies to its first
+    // argument. `ggml_clamp` writes through a view of its input, which is safe
+    // here for the reason it is safe there — nothing else reads `up` or `gate`.
+    const float limit = swiglu_limit_of(B, layer);
+    if (limit > 1e-6f) {
+        up   = ggml_clamp(ctx, up,   -limit,    limit);
+        gate = ggml_clamp(ctx, gate, -INFINITY, limit);
+    }
+
     ggml_tensor * act  = ggml_swiglu_split(ctx, gate, up);
     ggml_tensor * res  = ggml_mul_mat_id(ctx, w_down, act, ids);
     res = ggml_mul(ctx, res, wts);

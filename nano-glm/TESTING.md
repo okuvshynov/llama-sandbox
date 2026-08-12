@@ -147,6 +147,43 @@ picked a resident expert read *exactly* 0, and the worst layers are the ones
 the split device did most work in. If either stops holding, distrust the run
 before distrusting the driver.
 
+### Run it for every new architecture, on a split configuration
+
+Not optional, and this is the case that proves it. `run_device_compact` — the
+path a device takes when it holds only *some* experts — is deliberately
+arch-neutral: it moves weights and calls `mul_mat_id`, and knows nothing about
+which model it is serving. That is the right design and it has one failure mode,
+which deepseek4 hit: **an op the architecture needs and the neutral path does
+not have.** deepseek4 clamps its SwiGLU at ±10.0; `run_device_compact` built
+`mul_mat_id -> swiglu_split` with nothing between, which is correct for glm-dsa
+and wrong here.
+
+Nothing caught it for four commits. `gate.py rpc` starts a server with no
+`--gpu-experts` or `--cpu-experts`, so every expert lives on device 0 and takes
+the *other* path — the one that calls `build_ds4_moe_experts` and does clamp.
+**The gate's server configuration never reaches the code the gate exists to
+check.** Only a split configuration does, and only `--compare` looks there.
+
+So: a new architecture is not ported until `--compare` has been run against a
+split configuration. Use `--cpu-experts` rather than `--gpu-experts` for it —
+identical arithmetic on both sides means any residual is the graph.
+
+The residual is not zero even when correct: a token whose experts land on two
+devices has its contributions summed by the host scatter-add instead of ggml's
+pairwise adds, so summation order differs and the result drifts at rounding
+level. What a missing op looks like, measured on this one with only 12.67% of
+pairs on the split device:
+
+| `--cpu-experts 32 --compare`, `01_prose` | worst layer max abs | overall rel RMS |
+|---|---|---|
+| clamp missing | 2.241e+02 | 5.598e-02 |
+| clamp present | 1.221e-04 | 1.873e-08 |
+
+Six orders of magnitude on both, so a single run at any point would have found
+it. Read the **max** by preference — it is the more sensitive of the two when a
+fault is rare — but do not wait for a subtle signal: an omitted op in this path
+is not subtle.
+
 ## `moe-bench`: the expert kernel, without the model
 
 ```bash
