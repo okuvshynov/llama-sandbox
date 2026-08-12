@@ -1,0 +1,96 @@
+{
+ "created": "2026-08-12T10:20:54",
+ "host": "DESKTOP-N3V6DBC",
+ "platform": "Windows-10-10.0.19045-SP0",
+ "git_rev_live": "2885006",
+ "n_threads": 16,
+ "binary": {
+  "git_rev": "9768406-dirty",
+  "compiler": "MSVC 19.50.35723.0",
+  "ggml_version": "0.18.1",
+  "ggml_commit": "6a32c29a7",
+  "blas": "0",
+  "llamafile": "1",
+  "vulkan": "0",
+  "trace": "0",
+  "n_threads": "16",
+  "cores_phys": "16",
+  "cores_log": "32"
+ },
+ "model": {
+  "dir": "D:\\llms\\ds-v4-flash\\UD-Q8_K_XL",
+  "first": "DeepSeek-V4-Flash-0731-UD-Q8_K_XL-00001-of-00005.gguf",
+  "shards": [
+   {
+    "name": "DeepSeek-V4-Flash-0731-UD-Q8_K_XL-00001-of-00005.gguf",
+    "size": 5257408,
+    "mtime": 1786464470
+   },
+   {
+    "name": "DeepSeek-V4-Flash-0731-UD-Q8_K_XL-00002-of-00005.gguf",
+    "size": 49215492960,
+    "mtime": 1786464468
+   },
+   {
+    "name": "DeepSeek-V4-Flash-0731-UD-Q8_K_XL-00003-of-00005.gguf",
+    "size": 49700372160,
+    "mtime": 1786465000
+   },
+   {
+    "name": "DeepSeek-V4-Flash-0731-UD-Q8_K_XL-00004-of-00005.gguf",
+    "size": 49466495968,
+    "mtime": 1786464766
+   },
+   {
+    "name": "DeepSeek-V4-Flash-0731-UD-Q8_K_XL-00005-of-00005.gguf",
+    "size": 13481997024,
+    "mtime": 1786464534
+   }
+  ]
+ },
+ "runs": {
+  "smoke": {
+   "n_prompt": 14,
+   "n_predict": 4,
+   "bytes": 18807,
+   "sha256": "314a6d6a0d1d1bbc1758b6d9ca6cc4ba26376a5d41f734a72d5d23a59554af47",
+   "independent": "llama.cpp rescore --sim-gen, KL == 0"
+  },
+  "01_prose": {
+   "n_prompt": 111,
+   "n_predict": 32,
+   "bytes": 148307,
+   "sha256": "0ff2b3c657694e03dad25d2922abff4317cd8558feedebd1361a10ecea3bb2ec",
+   "independent": "llama.cpp rescore --sim-gen, KL == 0"
+  },
+  "02_code": {
+   "n_prompt": 143,
+   "n_predict": 32,
+   "bytes": 181459,
+   "sha256": "558e64e47cf759b7985f0f8bb7c40f8ba4662a98527395c7a152791f4e5f1b29",
+   "independent": "llama.cpp rescore --sim-gen, KL == 0"
+  },
+  "03_math": {
+   "n_prompt": 126,
+   "n_predict": 32,
+   "bytes": 163847,
+   "sha256": "9a77a19ed295b77c82f8e4f9d94b94d36c19b645a1c0b4b7d7791cfee1cbf0ea",
+   "independent": "llama.cpp rescore --sim-gen, KL == 0"
+  },
+  "04_history": {
+   "n_prompt": 118,
+   "n_predict": 32,
+   "bytes": 155559,
+   "sha256": "300e0c384ee20be22cad68697ff9e534ea7ebfe331be212690a291c6abfd6eaa",
+   "independent": "llama.cpp rescore --sim-gen, KL == 0"
+  },
+  "05_french": {
+   "n_prompt": 117,
+   "n_predict": 32,
+   "bytes": 154523,
+   "sha256": "aa567df54f9576824ba1de63009d0ce86d57781d7f601ced3ea2fc0f8dd9689c",
+   "independent": "llama.cpp rescore --sim-gen, KL == 0"
+  }
+ },
+ "note": "Golden set: nano-glm local output, every position verified against llama.cpp rescore --sim-gen at KL == 0. Regenerate with `python gate.py --update-golden`."
+}

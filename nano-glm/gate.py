@@ -64,6 +64,9 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
+# Set from --testdata. A golden set belongs to one model on one machine, so a
+# second architecture needs its own directory; lib/README.md predicted
+# "gate.py itself needs no change" and this is the change it needed.
 TESTDATA = os.path.join(HERE, "testdata")
 LOGIT_KLD = os.path.join(REPO, "logit-kld")
 EXE = ".exe" if os.name == "nt" else ""
@@ -407,6 +410,9 @@ def main():
     ap.add_argument("--update-golden", action="store_true",
                     help="run llamacpp over every prompt and rewrite testdata/")
     ap.add_argument("--model", default=DEFAULT_MODEL)
+    ap.add_argument("--testdata", default=None,
+                    help="golden set directory (default testdata/). One model per "
+                         "directory: a golden set belongs to one model on one machine")
     ap.add_argument("--build", default=os.path.join(HERE, "build", "bin"))
     ap.add_argument("--logit-kld-build", default=os.path.join(LOGIT_KLD, "build", "bin"))
     ap.add_argument("--threads", type=int, default=None,
@@ -422,6 +428,10 @@ def main():
     ap.add_argument("--allow-drift", action="store_true",
                     help="downgrade provenance refusals to warnings")
     args = ap.parse_args()
+
+    if args.testdata:
+        global TESTDATA
+        TESTDATA = os.path.abspath(args.testdata)
 
     names = list(dict.fromkeys(args.tests))
     if "all" in names:

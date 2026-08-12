@@ -68,6 +68,7 @@ struct dump_params {
     int32_t     n_threads = (int32_t) physical_core_count();
     int32_t     n_ctx     = 4096;
     int32_t     n_ubatch  = 0;      // 0 = the whole prompt in one go
+    bool        tokenize_only = false;
     uint64_t    max_elem  = 4u * 1024 * 1024;  // per tensor, then truncate
     uint32_t    max_records = 0;               // 0 = no limit
 };
@@ -189,6 +190,25 @@ static bool parse_args(int argc, char ** argv, dump_params & p) {
         const std::string a = argv[i];
         if      (a == "-m"      && i + 1 < argc) p.model_path  = argv[++i];
         else if (a == "-p"      && i + 1 < argc) p.prompt      = argv[++i];
+        else if (a == "-f"      && i + 1 < argc) {
+            // A file, not a -p string: Windows builds argv through the ANSI code
+            // page, so every non-ASCII character in a prompt arrives mangled and
+            // nothing errors (repo CLAUDE.md). A file has no code page.
+            FILE * pf = fopen(argv[++i], "rb");
+            if (!pf) {
+                fprintf(stderr, "dump: cannot read prompt file\n");
+                p.model_path.clear();
+                break;
+            }
+            char buf[4096];
+            size_t n;
+            while ((n = fread(buf, 1, sizeof(buf), pf)) > 0) p.prompt.append(buf, n);
+            fclose(pf);
+            while (!p.prompt.empty() &&
+                   (p.prompt.back() == '\n' || p.prompt.back() == '\r')) {
+                p.prompt.pop_back();
+            }
+        }
         else if (a == "-o"      && i + 1 < argc) p.out_path    = argv[++i];
         else if (a == "--name"  && i + 1 < argc) p.name_filter = argv[++i];
         else if (a == "--op"    && i + 1 < argc) p.op_filter   = argv[++i];
@@ -244,6 +264,7 @@ static bool parse_args(int argc, char ** argv, dump_params & p) {
         else if (a == "-t"      && i + 1 < argc) p.n_threads   = atoi(argv[++i]);
         else if (a == "-c"      && i + 1 < argc) p.n_ctx       = atoi(argv[++i]);
         else if (a == "-ub"     && i + 1 < argc) p.n_ubatch    = atoi(argv[++i]);
+        else if (a == "--tokenize")             p.tokenize_only = true;
         else if (a == "--max-elem" && i + 1 < argc) p.max_elem = strtoull(argv[++i], nullptr, 10);
         else { p.model_path.clear(); break; }
     }
@@ -303,6 +324,14 @@ int main(int argc, char ** argv) {
     } else {
         tokens = common_tokenize(vocab, params.prompt, true, true);
     }
+    if (params.tokenize_only) {
+        printf("%zu", tokens.size());
+        for (llama_token t : tokens) printf(" %d", t);
+        printf("\n");
+        llama_model_free(model);
+        return 0;
+    }
+
     if (tokens.empty()) {
         fprintf(stderr, "dump: prompt tokenized to 0 tokens\n");
         llama_model_free(model);

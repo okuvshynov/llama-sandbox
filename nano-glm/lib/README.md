@@ -147,8 +147,20 @@ in it and can be read as bookkeeping.
 ### Also per-model, outside the code
 
 `testdata/` is a golden set for *one model on one machine* — new model, new
-`prompts.json` and a fresh `gate.py --update-golden`. `gate.py` itself needs no
-change; `DEFAULT_MODEL` is already an argument.
+`prompts.json` and a fresh `gate.py --update-golden`.
+
+The old text added "`gate.py` itself needs no change; `DEFAULT_MODEL` is already
+an argument", and that was half right. The model was an argument; the golden
+set's *directory* was a module-level constant, so a second model would have
+overwritten the first's references in place. `--testdata` is the change it
+needed, and deepseek4's set lives in `testdata-deepseek4/`.
+
+Two more things the second model wanted that this section did not anticipate,
+both small and both about the corpus rather than the code: the prompt *texts*
+are shared but the token ids are not, so the corpus has to be re-tokenized
+(hence `dump --tokenize`); and the prompt has to be read from a **file**,
+because Windows builds `argv` through the ANSI code page and the French prompt
+does not survive it (repo `CLAUDE.md`).
 
 ## Header-only, for now
 

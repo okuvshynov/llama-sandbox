@@ -343,12 +343,33 @@ so a model that has always agreed proves nothing about the next one. Check with
 `grep "repack: repack tensor"` on the reference log; `logit-kld/CMakeLists.txt`
 forces it off and says why.
 
+## Two golden sets
+
+A golden set belongs to one model on one machine, so each architecture has its
+own directory and `--testdata` selects it. Everything else about the gate is
+shared.
+
+    python gate.py aa                                   # GLM-5.2, testdata/
+    python gate.py aa --testdata testdata-deepseek4                       --model D:\llms\ds-v4-flash\...-00001-of-00005.gguf
+
+The corpus is the same five prompt texts plus a smoke prefix, re-tokenized per
+model: the texts are shared, the ids are not, and the bit-exactness contract is
+defined over ids. `dump --tokenize` produces them, and reads the prompt from a
+**file** — Windows builds `argv` through the ANSI code page and the French
+prompt does not survive it (`CLAUDE.md`).
+
 ## Current status
 
-Golden set: 6 prompts, 761 positions, every one verified at KL == 0 against
-llama.cpp `rescore --sim-gen`. `rpc` passes byte-for-byte against it, so all
-three setups agree. Windows / MSVC 19.50 / ggml `6a32c29a7` / 16 threads /
-GLM-5.2 UD-Q6_K, 14 shards, 582.88 GiB.
+**GLM-5.2 UD-Q6_K** (14 shards, 582.88 GiB), `testdata/`: 6 prompts, 761
+positions, every one verified at KL == 0 against llama.cpp `rescore --sim-gen`.
+`rpc` passes byte-for-byte against it, so all three setups agree.
+
+**DeepSeek-V4-Flash UD-Q8_K_XL** (5 shards, 150.7 GiB),
+`testdata-deepseek4/`: 6 prompts, 793 positions, all at KL == 0. `rpc` is not
+wired yet — the client half of the remote-expert seam has no deepseek4 hook, so
+`nano-glm --moe-addr` aborts for it rather than misbehaving.
+
+Both on Windows / MSVC 19.50 / ggml `6a32c29a7` / 16 threads.
 
 macOS has no golden set yet — it needs its own, built by the same command, for
 the reason in `CLAUDE.md`: a different toolchain is a different set of numbers.
