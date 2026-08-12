@@ -348,6 +348,87 @@ but does share CPU and memory bandwidth between the two ends.
 Net on this workload it is a 1.31x win over local — and still **60% of shipped
 llama.cpp**.
 
+**Two corrections from the forced-split study below, neither of which changes
+the numbers in that table but both of which change what they mean.** Prefill's
+2.2x is mostly *not* the GPUs: 1.80x of it is the server's expert path measured
+with the dies deliberately idle, and only 1.30x is the dies. And the decode
+figure has since widened rather than narrowed — the allocator fix took the
+*local* baseline from 1.97 to 2.195 t/s, so the split now sits at 0.77x of a
+faster thing.
+
+### What the dies are actually worth here — and the 1.9x that is not them
+
+`split_study.py` runs the ladder `moe-server --force-split` makes possible, and
+it is deliberately **not** the study GLM-5.2 got. There, forced placement existed
+to reach distributions residency could not: at ~22% resident, the real system
+could never put every slot on a die. DeepSeek-V4-Flash is the opposite case — at
+240 of 256 experts resident (93.75%) a token's 6 slots already land on a die
+~5.6 times out of 6 — so the interesting direction is *downward*, forcing slots
+back onto the CPU to price one.
+
+`01_prose`, 111 prompt + 32 generated, one discarded warm-up and two measured
+passes per rung, `--gpu-experts 240 --gpu-devices 4`:
+
+| configuration | prefill | decode | rtt p50 |
+|---|---|---|---|
+| CPU only, no server | 3.55 | **2.195** | — |
+| natural (routing decides) | 8.45 | 1.670 | 2073 us |
+| `--force-split 2,2,1,1` — 0 slots on CPU | 8.30 | 1.685 | 2076 us |
+| `--force-split 1,1,1,1` — 2 on CPU | 7.95 | 1.655 | 2074 us |
+| `--force-split 1,1,0,0` — 4 on CPU | 6.90 | 1.605 | 2532 us |
+| `--force-split 0,0,0,0` — dies idle | 6.40 | 1.540 | 3235 us |
+
+**Natural routing already equals forced full placement** (8.45 vs 8.30 prefill,
+1.670 vs 1.685 decode, both inside the pass-to-pass spread). At 93.75% residency
+there is nothing left for more VRAM to buy on this model — which is the question
+"would more dies help" asked and answered from the other end than the GLM study
+asked it.
+
+**And most of the prefill win is not the GPUs.** The `0,0,0,0` rung holds every
+expert in VRAM and sends no work there, so it isolates the split's own path:
+
+| | prefill | vs local |
+|---|---|---|
+| local | 3.55 | 1.00x |
+| split, **dies idle** | 6.40 | **1.80x** |
+| split, all six slots on dies | 8.30 | 1.30x *more* |
+
+So of the 2.2x this file previously credited to offload, **1.80x is the server's
+expert path and only 1.30x is the four Vega dies.**
+
+The client's own instrumentation says where that goes, without a subtraction
+across runs: `lib/phase_timer.h` gives total compute and `moe_stats` gives the
+RPC total inside it, so trunk and experts separate directly.
+
+| | client trunk | expert work | total compute |
+|---|---|---|---|
+| local | ~26.5 s | **18.7 s** | 45.21 s |
+| split, dies idle | 26.9 s | **9.9 s** (server CPU) | 37.16 s |
+| split, all on dies | 26.1 s | **5.0 s** (four dies) | 31.37 s |
+
+The trunk is unchanged across all three, as it must be. **The same expert
+arithmetic takes 18.7 s in the client and 9.9 s in the server, on the same
+cores** — and the dies then take that 9.9 s to 5.0 s. The 1.9x is a pure
+software gap with no GPU and no network in it, and it is the largest single
+lever this file has ever identified. The obvious suspect is that `moe-server`
+compacts rows per expert before its matmuls while the client's local block runs
+`ggml_mul_mat_id` over the trunk graph, but that is a hypothesis: this
+measurement establishes the gap, not its cause.
+
+Two consequences. It is worth more than the split for most workloads, because
+**decode never beats local anyway** — the best split rung is 1.685 against
+local's 2.195 (0.77x), and closing a 1.9x on local experts moves the number that
+is already winning. And it means the split's headline prefill figure has been
+crediting the hardware for something the software was doing.
+
+**Marginal cost of a slot the CPU has to serve**, from the ladder: **~9.3 ms per
+slot per decode step**, and rising — 5.4 ms/slot over the first two, 9.5 over the
+middle two, 13.2 over the last two. Same increasing shape GLM-5.2 showed
+(6.6 ms for the first, ~20 for slots 2-4, ~37 for 5-8), which is the
+thread-per-device overlap working: the first CPU slots hide behind the dies'
+work and only become visible once the CPU's share exceeds theirs. Prefill runs
+~0.66 s per slot over the range, too noisy at two passes to claim curvature.
+
 ### Where the other 40% is, and why it is mostly not the kernels
 
 The obvious suspect is `GGML_CPU_REPACK`, which nano-glm cannot use: it rewrites

@@ -147,6 +147,21 @@ picked a resident expert read *exactly* 0, and the worst layers are the ones
 the split device did most work in. If either stops holding, distrust the run
 before distrusting the driver.
 
+## `split_study.py`: the whole forced-split ladder, unattended
+
+```bash
+python split_study.py --model <ds4.gguf>          # local, natural, then the ladder
+python split_study.py --model <m> --ladder 1,1,1,1 0,0,0,0
+```
+
+Starts a `build-vk` server per rung, runs the CPU-tree client against it with one
+discarded warm-up and two measured passes, and stops the server (waiting out the
+unmap, which is minutes and otherwise locks the exe — see Troubleshooting). Every
+pass is printed, never just the mean, and the summary carries a `tg spread`
+column so a difference smaller than the pass-to-pass noise is visible as such.
+
+The GLM-5.2 study this replaces was run by hand, which is why it was run once.
+
 ## `--force-split`: timing a distribution that residency cannot reach
 
 ```bash
