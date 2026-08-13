@@ -89,6 +89,31 @@ static inline int moe_vk_device_for(const moe_placement & P, const moe_mirror & 
     return n_weights > 0 ? dev : -1;
 }
 
+// Tokens per dispatch.
+//
+// `ggml_vk_use_mul_mat_vec_id` takes the vector path only when the ids tensor's
+// token count is <= 8 (ggml-vulkan.cpp:10607); one token more and it takes the
+// general path. Measured on the 4-layer stub, that boundary is worth +21.9% at
+// 8 tokens and -60.2% at 16 — the same cliff ../nano-glm found from the other
+// side. So the block is issued 8 tokens at a time rather than in one piece.
+#define MOE_VK_CHUNK 8
+
+// Which dimension of `t` counts tokens, or -1 for "none", or -2 for "ambiguous".
+//
+// Ambiguity is a real possibility rather than paranoia — a tensor whose expert
+// count or feature width happens to equal the token count would be sliced along
+// the wrong axis and produce fluent nonsense — so it is detected and refuses the
+// chunking rather than guessing.
+static inline int moe_vk_token_dim(const ggml_tensor * t, int64_t n_tok) {
+    int found = -1;
+    for (int d = 0; d < GGML_MAX_DIMS; d++) {
+        if (t->ne[d] != n_tok) continue;
+        if (found >= 0) return -2;
+        found = d;
+    }
+    return found;
+}
+
 // Rebuild and run. Returns false when the split was not run here, in which case
 // the caller must fall back to the CPU — every early return below is a case
 // where being slow is right and guessing would be wrong.
@@ -153,81 +178,131 @@ static inline bool moe_vk_compute(moe_placement & P, moe_mirror & M, moe_vk & V,
         if (host[i]->view_src) consumed[idx[host[i]->view_src]] = true;
     }
 
+    // How many tokens this split covers, and where each tensor keeps them.
+    // Read from the ids tensor rather than guessed: it is the tensor whose
+    // second dimension the Vulkan backend actually tests.
+    int64_t n_tok = 0;
+    for (int i = 0; i < n_nodes && n_tok == 0; i++) {
+        const ggml_tensor * n = ggml_graph_node(gf, i);
+        if (n->op == GGML_OP_MUL_MAT_ID && n->src[2]) n_tok = n->src[2]->ne[1];
+    }
+    std::vector<int> tok_dim(n_all, -1);
+    int64_t chunk = n_tok > 0 ? n_tok : 1;
+    if (n_tok > MOE_VK_CHUNK) {
+        chunk = MOE_VK_CHUNK;
+        for (int i = 0; i < n_all; i++) {
+            if (M.copy.find(host[i]) != M.copy.end()) continue;   // a weight, never sliced
+            tok_dim[i] = moe_vk_token_dim(host[i], n_tok);
+            if (tok_dim[i] == -2) {                                // cannot tell: do not guess
+                static bool said = false;
+                if (!said) {
+                    said = true;
+                    fprintf(stderr, "%s: %s has two dimensions of %lld; running unchunked\n",
+                            tag, ggml_get_name(host[i]), (long long) n_tok);
+                }
+                chunk = n_tok;
+                break;
+            }
+        }
+    }
+
     ggml_init_params ip = {
         /* .mem_size   = */ (size_t) (n_all + 16) * ggml_tensor_overhead()
                             + ggml_graph_overhead_custom(n_all + 16, false),
         /* .mem_buffer = */ nullptr,
         /* .no_alloc   = */ true,
     };
-    ggml_context * ctx = ggml_init(ip);
-    if (!ctx) return false;
-
-    // Twins. Built by writing the recorded fields into a bare tensor rather than
-    // by calling ggml_mul_mat_id / ggml_clamp / ..., because the op constructors
-    // are where a rebuild would start disagreeing with the graph it is meant to
-    // be running.
-    std::vector<ggml_tensor *> twin(n_all, nullptr);
-    std::vector<int> uploads;
-    for (int i = 0; i < n_all; i++) {
-        ggml_tensor * h = host[i];
-        auto mirrored = M.copy.find(h);
-        if (mirrored != M.copy.end()) {
-            twin[i] = mirrored->second;      // already in VRAM, nothing to do
-            continue;
-        }
-        ggml_tensor * t = ggml_new_tensor(ctx, h->type, GGML_MAX_DIMS, h->ne);
-        if (!t) { ggml_free(ctx); return false; }
-        ggml_set_name(t, ggml_get_name(h));
-        for (int d = 0; d < GGML_MAX_DIMS; d++) t->nb[d] = h->nb[d];
-        memcpy(t->op_params, h->op_params, GGML_MAX_OP_PARAMS);
-        if (i < n_nodes) {
-            t->op = h->op;
-        } else if (h->data) {
-            uploads.push_back(i);            // an input: activations, ids, weights
-        }
-        twin[i] = t;
-    }
-    for (int i = 0; i < n_nodes; i++) {
-        for (int s = 0; s < GGML_MAX_SRC; s++) {
-            twin[i]->src[s] = host[i]->src[s] ? twin[idx[host[i]->src[s]]] : nullptr;
-        }
-        if (host[i]->view_src) {
-            twin[i]->view_src  = twin[idx[host[i]->view_src]];
-            twin[i]->view_offs = host[i]->view_offs;
-        }
-    }
-
-    // Expanded one node at a time in the reference's own order: each node's
-    // sources are already in the hash set, so expand appends exactly that node.
-    ggml_cgraph * dg = ggml_new_graph_custom(ctx, (size_t) n_all + 16, false);
-    for (int i = 0; i < n_nodes; i++) ggml_build_forward_expand(dg, twin[i]);
 
     ggml_backend_buffer_type_t buft = ggml_backend_dev_buffer_type(P.devs[dev]);
     if (!V.gallocs[dev]) V.gallocs[dev] = ggml_gallocr_new(buft);
-    if (!ggml_gallocr_alloc_graph(V.gallocs[dev], dg)) {
-        fprintf(stderr, "%s: %s could not allocate the block's graph; back to the CPU\n",
-                tag, P.dev_name[dev].c_str());
-        V.refused[dev] = true;
+
+    // One pass per chunk of tokens. A chunk twin keeps the host tensor's
+    // *strides* and shrinks only the token dimension, so its byte span is
+    // exactly the host tensor's span starting at t0*nb[d] — which is what keeps
+    // the upload and the read-back single contiguous copies instead of a
+    // per-token scatter.
+    for (int64_t t0 = 0; t0 < (n_tok > 0 ? n_tok : 1); t0 += chunk) {
+        const int64_t k = (n_tok > 0 && t0 + chunk > n_tok) ? n_tok - t0 : chunk;
+
+        ggml_context * ctx = ggml_init(ip);
+        if (!ctx) return false;
+
+        // Twins. Built by writing the source tensor's fields into a bare tensor
+        // rather than by calling ggml_mul_mat_id / ggml_clamp / ..., because the
+        // op constructors are where a rebuild would start disagreeing with the
+        // graph it is meant to be running.
+        std::vector<ggml_tensor *> twin(n_all, nullptr);
+        std::vector<int> uploads;
+        for (int i = 0; i < n_all; i++) {
+            ggml_tensor * h = host[i];
+            auto mirrored = M.copy.find(h);
+            if (mirrored != M.copy.end()) {
+                twin[i] = mirrored->second;      // already in VRAM, nothing to do
+                continue;
+            }
+            int64_t ne[GGML_MAX_DIMS];
+            for (int d = 0; d < GGML_MAX_DIMS; d++) ne[d] = h->ne[d];
+            if (tok_dim[i] >= 0) ne[tok_dim[i]] = k;
+            ggml_tensor * t = ggml_new_tensor(ctx, h->type, GGML_MAX_DIMS, ne);
+            if (!t) { ggml_free(ctx); return false; }
+            ggml_set_name(t, ggml_get_name(h));
+            for (int d = 0; d < GGML_MAX_DIMS; d++) t->nb[d] = h->nb[d];
+            memcpy(t->op_params, h->op_params, GGML_MAX_OP_PARAMS);
+            if (i < n_nodes) {
+                t->op = h->op;
+            } else if (h->data) {
+                uploads.push_back(i);            // an input: activations, ids, router weights
+            }
+            twin[i] = t;
+        }
+        for (int i = 0; i < n_nodes; i++) {
+            for (int s = 0; s < GGML_MAX_SRC; s++) {
+                twin[i]->src[s] = host[i]->src[s] ? twin[idx[host[i]->src[s]]] : nullptr;
+            }
+            if (host[i]->view_src) {
+                twin[i]->view_src  = twin[idx[host[i]->view_src]];
+                twin[i]->view_offs = host[i]->view_offs;
+            }
+        }
+
+        // Expanded one node at a time in the reference's own order: each node's
+        // sources are already in the hash set, so expand appends exactly that
+        // node.
+        ggml_cgraph * dg = ggml_new_graph_custom(ctx, (size_t) n_all + 16, false);
+        for (int i = 0; i < n_nodes; i++) ggml_build_forward_expand(dg, twin[i]);
+
+        if (!ggml_gallocr_alloc_graph(V.gallocs[dev], dg)) {
+            fprintf(stderr, "%s: %s could not allocate the block's graph; back to the CPU\n",
+                    tag, P.dev_name[dev].c_str());
+            V.refused[dev] = true;
+            ggml_free(ctx);
+            return false;
+        }
+
+        for (int i : uploads) {
+            const size_t off = tok_dim[i] >= 0 ? (size_t) t0 * host[i]->nb[tok_dim[i]] : 0;
+            ggml_backend_tensor_set(twin[i], (const char *) host[i]->data + off,
+                                    0, ggml_nbytes(twin[i]));
+        }
+
+        const enum ggml_status st = ggml_backend_graph_compute(V.backends[dev], dg);
+        if (st != GGML_STATUS_SUCCESS) {
+            fprintf(stderr, "%s: %s returned status %d; back to the CPU\n",
+                    tag, P.dev_name[dev].c_str(), (int) st);
+            V.refused[dev] = true;
+            ggml_free(ctx);
+            return false;
+        }
+
+        for (int i = 0; i < n_nodes; i++) {
+            if (consumed[i] || !host[i]->data) continue;
+            const size_t off = tok_dim[i] >= 0 ? (size_t) t0 * host[i]->nb[tok_dim[i]] : 0;
+            ggml_backend_tensor_get(twin[i], (char *) host[i]->data + off,
+                                    0, ggml_nbytes(twin[i]));
+        }
+
         ggml_free(ctx);
-        return false;
-    }
-
-    for (int i : uploads) {
-        ggml_backend_tensor_set(twin[i], host[i]->data, 0, ggml_nbytes(host[i]));
-    }
-
-    const enum ggml_status st = ggml_backend_graph_compute(V.backends[dev], dg);
-    if (st != GGML_STATUS_SUCCESS) {
-        fprintf(stderr, "%s: %s returned status %d; back to the CPU\n",
-                tag, P.dev_name[dev].c_str(), (int) st);
-        V.refused[dev] = true;
-        ggml_free(ctx);
-        return false;
-    }
-
-    for (int i = 0; i < n_nodes; i++) {
-        if (consumed[i] || !host[i]->data) continue;
-        ggml_backend_tensor_get(twin[i], host[i]->data, 0, ggml_nbytes(host[i]));
+        if (n_tok == 0) break;
     }
 
     // Announced once per device, because "the backend was engaged" and "the
@@ -235,12 +310,11 @@ static inline bool moe_vk_compute(moe_placement & P, moe_mirror & M, moe_vk & V,
     // already shipped four checks that proved neither.
     if (!V.ran[dev]) {
         V.ran[dev] = true;
-        fprintf(stderr, "%s: %s computed a split (%d nodes)\n",
-                tag, P.dev_name[dev].c_str(), n_nodes);
+        fprintf(stderr, "%s: %s computed a split (%d nodes, %lld tokens in chunks of %lld)\n",
+                tag, P.dev_name[dev].c_str(), n_nodes,
+                (long long) n_tok, (long long) chunk);
     }
     V.n_split[dev]++;
-
-    ggml_free(ctx);
     return true;
 }
 

@@ -317,13 +317,32 @@ Increments, in order:
    dispatch and transfer, not by arithmetic — exactly what "one die is as fast
    as four" predicted.
 
-   So `shaders`/chunking is not a later refinement, it is the next step: split a
-   large `mul_mat_id` into dispatches of at most 8 tokens and the prefill loss
-   should become a prefill win. That is a graph decision, not a shader.
+5. **Chunking — done, and it worked.** The split is issued `MOE_VK_CHUNK = 8`
+   tokens at a time. A chunk twin keeps the host tensor's *strides* and shrinks
+   only the token dimension, so its byte span is exactly the host span at
+   `t0*nb[d]` and both the upload and the read-back stay single contiguous
+   copies rather than a per-token scatter.
 
-5. Then the real model, which is only worth loading once a configuration wins on
-   the stub — 7-9% load-to-load spread there cannot see a 20% effect reliably,
-   let alone confirm one.
+   | batch | pp8 | pp16 | pp32 | pp128 | pp512 | decode |
+   |---|---|---|---|---|---|---|
+   | before | +21.9% | -60.2% | -54.6% | -51.4% | — | -0.1% |
+   | after | **+26.7%** | **+32.9%** | **+35.1%** | **+30.1%** | **+27.2%** | -0.2% |
+
+   The cliff is gone and prefill is a **+27-35% win** at every batch size. KLD
+   improved too (6.2e-5 from 8.4e-5): shorter reductions accumulate less error.
+
+   The token dimension is found per tensor by matching the ids tensor's token
+   count, and a tensor with *two* dimensions of that size refuses the chunking
+   rather than guessing — slicing a 6-expert axis because the batch happened to
+   be 6 would produce fluent nonsense.
+
+   **Decode is untouched (-0.2%)** and will stay that way: batch 1 was always on
+   the fast path, so the die is simply no faster than 16 CPU cores for one
+   token's experts. Decode needs a different idea, not a bigger chunk.
+
+6. The real model. Only worth loading once a configuration wins on the stub —
+   7-9% load-to-load spread cannot confirm a 30% effect cheaply, but it can
+   confirm one this large.
 
 **Gate: `gate.py --tol`, and the tolerance has to be argued rather than picked.**
 The CPU path keeps its `--tol 0` bit-identity check — it does not retire when

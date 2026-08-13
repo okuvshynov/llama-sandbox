@@ -267,15 +267,21 @@ for the 1.25x ceiling that decode faces regardless.
 **What the dies are worth so far.** `bench.py --build-dir build-vk --ngl 0` on
 the 4-layer stub, our compute against the same weights on the CPU:
 
-| batch | 4 | 8 | 16 | 32 | 128 | decode |
+| batch | 8 | 16 | 32 | 128 | 512 | decode |
 |---|---|---|---|---|---|---|
-| our compute | **+15.6%** | **+21.9%** | -60.2% | -54.6% | -51.4% | -0.1% |
+| unchunked | +21.9% | -60.2% | -54.6% | -51.4% | — | -0.1% |
+| **8-token chunks** | **+26.7%** | **+32.9%** | **+35.1%** | **+30.1%** | **+27.2%** | -0.2% |
 
-The cliff sits at `ggml_vk_use_mul_mat_vec_id` — `src2->ne[1] <= 8`
+The cliff was `ggml_vk_use_mul_mat_vec_id` — `src2->ne[1] <= 8`
 (`ggml-vulkan.cpp:10607`), the ids tensor's token count. Up to 8 tokens the dies
-use the vector path and beat 16 CPU cores; past that they take the general path
-and lose half. Chunking a large `mul_mat_id` into 8-token dispatches is the next
-step, and it is a graph decision rather than a shader.
+take the vector path and beat 16 CPU cores; past that they take the general path
+and lose half. Issuing the block 8 tokens at a time keeps it on the fast path
+always, which is a graph decision rather than a shader.
+
+**Decode is unaffected and will stay that way.** Batch 1 was always on the fast
+path, so a die is simply no faster than 16 CPU cores for one token's experts —
+about 1.45 ms per layer either way, bound by dispatch and transfer rather than
+arithmetic. Decode needs a different idea, not a bigger chunk.
 
 Two flags are not optional when benchmarking this: **`--ngl 0`**, or llama-bench's
 default of 99 quietly offloads the trunk too and the rows stop being comparable;
