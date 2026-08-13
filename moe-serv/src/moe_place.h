@@ -32,11 +32,13 @@
 #include <string>
 #include <vector>
 
-// -1 means "stays on the CPU". Indices are into moe_dies::devs.
+// -1 means "stays on the CPU"; -2 means "not seen yet". Other values index the
+// dev* vectors, which are parallel.
 struct moe_placement {
     std::vector<int> layer_dev;      // by layer index, sized as layers are seen
     std::vector<size_t> dev_free;    // VRAM still unclaimed, by device
     std::vector<std::string> dev_name;
+    std::vector<ggml_backend_dev_t> devs;
     size_t reserve_per_dev = 0;      // held back for activations and compute
     bool   planned = false;
 };
@@ -62,6 +64,7 @@ static inline void moe_place_probe(moe_placement & P) {
         if (ggml_backend_dev_type(d) != GGML_BACKEND_DEVICE_TYPE_GPU) continue;
         size_t free_ = 0, total = 0;
         ggml_backend_dev_memory(d, &free_, &total);
+        P.devs.push_back(d);
         P.dev_name.push_back(ggml_backend_dev_name(d));
         P.dev_free.push_back(free_ > P.reserve_per_dev ? free_ - P.reserve_per_dev : 0);
     }

@@ -24,6 +24,7 @@
 #include "ggml-backend-impl.h"
 #include "ggml.h"
 
+#include "moe_mirror.h"
 #include "moe_place.h"
 
 #include <cstdio>
@@ -49,8 +50,22 @@ struct moeserv_buffer {
     size_t size = 0;
 };
 
+// Where each layer's experts will live, and the VRAM copies of the placed ones.
+// Both are per-model: `moeserv_buffer_free` resets them when the model buffer
+// goes, so a process that loads a second model re-probes and re-uploads.
+static moe_placement moeserv_place;
+static moe_mirror    moeserv_mirror;
+
 static void moeserv_buffer_free(ggml_backend_buffer_t buffer) {
     auto * ctx = (moeserv_buffer *) buffer->context;
+    // The mirror holds pointers to tensors in this buffer, so it cannot outlive
+    // it. Only for a real buffer: `weight_buft_supported` attaches zero-sized
+    // ones to ask whether we accept a tensor, and freeing the mirror on those
+    // would throw away 115 GiB of upload during model loading.
+    if (ctx->size > 0) {
+        moe_mirror_free(moeserv_mirror);
+        moeserv_place = moe_placement();
+    }
     free(ctx->data);
     delete ctx;
 }
@@ -59,11 +74,8 @@ static void * moeserv_buffer_get_base(ggml_backend_buffer_t buffer) {
     return ((moeserv_buffer *) buffer->context)->data;
 }
 
-// Where each layer's experts will live. Filled as the loader allocates tensors,
-// obeyed later by graph_compute. See moe_place.h for why whole layers.
-static moe_placement moeserv_place;
-
-// `dies` increment 1: decide placement here, act on it nowhere yet.
+// `dies`: decide placement here, and record what to mirror. See moe_place.h for
+// why whole layers.
 //
 // This is the hook ggml calls once per tensor as it allocates, which makes it
 // the only place that sees both the tensor's name (the layer index) and its
@@ -72,7 +84,11 @@ static moe_placement moeserv_place;
 static enum ggml_status moeserv_buffer_init_tensor(ggml_backend_buffer_t buffer, ggml_tensor * tensor) {
     GGML_UNUSED(buffer);
     moe_place_probe(moeserv_place);
-    moe_place_assign(moeserv_place, moe_place_layer_of(ggml_get_name(tensor)), ggml_nbytes(tensor));
+    const int dev = moe_place_assign(moeserv_place, moe_place_layer_of(ggml_get_name(tensor)),
+                                     ggml_nbytes(tensor));
+    // Recorded now, uploaded at the first compute: the weight has not been
+    // written yet, and this hook runs during allocation.
+    moe_mirror_note(moeserv_mirror, dev, tensor);
     return GGML_STATUS_SUCCESS;
 }
 
@@ -388,6 +404,9 @@ static enum ggml_status moeserv_backend_graph_compute(ggml_backend_t backend, gg
         }
         fprintf(stderr, "\n");
         moe_place_report(moeserv_place, MOESERV_NAME);
+        // First compute is the first moment every weight has been written, and
+        // the first moment we know the run will actually use us.
+        moe_mirror_upload(moeserv_place, moeserv_mirror, MOESERV_NAME);
     }
 
     ggml_backend_t cpu = moeserv_cpu();

@@ -254,11 +254,17 @@ baseline.
 
 Increments, in order:
 
-1. Enumerate the dies, compute and log the placement, change nothing else. The
-   check is that the gate still passes bit-identically — a placement that is only
-   printed must not move a logit.
-2. Upload the mirror; still compute on the CPU. Checks VRAM accounting and load
-   time against the same gate.
+1. **Done.** Enumerate the dies, compute and log the placement, change nothing
+   else — a placement that is only printed must not move a logit, and the gate
+   says it did not. All three branches exercised on the stub by shrinking usable
+   VRAM with `MOESERV_RESERVE_MB` rather than building bigger models.
+2. **Done.** Upload the mirror; still compute on the CPU. **12.75 GiB at
+   3.2-3.5 GiB/s**, so the real model's 115 GiB costs ~35 s of load, once.
+   Freed and reset when the model buffer goes, so a second load re-probes.
+   Untested: the fallback that sends a die's layers back to the CPU when
+   allocation fails. It cannot be reached by shrinking the reserve — that
+   changes the *plan*, not the outcome of allocating it — and needs a driver
+   that reports more free VRAM than it will hand out.
 3. Compute placed layers on their die. Gate moves to `--tol`.
 4. Bench, both hosts, decode and prefill.
 
