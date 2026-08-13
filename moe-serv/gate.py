@@ -66,7 +66,10 @@ OT_CPU = "exps=CPU"
 
 def run(tag, exe, args, log_path, env_extra=None):
     env = dict(os.environ)
-    for k in ("GGML_BACKEND_PATH", "MOESERV_CAPTURE", "MOESERV_DISABLE"):
+    # Scrubbed rather than inherited: a variable left over in the shell would
+    # otherwise apply to only some runs and silently make the comparison
+    # meaningless.
+    for k in ("GGML_BACKEND_PATH", "MOESERV_DISABLE"):
         env.pop(k, None)
     env.update(env_extra or {})
     with open(log_path, "wb") as log:

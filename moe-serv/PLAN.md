@@ -143,25 +143,24 @@ not, and the run says so in one `-v` line that was not being read. And the
 looked the same either way; the gate now asserts where the weights went, not
 only that something was computed.
 
-### `tape` — Done, and no longer a correctness path
+### `tape` — Removed (`9fe5558`, `0ea5520`)
 
-`MOESERV_CAPTURE=<dir>` records a split generically — node list with ops,
-shapes, `op_params` and source indices, plus the data of every tensor the split
-does not produce or does not consume, content-addressed into `blobs/`.
-`tape_inspect.py` reads it back. One record per distinct split shape, so a run
-of any length yields one prefill and one decode record and then costs nothing.
-
-It was built to be half of a replay harness, and `gate` is a better answer to
-the same question: llama.cpp is the harness, so nothing has to define the graph
-a second time. What survives is inspection — it is how we know the backend is
-handed exactly the expert half of `build_moe_ffn` and nothing else — and a
-plausible input for a standalone kernel benchmark under `dies`. **If neither
-earns its keep, delete it**; a second thing that looks like a correctness path
+A capture format for the split `graph_compute` is handed, built to be half of a
+replay harness. `gate` answered the same question better — llama.cpp is the
+harness, so nothing has to define the graph a second time — leaving `tape` with
+no job that justified carrying it. Deleted rather than kept "in case": it is one
+`git show 9fe5558` away, and a second thing that looks like a correctness path
 is a liability.
 
-Kept from building it: captures are bounded by `MOESERV_CAPTURE_MAX_RECORDS` /
-`_MAX_MB` because the first unbounded one was 140 GB — llama.cpp hands
-`mul_mat_id` the whole 256-expert tensor, 1.07 GB, three per layer.
+Two findings from it are worth having without the code. The block the backend
+receives is exactly the expert half of `build_moe_ffn` and nothing else —
+`MUL_MAT_ID`, `CLAMP`, `MUL_MAT_ID`, `CLAMP`, `GLU`, `MUL_MAT_ID`, `MUL`, then
+six terminal `VIEW`s. And any future scheme that captures a `mul_mat_id`'s
+inputs faces the same wall: llama.cpp hands it the *whole* 256-expert tensor,
+1.07 GB, three per layer, so an unbounded capture of a 4-token run wrote 140 GB.
+Slicing the weights to the experts the ids name (~80 MB per decode record) is
+the way through, and it is the reason to revive this only with a purpose in
+hand — see the open question under `dies`.
 
 ### `dies` — Planned, next
 
@@ -200,7 +199,8 @@ amplification than at 43, and the layer count is a knob (`make_stub.py
 --layers`). If a Vulkan difference grows with depth faster than the repack gap
 does, that is a signal the logits alone cannot give. Whether that is enough, or
 whether `dies` needs a per-op comparison after all, is the open question — and
-if it is the latter, `tape` is the thing to revive rather than replace.
+if it is the latter, the thing to reach for is `git show 9fe5558`, not a new
+format.
 
 ### Later — one line each
 

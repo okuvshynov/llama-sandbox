@@ -183,20 +183,9 @@ bit-identical to llama.cpp's on the same weights. It also corrected two things
 that had been assumed: `passthrough`'s bit-identity had only ever been checked
 on generated *text*, and `-ot exps=CPU` is not a non-repacked control.
 
-**`tape` done, and no longer a correctness path.** `MOESERV_CAPTURE=<dir>`
-records each split generically — node list with ops, shapes, `op_params` and
-source indices, plus data for every tensor the split does not produce or does
-not consume — content-addressed into `blobs/`, one record per distinct split
-shape. `tape_inspect.py` reads it back.
-
-```powershell
-$env:MOESERV_CAPTURE = "...\results\cap"
-$env:MOESERV_CAPTURE_MAX_RECORDS = "4"      # also _MAX_MB, default 4096
-llama-completion -m <model> -ot exps=MoE -p "..." -n 2
-python tape_inspect.py results\cap --record 0
-```
-
-It exists to show what the backend is handed, not to check it — `gate` does
-that, without a second definition of the graph. Captures are bounded because
-llama.cpp hands `mul_mat_id` the whole 256-expert tensor (1.07 GB, three per
-layer) and the first unbounded one was 140 GB.
+**`tape` removed.** A capture format for the split the backend is handed, built
+to be half of a replay harness; `gate` answered the same question without a
+second definition of the graph, so it was deleted rather than carried. It is in
+`git show 9fe5558` if a per-op comparison is ever needed. What it established
+stands: the block we receive is exactly the expert half of `build_moe_ffn` and
+nothing else.

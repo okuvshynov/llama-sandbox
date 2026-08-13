@@ -24,8 +24,6 @@
 #include "ggml-backend-impl.h"
 #include "ggml.h"
 
-#include "moe_capture.h"
-
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -336,11 +334,6 @@ static void moeserv_backend_free(ggml_backend_t backend) {
 // library; asking the registry gets the same instance type llama.cpp is using,
 // built with the same flags, which is what makes delegation bit-identical
 // rather than merely correct.
-// Last value llama.cpp asked for through `ggml_backend_set_n_threads`, kept
-// only so `tape` can record it — see moeserv_set_n_threads. Zero means never
-// set, which a replay must treat as unknown rather than as a default.
-static int moeserv_n_threads = 0;
-
 static ggml_backend_t moeserv_cpu() {
     static ggml_backend_t cpu = nullptr;
     if (!cpu) {
@@ -379,36 +372,7 @@ static enum ggml_status moeserv_backend_graph_compute(ggml_backend_t backend, gg
 
     ggml_backend_t cpu = moeserv_cpu();
     if (!cpu) return GGML_STATUS_FAILED;
-    const enum ggml_status st = ggml_backend_graph_compute(cpu, cgraph);
-
-    // `tape`. After compute, so the output tensor holds the result the replay
-    // will be checked against. Opened lazily on the first split rather than at
-    // load, because a process that registers the backend and never computes
-    // (llama-bench listing devices, the -ot probe) should not leave a capture
-    // directory behind.
-    if (st == GGML_STATUS_SUCCESS) {
-        static moe_tape tape;
-        static bool tried = false;
-        if (!tried) {
-            tried = true;
-            if (const char * dir = getenv("MOESERV_CAPTURE")) {
-                moe_tape_open(tape, dir);
-                atexit([]() { /* see moeserv_tape_flush */ });
-            }
-        }
-        if (tape.active()) {
-            moe_tape_write(tape, cgraph, moeserv_n_threads);
-            // Rewrite the header every time rather than at exit: llama.cpp
-            // tools do not always unwind cleanly, and a capture whose count
-            // says 0 is indistinguishable from one that was never written.
-            const long here = ftell(tape.idx);
-            fseek(tape.idx, 8, SEEK_SET);
-            moe_tape_w32(tape.idx, tape.n_records);
-            fseek(tape.idx, here, SEEK_SET);
-            fflush(tape.idx);
-        }
-    }
-    return st;
+    return ggml_backend_graph_compute(cpu, cgraph);
 }
 
 static const ggml_backend_i moeserv_backend_i = {
@@ -477,7 +441,6 @@ static ggml_backend_dev_t moeserv_reg_get_device(ggml_backend_reg_t reg, size_t 
 // learn a number we otherwise could not see.
 static void moeserv_set_n_threads(ggml_backend_t backend, int n_threads) {
     GGML_UNUSED(backend);
-    moeserv_n_threads = n_threads;
     ggml_backend_t cpu = moeserv_cpu();
     if (!cpu) return;
     ggml_backend_dev_t dev = ggml_backend_get_device(cpu);
