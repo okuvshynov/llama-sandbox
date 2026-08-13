@@ -265,7 +265,25 @@ is green, and expect the load-to-load problem to be worse there, not better.
   timestamps, and they account for two thirds of the call. Read source, then
   measure it — this thread corrected itself three times and only the
   measurements survived.
-- **`shaders`** — now the only lever, for decode as well as prefill. The GPU
+- **`shaders`** — now the only lever, for decode as well as prefill. **The format
+  is worth ~1.3-1.5x of the block and no more**, measured on the branch
+  `moe-q40-experiment` with two stubs differing only in expert type (built by
+  `llama-quantize --allow-requantize --tensor-type ...exps=<type>` over a *quantized*
+  base ftype — the override is ignored under BF16 or COPY, `llama-quant.cpp:688`):
+
+  | type | n_tok | µs/chunk | GB/s |
+  |---|---|---|---|
+  | mxfp4 | 1 | 1043 | 76.9 |
+  | q4_0 | 1 | **871** | **97.5** |
+  | mxfp4 | 8 | 3880 | 156.8 |
+  | q4_0 | 8 | **2704** | **238.2** |
+
+  So a better-served format buys 16% of decode and 30% of prefill, and even q4_0
+  reaches only ~10-23% of the die's ~1024 GB/s. **`test-backend-ops` predicted a
+  20x gap** between these types (237 vs 11 GB/s) **at its own shapes; ours shows
+  1.3-1.5x** — the strongest argument yet that kernel work must be benchmarked at
+  our shapes and nowhere else. Accuracy of the requantisation is not yet
+  measured. The GPU
   timestamps put `mul_mat_id` at **~110 GB/s with 6 experts live** and ~210 GB/s
   with 44, against the die's ~1024: occupancy-limited at decode shapes,
   bandwidth-limited at prefill ones, and far from either ceiling. Same fit is
