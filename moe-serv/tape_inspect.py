@@ -23,7 +23,7 @@ import os
 import struct
 import sys
 
-MAGIC = b"MOETAPE1"
+MAGIC = b"MOETAPE2"
 GGML_MAX_DIMS = 4
 GGML_MAX_SRC = 10
 GGML_MAX_OP_PARAMS = 64
@@ -82,6 +82,10 @@ def read(path):
     while r.o < len(data) and len(records) < n_records:
         rec = {"index": r.u32(), "n_nodes": r.u32()}
         n_all = r.u32()
+        # Thread count is part of the arithmetic, not metadata: ggml partitions
+        # a matmul by it, and llama.cpp uses a different one for prefill than
+        # for decode. Replay reads this; nothing else can reproduce the bits.
+        rec["n_threads"] = r.u32()
         tensors = []
         for _ in range(n_all):
             t = {"name": r.string(), "op_name": r.string(), "type": r.u32(), "op": r.u32()}
@@ -136,8 +140,8 @@ def main():
         return 0
 
     rec = recs[args.record]
-    print("\nrecord %d: %d nodes, %d tensors\n"
-          % (rec["index"], rec["n_nodes"], len(rec["tensors"])))
+    print("\nrecord %d: %d nodes, %d tensors, %d threads\n"
+          % (rec["index"], rec["n_nodes"], len(rec["tensors"]), rec["n_threads"]))
     print("%-4s %-12s %-7s %-22s %-14s %s"
           % ("#", "op", "type", "shape", "srcs", "data"))
     for i, t in enumerate(rec["tensors"]):

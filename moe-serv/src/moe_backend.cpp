@@ -249,6 +249,17 @@ static bool moeserv_device_supports_op(ggml_backend_dev_t dev, const ggml_tensor
     GGML_UNUSED(dev);
     if (!op) return false;
 
+    // MOESERV_DISABLE=1 reverts to `handshake`: the weights still land in our
+    // buffer through -ot, but we claim nothing and llama.cpp's CPU backend
+    // computes them in place, in one unsplit graph.
+    //
+    // This is the gate's isolating control. Comparing against `-ot exps=CPU`
+    // answers the product question ("is llama.cpp with us the same as llama.cpp
+    // without us") but changes two things at once — where the weights live and
+    // who computes them. Comparing against this changes exactly one.
+    static const bool disabled = getenv("MOESERV_DISABLE") != nullptr;
+    if (disabled) return false;
+
     switch (op->op) {
         // Free structural ops, as BLAS does: claiming them keeps a view from
         // splitting a run of nodes that is otherwise ours. Pass 2 skips view
@@ -325,6 +336,11 @@ static void moeserv_backend_free(ggml_backend_t backend) {
 // library; asking the registry gets the same instance type llama.cpp is using,
 // built with the same flags, which is what makes delegation bit-identical
 // rather than merely correct.
+// Last value llama.cpp asked for through `ggml_backend_set_n_threads`, kept
+// only so `tape` can record it — see moeserv_set_n_threads. Zero means never
+// set, which a replay must treat as unknown rather than as a default.
+static int moeserv_n_threads = 0;
+
 static ggml_backend_t moeserv_cpu() {
     static ggml_backend_t cpu = nullptr;
     if (!cpu) {
@@ -381,7 +397,7 @@ static enum ggml_status moeserv_backend_graph_compute(ggml_backend_t backend, gg
             }
         }
         if (tape.active()) {
-            moe_tape_write(tape, cgraph);
+            moe_tape_write(tape, cgraph, moeserv_n_threads);
             // Rewrite the header every time rather than at exit: llama.cpp
             // tools do not always unwind cleanly, and a capture whose count
             // says 0 is indistinguishable from one that was never written.
@@ -461,6 +477,7 @@ static ggml_backend_dev_t moeserv_reg_get_device(ggml_backend_reg_t reg, size_t 
 // learn a number we otherwise could not see.
 static void moeserv_set_n_threads(ggml_backend_t backend, int n_threads) {
     GGML_UNUSED(backend);
+    moeserv_n_threads = n_threads;
     ggml_backend_t cpu = moeserv_cpu();
     if (!cpu) return;
     ggml_backend_dev_t dev = ggml_backend_get_device(cpu);
@@ -468,6 +485,18 @@ static void moeserv_set_n_threads(ggml_backend_t backend, int n_threads) {
     if (!reg) return;
     auto fn = (ggml_backend_set_n_threads_t)
         ggml_backend_reg_get_proc_address(reg, "ggml_backend_set_n_threads");
+
+    // Reported once, and reported when it *fails*, because the failure is
+    // silent and looks like a kernel difference: a delegate left at ggml's
+    // default of 4 threads computes the same arithmetic in a different
+    // summation order, and the gate then sees a small logit difference with no
+    // obvious cause.
+    static bool reported = false;
+    if (!reported) {
+        reported = true;
+        fprintf(stderr, "%s: delegate CPU threads %s -> %d\n", MOESERV_NAME,
+                fn ? "set" : "NOT SETTABLE, left at the ggml default", n_threads);
+    }
     if (fn) fn(cpu, n_threads);
 }
 

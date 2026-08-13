@@ -46,7 +46,7 @@ Three mechanisms, all of them already in llama.cpp, verified at `6a32c29a7`:
   `mul_mat_id` nodes ours. Pass 2 (`:1113`) then expands that across *adjacent
   unassigned* nodes, which is how the weightless ops join the same split.
 
-## Six things that are not obvious
+## Seven things that are not obvious
 
 **1. `GGML_BACKEND_PATH` is not honoured by every tool.** `llama_backend_init`
 calls `ggml_backend_load_all()` **only if `ggml_backend_reg_count()` is zero**
@@ -107,12 +107,46 @@ register into the wrong one. That is the loader's search order rather than
 anything arranged here, so treat it as a hazard: if `MoE` stops appearing in
 `-ot`'s buffer type list after a build change, this is the first thing to check.
 
+**7. `-ot <regex>=CPU` is not "the CPU baseline" — it is `CPU_REPACK`.** Naming
+a buffer type in `-ot` does not opt out of the CPU backend's extra buffer
+types: on this machine MXFP4 experts are still rewritten into a blocked layout
+and multiplied by a different GEMM. So `=CPU` and `=MoE` differ in *weight
+layout* as well as in backend, and any comparison between them charges the
+repack to whatever else changed. The run says which happened, in a line only
+`-v` prints:
+
+    tensor blk.0.ffn_gate_exps.weight (1088 MiB mxfp4) buffer type overridden to CPU_REPACK
+
+There is no runtime switch — `GGML_CPU_REPACK` is a build option — so a
+genuinely comparable stock control needs a second llama.cpp build. `gate.py`
+sidesteps it by keeping the weights in our buffer on both sides.
+
 ## Correctness
 
-1. End-to-end output with and without the backend, greedy and fixed seed.
-   Bit-identical through `passthrough`; a stated numerical floor after.
-2. Capture replay (`tape`, not built yet) — real tensors from real runs against
-   recorded output.
+```powershell
+python make_stub.py <model-00001-of-000NN.gguf> D:\llms\stub\ds4-L4.gguf --layers 4
+python gate.py                  # ~3 min: bit-identity of our compute
+python gate.py --vs-stock       # ~6 min: and what owning the weights costs
+```
+
+`gate.py` runs stock `llama-perplexity` twice, both placing the routed experts
+in our buffer, differing only in whether we claim any ops (`MOESERV_DISABLE=1`
+is the control), and compares the log-probability files `--kl-divergence-base`
+writes. Identical files mean our compute changed nothing. The harness is
+llama.cpp: nothing here defines the graph or the arithmetic a second time.
+
+`make_stub.py` is what makes that affordable — the first four layers of
+DeepSeek-V4-Flash are ~16 GiB and load in seconds, against 150 GiB and minutes.
+It copies tensors byte for byte and edits one metadata key; see its header for
+why a *prefix* of layers is the only safe cut, and why four is the minimum for
+this architecture.
+
+**The control is not stock llama.cpp.** llama.cpp overrides `-ot exps=CPU` to
+`CPU_REPACK` and multiplies MXFP4 experts by a different GEMM, which we cannot
+do — owning the weights is the point. So the honest claim is *bit-identical
+arithmetic on the weights as they sit in the file*, and the gap to a stock run
+is measured rather than assumed: mean KLD **3.6e-5**, max **2.1e-3**, top-1
+agreement **99.804%** over four layers.
 
 **`test-backend-ops` does not work for this backend.** It calls `supports_op` on
 every tensor *before allocating any*, so a weight has no buffer yet and our
@@ -141,23 +175,28 @@ On DeepSeek-V4-Flash:
 
     MoE: first split has 13 nodes: MUL x1 MUL_MAT_ID x3 VIEW x6 CLAMP x2 GLU x1
     sched_reserve: graph splits = 87        (43 layers x 2 + 1)
-    generated text bit-identical to stock
 
-One split per MoE layer, nothing claimed outside it, same bytes out.
+One split per MoE layer, nothing claimed outside it.
 
-**`tape` capture done, replay remaining.** `MOESERV_CAPTURE=<dir>` records each
-split generically — node list with ops, shapes, `op_params` and source indices,
-plus data for every graph input and every terminal node — with tensor data
-content-addressed into `blobs/`. `tape_inspect.py` reads it back.
+**`gate` done.** The correctness contract above, and it says our compute is
+bit-identical to llama.cpp's on the same weights. It also corrected two things
+that had been assumed: `passthrough`'s bit-identity had only ever been checked
+on generated *text*, and `-ot exps=CPU` is not a non-repacked control.
+
+**`tape` done, and no longer a correctness path.** `MOESERV_CAPTURE=<dir>`
+records each split generically — node list with ops, shapes, `op_params` and
+source indices, plus data for every tensor the split does not produce or does
+not consume — content-addressed into `blobs/`, one record per distinct split
+shape. `tape_inspect.py` reads it back.
 
 ```powershell
 $env:MOESERV_CAPTURE = "...\results\cap"
-$env:MOESERV_CAPTURE_MAX_RECORDS = "2"      # also _MAX_MB, default 4096
+$env:MOESERV_CAPTURE_MAX_RECORDS = "4"      # also _MAX_MB, default 4096
 llama-completion -m <model> -ot exps=MoE -p "..." -n 2
 python tape_inspect.py results\cap --record 0
 ```
 
-**Captures are large and bounded on purpose.** llama.cpp hands `mul_mat_id` the
-whole 256-expert tensor — 1.06 GB each, three per layer — so an unbounded
-capture of a 4-token run wrote 140 GB. A couple of records is what replay needs;
-the budget stops there and says so.
+It exists to show what the backend is handed, not to check it — `gate` does
+that, without a second definition of the graph. Captures are bounded because
+llama.cpp hands `mul_mat_id` the whole 256-expert tensor (1.07 GB, three per
+layer) and the first unbounded one was 140 GB.

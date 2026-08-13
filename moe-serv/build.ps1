@@ -45,5 +45,5 @@ $dll = Join-Path $build "bin\moeserv.dll"
 if (-not (Test-Path $dll)) { throw "expected $dll" }
 Write-Host "built $dll" -ForegroundColor Green
 Write-Host ""
-Write-Host "  `$env:GGML_BACKEND_PATH = `"$dll`"" -ForegroundColor DarkGray
-Write-Host "  llama-bench -m <model> -ot `"nonexistent=MoE`"   # should list MoE" -ForegroundColor DarkGray
+Write-Host "  python gate.py              # correctness, against the stub model" -ForegroundColor DarkGray
+Write-Host "  python gate.py --vs-stock   # and what owning the weights costs" -ForegroundColor DarkGray

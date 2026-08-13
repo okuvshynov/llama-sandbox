@@ -1,0 +1,85 @@
+A mixture-of-experts transformer spends most of its parameters in places that
+most of its tokens never touch. Each layer holds a bank of expert feed-forward
+networks, and a small router picks a handful of them per token. The arithmetic
+that results is not especially complicated: three matrix multiplications
+against a selected subset of the bank, a gated activation between them, and a
+weighted sum of what comes back. What makes it interesting is the shape of the
+work rather than its difficulty. The weights are enormous and cold, the
+activations are tiny and hot, and the selection changes on every token, so the
+memory system rather than the arithmetic unit decides how fast the thing runs.
+
+This corpus exists to be tokenized, not to be read for pleasure. It needs
+enough tokens to fill a context window and enough variety that the logits it
+produces are not degenerate, because a comparison between two runs is only as
+sharp as the values being compared. Repeated text would make every position
+predictable, the probability mass would collapse onto a few tokens, and a
+difference in the tail would have nowhere to show itself. So the prose wanders
+a little on purpose.
+
+Consider what it means for two runs of the same program to disagree. The
+obvious answer is that one of them is wrong, but in floating-point arithmetic
+the more common answer is that both are right and they added the same numbers
+in a different order. A matrix multiplication partitioned across sixteen
+threads and one partitioned across thirty-two threads accumulate their sums in
+different groupings, and the last few bits of the result reflect that. A
+compiler that contracts a multiply and an add into a single fused instruction
+produces a different rounding than one that does not. A kernel that repacks its
+weights into a blocked layout before multiplying will not agree bit for bit
+with one that reads them as they sit in the file. None of these is a bug, and
+all of them look exactly like one.
+
+The practical consequence is that bit-identity is a property of a run
+configuration and not of a model. Two runs agree only when they share a
+toolchain, a thread count, a batch shape, and a weight layout. Change any of
+those and the numbers move by an amount that sits in the same range as the
+differences a person is usually trying to measure. This is why a comparison
+worth trusting fixes everything it can and states what it could not fix.
+
+There is a second trap, subtler than the first. A test can pass without having
+tested anything. A backend that was never loaded produces exactly the same
+output as one that was loaded and did nothing, and the log line that would have
+distinguished them may have been filtered away by a verbosity setting. An
+argument containing a special character may be eaten by the shell before the
+program sees it. A control that structurally cannot vary will report perfect
+agreement forever. In each case the result is a clean green pass, which is also
+the result the person running it was hoping for, and that combination is how a
+mistake survives for weeks.
+
+The remedy is not more tests but a different kind of evidence. Assert that the
+treatment was applied, separately from asserting that the outcome was good, and
+make the harness refuse to compare when it cannot prove the first. Add a
+negative control that must fail, and check that it does. When two green results
+contradict each other, that is one datum and not two, and the thing to
+investigate is the harness rather than the subject.
+
+Numbers deserve the same suspicion. A mean over several thousand values will
+hide a single wrong one, and a single wrong one is precisely what an
+off-by-one index produces. Reporting the maximum absolute and relative
+difference costs nothing and cannot be fooled that way. Reporting where the
+maximum occurred costs a little more and usually names the bug outright.
+
+Hardware supplies its own surprises. A scheduler that offloads large batches to
+an accelerator can turn a working configuration into one that produces silent
+garbage, or merely one that runs three times slower, depending on which
+operations the accelerator declines to implement. A file that reads back
+correctly may be doing so from a cache rather than from the disk beneath it,
+and the same cache can corrupt a mapping that nothing ever wrote to. Memory
+bandwidth is easier to measure than to reason about, and the measurement is
+usually worth taking before the reasoning is worth trusting.
+
+None of this is specific to any one architecture. The expert block of a
+mixture-of-experts model is among the least distinctive parts of it: a routing
+step that chooses, a gathered matrix multiplication that expands, an activation
+that gates, a second gathered multiplication that contracts, and a weighted sum
+that combines. Models differ in how the router scores its options, whether a
+bias is added before the top-k selection, whether the gate is clamped before it
+saturates, and how many experts are shared rather than routed. Those
+differences are small in code and large in consequence, because a path written
+to be architecture-neutral will quietly omit the one operation a particular
+model needs, and every test that never exercises that path will pass.
+
+So the discipline is unglamorous. Fix the configuration. Prove the treatment
+applied. Compare the extremes rather than the averages. Keep a control that can
+fail, and run it. Write down what was measured and under which conditions, so
+that a number quoted six weeks later still means something. The interesting
+work is elsewhere, but the interesting work does not survive without this.
