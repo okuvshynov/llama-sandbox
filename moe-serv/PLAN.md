@@ -17,6 +17,11 @@ How llama.cpp is persuaded to hand us exactly that block — `GGML_BACKEND_PATH`
 `-ot`, and the scheduler's buffer-based assignment — is in `README.md`, with
 file:line references. No llama.cpp patch, no fork, no maintained diff.
 
+**Where it stands:** the block is claimed, mirrored onto four Vega II dies and
+computed there, bit-exact against the CPU on the same weights, and worth **+21%
+of prefill** on DeepSeek-V4-Flash. Decode is unchanged and, for the reason in
+`dies` below, will stay that way without a different idea.
+
 ## Invariants
 
 - **No llama.cpp source changes, ever.** If something appears to need one, that
@@ -25,7 +30,8 @@ file:line references. No llama.cpp patch, no fork, no maintained diff.
   (DeepSeek-V4-Flash, UD-Q8_K_XL). "Supported" means a passing correctness
   contract against a real checkpoint. The expert block is among the least
   model-specific parts of a MoE transformer, so a third model probably mostly
-  works — do not say so until one has been run.
+  works — do not say so until one has been run. **Only deepseek4 has ever been
+  run**; see `breadth`.
 - **Refuse what is untested.** `build_moe_ffn` can emit shapes neither model
   uses: fused `gate_up_exps`, expert bias (`ADD_ID`), `weight_before_ffn`, and
   the non-SwiGLU gates. `supports_op` must return false for those, so an
@@ -37,6 +43,9 @@ file:line references. No llama.cpp patch, no fork, no maintained diff.
   reset its running backend id when it meets an op it cannot place
   (`ggml_backend_sched_set_if_supported`), so claiming it could reach past the
   block into the trunk.
+- **Every fall-back is a fall-back to the CPU, never a skip.** A layer that does
+  not fit, an op a die declines, a shape the chunker cannot read: all of them
+  must be slow and right.
 - **No dependency on `../nano-glm`, in either direction.** Copy what is worth
   copying, as source that then belongs here.
 
@@ -47,359 +56,142 @@ placing the routed experts in our buffer with `-ot`, differing only in whether
 we claim any ops (`MOESERV_DISABLE=1` is the control). Each writes its
 log-probabilities with `--kl-divergence-base`; those files are a deterministic
 function of the logits, so identical files mean our compute changed nothing.
-Bit-identical through `passthrough`; a stated numerical floor after.
 
 The harness is llama.cpp. Nothing here defines the graph, the ops or the
 arithmetic a second time, because a wrong test that passes is worse than no
-test. `make_stub.py` is what makes it affordable — the first four layers of
-DeepSeek-V4-Flash are ~16 GiB and load in seconds, against 150 GiB and minutes.
+test. `make_stub.py` is what makes it affordable — four layers of
+DeepSeek-V4-Flash load in seconds against 150 GiB in minutes.
 
-**The control is not stock llama.cpp, and that is not a shortcut.** llama.cpp
-overrides `-ot exps=CPU` to **CPU_REPACK** and rewrites MXFP4 experts into a
-blocked layout multiplied by a different GEMM (repo `CLAUDE.md`). We cannot
-repack — owning the weights is the point, and a second 137 GiB copy is not
-available — so that comparison differs in weight layout as well as in backend.
-It is worth knowing and `--vs-stock` measures it; it is not the gate.
+- **CPU path: `--tol 0`.** Bit-identical, and it does not retire now that Vulkan
+  works — it is the regression test on the plumbing.
+- **Vulkan path: `--tol 5e-4`**, typed on the command line every time rather
+  than defaulted. That is ~14x the **measured repack gap** (mean KLD 3.6e-5,
+  max 2.1e-3), which is what two *correct* kernels disagreeing looks like on this
+  machine; the Vulkan path measures 6.2e-5. Necessary, not sufficient:
+  end-to-end KLD saturates on deep models and a mathematically-invariant wrong
+  graph sits inside the precision band (repo `CLAUDE.md`).
+
+**The control is not stock llama.cpp.** llama.cpp overrides `-ot exps=CPU` to
+`CPU_REPACK` and multiplies MXFP4 experts by a different GEMM, which we cannot
+do. `--vs-stock` measures that gap; it is not the gate.
 
 `test-backend-ops` does **not** work here and must never be quoted as
 conformance — it calls `supports_op` before allocating anything, so our
-ownership guard answers no and it reports OK over 0/0 tests. Useful only as a
-smoke test that the buffer type allocates and frees.
+ownership guard answers no and it reports OK over 0/0 tests.
 
-Every check must assert the backend was *engaged* — and, since today, also
-where the weights went, which is the assertion that would have caught the
-CPU_REPACK control being wrong the first time instead of after an hour. Runs
-that cannot prove both from their own log abort the gate rather than being
-compared. Five separate "passes" in this project have now tested nothing at
-all, or tested the wrong thing.
+Every check asserts **where the weights went and whether we computed**, from
+each run's own log, and aborts rather than comparing when it cannot. Five
+"passes" in this project have tested nothing or the wrong thing.
 
 ## Steps
 
 Named, not numbered: `../nano-glm/PLAN.md` numbered its steps and reality
-reordered them, leaving code comments pointing at "step 9" and an
-`OPTIMIZATION.md` section called "3-adjacent". Names survive reprioritisation.
+reordered them, leaving code comments pointing at "step 9".
 
 ### `handshake` — Done (`3b228f2`)
 
-Library registers, exposes a buffer type named `MoE` that `-ot` resolves, claims
-no ops. Verified invisible when explicitly targeted.
-
+Registers, exposes a buffer type named `MoE` that `-ot` resolves, claims no ops.
 Surprise worth carrying: `-ot` is honoured **regardless of `supports_op`**, so
-140352 MiB of expert weights landed in our buffer before we claimed a single op.
-The run stayed correct because the buffer is host memory and the CPU backend
-accepts any host buffer. That made `passthrough` the smaller half, and it makes
-**`is_host` load-bearing** — see `dies`.
+140352 MiB of experts landed in our buffer before a single op was claimed — the
+run stayed correct only because the buffer is host memory, which makes `is_host`
+load-bearing.
 
 ### `passthrough` — Done (`bd7abcc`)
 
-Claims `MUL_MAT_ID`, `CLAMP`, `GLU`, `MUL` (guarded by ownership) and computes
-by handing the split to a CPU backend from the host's registry.
+Claims `MUL_MAT_ID`, `CLAMP`, `GLU`, `MUL` guarded by ownership; one split per
+MoE layer, nothing outside it. Its "bit-identical" was measured on generated
+*text*, which `gate` later showed to be the weaker claim.
 
-    MoE: first split has 13 nodes: MUL x1 MUL_MAT_ID x3 VIEW x6 CLAMP x2 GLU x1
-    sched_reserve: graph splits = 87        (43 layers x 2 + 1)
+### `gate` — Done (`0ea5520`)
 
-One split per MoE layer, nothing outside it. Throughput recorded, not compared —
-an extra split boundary buys nothing yet and it is expected to be slower.
+`gate.py` + `make_stub.py`, the contract above. Established that our compute is
+bit-identical to llama.cpp's on the same weights, that a **prefix** of layers is
+a valid model needing no metadata surgery beyond `block_count`, and that the
+repack gap is 3.6e-5 mean KLD — the yardstick every tolerance since is argued
+from.
 
-Bit-identity was claimed here on **generated text**, which `gate` has since
-shown to be the weaker statement: at the logit level our compute is bit-exact
-against the same-placement control, and stock llama.cpp differs from both
-because of the repack. Text identity would have survived either outcome.
+### `tape` — Removed (`9fe5558`, `c5ec045`)
 
-### `gate` — Done
+A capture/replay format, superseded by `gate` before it was finished. `git show
+9fe5558` if a per-op comparison is ever needed.
 
-`gate.py` + `make_stub.py`: the correctness contract above, running in minutes
-against a cut-down model rather than in an hour against 150 GiB. Result:
+### `bench` — Done (`615d67c`)
 
-    ctl    experts -> MoE         our compute: no
-    moe    experts -> MoE         our compute: yes
-    PASS: our compute is bit-identical to llama.cpp's on the same weights
+`bench.py`. Established the measurement discipline that everything after it
+relied on: **decode on the real model cannot resolve anything below ~10%**
+(7-9% load-to-load against 2-6% effects), so the stub is the instrument and only
+a quantity that transfers may be extrapolated. Prefill turned out to be the
+exception — see `dies`.
 
-Three things it established that were previously assumed.
+### `dies` — Done (`f312726`, `11626d1`, `ebf83f6`, `57c5b85`, `b9e0cec`, `6689bdc`)
 
-**Our compute is exactly llama.cpp's.** Same weights, same threads, one
-unsplit graph versus a claimed split — byte-identical log-probabilities. The
-split boundary costs nothing arithmetically.
+The expert block on four Vega II dies, with ggml's own kernels. Whole layers,
+packed in device order, mirrored into VRAM; the rest on the CPU. On
+DeepSeek-V4-Flash that is **9 layers per die, 36 of 43, 7 on the CPU**, exactly
+as the capacity arithmetic predicted before it met the real model.
 
-**Owning the weights does cost something, and it is now measured.** Against
-stock (`--vs-stock`), where llama.cpp overrides `-ot exps=CPU` to **CPU_REPACK**
-and multiplies MXFP4 experts by a different GEMM: mean KLD 3.6e-5, max 2.1e-3,
-top-1 agreement 99.804% over four layers. That is the price of ownership, not a
-defect, and it will not go away — so **the project's headline claim is
-"bit-identical arithmetic on the weights as they sit in the file", never
-"bit-identical to a stock run"**.
+    pp512        stock 18.49    ours-off 18.02    ours-on 21.84
+    our compute  +21.1%         net vs stock +18.1%        (spreads <= 1.1%)
 
-**A prefix of layers is a valid model; a renumbered layer is not.** Every
-per-layer thing llama.cpp reads is indexed by layer number, so a prefix needs no
-metadata surgery beyond `block_count` and cutting the arrays whose length must
-equal it. Four layers is the minimum for deepseek4: the compressor kinds appear
-at layers 2 (ratio 4) and 3 (ratio 128), and a stub with neither divides by zero
-building an empty KV cache.
+Three findings that shape what comes next:
 
-Two mistakes worth keeping. `-ot exps=CPU` was used as the control for an hour
-on the belief that naming a buffer type bypasses the repack selection — it does
-not, and the run says so in one `-v` line that was not being read. And the
-`passthrough` bit-identity claim rested on generated text, which would have
-looked the same either way; the gate now asserts where the weights went, not
-only that something was computed.
+- **The cliff.** `ggml_vk_use_mul_mat_vec_id` takes the vector path only at
+  <= 8 tokens (`ggml-vulkan.cpp:10607`). Unchunked, prefill *lost* 51%; issuing
+  the block 8 tokens at a time wins 21-35%. A graph decision, not a shader —
+  which is why `shaders` is now less urgent than it looked.
+- **Decode cannot be fixed by chunking.** Batch 1 is already on the fast path,
+  and a die is no quicker than 16 CPU cores for one token's experts (~1.45 ms
+  per layer either way). The block is also only ~20% of the bytes a decode step
+  reads, capping any decode win at 1.25x.
+- **Prefill measures well on the real model** (0.0-1.1% load-to-load), unlike
+  decode. The "stub is the instrument" rule is a decode rule.
 
-### `tape` — Removed (`9fe5558`, `0ea5520`)
+### `breadth` — Planned, next
 
-A capture format for the split `graph_compute` is handed, built to be half of a
-replay harness. `gate` answered the same question better — llama.cpp is the
-harness, so nothing has to define the graph a second time — leaving `tape` with
-no job that justified carrying it. Deleted rather than kept "in case": it is one
-`git show 9fe5558` away, and a second thing that looks like a correctness path
-is a liability.
+Run GLM-5.2 (`glm-dsa`, UD-Q6_K, 583 GiB). The invariants name two models and
+only one has ever been run, so every generalisation this project has made is
+currently untested: a second architecture is the cheapest way to find which of
+them were really deepseek4 in disguise.
 
-Two findings from it are worth having without the code. The block the backend
-receives is exactly the expert half of `build_moe_ffn` and nothing else —
-`MUL_MAT_ID`, `CLAMP`, `MUL_MAT_ID`, `CLAMP`, `GLU`, `MUL_MAT_ID`, `MUL`, then
-six terminal `VIEW`s. And any future scheme that captures a `mul_mat_id`'s
-inputs faces the same wall: llama.cpp hands it the *whole* 256-expert tensor,
-1.07 GB, three per layer, so an unbounded capture of a 4-token run wrote 140 GB.
-Slicing the weights to the experts the ids name (~80 MB per decode record) is
-the way through, and it is the reason to revive this only with a purpose in
-hand — see the open question under `dies`.
+Specifically at risk, in rough order of likelihood:
 
-### `bench` — Done
+- **The chunker's token-dimension inference.** It matches each tensor's extents
+  against the ids tensor's token count and refuses when two dimensions match.
+  GLM-5.2 has a different `n_expert_used` and `n_ff_exp`, so both the match and
+  the refusal need to be seen happening.
+- **`supports_op`'s claim set.** glm-dsa gates with sigmoid rather than
+  sqrt-softplus and has no SwiGLU clamp, so its block is a different op sequence
+  — the guard should claim it or decline it cleanly, and "decline" must mean the
+  CPU path, not a wrong answer.
+- **`make_stub.py`'s prefix rule.** Whether GLM-5.2 has per-layer arrays that
+  `get_key_or_arr` sizes to `block_count`, and whether a short prefix is a
+  loadable model at all — deepseek4 needed four layers for reasons specific to
+  its compressor kinds.
+- **Placement arithmetic** at a different expert size and layer count.
 
-`bench.py`: decode throughput for the gate's three configurations, CPU only.
-Numbers and reasoning in `README.md`; the two results that matter here are that
-**our split costs the real model ~0.4% and at most ~3%** of decode, and that
-**this cannot be measured on the real model at all**.
-
-That second one shapes everything after it. On DeepSeek-V4-Flash the
-load-to-load spread is 7-9% while the effects are 2-6%, so the three
-configurations interleave and the two loads rank them differently — one
-3.1-3.6 t/s band and no ordering. More loads is the wrong answer at sqrt(n).
-The 4-layer stub has a 0.0-2.3% spread, resolves the repack difference (3.2%),
-and bounds the per-split cost at ≤216 µs, which scales to the real model by
-split count. **So the stub is the measuring instrument and the real model is the
-sanity check, for performance as well as for correctness.**
-
-`bench.py` now refuses to print a delta smaller than the noise it just measured.
-The first version printed three confident percentages under a table whose own
-spread contradicted all of them.
-
-### `dies` — In progress
-
-Compute claimed ops on the four Vega II dies via Vulkan, reusing ggml's own
-kernels. They are generic and not tuned for Vega II; that is fine as a start and
-`shaders` is where it stops being fine.
-
-**The ceiling first, because it decides what "good" means.** DeepSeek-V4-Flash
-is 90.9% experts *by size*, but a decode step reads only 6 of 256 experts and
-100% of everything else:
-
-| | GiB read per token | share |
-|---|---|---|
-| routed experts (6/256) | 3.21 | **20.2%** |
-| attention, shared expert, output head | 12.70 | 79.8% |
-
-So if the dies made our whole block **free**, decode goes 3.46 -> 4.34 t/s: a
-**1.25x ceiling** before any transfer or dispatch cost. `../nano-glm`'s best
-llama.cpp Vulkan decode was 4.64 t/s at `-ngl 99 -ncmoe 24 -nopo 1
--ts 24/6/6/7` — which offloads *attention* and leaves experts on the CPU, i.e.
-the other 80%. **For decode, the block we own is the less valuable half**, and
-the two approaches compose rather than compete (`-ngl` is llama.cpp's business).
-Prefill inverts this: at batch 512 nearly every expert is touched.
-
-Nothing about that changes the plan — capacity is still the reason this project
-exists, since the experts are precisely what does not fit — but it does mean a
-decode result near 4.3 t/s is a *success*, not a disappointment, and that the
-prefill number is the one to watch.
-
-**Placement: whole layers, packed in device order, remainder on the CPU.**
-3.188 GiB of experts per layer against 31.73 GiB per die gives **9 layers/die,
-36 of 43 on the GPUs (84%)**, ~3 GiB/die spare. Three measurements decide this,
-all from `../nano-glm`:
-
-- **One die is as fast as four** (20.2 / 20.6 / 20.0 s, sd 0.1-0.2). The dies are
-  bound by something fixed per dispatch, not by throughput — *adding dies buys
-  VRAM capacity, not speed* — so the policy should minimise dispatches.
-- **Routing skew does not transfer across prompts**: a placement built from other
-  prompts catches 28.2% of selections against 23.1% for random. Hot-expert
-  placement is ~5pp for a lot of machinery. Not built.
-- **Time is linear in the slots left on the CPU**, so the only thing worth
-  maximising is resident fraction.
-
-Striping each layer's experts across all four dies reaches 91% residency but
-costs ~3.3 dispatches per layer instead of 1. That extra 7pp is worth ~7% of
-expert time = **1.4% of decode**, which does not buy 3.3x the dispatches on
-dispatch-bound hardware. Same arithmetic rejects per-expert placement. Revisit
-only if a measurement says dispatch is cheap.
-
-**Mechanism: mirror into VRAM, do not move.** The buffer stays host memory with
-`is_host` true, and the layers we place get a second copy uploaded to a die.
-Costs 137 GiB host + up to 115 GiB VRAM, which this machine has. The
-alternative — making our buffer type device memory — cannot express "84% on GPU,
-16% on CPU" at all, because llama.cpp allocates one buffer per buffer type, and
-it would drop `is_host`, which is what keeps every unclaimed op free and the
-correctness gate unchanged.
-
-Per split we then either delegate to the CPU as today, or rebuild the received
-graph against the die's tensors, upload the activations, compute, and read the
-terminals back. Rebuilding generically from the cgraph — not hard-coding the
-five ops — for the reason `tape` was built that way.
-
-**Host build requirement, and it is not optional.** `dies` needs llama.cpp built
-with `GGML_VULKAN=ON` (`llama.cpp/build-vk`), and **every run must pass
-`-nopo 1`**. Otherwise `op_offload` hands host matmuls to the Vulkan device at
-batch >= 32, they bounce off the two ops Vulkan cannot run (`DSV4_HC_COMB` every
-layer, `LIGHTNING_INDEXER` on ratio-4 layers), and prefill fragments into ~1780
-splits — 5.37 t/s against 17.99 (repo `CLAUDE.md`). `gate.py` and `bench.py`
-take `--build-dir` so both hosts are reachable, and the CPU-only host stays the
-baseline.
-
-Increments, in order:
-
-1. **Done.** Enumerate the dies, compute and log the placement, change nothing
-   else — a placement that is only printed must not move a logit, and the gate
-   says it did not. All three branches exercised on the stub by shrinking usable
-   VRAM with `MOESERV_RESERVE_MB` rather than building bigger models.
-2. **Done.** Upload the mirror; still compute on the CPU. **12.75 GiB at
-   3.2-3.5 GiB/s**, so the real model's 115 GiB costs ~35 s of load, once.
-   Freed and reset when the model buffer goes, so a second load re-probes.
-   Untested: the fallback that sends a die's layers back to the CPU when
-   allocation fails. It cannot be reached by shrinking the reserve — that
-   changes the *plan*, not the outcome of allocating it — and needs a driver
-   that reports more free VRAM than it will hand out.
-3. **Done.** Compute placed layers on their die (`src/moe_run_vk.h`): rebuild
-   the received split against the mirror, upload the inputs, compute, read the
-   terminals back. Rebuilt generically from the cgraph — nothing in that file
-   names an op. Measured against the same-placement control on the 4-layer stub:
-
-   | configuration | mean KLD | max KLD | top-1 |
-   |---|---|---|---|
-   | repack gap, CPU vs CPU_REPACK (the yardstick) | 3.6e-5 | 2.1e-3 | 99.804% |
-   | 4 layers on Vulkan0 | 8.4e-5 | 1.13e-2 | 99.804% |
-   | 4 layers, one per die | 8.4e-5 | 1.13e-2 | 99.804% |
-   | 1 layer on Vulkan0, 3 on CPU | 8.1e-5 | 1.11e-2 | 99.216% |
-
-   **Vulkan is 2.3x the repack gap on the mean and 5.4x on the max — the same
-   order**, which is the criterion: the repack gap is two *correct* kernels
-   disagreeing on this machine and model, so a difference of that size is
-   evidence of different rounding and nothing else.
-
-   The four-dies row is identical to the one-die row to every printed digit, so
-   the dies agree with each other exactly. That is the same-arithmetic control
-   `../nano-glm` had to learn to run: without it, a difference between dies would
-   have been charged to Vulkan.
-
-   **Necessary, not sufficient.** End-to-end KLD saturates on a deep model and a
-   mathematically-invariant wrong graph sits inside the precision band (repo
-   `CLAUDE.md`). Four layers is chosen partly because it amplifies less than 43;
-   whether that is enough is still the open question below.
-
-4. **Done, and it found the wall.** `bench.py --build-dir build-vk --ngl 0`, the
-   4-layer stub, ours-off (CPU) against ours-on (dies):
-
-   | batch | our compute |
-   |---|---|
-   | pp4 | **+15.6%** |
-   | pp8 | **+21.9%** |
-   | pp16 | **-60.2%** |
-   | pp32 | -54.6% |
-   | pp128 | -51.4% |
-   | tg32 (decode) | -0.1% |
-
-   **The cliff is `ggml_vk_use_mul_mat_vec_id`**: `src2->ne[1] <= 8`
-   (`ggml-vulkan.cpp:10607`), where `src2` is the ids tensor and `ne[1]` is the
-   token count. At 8 tokens or fewer the dies use the vector path and beat 16
-   CPU cores by ~20%; at 9 or more they take the general path and lose half.
-   This is `../nano-glm`'s 10.2x cliff, found independently and from the other
-   side.
-
-   **Decode gains nothing** (-0.1%), which is the more sobering number: batch 1
-   is firmly on the fast path, so the die is simply no faster than the CPU for
-   one token's experts. At ~1.45 ms per layer either way, the dies are bound by
-   dispatch and transfer, not by arithmetic — exactly what "one die is as fast
-   as four" predicted.
-
-5. **Chunking — done, and it worked.** The split is issued `MOE_VK_CHUNK = 8`
-   tokens at a time. A chunk twin keeps the host tensor's *strides* and shrinks
-   only the token dimension, so its byte span is exactly the host span at
-   `t0*nb[d]` and both the upload and the read-back stay single contiguous
-   copies rather than a per-token scatter.
-
-   | batch | pp8 | pp16 | pp32 | pp128 | pp512 | decode |
-   |---|---|---|---|---|---|---|
-   | before | +21.9% | -60.2% | -54.6% | -51.4% | — | -0.1% |
-   | after | **+26.7%** | **+32.9%** | **+35.1%** | **+30.1%** | **+27.2%** | -0.2% |
-
-   The cliff is gone and prefill is a **+27-35% win** at every batch size. KLD
-   improved too (6.2e-5 from 8.4e-5): shorter reductions accumulate less error.
-
-   The token dimension is found per tensor by matching the ids tensor's token
-   count, and a tensor with *two* dimensions of that size refuses the chunking
-   rather than guessing — slicing a 6-expert axis because the batch happened to
-   be 6 would produce fluent nonsense.
-
-   **Decode is untouched (-0.2%)** and will stay that way: batch 1 was always on
-   the fast path, so the die is simply no faster than 16 CPU cores for one
-   token's experts. Decode needs a different idea, not a bigger chunk.
-
-6. **The real model — done, and the win transferred.** DeepSeek-V4-Flash,
-   150.75 GiB, placement exactly as this plan computed in advance: **9 layers
-   per die, 36 of 43, 7 on the CPU**, 1.48 GiB spare each, 28.69 GiB mirrored
-   per die. Two loads, `--ngl 0 --pp 512 --n 32`:
-
-   | pp512 | per load | mean | spread |
-   |---|---|---|---|
-   | `stock` | 18.49 / 18.49 | 18.49 | 0.0% |
-   | `ours-off` | 17.93 / 18.12 | 18.02 | 1.1% |
-   | **`ours-on`** | 21.92 / 21.75 | **21.84** | 0.8% |
-
-   **Prefill +21.1%** over the same-placement control, **+18.1%** over llama.cpp
-   as shipped, both resolved. Decode resolves nothing (3.48 / 3.42 / 3.45
-   against 1.4-3.5% noise).
-
-   Two things worth keeping. **Prefill measures far better than decode on this
-   machine** — 0.0-1.1% load-to-load against decode's 7-9% — because it is
-   compute-bound rather than paging-bound, so the "the stub is the instrument"
-   rule is a decode rule, not a universal one. And the stub predicted the real
-   model within 6 points (+27% against +21%), which is the first time in this
-   project a stub-measured effect has been confirmed at full scale.
-
-**Gate: `gate.py --tol`, and the tolerance has to be argued rather than picked.**
-The CPU path keeps its `--tol 0` bit-identity check — it does not retire when
-Vulkan lands, it becomes the regression test on the plumbing. For Vulkan the
-question is what number to allow, and two things already measured bound it:
-
-- The **repack gap** (mean KLD 3.6e-5, max 2.1e-3 over four layers) is a
-  same-machine, same-model example of *two correct kernels disagreeing*. A
-  Vulkan difference of that order is evidence of nothing except different
-  rounding; one much larger is worth investigating.
-- End-to-end KLD **saturates** on a deep model (`../nano-glm/OPTIMIZATION.md`),
-  and a **mathematically-invariant wrong graph hides inside the precision noise
-  floor** (repo `CLAUDE.md`, the Hadamard incident). So a passing tolerance at
-  the logits is necessary and nowhere near sufficient.
-
-Which means the stub earns a second job: at four layers there is far less
-amplification than at 43, and the layer count is a knob (`make_stub.py
---layers`). If a Vulkan difference grows with depth faster than the repack gap
-does, that is a signal the logits alone cannot give. Whether that is enough, or
-whether `dies` needs a per-op comparison after all, is the open question — and
-if it is the latter, the thing to reach for is `git show 9fe5558`, not a new
-format.
+Order: build a stub, get `gate.py --tol 0` green on the CPU path, then the
+Vulkan path, then `bench.py` prefill. Only load the 583 GiB model once the stub
+is green, and expect the load-to-load problem to be worse there, not better.
 
 ### Later — one line each
 
-- **`residency`** — which experts sit on which die, and what happens to the rest.
-- **`wire`** — in-process or a separate process over a socket. Undecided until a
-  call's real cost is known.
-- **`shaders`** — custom kernels for these dies, if the generic path leaves
-  something. May not exist as a step; the known win is chunking, which is `dies`.
-- **`breadth`** — a third model, once two are solid.
+- **`decode`** — the remaining perf gap, and it needs fewer round trips (several
+  layers per submission, or activations that never leave the die), not faster
+  kernels.
+- **`residency`** — which experts sit on which die, once something makes the
+  static whole-layer placement look wrong.
+- **`wire`** — in-process or a separate process over a socket. Still undecided,
+  and now informed by a measured per-split cost.
+- **`shaders`** — custom kernels for these dies. Demoted: the generic ones win
+  prefill once the graph keeps them on the vector path.
 
 ## Links
 
-- `README.md` — build, run, how the mechanism works, and the things that are not
-  obvious about writing an out-of-tree ggml backend.
-- `gate.py` / `make_stub.py` — the correctness gate and the stub it runs on,
-  each carrying its own reasoning at the top.
-- `../nano-glm/OPTIMIZATION.md` — the measurements this project starts from:
-  what the dies are worth, the 8-pair cliff, expert residency at Q8.
-- Commits `b6f46b1` (plan), `3b228f2` (`handshake`), `bd7abcc` (`passthrough`),
-  `9fe5558` (`tape` capture).
+- `README.md` — build, run, how the mechanism works, the numbers, and the things
+  that are not obvious about writing an out-of-tree ggml backend.
+- `gate.py` / `bench.py` / `make_stub.py` — each carries its reasoning in its
+  header, including the measurement discipline the benchmarks depend on.
+- `../nano-glm/OPTIMIZATION.md` — where the dies' dispatch-bound behaviour, the
+  8-pair cliff and the routing-skew result were first measured.
+- Repo `CLAUDE.md` — the traps this project keeps meeting: repack, op_offload,
+  load-to-load variance, and controls that test nothing.
