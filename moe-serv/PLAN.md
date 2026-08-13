@@ -265,7 +265,32 @@ is green, and expect the load-to-load problem to be worse there, not better.
   timestamps, and they account for two thirds of the call. Read source, then
   measure it — this thread corrected itself three times and only the
   measurements survived.
-- **`shaders`** — now the only lever, for decode as well as prefill. **The format
+- **`shaders` — the ceiling is measured, and the gap is ALU, not bandwidth.**
+  `moe-probe` (`src/moe_probe.cpp`, standalone, synthetic, no model) runs one
+  `mul_mat_id` at our own shapes — k=4096, m=2048, 6 of 32 experts, 1 token:
+
+  | type | MB | µs | GB/s |
+  |---|---|---|---|
+  | f32 | 201.33 | 365.6 | **550.7** |
+  | f16 | 100.66 | 375.8 | 267.9 |
+  | q8_0 | 53.48 | 201.3 | 265.7 |
+  | q4_0 | 28.31 | **167.2** | 169.3 |
+  | mxfp4 | 26.74 | 222.8 | 120.0 |
+
+  **f32 reaches 550 GB/s on this gather**, so the access pattern and the memory
+  system are not the limit. Now read the *time* column: mxfp4 moves **7.5x less
+  data than f32 and still takes 61% as long**. The quantized kernels are not
+  bandwidth-bound at all — they are bound by unpacking. A 4-bit format streaming
+  at 550 GB/s would finish in **48 µs against mxfp4's 223: 4.6x of headroom**,
+  none of it addressable by alignment or coalescing alone.
+
+  So the design earlier sketched around load alignment was aiming at the wrong
+  term. What matters is cost per weight unpacked: a LUT in LDS rather than
+  arithmetic extraction, packed-fp16 accumulation (`V_PK_FMA_F16`, 2x rate on
+  Vega), and `V_DOT4_I32_I8` as the fallback. f16 being *slower than f32* in
+  wall time says kernel quality varies even where there is nothing to unpack.
+
+- **`shaders` (context)** — for decode as well as prefill. **The format
   is worth ~1.3-1.5x of the block and no more**, measured on the branch
   `moe-q40-experiment` with two stubs differing only in expert type (built by
   `llama-quantize --allow-requantize --tensor-type ...exps=<type>` over a *quantized*

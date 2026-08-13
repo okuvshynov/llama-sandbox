@@ -25,6 +25,13 @@ endif()
 # but the flag also gates GGML_BACKEND_DL_IMPL, which is what generates our
 # `ggml_backend_init` / `ggml_backend_score` exports. So it is set as a compile
 # definition on our target only, below, rather than as a ggml-wide option.
+# Vulkan is built here only for `moe-probe`, which needs a device in its *own*
+# process. It changes nothing about moeserv.dll: that links ggml as an import
+# library and resolves to the host llama.cpp's copy at load time, so the host's
+# build decides what backends the library sees. The cost is shader compilation
+# on a clean build.
+set(GGML_VULKAN ON CACHE BOOL "" FORCE)
+
 add_subdirectory("${LLAMA_CPP_DIR}/ggml" ggml EXCLUDE_FROM_ALL)
 
 add_library(moeserv SHARED src/moe_backend.cpp)
@@ -71,3 +78,12 @@ set_target_properties(moeserv PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
     PREFIX "")
+
+# moe-probe — a standalone kernel benchmark, deliberately not part of the
+# backend. It links ggml normally because it needs the kernels in its own
+# process; the library never does, since it borrows the host's.
+add_executable(moe-probe src/moe_probe.cpp)
+target_include_directories(moe-probe PRIVATE "${LLAMA_CPP_DIR}/ggml/include")
+target_link_libraries(moe-probe PRIVATE ggml-base ggml)
+set_target_properties(moe-probe PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
