@@ -19,8 +19,16 @@ file:line references. No llama.cpp patch, no fork, no maintained diff.
 
 **Where it stands:** the block is claimed, mirrored onto four Vega II dies and
 computed there, bit-exact against the CPU on the same weights, and worth **+21%
-of prefill** on DeepSeek-V4-Flash. Decode is unchanged and, for the reason in
-`dies` below, will stay that way without a different idea.
+of prefill** and **+6.9% of decode** on DeepSeek-V4-Flash.
+
+**Optimising the block is the right thing even where this machine cannot show
+it.** A decode step here reads 6 of 256 experts and all of the trunk, so our
+block is ~20% of the bytes and even a free one caps at 1.25x. That is this
+machine's balance, not the approach's: the trunk's weights are 13.7 GiB and
+would fit on one modern GPU, where they cost a fraction of the 231 ms/token they
+cost on these cores. In that configuration the expert block is most of the time
+— and it currently runs at ~7% of a die's bandwidth, so the headroom is large
+and it is the part worth having.
 
 ## Invariants
 
@@ -236,8 +244,11 @@ is green, and expect the load-to-load problem to be worse there, not better.
   static whole-layer placement look wrong.
 - **`wire`** — in-process or a separate process over a socket. Still undecided,
   and now informed by a measured per-split cost.
-- **`shaders`** — custom kernels for these dies. Demoted: the generic ones win
-  prefill once the graph keeps them on the vector path.
+- **`shaders`** — fewer, larger dispatches first: the die's decode time fits
+  ~85 µs per submitted op x 13 nodes almost exactly, which would make it
+  submission-bound rather than bandwidth-bound. Test by varying node count and
+  bytes independently — the profile already records `n_nodes`. Custom kernels
+  only after that.
 
 ## Links
 
