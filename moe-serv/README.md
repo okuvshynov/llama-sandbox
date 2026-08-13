@@ -264,6 +264,23 @@ Needs `--build-dir build-vk` and, on that host, the no-op-offload flag — which
 `gate.py` and `bench.py` add for you. See `PLAN.md` for why whole layers, and
 for the 1.25x ceiling that decode faces regardless.
 
+**What the dies are worth so far.** `bench.py --build-dir build-vk --ngl 0` on
+the 4-layer stub, our compute against the same weights on the CPU:
+
+| batch | 4 | 8 | 16 | 32 | 128 | decode |
+|---|---|---|---|---|---|---|
+| our compute | **+15.6%** | **+21.9%** | -60.2% | -54.6% | -51.4% | -0.1% |
+
+The cliff sits at `ggml_vk_use_mul_mat_vec_id` — `src2->ne[1] <= 8`
+(`ggml-vulkan.cpp:10607`), the ids tensor's token count. Up to 8 tokens the dies
+use the vector path and beat 16 CPU cores; past that they take the general path
+and lose half. Chunking a large `mul_mat_id` into 8-token dispatches is the next
+step, and it is a graph decision rather than a shader.
+
+Two flags are not optional when benchmarking this: **`--ngl 0`**, or llama-bench's
+default of 99 quietly offloads the trunk too and the rows stop being comparable;
+and the no-op-offload flag, which `bench.py` adds for you.
+
 **`tape` removed.** A capture format for the split the backend is handed, built
 to be half of a replay harness; `gate` answered the same question without a
 second definition of the graph, so it was deleted rather than carried. It is in

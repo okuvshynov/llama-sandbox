@@ -61,10 +61,15 @@ static moe_vk        moeserv_vk;
 static void moeserv_buffer_free(ggml_backend_buffer_t buffer) {
     auto * ctx = (moeserv_buffer *) buffer->context;
     // The mirror holds pointers to tensors in this buffer, so it cannot outlive
-    // it. Only for a real buffer: `weight_buft_supported` attaches zero-sized
-    // ones to ask whether we accept a tensor, and freeing the mirror on those
-    // would throw away 115 GiB of upload during model loading.
-    if (ctx->size > 0) {
+    // it — but *only* this buffer. `weight_buft_supported` attaches zero-sized
+    // buffers to ask whether we accept a tensor, and `ggml_backend_sched`
+    // allocates a compute buffer of our type once per context. Tearing down on
+    // either of those throws away the placement mid-run, which is not a
+    // correctness bug (everything falls back to the CPU and stays right) and is
+    // exactly the kind of silent performance bug a benchmark reports as a
+    // result.
+    if (buffer == moeserv_place.weights_buf) {
+        moe_vk_report(moeserv_place, moeserv_vk, MOESERV_NAME);
         moe_vk_free(moeserv_vk);
         moe_mirror_free(moeserv_mirror);
         moeserv_place = moe_placement();
@@ -92,6 +97,7 @@ static enum ggml_status moeserv_buffer_init_tensor(ggml_backend_buffer_t buffer,
     // Recorded now, uploaded at the first compute: the weight has not been
     // written yet, and this hook runs during allocation.
     moe_mirror_note(moeserv_mirror, dev, tensor);
+    if (dev >= 0) moeserv_place.weights_buf = buffer;
     return GGML_STATUS_SUCCESS;
 }
 
@@ -422,6 +428,7 @@ static enum ggml_status moeserv_backend_graph_compute(ggml_backend_t backend, gg
         return GGML_STATUS_SUCCESS;
     }
 
+    moeserv_vk.n_cpu++;
     ggml_backend_t cpu = moeserv_cpu();
     if (!cpu) return GGML_STATUS_FAILED;
     return ggml_backend_graph_compute(cpu, cgraph);

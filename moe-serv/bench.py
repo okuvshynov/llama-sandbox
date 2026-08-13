@@ -1,21 +1,22 @@
 #!/usr/bin/env python3
-"""Decode throughput, CPU only, for the three configurations the gate compares.
+"""Throughput for the three configurations the gate compares.
 
-    python bench.py                       # ~20 min on DeepSeek-V4-Flash
-    python bench.py --loads 3 --n 64
+    python bench.py                                   # decode, CPU-only host
+    python bench.py --pp 128 --build-dir build-vk     # prefill too, on the dies
 
 Same three configurations as `gate.py`, so the performance story and the
 correctness story describe the same runs:
 
     stock      llama.cpp as shipped        experts repacked, one graph
     ours-off   -ot exps=MoE, claims off    experts not repacked, one graph
-    ours-on    -ot exps=MoE               experts not repacked, our split
+    ours-on    -ot exps=MoE               experts not repacked, ours to compute
 
 Read as two differences rather than three numbers. `stock -> ours-off` is what
 llama.cpp's MXFP4 repack is worth, which we forfeit by owning the weights and
-cannot get back. `ours-off -> ours-on` is what the extra split boundary costs,
-which is ours to fix. Quoting only `stock -> ours-on` would fold a compile-time
-kernel choice into an architectural claim.
+cannot get back. `ours-off -> ours-on` is what our compute is worth — the extra
+split boundary on the CPU-only host, the four Vega II dies on the Vulkan one.
+Quoting only `stock -> ours-on` would fold a compile-time kernel choice into an
+architectural claim.
 
 MEASUREMENT DISCIPLINE, ALL OF IT LEARNED HERE (repo CLAUDE.md)
 
@@ -30,8 +31,10 @@ MEASUREMENT DISCIPLINE, ALL OF IT LEARNED HERE (repo CLAUDE.md)
 - **Round-robin, not blocked.** Load 1 of every configuration, then load 2, so
   drift in the machine's state hits all of them alike instead of the one that
   happened to run last.
-- **Decode only.** `-p 0`. Prefill and decode are bound by different things and
-  a table mixing them invites an average of the two.
+- **Prefill and decode reported apart**, never averaged: they are bound by
+  different things, and for this project by opposite ones. A decode step reads
+  6 of 256 experts, so our block is ~20% of its bytes; a 512-token prefill
+  touches nearly all of them.
 
 Each run must also prove from its own log where the expert weights went and
 whether we computed, and a run that cannot aborts rather than being tabulated.
@@ -98,7 +101,19 @@ def main():
     ap.add_argument("--out", default=os.path.join(HERE, "results"))
     ap.add_argument("--threads", type=int, default=16)
     ap.add_argument("--reps", type=int, default=5)
-    ap.add_argument("--n", type=int, default=32, help="tokens to generate")
+    # Strings, so llama-bench's own comma syntax works: --pp 8,128,512 sweeps
+    # batch size in one load, which is how a per-dispatch cost is told apart
+    # from a per-byte one.
+    ap.add_argument("--n", default="32", help="tokens to generate (0 skips decode)")
+    ap.add_argument("--pp", default="0", help="prompt tokens (0 skips prefill)")
+    # Explicit, always. llama-bench defaults -ngl to 99, so on a Vulkan-enabled
+    # host every configuration silently offloads the trunk as well — and then
+    # `stock` is not a CPU baseline, `ours-off` has attention on the GPU, and the
+    # three rows differ in much more than who computes the expert block. Leaving
+    # it at 0 isolates the one thing this benchmark is about. `--ngl 99` asks a
+    # different and also interesting question (what is the best end-to-end
+    # configuration), and the answer belongs in its own table.
+    ap.add_argument("--ngl", type=int, default=0, help="layers llama.cpp offloads itself")
     ap.add_argument("--loads", type=int, default=2, help="separate loads per configuration")
     args = ap.parse_args()
 
@@ -120,8 +135,8 @@ def main():
          "buft": {"MoE"}, "engaged": True},
     ]
     # -v so the placement lines survive to the log; it changes nothing measured.
-    common = ["-t", str(args.threads), "-r", str(args.reps),
-              "-p", "0", "-n", str(args.n), "-lm", "none", "-v"]
+    common = ["-t", str(args.threads), "-r", str(args.reps), "-ngl", str(args.ngl),
+              "-p", args.pp, "-n", args.n, "-lm", "none", "-v"]
     if args.build_dir != "build":
         # See gate.py: on a Vulkan-enabled build this is the difference between
         # measuring us and measuring op_offload's graph fragmentation.
@@ -130,56 +145,67 @@ def main():
     print("bench: %s" % os.path.basename(args.model))
     print("  %s\n" % " ".join(common))
 
-    results = {c["tag"]: [] for c in configs}
+    # Keyed by (config, test) — llama-bench emits one row per test, and folding
+    # a pp row into a tg mean would average two things bound by different
+    # hardware limits.
+    results = {}
+    tests = []
     for load in range(1, args.loads + 1):
         for c in configs:
             log = os.path.join(args.out, "bench-%s-%d.log" % (c["tag"], load))
             rows = run(c, exe, args.model, common, log)
             for test, val, sd in rows:
-                # flush: a 20-minute run is usually redirected to a file, and
-                # Python buffers stdout when it is not a terminal — without this
-                # the whole log appears at the end and progress is invisible.
+                if test not in tests:
+                    tests.append(test)
+                # flush: a long run is usually redirected to a file, and Python
+                # buffers stdout when it is not a terminal — without this the
+                # whole log appears at the end and progress is invisible.
                 print("  load %d  %-9s %-6s %7.2f +- %.2f" % (load, c["tag"], test, val, sd),
                       flush=True)
-                results[c["tag"]].append(val)
+                results.setdefault((c["tag"], test), []).append(val)
 
-    print("\n%-10s %-28s %s" % ("config", "per load (t/s)", "mean"))
-    means, spreads = {}, {}
-    for c in configs:
-        vals = results[c["tag"]]
-        means[c["tag"]] = statistics.fmean(vals)
-        spreads[c["tag"]] = ((max(vals) - min(vals)) / means[c["tag"]] * 100.0
-                             if len(vals) > 1 else float("inf"))
-        print("%-10s %-28s %6.2f   (load-to-load %.1f%%)"
-              % (c["tag"], "  ".join("%.2f" % v for v in vals),
-                 means[c["tag"]], spreads[c["tag"]]))
+    for test in tests:
+        print("\n%-6s %-10s %-28s %s" % (test, "config", "per load (t/s)", "mean"))
+        means, spreads = {}, {}
+        for c in configs:
+            vals = results.get((c["tag"], test), [])
+            if not vals:
+                continue
+            means[c["tag"]] = statistics.fmean(vals)
+            spreads[c["tag"]] = ((max(vals) - min(vals)) / means[c["tag"]] * 100.0
+                                 if len(vals) > 1 else float("inf"))
+            print("%-6s %-10s %-28s %6.2f   (load-to-load %.1f%%)"
+                  % ("", c["tag"], "  ".join("%.2f" % v for v in vals),
+                     means[c["tag"]], spreads[c["tag"]]))
 
-    # A delta is only reported as a delta when it is larger than the noise this
-    # same run measured. Printing "-4.0%" next to "load-to-load 8.7%" invites
-    # exactly the mistake the two-load rule exists to prevent, and the first
-    # version of this script did precisely that: on the run that produced these
-    # numbers, every configuration's per-load values interleaved, load 1 and
-    # load 2 ranked them in different orders, and the summary still printed
-    # three confident percentages.
-    print()
-    unresolved = 0
-    for label, a, b in (("repack           stock -> ours-off ", "stock", "ours-off"),
-                        ("our split        ours-off -> ours-on", "ours-off", "ours-on"),
-                        ("net vs stock     stock -> ours-on  ", "stock", "ours-on")):
-        delta = (means[b] / means[a] - 1.0) * 100.0
-        noise = max(spreads[a], spreads[b])
-        if abs(delta) < noise:
-            unresolved += 1
-            print("  %s: NOT RESOLVED (%+.1f%% vs %.1f%% noise)" % (label, delta, noise))
-        else:
-            print("  %s: %+.1f%%" % (label, delta))
+        # A delta is only reported as a delta when it is larger than the noise
+        # this same run measured. Printing "-4.0%" next to "load-to-load 8.7%"
+        # invites exactly the mistake the two-load rule exists to prevent, and
+        # the first version of this script did precisely that: every
+        # configuration's per-load values interleaved, the two loads ranked them
+        # in different orders, and the summary printed three confident
+        # percentages anyway.
+        print()
+        unresolved = 0
+        pairs = (("repack        stock -> ours-off ", "stock", "ours-off"),
+                 ("our compute   ours-off -> ours-on", "ours-off", "ours-on"),
+                 ("net vs stock  stock -> ours-on  ", "stock", "ours-on"))
+        for label, a, b in pairs:
+            if a not in means or b not in means:
+                continue
+            delta = (means[b] / means[a] - 1.0) * 100.0
+            noise = max(spreads[a], spreads[b])
+            if abs(delta) < noise:
+                unresolved += 1
+                print("  %s: NOT RESOLVED (%+.1f%% vs %.1f%% noise)" % (label, delta, noise))
+            else:
+                print("  %s: %+.1f%%" % (label, delta))
 
-    if unresolved:
-        print("\n%d of 3 comparisons are below this run's own noise floor." % unresolved)
-        print("More loads help only as sqrt(n): separating a 4% effect through an")
-        print("8% spread needs ~30 loads, which is hours. Measure the per-split")
-        print("cost on a small model instead, where the spread is ~0.3%, and")
-        print("scale it by the split count -- see PLAN.md.")
+        if unresolved:
+            print("  %d of %d comparisons are below this run's own noise floor."
+                  % (unresolved, len(pairs)))
+            print("  More loads help only as sqrt(n). Measure on the stub instead,")
+            print("  where the spread is ~0.3%, and scale what transfers -- see PLAN.md.")
     return 0
 
 

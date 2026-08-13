@@ -292,7 +292,38 @@ Increments, in order:
    `CLAUDE.md`). Four layers is chosen partly because it amplifies less than 43;
    whether that is enough is still the open question below.
 
-4. Bench, both hosts, decode and prefill.
+4. **Done, and it found the wall.** `bench.py --build-dir build-vk --ngl 0`, the
+   4-layer stub, ours-off (CPU) against ours-on (dies):
+
+   | batch | our compute |
+   |---|---|
+   | pp4 | **+15.6%** |
+   | pp8 | **+21.9%** |
+   | pp16 | **-60.2%** |
+   | pp32 | -54.6% |
+   | pp128 | -51.4% |
+   | tg32 (decode) | -0.1% |
+
+   **The cliff is `ggml_vk_use_mul_mat_vec_id`**: `src2->ne[1] <= 8`
+   (`ggml-vulkan.cpp:10607`), where `src2` is the ids tensor and `ne[1]` is the
+   token count. At 8 tokens or fewer the dies use the vector path and beat 16
+   CPU cores by ~20%; at 9 or more they take the general path and lose half.
+   This is `../nano-glm`'s 10.2x cliff, found independently and from the other
+   side.
+
+   **Decode gains nothing** (-0.1%), which is the more sobering number: batch 1
+   is firmly on the fast path, so the die is simply no faster than the CPU for
+   one token's experts. At ~1.45 ms per layer either way, the dies are bound by
+   dispatch and transfer, not by arithmetic — exactly what "one die is as fast
+   as four" predicted.
+
+   So `shaders`/chunking is not a later refinement, it is the next step: split a
+   large `mul_mat_id` into dispatches of at most 8 tokens and the prefill loss
+   should become a prefill win. That is a graph decision, not a shader.
+
+5. Then the real model, which is only worth loading once a configuration wins on
+   the stub — 7-9% load-to-load spread there cannot see a 20% effect reliably,
+   let alone confirm one.
 
 **Gate: `gate.py --tol`, and the tolerance has to be argued rather than picked.**
 The CPU path keeps its `--tol 0` bit-identity check — it does not retire when

@@ -41,6 +41,13 @@ struct moe_placement {
     std::vector<ggml_backend_dev_t> devs;
     size_t reserve_per_dev = 0;      // held back for activations and compute
     bool   planned = false;
+
+    // The buffer the placed weights live in, remembered so teardown can tell it
+    // from the scheduler's compute buffer — which is also ours, also non-empty,
+    // and is created and destroyed once per context. Treating those as the model
+    // going away silently sent every layer back to the CPU after the first test
+    // of a benchmark, while the run still looked like it was using the GPUs.
+    ggml_backend_buffer_t weights_buf = nullptr;
 };
 
 // Ask the host registry for every GPU device. Nothing is allocated here: this

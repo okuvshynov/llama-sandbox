@@ -41,12 +41,19 @@ struct moe_vk {
     std::vector<ggml_gallocr_t> gallocs;    // kept across calls, see above
     std::vector<bool>           refused;    // device cannot run this block
     std::vector<bool>           ran;        // has computed at least one split
+    // Splits actually computed here, by device, plus the ones that went to the
+    // CPU. Reported at teardown: "the backend was engaged" and "the dies did
+    // most of the work" are different claims, and a benchmark that cannot tell
+    // them apart will eventually quote a number for the wrong configuration.
+    std::vector<uint64_t>       n_split;
+    uint64_t                    n_cpu = 0;
 
     void resize(size_t n) {
         backends.resize(n, nullptr);
         gallocs.resize(n, nullptr);
         refused.resize(n, false);
         ran.resize(n, false);
+        n_split.resize(n, 0);
     }
 };
 
@@ -231,7 +238,22 @@ static inline bool moe_vk_compute(moe_placement & P, moe_mirror & M, moe_vk & V,
         fprintf(stderr, "%s: %s computed a split (%d nodes)\n",
                 tag, P.dev_name[dev].c_str(), n_nodes);
     }
+    V.n_split[dev]++;
 
     ggml_free(ctx);
     return true;
+}
+
+static inline void moe_vk_report(const moe_placement & P, const moe_vk & V, const char * tag) {
+    uint64_t gpu = 0;
+    for (uint64_t n : V.n_split) gpu += n;
+    if (gpu == 0 && V.n_cpu == 0) return;
+    fprintf(stderr, "%s: splits computed — %llu on device(s), %llu on the CPU\n",
+            tag, (unsigned long long) gpu, (unsigned long long) V.n_cpu);
+    for (size_t d = 0; d < V.n_split.size() && d < P.dev_name.size(); d++) {
+        if (V.n_split[d]) {
+            fprintf(stderr, "%s:   %-9s %llu\n", tag, P.dev_name[d].c_str(),
+                    (unsigned long long) V.n_split[d]);
+        }
+    }
 }
