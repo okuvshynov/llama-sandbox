@@ -146,7 +146,41 @@ Three findings that shape what comes next:
 - **Prefill measures well on the real model** (0.0-1.1% load-to-load), unlike
   decode. The "stub is the instrument" rule is a decode rule.
 
-### `breadth` — Planned, next
+### `decode` — Planned, next
+
+Profiled with `MOESERV_PROFILE=<prefix>` (`src/moe_prof.h`), which writes one
+CSV row per split with microsecond phase timings for both paths — `dev = -1` is
+the CPU delegate, so the die and the 16 cores it replaced are in one file.
+Decode, stub, one layer on a die and three on the CPU, **steady-state medians**:
+
+| | CPU | vk0 |
+|---|---|---|
+| compute | 1420 | **1018** |
+| read-back | — | **530** |
+| build + alloc + upload + free | — | 19 |
+| **per layer, µs** | **1420** | **1578** |
+
+**The die wins the arithmetic and loses it back at the border.** Compute is 1.4x
+faster; the read-back costs 530 µs and turns the layer into an 11% net loss,
+which is why decode measured flat.
+
+530 µs for 98 KB is 185 MB/s — not bandwidth, but **six separate
+`ggml_backend_tensor_get` calls at ~88 µs each**, one per terminal, each
+stalling the pipeline. Those six terminals are views that tile one parent
+tensor exactly, so one contiguous read of the parent would do. Projected:
+1125 µs per layer, **+26% against the CPU** — decode's first real win.
+
+So the next step is: when a split's terminals are all views of one node, read
+that node once instead. Generic (walk `view_src` to a root that is itself a node
+here), and it must not change a bit — the six reads and the one read cover the
+same bytes.
+
+Watch out for two things the profile also showed. The **first call costs 306 ms**
+(Vulkan pipeline compilation) and dragged the *mean* to 4730 µs against a median
+of 1580 — quote medians here, or drop the warm-up. And `alloc` is 4 µs steady
+against 2873 µs on the first call, so the kept allocator is doing its job.
+
+### `breadth` — Planned, after that
 
 Run GLM-5.2 (`glm-dsa`, UD-Q6_K, 583 GiB). The invariants name two models and
 only one has ever been run, so every generalisation this project has made is
@@ -175,9 +209,6 @@ is green, and expect the load-to-load problem to be worse there, not better.
 
 ### Later — one line each
 
-- **`decode`** — the remaining perf gap, and it needs fewer round trips (several
-  layers per submission, or activations that never leave the die), not faster
-  kernels.
 - **`residency`** — which experts sit on which die, once something makes the
   static whole-layer placement look wrong.
 - **`wire`** — in-process or a separate process over a socket. Still undecided,

@@ -57,6 +57,7 @@ struct moeserv_buffer {
 static moe_placement moeserv_place;
 static moe_mirror    moeserv_mirror;
 static moe_vk        moeserv_vk;
+static moe_prof      moeserv_prof;
 
 static void moeserv_buffer_free(ggml_backend_buffer_t buffer) {
     auto * ctx = (moeserv_buffer *) buffer->context;
@@ -70,6 +71,7 @@ static void moeserv_buffer_free(ggml_backend_buffer_t buffer) {
     // result.
     if (buffer == moeserv_place.weights_buf) {
         moe_vk_report(moeserv_place, moeserv_vk, MOESERV_NAME);
+        moe_prof_flush(moeserv_prof, MOESERV_NAME);
         moe_vk_free(moeserv_vk);
         moe_mirror_free(moeserv_mirror);
         moeserv_place = moe_placement();
@@ -424,14 +426,37 @@ static enum ggml_status moeserv_backend_graph_compute(ggml_backend_t backend, gg
     // slow, never skipped.
     const int dev = moe_vk_device_for(moeserv_place, moeserv_mirror, cgraph);
     if (dev >= 0 && moe_vk_compute(moeserv_place, moeserv_mirror, moeserv_vk,
-                                   dev, cgraph, MOESERV_NAME)) {
+                                   moeserv_prof, dev, cgraph, MOESERV_NAME)) {
         return GGML_STATUS_SUCCESS;
     }
 
     moeserv_vk.n_cpu++;
     ggml_backend_t cpu = moeserv_cpu();
     if (!cpu) return GGML_STATUS_FAILED;
-    return ggml_backend_graph_compute(cpu, cgraph);
+
+    // Timed the same way as the Vulkan path and written to the same file with
+    // dev = -1. The comparison worth having is not "how long does a die take"
+    // but "how does that compare with the 16 cores it replaced, on the same
+    // layer of the same model", and that needs both in one place.
+    const bool prof = moe_prof_on(moeserv_prof);
+    moe_timer t;
+    const enum ggml_status st = ggml_backend_graph_compute(cpu, cgraph);
+    if (prof) {
+        moe_prof_row row = {};
+        row.call     = moeserv_prof.n_calls;
+        row.dev      = -1;
+        row.n_nodes  = ggml_graph_n_nodes(cgraph);
+        row.n_chunks = 1;
+        for (int i = 0; i < row.n_nodes; i++) {
+            const ggml_tensor * n = ggml_graph_node(cgraph, i);
+            if (n->op == GGML_OP_MUL_MAT_ID && n->src[2]) { row.n_tok = n->src[2]->ne[1]; break; }
+        }
+        row.chunk = row.n_tok;
+        row.compute_us = row.total_us = t.lap();
+        moe_prof_add(moeserv_prof, row);
+    }
+    moeserv_prof.n_calls++;
+    return st;
 }
 
 static const ggml_backend_i moeserv_backend_i = {

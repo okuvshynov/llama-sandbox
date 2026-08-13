@@ -27,6 +27,7 @@
 
 #include "moe_mirror.h"
 #include "moe_place.h"
+#include "moe_prof.h"
 
 #include "ggml.h"
 #include "ggml-alloc.h"
@@ -118,7 +119,7 @@ static inline int moe_vk_token_dim(const ggml_tensor * t, int64_t n_tok) {
 // the caller must fall back to the CPU — every early return below is a case
 // where being slow is right and guessing would be wrong.
 static inline bool moe_vk_compute(moe_placement & P, moe_mirror & M, moe_vk & V,
-                                  int dev, ggml_cgraph * gf, const char * tag) {
+                                  moe_prof & PR, int dev, ggml_cgraph * gf, const char * tag) {
     V.resize(P.devs.size());
     if (dev < 0 || dev >= (int) P.devs.size() || V.refused[dev]) return false;
 
@@ -221,8 +222,19 @@ static inline bool moe_vk_compute(moe_placement & P, moe_mirror & M, moe_vk & V,
     // exactly the host tensor's span starting at t0*nb[d] — which is what keeps
     // the upload and the read-back single contiguous copies instead of a
     // per-token scatter.
+    const bool prof = moe_prof_on(PR);
+    moe_prof_row row = {};
+    row.call = PR.n_calls;
+    row.dev = dev;
+    row.n_nodes = n_nodes;
+    row.n_tok = n_tok;
+    row.chunk = chunk;
+    moe_timer timer, total;
+
     for (int64_t t0 = 0; t0 < (n_tok > 0 ? n_tok : 1); t0 += chunk) {
         const int64_t k = (n_tok > 0 && t0 + chunk > n_tok) ? n_tok - t0 : chunk;
+        row.n_chunks++;
+        if (prof) timer.lap();
 
         ggml_context * ctx = ggml_init(ip);
         if (!ctx) return false;
@@ -270,6 +282,7 @@ static inline bool moe_vk_compute(moe_placement & P, moe_mirror & M, moe_vk & V,
         // node.
         ggml_cgraph * dg = ggml_new_graph_custom(ctx, (size_t) n_all + 16, false);
         for (int i = 0; i < n_nodes; i++) ggml_build_forward_expand(dg, twin[i]);
+        if (prof) row.build_us += timer.lap();
 
         if (!ggml_gallocr_alloc_graph(V.gallocs[dev], dg)) {
             fprintf(stderr, "%s: %s could not allocate the block's graph; back to the CPU\n",
@@ -279,11 +292,14 @@ static inline bool moe_vk_compute(moe_placement & P, moe_mirror & M, moe_vk & V,
             return false;
         }
 
+        if (prof) row.alloc_us += timer.lap();
+
         for (int i : uploads) {
             const size_t off = tok_dim[i] >= 0 ? (size_t) t0 * host[i]->nb[tok_dim[i]] : 0;
             ggml_backend_tensor_set(twin[i], (const char *) host[i]->data + off,
                                     0, ggml_nbytes(twin[i]));
         }
+        if (prof) row.upload_us += timer.lap();
 
         const enum ggml_status st = ggml_backend_graph_compute(V.backends[dev], dg);
         if (st != GGML_STATUS_SUCCESS) {
@@ -294,16 +310,26 @@ static inline bool moe_vk_compute(moe_placement & P, moe_mirror & M, moe_vk & V,
             return false;
         }
 
+        if (prof) row.compute_us += timer.lap();
+
         for (int i = 0; i < n_nodes; i++) {
             if (consumed[i] || !host[i]->data) continue;
             const size_t off = tok_dim[i] >= 0 ? (size_t) t0 * host[i]->nb[tok_dim[i]] : 0;
             ggml_backend_tensor_get(twin[i], (char *) host[i]->data + off,
                                     0, ggml_nbytes(twin[i]));
         }
+        if (prof) row.read_us += timer.lap();
 
         ggml_free(ctx);
+        if (prof) row.free_us += timer.lap();
         if (n_tok == 0) break;
     }
+
+    if (prof) {
+        row.total_us = total.lap();
+        moe_prof_add(PR, row);
+    }
+    PR.n_calls++;
 
     // Announced once per device, because "the backend was engaged" and "the
     // device computed something" are different claims and this project has
