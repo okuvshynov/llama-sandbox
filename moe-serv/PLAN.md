@@ -162,9 +162,37 @@ Slicing the weights to the experts the ids name (~80 MB per decode record) is
 the way through, and it is the reason to revive this only with a purpose in
 hand — see the open question under `dies`.
 
+### `bench` — Done
+
+`bench.py`: decode throughput for the gate's three configurations, CPU only.
+Numbers and reasoning in `README.md`; the two results that matter here are that
+**our split costs the real model ~0.4% and at most ~3%** of decode, and that
+**this cannot be measured on the real model at all**.
+
+That second one shapes everything after it. On DeepSeek-V4-Flash the
+load-to-load spread is 7-9% while the effects are 2-6%, so the three
+configurations interleave and the two loads rank them differently — one
+3.1-3.6 t/s band and no ordering. More loads is the wrong answer at sqrt(n).
+The 4-layer stub has a 0.0-2.3% spread, resolves the repack difference (3.2%),
+and bounds the per-split cost at ≤216 µs, which scales to the real model by
+split count. **So the stub is the measuring instrument and the real model is the
+sanity check, for performance as well as for correctness.**
+
+`bench.py` now refuses to print a delta smaller than the noise it just measured.
+The first version printed three confident percentages under a table whose own
+spread contradicted all of them.
+
 ### `dies` — Planned, next
 
 Compute claimed ops on the four Vega II dies via Vulkan.
+
+**Baseline to beat: 3.1-3.6 t/s** decode, CPU only, on DeepSeek-V4-Flash — and
+a GPU win has to clear that whole band on the real model, not the midpoint. For
+reference `../nano-glm/OPTIMIZATION.md` measured llama.cpp's best Vulkan decode
+at 4.64 t/s (`-ngl 99 -ncmoe 24 -nopo 1 -ts 24/6/6/7`), itself the top of a
+3.6-4.6 band. So the honest target is roughly **+30% over CPU**, and the
+measurement problem above is the first obstacle: a change worth 10% is not
+observable on the real model with this method.
 
 The real decision is **weight placement, and `is_host` is what makes it sharp**.
 Today the buffer is host memory, which is why every op we do *not* claim is free

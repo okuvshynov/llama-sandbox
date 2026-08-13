@@ -148,6 +148,64 @@ arithmetic on the weights as they sit in the file*, and the gap to a stock run
 is measured rather than assumed: mean KLD **3.6e-5**, max **2.1e-3**, top-1
 agreement **99.804%** over four layers.
 
+## Performance — decode, CPU only
+
+```powershell
+python bench.py                                  # ~50 min on the real model
+python bench.py --model D:\llms\stub\ds4-L4.gguf # ~4 min, and far more precise
+```
+
+Same three configurations as the gate, so the performance and correctness
+stories describe the same runs. Read as two differences: `stock -> ours-off` is
+what llama.cpp's MXFP4 repack is worth (we cannot repack — owning the weights is
+the point), and `ours-off -> ours-on` is what our extra split boundary costs.
+
+**DeepSeek-V4-Flash, 150.75 GiB, 43 layers.** `-t 16 -r 5 -p 0 -n 32 -lm none`,
+two loads each, tg32 t/s:
+
+| config | load 1 | load 2 | mean | load-to-load |
+|---|---|---|---|---|
+| `stock` | 3.34 ± 0.05 | 3.59 ± 0.20 | 3.46 | 7.2% |
+| `ours-off` | 3.47 ± 0.03 | 3.18 ± 0.03 | 3.33 | 8.7% |
+| `ours-on` | 3.12 ± 0.04 | 3.39 ± 0.10 | 3.25 | 8.3% |
+
+**Nothing here is resolved.** Sorted, the six measurements interleave — 3.12
+`ours-on`, 3.18 `ours-off`, 3.34 `stock`, 3.39 `ours-on`, 3.47 `ours-off`, 3.59
+`stock` — and the two loads rank the configurations differently. Every
+difference between the means (4.0%, 2.1%, 6.1%) is smaller than any single
+configuration's own load-to-load spread. All three sit in one **3.1-3.6 t/s
+band**, and `bench.py` now refuses to print a delta below the noise it measured.
+
+More loads is the wrong answer: the spread only falls as sqrt(n), so separating
+a 4% effect through an 8% spread needs ~30 loads, or hours per data point.
+
+**The same measurement on the 4-layer stub, where it resolves.** 15.78 GiB fits
+comfortably, and the load-to-load spread drops from 7-9% to 0.0-2.3%:
+
+| config | load 1 | load 2 | mean | load-to-load |
+|---|---|---|---|---|
+| `stock` | 27.55 ± 0.42 | 27.46 ± 0.53 | 27.51 | 0.3% |
+| `ours-off` | 26.62 ± 0.89 | 26.61 ± 0.37 | 26.62 | 0.0% |
+| `ours-on` | 26.84 ± 0.69 | 26.24 ± 0.66 | 26.54 | 2.3% |
+
+Repack is worth **3.2%** of decode, resolved. Our split is **-0.3%**, still
+inside that config's own 2.3% spread, so it is an upper bound rather than a
+measurement.
+
+**What that implies for the real model.** A split boundary costs a roughly
+fixed amount per split — scheduler bookkeeping and a second `graph_compute`
+call, neither of which scales with tensor size — so the absolute per-split cost
+transfers even though the percentage does not. At 4 splits per token and
+37.6 ms per token, the stub's point estimate is **~27 µs per split** and its
+noise bound is **≤216 µs**. The real model runs 43 splits at ~300 ms per token,
+so our split costs it **~0.4%, and at most ~3%** — which is exactly why it is
+invisible in a 7-9% band, and small enough not to matter before `dies`.
+
+The caveat that keeps this honest: the extrapolation assumes per-split cost is
+independent of tensor size, and `../nano-glm/OPTIMIZATION.md` records a case
+where per-graph allocator churn cost 37 ms per chunk. If a future change makes
+the split path allocate, this estimate stops holding.
+
 **`test-backend-ops` does not work for this backend.** It calls `supports_op` on
 every tensor *before allocating any*, so a weight has no buffer yet and our
 ownership guard answers no to everything: the suite prints `Backend MoE: OK`
