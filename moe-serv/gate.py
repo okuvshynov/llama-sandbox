@@ -125,6 +125,12 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default=r"D:\llms\stub\ds4-L4.gguf")
     ap.add_argument("--llama-cpp", default=r"C:\Users\oleksandr\Desktop\llama.cpp")
+    # build     — CPU-only, the baseline host
+    # build-vk  — GGML_VULKAN=ON, required by `dies`. Every run against it must
+    #             pass -nopo 1, or op_offload hands host matmuls to the Vulkan
+    #             device at batch >= 32 and they bounce off the two ops Vulkan
+    #             cannot run (repo CLAUDE.md).
+    ap.add_argument("--build-dir", default="build")
     ap.add_argument("--backend", default=os.path.join(HERE, "build", "bin", "moeserv.dll"))
     ap.add_argument("--corpus", default=os.path.join(HERE, "gate_corpus.txt"))
     ap.add_argument("--out", default=os.path.join(HERE, "results"))
@@ -140,7 +146,7 @@ def main():
                     help="also measure the gap against repacked stock llama.cpp")
     args = ap.parse_args()
 
-    exe = os.path.join(args.llama_cpp, "build", "bin", "llama-perplexity.exe")
+    exe = os.path.join(args.llama_cpp, args.build_dir, "bin", "llama-perplexity.exe")
     for path, what in ((exe, "llama-perplexity"), (args.model, "model"),
                        (args.backend, "moeserv.dll"), (args.corpus, "corpus")):
         if not os.path.exists(path):
@@ -151,6 +157,17 @@ def main():
     # that is computed.
     base = ["-m", args.model, "-f", args.corpus, "-c", str(args.ctx),
             "-t", str(args.threads), "-tb", str(args.threads), "--no-warmup", "-v"]
+    if args.build_dir != "build":
+        # Not a tuning flag. Without it a Vulkan-enabled build offloads host
+        # matmuls it cannot finish, and the run measures graph fragmentation
+        # rather than anything this project did.
+        #
+        # Spelled differently per tool: the common-arg tools take
+        # `--no-op-offload` as a toggle, llama-bench takes `-nopo 1`. Passing
+        # llama-bench's spelling here is an "invalid argument" abort, which is
+        # at least loud — the dangerous direction would be a flag that parsed
+        # and did nothing.
+        base += ["--no-op-offload"]
     dat = lambda n: os.path.join(args.out, "gate-%s.dat" % n)
     log = lambda n: os.path.join(args.out, "gate-%s.log" % n)
 

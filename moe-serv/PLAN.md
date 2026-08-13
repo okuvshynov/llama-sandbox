@@ -182,31 +182,85 @@ sanity check, for performance as well as for correctness.**
 The first version printed three confident percentages under a table whose own
 spread contradicted all of them.
 
-### `dies` — Planned, next
+### `dies` — In progress
 
-Compute claimed ops on the four Vega II dies via Vulkan.
+Compute claimed ops on the four Vega II dies via Vulkan, reusing ggml's own
+kernels. They are generic and not tuned for Vega II; that is fine as a start and
+`shaders` is where it stops being fine.
 
-**Baseline to beat: 3.1-3.6 t/s** decode, CPU only, on DeepSeek-V4-Flash — and
-a GPU win has to clear that whole band on the real model, not the midpoint. For
-reference `../nano-glm/OPTIMIZATION.md` measured llama.cpp's best Vulkan decode
-at 4.64 t/s (`-ngl 99 -ncmoe 24 -nopo 1 -ts 24/6/6/7`), itself the top of a
-3.6-4.6 band. So the honest target is roughly **+30% over CPU**, and the
-measurement problem above is the first obstacle: a change worth 10% is not
-observable on the real model with this method.
+**The ceiling first, because it decides what "good" means.** DeepSeek-V4-Flash
+is 90.9% experts *by size*, but a decode step reads only 6 of 256 experts and
+100% of everything else:
 
-The real decision is **weight placement, and `is_host` is what makes it sharp**.
-Today the buffer is host memory, which is why every op we do *not* claim is free
-— the CPU reads our tensors in place. The moment the buffer becomes device
-memory, `ggml_backend_cpu_device_supports_buft` stops accepting it and each
-unclaimed op becomes a copy. So the choice is not "device memory or mirror" but
-"how much does the block have to claim before device-resident weights stop
-costing more than they save".
+| | GiB read per token | share |
+|---|---|---|
+| routed experts (6/256) | 3.21 | **20.2%** |
+| attention, shared expert, output head | 12.70 | 79.8% |
 
-Two known constraints, both from `../nano-glm/OPTIMIZATION.md`: a 10.2x cliff at
-9 pairs per `mul_mat_id` dispatch (`ggml_vk_use_mul_mat_vec_id`), which is a
-chunking decision rather than a shader; and 240 of 256 experts fitting in
-124.7 GiB of VRAM at Q8, so partial residency is the normal case and not an
-edge.
+So if the dies made our whole block **free**, decode goes 3.46 -> 4.34 t/s: a
+**1.25x ceiling** before any transfer or dispatch cost. `../nano-glm`'s best
+llama.cpp Vulkan decode was 4.64 t/s at `-ngl 99 -ncmoe 24 -nopo 1
+-ts 24/6/6/7` — which offloads *attention* and leaves experts on the CPU, i.e.
+the other 80%. **For decode, the block we own is the less valuable half**, and
+the two approaches compose rather than compete (`-ngl` is llama.cpp's business).
+Prefill inverts this: at batch 512 nearly every expert is touched.
+
+Nothing about that changes the plan — capacity is still the reason this project
+exists, since the experts are precisely what does not fit — but it does mean a
+decode result near 4.3 t/s is a *success*, not a disappointment, and that the
+prefill number is the one to watch.
+
+**Placement: whole layers, packed in device order, remainder on the CPU.**
+3.188 GiB of experts per layer against 31.73 GiB per die gives **9 layers/die,
+36 of 43 on the GPUs (84%)**, ~3 GiB/die spare. Three measurements decide this,
+all from `../nano-glm`:
+
+- **One die is as fast as four** (20.2 / 20.6 / 20.0 s, sd 0.1-0.2). The dies are
+  bound by something fixed per dispatch, not by throughput — *adding dies buys
+  VRAM capacity, not speed* — so the policy should minimise dispatches.
+- **Routing skew does not transfer across prompts**: a placement built from other
+  prompts catches 28.2% of selections against 23.1% for random. Hot-expert
+  placement is ~5pp for a lot of machinery. Not built.
+- **Time is linear in the slots left on the CPU**, so the only thing worth
+  maximising is resident fraction.
+
+Striping each layer's experts across all four dies reaches 91% residency but
+costs ~3.3 dispatches per layer instead of 1. That extra 7pp is worth ~7% of
+expert time = **1.4% of decode**, which does not buy 3.3x the dispatches on
+dispatch-bound hardware. Same arithmetic rejects per-expert placement. Revisit
+only if a measurement says dispatch is cheap.
+
+**Mechanism: mirror into VRAM, do not move.** The buffer stays host memory with
+`is_host` true, and the layers we place get a second copy uploaded to a die.
+Costs 137 GiB host + up to 115 GiB VRAM, which this machine has. The
+alternative — making our buffer type device memory — cannot express "84% on GPU,
+16% on CPU" at all, because llama.cpp allocates one buffer per buffer type, and
+it would drop `is_host`, which is what keeps every unclaimed op free and the
+correctness gate unchanged.
+
+Per split we then either delegate to the CPU as today, or rebuild the received
+graph against the die's tensors, upload the activations, compute, and read the
+terminals back. Rebuilding generically from the cgraph — not hard-coding the
+five ops — for the reason `tape` was built that way.
+
+**Host build requirement, and it is not optional.** `dies` needs llama.cpp built
+with `GGML_VULKAN=ON` (`llama.cpp/build-vk`), and **every run must pass
+`-nopo 1`**. Otherwise `op_offload` hands host matmuls to the Vulkan device at
+batch >= 32, they bounce off the two ops Vulkan cannot run (`DSV4_HC_COMB` every
+layer, `LIGHTNING_INDEXER` on ratio-4 layers), and prefill fragments into ~1780
+splits — 5.37 t/s against 17.99 (repo `CLAUDE.md`). `gate.py` and `bench.py`
+take `--build-dir` so both hosts are reachable, and the CPU-only host stays the
+baseline.
+
+Increments, in order:
+
+1. Enumerate the dies, compute and log the placement, change nothing else. The
+   check is that the gate still passes bit-identically — a placement that is only
+   printed must not move a logit.
+2. Upload the mirror; still compute on the CPU. Checks VRAM accounting and load
+   time against the same gate.
+3. Compute placed layers on their die. Gate moves to `--tol`.
+4. Bench, both hosts, decode and prefill.
 
 **Gate: `gate.py --tol`, and the tolerance has to be argued rather than picked.**
 The CPU path keeps its `--tol 0` bit-identity check — it does not retire when

@@ -92,6 +92,8 @@ def main():
                     default=r"D:\llms\ds-v4-flash\UD-Q8_K_XL"
                             r"\DeepSeek-V4-Flash-0731-UD-Q8_K_XL-00001-of-00005.gguf")
     ap.add_argument("--llama-cpp", default=r"C:\Users\oleksandr\Desktop\llama.cpp")
+    ap.add_argument("--build-dir", default="build",
+                    help="'build' is the CPU-only baseline host, 'build-vk' has Vulkan")
     ap.add_argument("--backend", default=os.path.join(HERE, "build", "bin", "moeserv.dll"))
     ap.add_argument("--out", default=os.path.join(HERE, "results"))
     ap.add_argument("--threads", type=int, default=16)
@@ -100,7 +102,7 @@ def main():
     ap.add_argument("--loads", type=int, default=2, help="separate loads per configuration")
     args = ap.parse_args()
 
-    exe = os.path.join(args.llama_cpp, "build", "bin", "llama-bench.exe")
+    exe = os.path.join(args.llama_cpp, args.build_dir, "bin", "llama-bench.exe")
     for path, what in ((exe, "llama-bench"), (args.model, "model"),
                        (args.backend, "moeserv.dll")):
         if not os.path.exists(path):
@@ -120,6 +122,10 @@ def main():
     # -v so the placement lines survive to the log; it changes nothing measured.
     common = ["-t", str(args.threads), "-r", str(args.reps),
               "-p", "0", "-n", str(args.n), "-lm", "none", "-v"]
+    if args.build_dir != "build":
+        # See gate.py: on a Vulkan-enabled build this is the difference between
+        # measuring us and measuring op_offload's graph fragmentation.
+        common += ["-nopo", "1"]
 
     print("bench: %s" % os.path.basename(args.model))
     print("  %s\n" % " ".join(common))

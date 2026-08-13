@@ -24,6 +24,8 @@
 #include "ggml-backend-impl.h"
 #include "ggml.h"
 
+#include "moe_place.h"
+
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -55,6 +57,23 @@ static void moeserv_buffer_free(ggml_backend_buffer_t buffer) {
 
 static void * moeserv_buffer_get_base(ggml_backend_buffer_t buffer) {
     return ((moeserv_buffer *) buffer->context)->data;
+}
+
+// Where each layer's experts will live. Filled as the loader allocates tensors,
+// obeyed later by graph_compute. See moe_place.h for why whole layers.
+static moe_placement moeserv_place;
+
+// `dies` increment 1: decide placement here, act on it nowhere yet.
+//
+// This is the hook ggml calls once per tensor as it allocates, which makes it
+// the only place that sees both the tensor's name (the layer index) and its
+// size before any weight has been written. Deciding at write time instead would
+// mean deciding several times per tensor, since set_tensor is chunked.
+static enum ggml_status moeserv_buffer_init_tensor(ggml_backend_buffer_t buffer, ggml_tensor * tensor) {
+    GGML_UNUSED(buffer);
+    moe_place_probe(moeserv_place);
+    moe_place_assign(moeserv_place, moe_place_layer_of(ggml_get_name(tensor)), ggml_nbytes(tensor));
+    return GGML_STATUS_SUCCESS;
 }
 
 static void moeserv_buffer_memset_tensor(ggml_backend_buffer_t buffer, ggml_tensor * tensor,
@@ -96,7 +115,7 @@ static void moeserv_buffer_clear(ggml_backend_buffer_t buffer, uint8_t value) {
 static const ggml_backend_buffer_i moeserv_buffer_i = {
     /* .free_buffer   = */ moeserv_buffer_free,
     /* .get_base      = */ moeserv_buffer_get_base,
-    /* .init_tensor   = */ nullptr,
+    /* .init_tensor   = */ moeserv_buffer_init_tensor,
     /* .memset_tensor = */ moeserv_buffer_memset_tensor,
     /* .set_tensor    = */ moeserv_buffer_set_tensor,
     /* .get_tensor    = */ moeserv_buffer_get_tensor,
@@ -368,6 +387,7 @@ static enum ggml_status moeserv_backend_graph_compute(ggml_backend_t backend, gg
             if (counts[o]) fprintf(stderr, " %s x%d", ggml_op_name((enum ggml_op) o), counts[o]);
         }
         fprintf(stderr, "\n");
+        moe_place_report(moeserv_place, MOESERV_NAME);
     }
 
     ggml_backend_t cpu = moeserv_cpu();
