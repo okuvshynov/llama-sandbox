@@ -87,7 +87,7 @@ by handing the split to a CPU backend from the host's registry.
 One split per MoE layer, nothing outside it. Throughput recorded, not compared —
 an extra split boundary buys nothing yet and it is expected to be slower.
 
-### `tape` — In progress
+### `tape` — In progress: capture done, replay remaining
 
 Capture what `graph_compute` already sees, and replay it without llama.cpp or a
 model. Promoted from convenience to requirement by the `test-backend-ops`
@@ -101,26 +101,88 @@ with each record referencing the hash. Activations need a cap or a sampling rule
 or a 24-token run fills a disk; both belong in the format header rather than in
 someone's memory.
 
-**Replay.** A standalone `moe-replay` reads a capture, rebuilds the graph, runs
-it against a chosen compute path, and compares to the recorded output. Same
-five-op structure the backend claims, so a divergence is localised to a kernel
-rather than to the model.
+**Capture: done** (`src/moe_capture.h`, `tape_inspect.py`). A record of a
+deepseek4 decode split reads back as exactly the expert half of `build_moe_ffn`
+— `MUL_MAT_ID`, `CLAMP`, `MUL_MAT_ID`, `CLAMP`, `GLU`, `MUL_MAT_ID`, `MUL`, then
+six terminal `VIEW`s — with all six leaves captured (three mxfp4 weight tensors,
+activations, ids, router weights). Two format bugs that reading it back caught:
 
-Open questions, in the order they will probably be answered:
+- The op *number* was recorded and the reader decoded `MUL_MAT_ID` as `op50`,
+  because the enum is internal and had moved. The name is now recorded too.
+- "Capture the last node" was the wrong output rule: this split's terminals are
+  six views of the experts tensor, all consumed *outside* our claim, so a replay
+  would have compared one sixth of the result and passed. The rule is now
+  "every node nothing in this split consumes".
+
+**Replay: remaining.** A standalone `moe-replay` reads a capture, rebuilds the
+graph from the recorded node list, runs it against a chosen compute path, and
+compares to the recorded terminals. Rebuilding rather than hard-coding the five
+ops is the point — see the open question below.
+
+**The capture must be complete enough to recompute the block independently**,
+not merely to re-run our own graph — because of what `dies` needs, below.
+
+**Captures are bounded by a budget, and that is the whole size policy.** The
+first attempt on a 4-token run wrote **140 GB**: content addressing dedupes a
+weight across calls, but each of the 43 layers has different experts and
+llama.cpp hands `mul_mat_id` the *whole* 256-expert tensor — ~1.07 GB, three per
+layer. `MOESERV_CAPTURE_MAX_RECORDS` and `MOESERV_CAPTURE_MAX_MB` stop the
+capture early and say so.
+
+A handful of records is what replay needs, so this is sufficient rather than a
+compromise: the point is to check a kernel against real tensors, not to archive
+a run. Keep it this way until something actually needs more.
+
+If a larger corpus is ever wanted, the move is to **slice each `mul_mat_id`'s
+weights to the experts its ids name** and remap the ids to `0..k-1` — ~80 MB per
+decode record instead of 3.2 GB, and a faithful reduction rather than a
+truncation. Not built, not needed yet, and it would put `mul_mat_id`-specific
+knowledge into an otherwise generic capture, so it should wait for a reason.
+
+Open questions:
 
 - What identifies a record — layer index is not in the graph the backend sees.
-  Call ordinal is available and probably enough; check whether the tensor names
-  llama.cpp assigns survive into the split.
-- Whether to capture at every call or sample. Prefill and decode are different
-  shapes and both matter; a rule like "first N of each distinct shape" keeps
-  both without keeping everything.
-- Whether replay should link the backend or reimplement the graph. Linking keeps
-  one definition; reimplementing lets replay test a backend that is broken.
+  Call ordinal is available and probably enough.
+- Whether replay rebuilds the graph from recorded metadata or hard-codes the
+  five ops. Rebuilding is generic and tests *the graph the backend built*;
+  hard-coding would re-introduce exactly the duplication that cost `../nano-glm`
+  a 5.6% RMS bug.
 
 Done when: a capture from each of the two models replays bit-identically
-against the CPU path, and the capture of a deliberately corrupted run does not.
-The second half is the negative control, and given this project's record it is
-not optional.
+against the CPU path, **and a deliberately corrupted capture does not**. The
+second half is the negative control, and given that four checks in this project
+have passed while testing nothing, it is not optional.
+
+### Why `tape` gates `dies`: a Vulkan kernel cannot be tested against CPU
+
+`passthrough` is bit-identical because it delegates to the same kernels. Vulkan
+will not be, so `dies` needs a tolerance — and "within epsilon of CPU" is a weak
+test whose pass band is the size of the bugs it should catch. This repo has the
+scar: end-to-end KL **saturates** on a deep model
+(`../nano-glm/OPTIMIZATION.md`), and a **mathematically-invariant wrong graph
+hides inside the precision noise floor** (repo `CLAUDE.md` — a structurally
+wrong Hadamard rotation sat at exactly F16 epsilon, where "the magnitude looks
+like precision" was evidence about magnitude, not cause).
+
+What makes a numeric test well-posed *here* is that the block is a **pure
+function of its inputs**: the router runs outside our claim, so expert ids
+arrive as data and there is no argmax-flip nondeterminism to chase.
+
+So replay should compute a **high-precision reference** from the captured
+inputs — dequantize exactly (MXFP4/Q6_K dequant is exact into f32 and is
+therefore not a divergence source), then matmuls and activation in f64 — and
+compare *both* paths against it:
+
+    err_cpu    = |cpu    - f64_reference|      the floor, measured not assumed
+    err_vulkan = |vulkan - f64_reference|
+
+The question becomes **"is the Vulkan error the same order as the CPU's own
+error"** rather than "is Vulkan close to CPU". A differently-rounded kernel
+lands on the floor; a structurally wrong one does not, even when its absolute
+magnitude looks like precision.
+
+Report **max-abs and max-rel, never a mean** — a mean over 4096 values hides the
+one wrong element, which is what a mis-indexed view produces.
 
 ### `dies` — Planned, next
 
@@ -140,7 +202,11 @@ chunking decision rather than a shader; and 240 of 256 experts fitting in
 124.7 GiB of VRAM at Q8, so partial residency is the normal case and not an
 edge.
 
-Gate: `passthrough`'s, minus bit-identity, plus a documented numerical floor.
+Gate: the two-sided comparison `tape` provides — Vulkan's error against the f64
+reference must be the same order as the CPU's own, not merely close to CPU. Plus
+`passthrough`'s bit-identity gate, which does **not** retire when `dies` lands:
+the CPU delegation path stays, so it remains a regression check on the plumbing,
+and the tolerance only ever applies to the Vulkan path.
 
 ### Later — one line each
 

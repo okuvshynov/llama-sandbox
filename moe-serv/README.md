@@ -145,5 +145,19 @@ On DeepSeek-V4-Flash:
 
 One split per MoE layer, nothing claimed outside it, same bytes out.
 
-Next is `tape` in `PLAN.md`, which the `test-backend-ops` finding promoted from
-convenience to requirement.
+**`tape` capture done, replay remaining.** `MOESERV_CAPTURE=<dir>` records each
+split generically — node list with ops, shapes, `op_params` and source indices,
+plus data for every graph input and every terminal node — with tensor data
+content-addressed into `blobs/`. `tape_inspect.py` reads it back.
+
+```powershell
+$env:MOESERV_CAPTURE = "...\results\cap"
+$env:MOESERV_CAPTURE_MAX_RECORDS = "2"      # also _MAX_MB, default 4096
+llama-completion -m <model> -ot exps=MoE -p "..." -n 2
+python tape_inspect.py results\cap --record 0
+```
+
+**Captures are large and bounded on purpose.** llama.cpp hands `mul_mat_id` the
+whole 256-expert tensor — 1.06 GB each, three per layer — so an unbounded
+capture of a 4-token run wrote 140 GB. A couple of records is what replay needs;
+the budget stops there and says so.
