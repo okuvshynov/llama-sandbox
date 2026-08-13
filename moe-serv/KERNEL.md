@@ -88,3 +88,18 @@ waits via s_waitcnt at first use, which the compiler already places after
 independent work — the hardware was prefetching; the manual version only added
 an address clamp per iteration. Latency, if it is the limiter, is not hidable
 from *inside* one iteration's window.
+
+## E5/E5b — LDS-free arithmetic decode: 2x WORSE, reverted
+
+Constructing the doubled-e2m1 value as float bits (~6 VALU/weight, ~4-cycle
+chain) instead of the LUT read: gate/up 107.0 -> 198.2 µs, down 91.1 -> 180.0.
+E5b replaced the quarter-rate v_mul_lo_u32 in the constant select and changed
+nothing (199.0), so the slowdown is the decode itself — plausibly VGPR
+pressure from 16 inlined copies, or plain instruction count under a
+stall-dominated issue schedule. Either way the latency hypothesis joins the
+throughput one: the broadcast-LDS LUT beats arithmetic decode from both sides.
+
+Ledger after five experiments: E2 kept (+2.3%), E1/E3/E4/E5 reverted. The
+inner loop as first written — bfe, broadcast LDS read, FMA — has survived
+every attempt to improve it locally. Remaining untried levers are structural:
+occupancy (E6), packed-f16 math, or accepting 107/91 and integrating.
