@@ -157,3 +157,9 @@ table). The surviving kernel is the original inner loop + E2's layout + E6's
 thread shape; every local modification of the inner loop itself has lost to
 it. What is left is ground truth (ISA disassembly to see what the compiler
 actually emits) or acceptance.
+
+**Workflow footgun, hit once already:** the .spv files are build artifacts —
+a `git checkout` of the .comp sources does not invalidate them, and a
+"verification" run after a revert executed the reverted experiment's shader.
+Rebuild before believing any number, and treat a check result that exactly
+reproduces the previous run's failure as a stale-binary tell.
