@@ -29,7 +29,7 @@ would fit on one modern GPU, where they cost a fraction of the 231 ms/token they
 cost on these cores. In that configuration the expert block is most of the time
 — and it currently runs at ~21% of a die's bandwidth with two thirds of a decode
 call spent in fixed per-dispatch cost, so the headroom is large and it is the
-part worth having. See `fusion` and `shaders`.
+part worth having. See `submission` and `shaders`.
 
 ## Invariants
 
@@ -245,12 +245,19 @@ is green, and expect the load-to-load problem to be worse there, not better.
   static whole-layer placement look wrong.
 - **`wire`** — in-process or a separate process over a socket. Still undecided,
   and now informed by a measured per-split cost.
-- **`fusion`** — decode's lever. With the distinct-expert count measured, the
-  die's compute fits **`710 µs + MB / 212 GB/s`**, and at batch 1 the fixed term
-  is **66%** of the call. Over 7 real dispatches (6 of the 13 nodes are VIEWs)
-  that is ~101 µs each, matching the ~78-88 µs measured independently on the
-  transfer path. Folding the block to 3 dispatches projects **1108 -> 684 µs,
-  1.62x**. Graph work, no shader needed.
+- **`submission`** — decode's wall, and fusion is *not* the way through it.
+  The die's compute fits **`710 µs + MB / 212 GB/s`**, so at batch 1 two thirds
+  of the call is fixed. Padding the graph with no-op dispatches
+  (`MOESERV_PAD_NODES`) split that fixed term: **`1107 µs + 4.5 µs x
+  n_dispatches`** — tripling the dispatch count cost 83 µs. So it is **per
+  submission (~730 µs), not per op**, and fusing the block from 7 ops to 3 is
+  worth ~1.6%, against the 1.62x a projection had claimed.
+  That leaves two real options and neither is graph work: make a submission
+  cheaper (what does ggml-vulkan do per `graph_compute`? ~730 µs is very high
+  for a fence wait), or make fewer of them — which llama.cpp's one-split-per-
+  layer structure forbids, since the layers are sequential. Until one of those
+  moves, decode's block is floored at ~730 µs against the CPU's 1420, so **1.9x
+  is the best the dies can do there** and we have 1.28x.
 - **`shaders`** — prefill's lever, where the same fit is 88% bandwidth. 212 GB/s
   is ~21% of the die's ~1024, and `test-backend-ops perf -o MUL_MAT_ID` on this
   device reaches 237-670 GB/s at batch 1 for f32/q4_0/q4_K, so 2-3x looks

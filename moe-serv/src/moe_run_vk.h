@@ -100,6 +100,16 @@ static inline int moe_vk_device_for(const moe_placement & P, const moe_mirror & 
 // side. So the block is issued 8 tokens at a time rather than in one piece.
 #define MOE_VK_CHUNK 8
 
+// Upper bound on the diagnostic padding below, so contexts and graphs can be
+// sized for it once.
+#define MOE_VK_PAD 32
+
+static inline int moe_vk_pad() {
+    static const int n = getenv("MOESERV_PAD_NODES")
+                       ? std::min(MOE_VK_PAD, atoi(getenv("MOESERV_PAD_NODES"))) : 0;
+    return n;
+}
+
 // Which dimension of `t` counts tokens, or -1 for "none", or -2 for "ambiguous".
 //
 // Ambiguity is a real possibility rather than paranoia — a tensor whose expert
@@ -209,8 +219,8 @@ static inline bool moe_vk_compute(moe_placement & P, moe_mirror & M, moe_vk & V,
     }
 
     ggml_init_params ip = {
-        /* .mem_size   = */ (size_t) (n_all + 16) * ggml_tensor_overhead()
-                            + ggml_graph_overhead_custom(n_all + 16, false),
+        /* .mem_size   = */ (size_t) (n_all + 16 + MOE_VK_PAD) * ggml_tensor_overhead()
+                            + ggml_graph_overhead_custom(n_all + 16 + MOE_VK_PAD, false),
         /* .mem_buffer = */ nullptr,
         /* .no_alloc   = */ true,
     };
@@ -338,8 +348,30 @@ static inline bool moe_vk_compute(moe_placement & P, moe_mirror & M, moe_vk & V,
         // Expanded one node at a time in the reference's own order: each node's
         // sources are already in the hash set, so expand appends exactly that
         // node.
-        ggml_cgraph * dg = ggml_new_graph_custom(ctx, (size_t) n_all + 16, false);
+        ggml_cgraph * dg = ggml_new_graph_custom(ctx, (size_t) n_all + 16 + MOE_VK_PAD, false);
         for (int i = 0; i < n_nodes; i++) ggml_build_forward_expand(dg, twin[i]);
+
+        // Diagnostic, MOESERV_PAD_NODES=N: append N dispatches that move almost
+        // no data and change no value, separating a per-*dispatch* cost from a
+        // per-*submission* one. `ggml_clamp` to +/-inf is a numerical no-op and
+        // these nodes are twin-only, so nothing reads them back.
+        //
+        // Kept because it earned its place: it measured
+        // `compute = 1107 us + 4.5 us x n_dispatches` on this driver, i.e. the
+        // fixed cost is per submission and **fusing ops is worth ~1.6%**, which
+        // stopped an implementation that a projection had valued at 1.62x. Any
+        // future "fuse the block" idea should re-run this first, on whatever
+        // hardware it is aimed at.
+        for (int p = 0, pad = moe_vk_pad(); p < pad; p++) {
+            ggml_tensor * prev = p == 0 ? twin[0] : ggml_graph_node(dg, ggml_graph_n_nodes(dg) - 1);
+            ggml_tensor * t = ggml_new_tensor(ctx, prev->type, GGML_MAX_DIMS, prev->ne);
+            if (!t) break;
+            t->op = GGML_OP_CLAMP;
+            const float lim[2] = { -INFINITY, INFINITY };
+            memcpy(t->op_params, lim, sizeof(lim));
+            t->src[0] = prev;
+            ggml_build_forward_expand(dg, t);
+        }
         if (prof) row.build_us += timer.lap();
 
         if (!ggml_gallocr_alloc_graph(V.gallocs[dev], dg)) {
