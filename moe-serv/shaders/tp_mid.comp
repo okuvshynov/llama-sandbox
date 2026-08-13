@@ -1,0 +1,39 @@
+#version 450
+// TP block, stage 2: reduce the fused gate|up partials, clamp both halves,
+// SwiGLU, write this die's slice of the hidden activation.
+//
+// The GU matmul's M is 2*inter_slice, laid out [gate cols | up cols]; column c
+// pairs with column c + inter_slice. Clamp bounds arrive as push constants so
+// the integration can copy them from the received graph's CLAMP op_params
+// rather than hard-coding a model's limits.
+
+layout(local_size_x = 256) in;
+
+layout(std430, binding = 0) readonly  buffer Part { float p[]; };  // [S][KT][2*I]
+layout(std430, binding = 1) writeonly buffer H    { float h[]; };  // [S][I]
+
+layout(push_constant) uniform PC {
+    uint  inter;        // I: this die's slice of the intermediate dim
+    uint  n_tiles;      // GU k-tiles
+    float gate_min, gate_max;
+    float up_min,   up_max;
+} pc;
+
+void main() {
+    const uint c    = gl_WorkGroupID.x * 256u + gl_LocalInvocationID.x;
+    const uint slot = gl_WorkGroupID.z;
+    if (c >= pc.inter) return;
+
+    const uint m2   = 2u * pc.inter;
+    const uint base = slot * pc.n_tiles * m2;
+    float g = 0.0, u = 0.0;
+    for (uint t = 0u; t < pc.n_tiles; t++) {
+        g += p[base + t * m2 + c];
+        u += p[base + t * m2 + pc.inter + c];
+    }
+    g = clamp(g, pc.gate_min, pc.gate_max);
+    u = clamp(u, pc.up_min,   pc.up_max);
+    // ggml_swiglu_split: silu(gate) * up.
+    const float sg = g / (1.0 + exp(-g));
+    h[slot * pc.inter + c] = sg * u;
+}

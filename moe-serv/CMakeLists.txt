@@ -87,7 +87,7 @@ set_target_properties(moeserv PROPERTIES
 # pipelines, ggml only as the CPU reference. The GLSL is compiled at build time
 # by the SDK's glslc and loaded from bin/shaders/ next to the executable.
 find_package(Vulkan REQUIRED)
-set(MOE_SHADERS mxfp4_pass1 mxfp4_pass2)
+set(MOE_SHADERS mxfp4_pass1 mxfp4_pass2 tp_mid tp_final)
 set(MOE_SPV_FILES)
 foreach(sh ${MOE_SHADERS})
     add_custom_command(

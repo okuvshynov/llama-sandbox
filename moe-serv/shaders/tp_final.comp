@@ -1,0 +1,29 @@
+#version 450
+// TP block, stage 4: reduce the down partials and apply the router weight.
+// The result is this die's *partial* [M] per slot — the host sums the dies'
+// partials into the terminal views, which is exact because the split is along
+// the reduction dimension and addition commutes with everything downstream.
+
+layout(local_size_x = 256) in;
+
+layout(std430, binding = 0) readonly  buffer Part { float p[];  };  // [S][KT][M]
+layout(std430, binding = 1) readonly  buffer W    { float wt[]; };  // [S] router weights
+layout(std430, binding = 2) writeonly buffer Y    { float y[];  };  // [S][M]
+
+layout(push_constant) uniform PC {
+    uint M;
+    uint n_tiles;
+} pc;
+
+void main() {
+    const uint c    = gl_WorkGroupID.x * 256u + gl_LocalInvocationID.x;
+    const uint slot = gl_WorkGroupID.z;
+    if (c >= pc.M) return;
+
+    float acc = 0.0;
+    const uint base = slot * pc.n_tiles * pc.M + c;
+    for (uint t = 0u; t < pc.n_tiles; t++) {
+        acc += p[base + t * pc.M];
+    }
+    y[slot * pc.M + c] = acc * wt[slot];
+}

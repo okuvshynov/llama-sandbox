@@ -26,7 +26,8 @@ layout(local_size_x = 256) in;
 layout(std430, binding = 0) readonly  buffer Plane  { uvec2 w[];  };  // nibble plane, k-paired
 layout(std430, binding = 1) readonly  buffer Scale  { uint  s[];  };  // scale plane, u8 as u32
 layout(std430, binding = 2) readonly  buffer X      { float x[];  };  // [K]
-layout(std430, binding = 3) writeonly buffer Part   { float p[];  };  // [E][KT][M]
+layout(std430, binding = 3) writeonly buffer Part   { float p[];  };  // [S][KT][M]
+layout(std430, binding = 4) readonly  buffer Ids    { int   ids[]; };  // [S] expert per slot
 
 layout(push_constant) uniform PC {
     uint K;            // reduction length
@@ -35,6 +36,10 @@ layout(push_constant) uniform PC {
     uint n_tiles;      // K / tile_k
     uint w_stride;     // uvec2s per expert in the nibble plane = K*M/16
     uint s_stride;     // u32s per expert in the scale plane    = (K/32)*M/4
+    // Per-slot stride into x, in floats. 0 = one shared vector (the GU matmul
+    // at batch 1); K = per-slot inputs (the down matmul, whose input is the
+    // slot's own SwiGLU output).
+    uint x_stride;
 } pc;
 
 // Doubled-e2m1 magnitudes for nibble&7, packed 4 bits each: {0,1,2,3,4,6,8,12}.
@@ -59,7 +64,8 @@ void main() {
     const uint tcol = gtid >> 1u;                      // which u32 column group
     const uint half_sel = (gtid & 1u) * 16u;           // which 16-bit half of it
     const uint kt   = gl_WorkGroupID.y;                // which K-tile
-    const uint e    = gl_WorkGroupID.z;                // which expert slot
+    const uint slot = gl_WorkGroupID.z;                // which routed slot
+    const uint e    = uint(ids[slot]);                 // which expert's weights
 
     if (tid < 16u) {
         float mag = float((TBL >> (4u * (tid & 7u))) & 0xFu);
@@ -67,7 +73,7 @@ void main() {
     }
     const uint k0 = kt * pc.tile_k;
     for (uint i = tid; i < pc.tile_k; i += 256u) {
-        xs[i] = x[k0 + i];
+        xs[i] = x[slot * pc.x_stride + k0 + i];
     }
     barrier();
 
@@ -106,7 +112,7 @@ void main() {
         a3 += e8m0_half((sc >> 24u) & 0xFFu) * b3;
     }
 
-    const uint pbase = ((e * pc.n_tiles + kt) * pc.M) + col0;
+    const uint pbase = ((slot * pc.n_tiles + kt) * pc.M) + col0;
     p[pbase + 0u] = a0;
     p[pbase + 1u] = a1;
     p[pbase + 2u] = a2;
