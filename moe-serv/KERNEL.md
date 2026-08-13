@@ -127,3 +127,33 @@ E6's 6 waves/SIMD: at four threads per u32 the redundant global traffic
 reaches 4x (each thread uses one byte of its 8-byte load) and per-thread work
 drops below what covers the loop overhead. E6 is the sweet spot of this
 family: 2x redundancy tolerated, 6 waves/SIMD, +10.5%.
+
+## E8 — packed-f16 sub-block accumulation: WORSE AND WRONG, reverted
+
+f16vec2 sub-block accumulators hoping for v_pk_fma_f16's 2x rate: gate/up
+95.8 -> 102.8 µs and max abs error 6.6e-2 — the expected f16 magnitude for
+32-term sums (~1e-3 relative), an order past the gate. Slower and inaccurate:
+either the compiler never emitted packed FMAs from this shape, or the
+f32<->f16 conversions ate the gain. Not worth a variant hunt while it also
+fails correctness; a future packed attempt must keep sub-sums in f32 and pack
+something else.
+
+## Ledger after eight experiments
+
+| exp | idea | result |
+|---|---|---|
+| E1 | LUT bank replication | -6%, reverted — same-word LDS reads broadcast |
+| E2 | paired-k uvec2 loads | **kept**, +2% — and proved loads aren't the limiter |
+| E3 | 256-entry byte LUT | -22%, reverted — real conflicts beyond 16 entries |
+| E4 | software prefetch | -2%, reverted — s_waitcnt already covers it |
+| E5 | arithmetic decode | -85%, reverted — LUT wins on both throughput and latency |
+| E6 | 4 cols/thread | **kept**, +10.5% — occupancy 3->6 waves/SIMD |
+| E7 | 2 cols/thread | -8%, reverted — lever saturates at 6 waves |
+| E8 | packed-f16 accum | slower and wrong, reverted |
+
+Standing: **gate/up 95.8 µs, down 88.9 µs** — block ~280 µs vs ggml's ~700
+(2.5x), practical f32 bound ~115 for the block's bytes (2.4x still on the
+table). The surviving kernel is the original inner loop + E2's layout + E6's
+thread shape; every local modification of the inner loop itself has lost to
+it. What is left is ground truth (ISA disassembly to see what the compiler
+actually emits) or acceptance.
