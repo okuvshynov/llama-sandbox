@@ -33,6 +33,7 @@
 #include "ggml-alloc.h"
 #include "ggml-backend.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <map>
 #include <vector>
@@ -262,10 +263,36 @@ static inline bool moe_vk_compute(moe_placement & P, moe_mirror & M, moe_vk & V,
     row.chunk = chunk;
     moe_timer timer, total;
 
+    // The ids tensor, for counting how many distinct experts a chunk touches.
+    // Found from the graph rather than assumed: it is whatever `mul_mat_id` was
+    // handed as src[2], which is also the tensor the Vulkan backend tests to
+    // pick its kernel.
+    const ggml_tensor * ids_host = nullptr;
+    for (int i = 0; i < n_nodes && !ids_host; i++) {
+        const ggml_tensor * n = ggml_graph_node(gf, i);
+        if (n->op == GGML_OP_MUL_MAT_ID && n->src[2] && n->src[2]->data) ids_host = n->src[2];
+    }
+
     for (int64_t t0 = 0; t0 < (n_tok > 0 ? n_tok : 1); t0 += chunk) {
         const int64_t k = (n_tok > 0 && t0 + chunk > n_tok) ? n_tok - t0 : chunk;
         row.n_chunks++;
-        if (prof) timer.lap();
+        if (prof) {
+            // Distinct expert ids over this chunk's tokens. Bounded by
+            // k * n_expert_used (<= 48 here), so sort-and-unique is cheaper
+            // than any cleverness and cannot be wrong.
+            if (ids_host && ids_host->type == GGML_TYPE_I32) {
+                std::vector<int32_t> e;
+                e.reserve((size_t) k * ids_host->ne[0]);
+                for (int64_t t = 0; t < k; t++) {
+                    const int32_t * p = (const int32_t *)
+                        ((const char *) ids_host->data + (t0 + t) * ids_host->nb[1]);
+                    for (int64_t j = 0; j < ids_host->ne[0]; j++) e.push_back(p[j]);
+                }
+                std::sort(e.begin(), e.end());
+                row.n_exp_loads += (int64_t) (std::unique(e.begin(), e.end()) - e.begin());
+            }
+            timer.lap();
+        }
 
         ggml_context * ctx = ggml_init(ip);
         if (!ctx) return false;

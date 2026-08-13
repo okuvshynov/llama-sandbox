@@ -40,6 +40,12 @@ struct moe_prof_row {
     int64_t  n_tok;
     int64_t  chunk;
     int64_t  n_chunks;
+    // Distinct experts summed over this call's chunks — the number of expert
+    // weight matrices actually read, and therefore the bytes moved. Measured
+    // rather than assumed: fitting a fixed cost and a bandwidth to two points
+    // needs this as the independent variable, and guessing it put the fixed
+    // cost anywhere between 176 and 773 us of a 1072 us call.
+    int64_t  n_exp_loads;
     int64_t  build_us;
     int64_t  alloc_us;
     int64_t  upload_us;
@@ -96,12 +102,13 @@ static inline void moe_prof_flush(moe_prof & P, const char * tag) {
         P.rows.clear();
         return;
     }
-    fprintf(f, "call,dev,n_nodes,n_tok,chunk,n_chunks,"
+    fprintf(f, "call,dev,n_nodes,n_tok,chunk,n_chunks,n_exp_loads,"
                "build_us,alloc_us,upload_us,compute_us,read_us,free_us,total_us\n");
     for (const moe_prof_row & r : P.rows) {
-        fprintf(f, "%u,%d,%d,%lld,%lld,%lld,%lld,%lld,%lld,%lld,%lld,%lld,%lld\n",
+        fprintf(f, "%u,%d,%d,%lld,%lld,%lld,%lld,%lld,%lld,%lld,%lld,%lld,%lld,%lld\n",
                 r.call, r.dev, r.n_nodes,
                 (long long) r.n_tok, (long long) r.chunk, (long long) r.n_chunks,
+                (long long) r.n_exp_loads,
                 (long long) r.build_us, (long long) r.alloc_us, (long long) r.upload_us,
                 (long long) r.compute_us, (long long) r.read_us, (long long) r.free_us,
                 (long long) r.total_us);
