@@ -72,7 +72,10 @@ target_include_directories(moeserv PRIVATE
 # embedded registry would be a second registry, and we would register into the
 # one nobody reads. See README.md on keeping stray ggml DLLs away from the
 # output directory for the same reason.
-target_link_libraries(moeserv PRIVATE ggml-base ggml)
+# Vulkan for the TP path (src/moe_tp.h): the DLL drives the four dies with its
+# own instance and pipelines when MOESERV_TP=1. Shaders come from bin/shaders/.
+find_package(Vulkan REQUIRED)
+target_link_libraries(moeserv PRIVATE ggml-base ggml Vulkan::Vulkan)
 
 set_target_properties(moeserv PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
@@ -86,7 +89,6 @@ set_target_properties(moeserv PROPERTIES
 # --custom runs the raw-Vulkan 2-pass MXFP4 prototype: its own instance and
 # pipelines, ggml only as the CPU reference. The GLSL is compiled at build time
 # by the SDK's glslc and loaded from bin/shaders/ next to the executable.
-find_package(Vulkan REQUIRED)
 set(MOE_SHADERS mxfp4_pass1 mxfp4_pass2 tp_mid tp_final)
 set(MOE_SPV_FILES)
 foreach(sh ${MOE_SHADERS})
@@ -103,6 +105,7 @@ add_custom_target(moe-shaders DEPENDS ${MOE_SPV_FILES})
 
 add_executable(moe-probe src/moe_probe.cpp src/moe_probe_custom.cpp)
 add_dependencies(moe-probe moe-shaders)
+add_dependencies(moeserv moe-shaders)
 target_include_directories(moe-probe PRIVATE "${LLAMA_CPP_DIR}/ggml/include")
 target_link_libraries(moe-probe PRIVATE ggml-base ggml Vulkan::Vulkan)
 set_target_properties(moe-probe PROPERTIES

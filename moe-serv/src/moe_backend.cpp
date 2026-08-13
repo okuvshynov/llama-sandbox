@@ -27,6 +27,7 @@
 #include "moe_mirror.h"
 #include "moe_place.h"
 #include "moe_run_vk.h"
+#include "moe_tp.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -58,6 +59,7 @@ static moe_placement moeserv_place;
 static moe_mirror    moeserv_mirror;
 static moe_vk        moeserv_vk;
 static moe_prof      moeserv_prof;
+static moe_tp        moeserv_tp;
 
 static void moeserv_buffer_free(ggml_backend_buffer_t buffer) {
     auto * ctx = (moeserv_buffer *) buffer->context;
@@ -71,6 +73,8 @@ static void moeserv_buffer_free(ggml_backend_buffer_t buffer) {
     // result.
     if (buffer == moeserv_place.weights_buf) {
         moe_vk_report(moeserv_place, moeserv_vk, MOESERV_NAME);
+        moe_tp_report(moeserv_tp, MOESERV_NAME);
+        moe_tp_free(moeserv_tp);
         moe_prof_flush(moeserv_prof, MOESERV_NAME);
         moe_vk_free(moeserv_vk);
         moe_mirror_free(moeserv_mirror);
@@ -93,6 +97,13 @@ static void * moeserv_buffer_get_base(ggml_backend_buffer_t buffer) {
 // mean deciding several times per tensor, since set_tensor is chunked.
 static enum ggml_status moeserv_buffer_init_tensor(ggml_backend_buffer_t buffer, ggml_tensor * tensor) {
     GGML_UNUSED(buffer);
+    // Under TP the whole-layer mirror is replaced by per-die slices built
+    // lazily at first compute; here we only remember which buffer holds the
+    // weights, so teardown can tell it from the scheduler's compute buffer.
+    if (moe_tp_enabled(moeserv_tp)) {
+        if (moe_place_layer_of(ggml_get_name(tensor)) >= 0) moeserv_place.weights_buf = buffer;
+        return GGML_STATUS_SUCCESS;
+    }
     moe_place_probe(moeserv_place);
     const int dev = moe_place_assign(moeserv_place, moe_place_layer_of(ggml_get_name(tensor)),
                                      ggml_nbytes(tensor));
@@ -418,6 +429,19 @@ static enum ggml_status moeserv_backend_graph_compute(ggml_backend_t backend, gg
         // First compute is the first moment every weight has been written, and
         // the first moment we know the run will actually use us.
         moe_mirror_upload(moeserv_place, moeserv_mirror, MOESERV_NAME);
+    }
+
+    // TP path first: one-token deepseek4 blocks across all dies. Any parse or
+    // residency failure falls through — slow and right, never skipped.
+    if (moe_tp_enabled(moeserv_tp)) {
+        if (moe_tp_compute(moeserv_tp, cgraph, MOESERV_NAME)) {
+            return GGML_STATUS_SUCCESS;
+        }
+        moeserv_tp.n_fallback++;
+        moeserv_vk.n_cpu++;
+        ggml_backend_t cpu0 = moeserv_cpu();
+        if (!cpu0) return GGML_STATUS_FAILED;
+        return ggml_backend_graph_compute(cpu0, cgraph);
     }
 
     // A placed layer runs on its die; everything else, and every case the die

@@ -142,6 +142,12 @@ def main():
     ap.add_argument("--threads", type=int, default=16)
     ap.add_argument("--tol", type=float, default=0.0,
                     help="max mean KLD to accept; 0 requires byte-identical logits")
+    # -ub 1 makes llama-perplexity hand the backend one token per split, which
+    # is the decode shape: it is how the TP path (MOESERV_TP=1) gets exercised
+    # by a logit-level check on real weights, which no synthetic probe can do.
+    ap.add_argument("--ubatch", type=int, default=0, help="micro-batch size (0 = default)")
+    ap.add_argument("--tp", action="store_true",
+                    help="treatment runs with MOESERV_TP=1 (implies you want --ubatch 1)")
     ap.add_argument("--vs-stock", action="store_true",
                     help="also measure the gap against repacked stock llama.cpp")
     args = ap.parse_args()
@@ -157,6 +163,14 @@ def main():
     # that is computed.
     base = ["-m", args.model, "-f", args.corpus, "-c", str(args.ctx),
             "-t", str(args.threads), "-tb", str(args.threads), "--no-warmup", "-v"]
+    if args.ubatch > 0:
+        # Pin the logical batch to one context too: at the default -b 2048,
+        # llama-perplexity evaluates ctx-sized chunks 4 sequences at a time
+        # (n_seq_max = 4), so a "1-token" ubatch carries one token per sequence
+        # — 4 tokens — and the TP path correctly refuses every call. That
+        # exact miss produced a PASS with "0 splits on the dies": the gate was
+        # green because nothing it meant to test had run.
+        base += ["-ub", str(args.ubatch), "-b", str(args.ctx)]
     if args.build_dir != "build":
         # Not a tuning flag. Without it a Vulkan-enabled build offloads host
         # matmuls it cannot finish, and the run measures graph fragmentation
@@ -177,8 +191,11 @@ def main():
               log("ctl"), {"GGML_BACKEND_PATH": args.backend, "MOESERV_DISABLE": "1"})
     check("ctl", ctl, "MoE", False)
 
+    moe_env = {"GGML_BACKEND_PATH": args.backend}
+    if args.tp:
+        moe_env["MOESERV_TP"] = "1"
     moe = run("moe", exe, base + ["-ot", OT_MOE, "--kl-divergence-base", dat("moe")],
-              log("moe"), {"GGML_BACKEND_PATH": args.backend})
+              log("moe"), moe_env)
     check("moe", moe, "MoE", True)
 
     identical = filecmp.cmp(dat("ctl"), dat("moe"), shallow=False)
@@ -189,7 +206,7 @@ def main():
         print("\nlogits differ from the same-placement control — measuring")
         kl = run("kld", exe, base + ["-ot", OT_MOE, "--kl-divergence",
                                      "--kl-divergence-base", dat("ctl")],
-                 log("kld"), {"GGML_BACKEND_PATH": args.backend})
+                 log("kld"), moe_env)
         mean = kld_report(kl)
         if args.tol > 0.0 and mean is not None and mean <= args.tol:
             print("\nPASS: mean KLD %.3e within tolerance %.3e" % (mean, args.tol))
