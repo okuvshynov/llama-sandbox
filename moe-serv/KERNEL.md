@@ -80,3 +80,11 @@ every FMA depends on an LDS read ~30 cycles away, with only 3 waves/SIMD and 8
 chains/thread to hide it. Next: attack latency (prefetch, then LDS-free
 arithmetic decode — whose *throughput* argument E1 killed but whose *latency*
 argument is untested).
+
+## E4 — software prefetch of the next uvec2: WORSE, reverted
+
+Gate/up 107.0 -> 109.5, down 91.1 -> 93.6. GCN issues loads asynchronously and
+waits via s_waitcnt at first use, which the compiler already places after
+independent work — the hardware was prefetching; the manual version only added
+an address clamp per iteration. Latency, if it is the limiter, is not hidable
+from *inside* one iteration's window.
