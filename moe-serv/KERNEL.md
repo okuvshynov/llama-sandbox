@@ -163,3 +163,40 @@ a `git checkout` of the .comp sources does not invalidate them, and a
 "verification" run after a revert executed the reverted experiment's shader.
 Rebuild before believing any number, and treat a check result that exactly
 reproduces the previous run's failure as a stale-binary tell.
+
+## E9 — tensor-parallel within expert vs expert-parallel, measured (no code)
+
+Question (user's): instead of dies owning whole experts (multinomial imbalance,
+max 2-3 of 6 slots on one die), Megatron-split every expert across all four —
+die d holds columns [512d,512d+512) of gate/up and the matching rows of down
+for ALL experts. Balance becomes perfect by construction; clamps and SwiGLU
+stay elementwise-local; the only join is summing four partial [4096] outputs
+per slot, which the host can do during read-back since the terminals are host
+views. Capacity identical. No ids-dependent placement at all.
+
+All shapes measured with the existing probe, zero new code:
+
+| per die, per layer (gate+up+down) | unfused | fused gate+up |
+|---|---|---|
+| TP, deterministic | 178.9 | **116.9** |
+| EP, max 2 slots (~55% of tokens) | 179.8 | 129.7 |
+| EP, max 3 slots (~38%) | 198.4 | 153.9 |
+| EP, expected over routing | ~188 | ~141 |
+
+Two findings. **At decode scale every scheme is dispatch-floor-dominated** —
+a 1/4-byte slice runs at 100 GB/s vs the full shape's 280, and 2 experts cost
+66% of 6 — so unfused TP and EP tie (~179): TP's slice inefficiency eats
+exactly what its balance saves. **Fusing gate+up into one matmul** (their
+columns interleaved at repack; both feed SwiGLU) removes one dispatch and its
+floor: TP drops to 116.9 deterministic, beating EP's expected 141 by 17% and
+its common tail by 24%.
+
+Verdict: TP-within-expert + fused gate/up is the integration design for
+decode. Costs carried forward: 4x read-back bytes (partials from every die,
+~384 KB/layer/token, concurrent), host-side partial summing (negligible), and
+the fused repack. The block pipeline per die becomes 4 dispatches: pass1(GU),
+reduce+clamp+SwiGLU fused, pass1(down), reduce.
+
+Also worth keeping: the fused-GU measurement helps *any* scheme, including
+single-die (2x95.4 -> ~95 + reduce for the pair), and none of this was
+buildable knowledge — every number came from CLI flags on the existing probe.
