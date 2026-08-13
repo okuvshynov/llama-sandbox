@@ -18,6 +18,15 @@ Two architectures, both bit-identical to llama.cpp:
 The name is now a historical accident; the second model is what turned the
 tier boundaries in `lib/` from a guess into a measurement.
 
+**A sibling project takes the opposite approach.** `../moe-serv` keeps
+llama.cpp's trunk and replaces only the routed experts, by loading a ggml
+backend into an unmodified llama.cpp that claims the MoE block. It exists
+because everything above — tokenizer, KV cache, attention, head — was built to
+reach the expert block, and is a second thing to debug when a number looks
+wrong. What this project produced and that one relies on: the op sequence, the
+measurements in `OPTIMIZATION.md`, and the knowledge that a bit-exact port is
+achievable at all. The two share no code by design.
+
 Laid out as a library and the apps that drive it:
 
 ```
