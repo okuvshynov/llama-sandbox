@@ -64,7 +64,7 @@ def placement(text):
 
 def run(cfg, exe, model, args, log_path):
     env = dict(os.environ)
-    for k in ("GGML_BACKEND_PATH", "MOESERV_DISABLE"):
+    for k in ("GGML_BACKEND_PATH", "MOESERV_DISABLE", "MOESERV_TP"):
         env.pop(k, None)
     env.update(cfg["env"])
     cmd = [exe, "-m", model] + args + cfg["args"]
@@ -82,6 +82,14 @@ def run(cfg, exe, model, args, log_path):
     if (ENGAGED in text) != cfg["engaged"]:
         raise SystemExit("%s: backend %s compute a split, expected the opposite"
                          % (cfg["tag"], "did" if ENGAGED in text else "did not"))
+    if cfg.get("tp"):
+        # "PASS with 0 splits on the dies" has already happened once. A TP row
+        # whose report says the dies computed nothing is not a measurement.
+        import re as _re
+        m = _re.search(r"MoE-TP: (\d+) splits on the dies, (\d+) fell back", text)
+        if not m or int(m.group(1)) == 0:
+            raise SystemExit("%s: TP path computed no splits — nothing was measured" % cfg["tag"])
+        print("  %s: %s splits on the dies, %s fell back" % (cfg["tag"], m.group(1), m.group(2)))
 
     rows = [(t, float(v), float(sd)) for t, v, sd in ROW.findall(text)]
     if not rows:
@@ -114,6 +122,8 @@ def main():
     # different and also interesting question (what is the best end-to-end
     # configuration), and the answer belongs in its own table.
     ap.add_argument("--ngl", type=int, default=0, help="layers llama.cpp offloads itself")
+    ap.add_argument("--tp", action="store_true",
+                    help="add an ours-tp config (MOESERV_TP=1, decode on all four dies)")
     ap.add_argument("--loads", type=int, default=2, help="separate loads per configuration")
     args = ap.parse_args()
 
@@ -134,6 +144,11 @@ def main():
          "env": {"GGML_BACKEND_PATH": args.backend},
          "buft": {"MoE"}, "engaged": True},
     ]
+    if args.tp:
+        configs.append(
+        {"tag": "ours-tp",  "args": ["-ot", "exps=MoE"],
+         "env": {"GGML_BACKEND_PATH": args.backend, "MOESERV_TP": "1"},
+         "buft": {"MoE"}, "engaged": True, "tp": True})
     # -v so the placement lines survive to the log; it changes nothing measured.
     common = ["-t", str(args.threads), "-r", str(args.reps), "-ngl", str(args.ngl),
               "-p", args.pp, "-n", args.n, "-lm", "none", "-v"]
@@ -189,7 +204,9 @@ def main():
         unresolved = 0
         pairs = (("repack        stock -> ours-off ", "stock", "ours-off"),
                  ("our compute   ours-off -> ours-on", "ours-off", "ours-on"),
-                 ("net vs stock  stock -> ours-on  ", "stock", "ours-on"))
+                 ("net vs stock  stock -> ours-on  ", "stock", "ours-on"),
+                 ("TP dies       ours-on -> ours-tp", "ours-on", "ours-tp"),
+                 ("TP vs stock   stock -> ours-tp  ", "stock", "ours-tp"))
         for label, a, b in pairs:
             if a not in means or b not in means:
                 continue

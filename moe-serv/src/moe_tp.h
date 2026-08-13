@@ -30,6 +30,7 @@
 #  include <windows.h>
 #endif
 
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -78,6 +79,8 @@ struct moe_tp_die {
     moe_tp_pipeline  p1, pmid, pfin;
     // Per-call scratch, shared by all layers of this die.
     moe_tp_buf io;                                  // host-visible: x | ids | wts | y readback
+    void *     io_ptr = nullptr;                    // persistently mapped — vkMapMemory per
+                                                    // call cost ~2 ms/layer on this driver
     moe_tp_buf x_dev, ids_dev, wts_dev, h, part_gu, part_dn, y;
     moe_tp_buf staging;                             // for weight uploads
     size_t     budget = 0;                          // device-local bytes still allowed
@@ -91,6 +94,9 @@ struct moe_tp {
     int64_t K = 0, INTER = 0, MOUT = 0, SLOTS = 0, ISL = 0;
     int64_t tile_k = 128;
     uint64_t n_calls = 0, n_fallback = 0;
+    // Per-call border accounting, µs — the probe timed the pipeline inside one
+    // submission and could not see any of this.
+    double t_stage = 0, t_submit = 0, t_wait = 0, t_sum = 0;
     std::string shader_dir;
     // io buffer offsets
     size_t off_x = 0, off_ids = 0, off_wts = 0, off_y = 0, io_size = 0;
@@ -363,6 +369,7 @@ static inline void moe_tp_free(moe_tp & T) {
     for (moe_tp_die & D : T.dies) {
         if (!D.dev) continue;
         vkDeviceWaitIdle(D.dev);
+        if (D.io_ptr) { vkUnmapMemory(D.dev, D.io.mem); D.io_ptr = nullptr; }
         for (moe_tp_buf * b : { &D.io, &D.x_dev, &D.ids_dev, &D.wts_dev, &D.h,
                                 &D.part_gu, &D.part_dn, &D.y, &D.staging }) moe_tp_free_buf(D, *b);
         for (moe_tp_pipeline * P : { &D.p1, &D.pmid, &D.pfin }) {
@@ -511,9 +518,20 @@ static inline bool moe_tp_set_dims(moe_tp & T, const moe_tp_call & c) {
     const VkBufferUsageFlags dev_usage =
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
     for (moe_tp_die & D : T.dies) {
+        // HOST_CACHED matters more than it looks: the plain VISIBLE|COHERENT
+        // type on AMD is write-combined — fine to write, ~150 MB/s to read —
+        // and this buffer is where the CPU reads 98 KB of partials per die per
+        // call. Uncached reads cost ~2 ms/layer; the cached type removes it.
+        // (lyrae hit the Metal spelling of this: storageModeShared, 8 GB/s.)
         if (!moe_tp_make_buf(D, T.io_size,
                 VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, D.io)) return false;
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+                VK_MEMORY_PROPERTY_HOST_CACHED_BIT, D.io)) {
+            if (!moe_tp_make_buf(D, T.io_size,
+                    VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, D.io)) return false;
+        }
+        MOE_TP_CHECK(vkMapMemory(D.dev, D.io.mem, 0, VK_WHOLE_SIZE, 0, &D.io_ptr));
         if (!moe_tp_make_buf(D, (size_t) T.K * 4, dev_usage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, D.x_dev)) return false;
         if (!moe_tp_make_buf(D, (size_t) T.SLOTS * 4, dev_usage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, D.ids_dev)) return false;
         if (!moe_tp_make_buf(D, (size_t) T.SLOTS * 4, dev_usage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, D.wts_dev)) return false;
@@ -705,15 +723,14 @@ static inline bool moe_tp_compute(moe_tp & T, ggml_cgraph * gf, const char * tag
     // changed them per call, which deepseek4 does not do — fall back if so.
     if (L.gmin != c.gmin || L.gmax != c.gmax || L.umin != c.umin || L.umax != c.umax) return false;
 
-    // Stage inputs into every die's io buffer.
+    const auto tt0 = std::chrono::steady_clock::now();
+    // Stage inputs into every die's persistently mapped io buffer.
     for (moe_tp_die & D : T.dies) {
-        void * p = nullptr;
-        if (vkMapMemory(D.dev, D.io.mem, 0, T.off_y, 0, &p) != VK_SUCCESS) return false;
-        memcpy((char *) p + T.off_x,   c.x->data,   (size_t) T.K * 4);
-        memcpy((char *) p + T.off_ids, c.ids->data, (size_t) T.SLOTS * 4);
-        memcpy((char *) p + T.off_wts, c.wts->data, (size_t) T.SLOTS * 4);
-        vkUnmapMemory(D.dev, D.io.mem);
+        memcpy((char *) D.io_ptr + T.off_x,   c.x->data,   (size_t) T.K * 4);
+        memcpy((char *) D.io_ptr + T.off_ids, c.ids->data, (size_t) T.SLOTS * 4);
+        memcpy((char *) D.io_ptr + T.off_wts, c.wts->data, (size_t) T.SLOTS * 4);
     }
+    const auto tt1 = std::chrono::steady_clock::now();
     // Submit all dies, then wait all — the concurrency the split probe priced
     // at ~60-100 us of fixed floor.
     for (size_t d = 0; d < T.dies.size(); d++) {
@@ -724,21 +741,27 @@ static inline bool moe_tp_compute(moe_tp & T, ggml_cgraph * gf, const char * tag
         si.pCommandBuffers = &L.per_die[d].cb;
         MOE_TP_CHECK(vkQueueSubmit(D.queue, 1, &si, D.fence));
     }
+    const auto tt2 = std::chrono::steady_clock::now();
     float * out = (float *) c.out->data;
     const size_t n_out = (size_t) T.SLOTS * T.MOUT;
+    std::chrono::steady_clock::time_point tt3;
     for (size_t d = 0; d < T.dies.size(); d++) {
         moe_tp_die & D = T.dies[d];
         MOE_TP_CHECK(vkWaitForFences(D.dev, 1, &D.fence, VK_TRUE, UINT64_MAX));
-        void * p = nullptr;
-        if (vkMapMemory(D.dev, D.io.mem, T.off_y, n_out * 4, 0, &p) != VK_SUCCESS) return false;
-        const float * yp = (const float *) p;
+        if (d == 0) tt3 = std::chrono::steady_clock::now();
+        const float * yp = (const float *) ((const char *) D.io_ptr + T.off_y);
         if (d == 0) {
             memcpy(out, yp, n_out * 4);
         } else {
             for (size_t i = 0; i < n_out; i++) out[i] += yp[i];
         }
-        vkUnmapMemory(D.dev, D.io.mem);
     }
+    const auto tt4 = std::chrono::steady_clock::now();
+    using us_t = std::chrono::duration<double, std::micro>;
+    T.t_stage  += us_t(tt1 - tt0).count();
+    T.t_submit += us_t(tt2 - tt1).count();
+    T.t_wait   += us_t(tt3 - tt2).count();
+    T.t_sum    += us_t(tt4 - tt3).count();
     if (T.n_calls++ == 0) {
         fprintf(stderr, "%s-TP: computed a split on %zu die(s) (layer %d, %lld slots)\n",
                 tag, T.dies.size(), c.layer, (long long) T.SLOTS);
@@ -750,5 +773,10 @@ static inline void moe_tp_report(const moe_tp & T, const char * tag) {
     if (T.n_calls || T.n_fallback) {
         fprintf(stderr, "%s-TP: %llu splits on the dies, %llu fell back\n",
                 tag, (unsigned long long) T.n_calls, (unsigned long long) T.n_fallback);
+    }
+    if (T.n_calls) {
+        const double n = (double) T.n_calls;
+        fprintf(stderr, "%s-TP: per call us: stage %.1f  submit %.1f  wait-first %.1f  wait-rest+sum %.1f%c",
+                tag, T.t_stage / n, T.t_submit / n, T.t_wait / n, T.t_sum / n, 10);
     }
 }
