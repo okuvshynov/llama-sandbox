@@ -1,0 +1,26 @@
+#version 450
+// Pass 2: reduce the K-tile partials into the output. Tiny next to pass 1 —
+// E * M outputs each summing n_tiles floats.
+
+layout(local_size_x = 256) in;
+
+layout(std430, binding = 0) readonly  buffer Part { float p[]; };  // [E][KT][M]
+layout(std430, binding = 1) writeonly buffer Y    { float y[]; };  // [E][M]
+
+layout(push_constant) uniform PC {
+    uint M;
+    uint n_tiles;
+} pc;
+
+void main() {
+    const uint col = gl_WorkGroupID.x * 256u + gl_LocalInvocationID.x;
+    const uint e   = gl_WorkGroupID.z;
+    if (col >= pc.M) return;
+
+    float acc = 0.0;
+    const uint base = e * pc.n_tiles * pc.M + col;
+    for (uint t = 0u; t < pc.n_tiles; t++) {
+        acc += p[base + t * pc.M];
+    }
+    y[e * pc.M + col] = acc;
+}

@@ -47,7 +47,13 @@ struct probe_args {
     int64_t n_tokens = 1;
     int     reps = 20;
     int     split = 1;               // spread n_used experts over this many devices
+    bool    custom = false;          // run the raw-Vulkan 2-pass prototype instead
+    int64_t tile_k = 64;             // its K-tile size
 };
+
+// moe_probe_custom.cpp — the raw-Vulkan 2-pass MXFP4 prototype.
+int run_custom_kernel(int64_t k, int64_t m, int64_t n_used, int reps, int64_t tile_k,
+                      const char * argv0);
 
 // Spin barrier for the split path: the waits are tens of microseconds, and a
 // condition variable's wake latency would be a measurable part of what this
@@ -308,10 +314,16 @@ int main(int argc, char ** argv) {
         else if (a == "--tokens") A.n_tokens = atoll(next());
         else if (a == "--reps")   A.reps     = atoi(next());
         else if (a == "--split")  A.split    = atoi(next());
+        else if (a == "--custom") A.custom   = true;
+        else if (a == "--tile")   A.tile_k   = atoll(next());
         else { fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
     }
 
     ggml_backend_load_all();
+
+    if (A.custom) {
+        return run_custom_kernel(A.k, A.m, A.n_used, A.reps, A.tile_k, argv[0]);
+    }
 
     if (A.split > 1) {
         // First `split` GPU devices, in registry order. Each runs its share of

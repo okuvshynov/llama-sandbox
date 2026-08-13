@@ -82,8 +82,28 @@ set_target_properties(moeserv PROPERTIES
 # moe-probe — a standalone kernel benchmark, deliberately not part of the
 # backend. It links ggml normally because it needs the kernels in its own
 # process; the library never does, since it borrows the host's.
-add_executable(moe-probe src/moe_probe.cpp)
+#
+# --custom runs the raw-Vulkan 2-pass MXFP4 prototype: its own instance and
+# pipelines, ggml only as the CPU reference. The GLSL is compiled at build time
+# by the SDK's glslc and loaded from bin/shaders/ next to the executable.
+find_package(Vulkan REQUIRED)
+set(MOE_SHADERS mxfp4_pass1 mxfp4_pass2)
+set(MOE_SPV_FILES)
+foreach(sh ${MOE_SHADERS})
+    add_custom_command(
+        OUTPUT "${CMAKE_BINARY_DIR}/bin/shaders/${sh}.spv"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/bin/shaders"
+        COMMAND Vulkan::glslc -O -o "${CMAKE_BINARY_DIR}/bin/shaders/${sh}.spv"
+                "${CMAKE_CURRENT_SOURCE_DIR}/shaders/${sh}.comp"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/${sh}.comp"
+        COMMENT "glslc ${sh}.comp")
+    list(APPEND MOE_SPV_FILES "${CMAKE_BINARY_DIR}/bin/shaders/${sh}.spv")
+endforeach()
+add_custom_target(moe-shaders DEPENDS ${MOE_SPV_FILES})
+
+add_executable(moe-probe src/moe_probe.cpp src/moe_probe_custom.cpp)
+add_dependencies(moe-probe moe-shaders)
 target_include_directories(moe-probe PRIVATE "${LLAMA_CPP_DIR}/ggml/include")
-target_link_libraries(moe-probe PRIVATE ggml-base ggml)
+target_link_libraries(moe-probe PRIVATE ggml-base ggml Vulkan::Vulkan)
 set_target_properties(moe-probe PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
