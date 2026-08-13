@@ -61,3 +61,22 @@ win, but the real yield is the diagnosis: halving global-load instructions
 changed almost nothing, so the limiter is the per-weight decode chain
 (shift+mask+LDS+FMA, ~3 issue slots per weight), not the loads. Next
 experiments should cut ops per weight, not bytes or loads.
+
+## E3 — byte-pair vec2 LUT (256 entries): WORSE, reverted
+
+One ds_read_b64 per two weights instead of two nibble reads; no unpack.
+Result: gate/up 107.0 -> 127.9 µs (-20%), down 91.1 -> 117.0 (-28%).
+
+Closes the loop with E1 from the other side: the 16-entry LUT is fast *because*
+every lane reading entry i hits the same LDS word and broadcasts; 256 entries
+under random byte indices spread over 512 words and conflict for real. Fewer
+but conflicting reads lose to more but broadcast ones. Between E1 and E3 the
+LUT is now known to be at its optimum size.
+
+Standing diagnosis after E1-E3: not loads (E2), not LUT conflicts (E1/E3), not
+occupancy (tile 64 runs 6 waves/SIMD vs tile 128's 3 and is *slower*), and a
+naive VALU count puts the floor at ~14 µs — so the 107 µs is latency-bound:
+every FMA depends on an LDS read ~30 cycles away, with only 3 waves/SIMD and 8
+chains/thread to hide it. Next: attack latency (prefetch, then LDS-free
+arithmetic decode — whose *throughput* argument E1 killed but whose *latency*
+argument is untested).
