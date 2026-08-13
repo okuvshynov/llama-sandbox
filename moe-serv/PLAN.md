@@ -119,15 +119,43 @@ A library that registers one device and claims nothing.
   our own.
 
 Done when:
-- `GGML_BACKEND_PATH=... llama-bench -m <model> -ot "nonexistent=MoE"` lists
-  `MoE` among "Available buffer types", which proves registration and name
-  resolution without running a model.
-- `GGML_BACKEND_PATH=... llama-cli -m <model> -p "..."` produces the same
-  output as without it — a registered backend that claims nothing must be
-  invisible.
+- `-ot "x=NOSUCHBUFT"` errors and lists `MoE` among "Available buffer types",
+  which proves registration and name resolution without running a model.
+- A real run with `-ot exps=MoE` produces the same output as one without — a
+  backend that claims no ops must be invisible even when explicitly targeted.
 
-The second is the real check. A backend that changes behaviour before it claims
-anything means the registration itself has a side effect.
+**DONE**, and it did more than this section expected.
+
+DeepSeek-V4-Flash, `llama-completion`, greedy, fixed seed, 24 tokens:
+
+    load_backend: loaded MoE backend from ...moeserv.dll
+    load_tensors:   CPU_Mapped model buffer size =  46935.53 MiB
+    load_tensors:   CPU_Mapped model buffer size =  46309.94 MiB
+    load_tensors:   CPU_Mapped model buffer size =  46086.90 MiB
+    load_tensors:   CPU_Mapped model buffer size =  11769.43 MiB
+    load_tensors:          MoE model buffer size = 140352.00 MiB
+
+Generated text byte-identical to the stock run.
+
+**The prediction in the first draft was wrong.** It said llama.cpp would refuse
+to place a weight in a buffer whose device cannot run the op, so `-ot` would be
+ignored and the run would fall back to the CPU. It is not ignored: `-ot` is an
+explicit override and llama.cpp honours it, so **137 GiB of expert weights are
+already in our buffer with `supports_op` returning false for everything**.
+
+Correctness survives for a different reason than the one written down: our
+buffer is host memory with `is_host` true, `ggml_backend_cpu_device_supports_buft`
+accepts any host buffer, and `ggml_backend_sched_backend_from_buffer` therefore
+hands every op to the CPU — which reads our tensors in place. Nothing is copied
+and nothing changes.
+
+Two consequences. **`passthrough` is smaller than planned**: weight ownership is
+already working, so what is left is turning `supports_op` on for the block and
+writing `graph_compute`. And **`is_host` is now load-bearing** — the moment the
+buffer stops being host-visible (`dies`), the CPU can no longer read it and
+every op we do not claim becomes a copy. That is the real content of the weight
+placement decision deferred to `dies`, and it is sharper than "device memory or
+mirror".
 
 ## `passthrough` — own the experts, compute them, change nothing
 
