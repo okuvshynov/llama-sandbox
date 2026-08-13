@@ -54,10 +54,18 @@ target_include_directories(moeserv PRIVATE
     "${LLAMA_CPP_DIR}/ggml/src")
 
 # ggml-base carries ggml_backend_buffer_init, the tensor helpers and the type
-# traits. Not ggml-cpu: `passthrough` will get its CPU kernels by asking the
-# already-loaded backend registry for a CPU backend at runtime, not by linking a
-# second copy of the kernels into this library.
-target_link_libraries(moeserv PRIVATE ggml-base)
+# traits. `ggml` carries the backend *registry* — ggml_backend_init_by_type and
+# friends live in ggml-backend-reg.cpp, which is in that target and not in the
+# base one.
+#
+# Not ggml-cpu, deliberately: the CPU kernels are obtained at runtime by asking
+# the registry for a CPU backend, so this library contains no second copy of
+# them. Both links here are *import* libraries, so at load time they resolve to
+# the ggml the host llama.cpp already has — which is the point. A statically
+# embedded registry would be a second registry, and we would register into the
+# one nobody reads. See README.md on keeping stray ggml DLLs away from the
+# output directory for the same reason.
+target_link_libraries(moeserv PRIVATE ggml-base ggml)
 
 set_target_properties(moeserv PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"

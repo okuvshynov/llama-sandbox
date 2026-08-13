@@ -198,17 +198,82 @@ static void moeserv_device_get_props(ggml_backend_dev_t dev, ggml_backend_dev_pr
     };
 }
 
-// `handshake`: claim nothing at all.
+// Is this tensor's storage ours? During a real graph that means the model
+// loader put it here via `-ot`; during `weight_buft_supported`'s probe it means
+// llama.cpp attached a temporary zero-size buffer of our type to ask the
+// question (`llama-model-loader.cpp`). Both should answer yes.
+static bool moeserv_is_ours(const ggml_tensor * t) {
+    if (!t) return false;
+    const ggml_tensor * s = t->view_src ? t->view_src : t;
+    return s->buffer != nullptr && s->buffer->buft == moeserv_buffer_type();
+}
+
+// Does this op's value descend from a matmul against weights we own?
 //
-// This is the load-bearing line of the increment. With it returning false, a
-// weight can be routed here by `-ot` and llama.cpp will still refuse to place
-// it (`weight_buft_supported` asks whether the owning device can run the op),
-// so the run falls back to the CPU and must be bit-identical to not loading
-// this library. `passthrough` narrows it to the MoE block.
+// The elementwise ops of the expert block — the SwiGLU clamps, the gate, the
+// router-weight multiply — carry no weights, so "is the weight ours" cannot
+// answer for them and claiming them unconditionally would claim every `mul` and
+// `clamp` in the model. Walking a few links up the source chain is precise
+// instead: `clamp(up)` where `up = mul_mat_id(our_weights, ...)` is ours, and a
+// `mul` in the attention block is not.
+//
+// Depth 4 covers the longest chain in the block, mul_mat_id -> clamp -> glu ->
+// mul_mat_id -> mul, and bounds the walk on a graph where a source chain can
+// otherwise be long.
+static bool moeserv_derives_from_ours(const ggml_tensor * t, int depth) {
+    if (!t || depth <= 0) return false;
+    if (t->op == GGML_OP_MUL_MAT_ID && moeserv_is_ours(t->src[0])) return true;
+    for (int i = 0; i < GGML_MAX_SRC; i++) {
+        if (moeserv_derives_from_ours(t->src[i], depth - 1)) return true;
+    }
+    return false;
+}
+
+// `passthrough`: claim the routed expert block and nothing else.
+//
+// The set is the expert half of llama.cpp's `build_moe_ffn`, minus the expert
+// sum. `ADD` is deliberately absent: it is also the residual add, and pass 2 of
+// the scheduler does not reset its running backend id when it meets an op it
+// cannot place (`ggml_backend_sched_set_if_supported`), so a claim on `ADD`
+// could reach past the block into the trunk. The sum is `n_expert_used - 1`
+// adds of [n_embd, n_tokens] and costs little on the CPU.
+//
+// Shapes neither of our two models uses are refused rather than mishandled:
+// fused `gate_up_exps` (caught by the src0 check, since a fused block's weights
+// would still be ours — so it is caught by the ne check below instead), expert
+// bias `ADD_ID`, and the non-SwiGLU gates. An unported model falls back to the
+// CPU and is slow, not wrong.
 static bool moeserv_device_supports_op(ggml_backend_dev_t dev, const ggml_tensor * op) {
     GGML_UNUSED(dev);
-    GGML_UNUSED(op);
-    return false;
+    if (!op) return false;
+
+    switch (op->op) {
+        // Free structural ops, as BLAS does: claiming them keeps a view from
+        // splitting a run of nodes that is otherwise ours. Pass 2 skips view
+        // ops entirely, so this cannot pull in anything distant.
+        case GGML_OP_NONE:
+        case GGML_OP_RESHAPE:
+        case GGML_OP_VIEW:
+        case GGML_OP_PERMUTE:
+        case GGML_OP_TRANSPOSE:
+            return true;
+
+        case GGML_OP_MUL_MAT_ID:
+            return moeserv_is_ours(op->src[0]);
+
+        case GGML_OP_CLAMP:
+        case GGML_OP_MUL:
+            return moeserv_derives_from_ours(op, 4);
+
+        // ggml_swiglu_split and friends are all GGML_OP_GLU; the variant is in
+        // op_params. Only SwiGLU is claimed — the others are untested here.
+        case GGML_OP_GLU:
+            return ggml_get_glu_op(op) == GGML_GLU_OP_SWIGLU &&
+                   moeserv_derives_from_ours(op, 4);
+
+        default:
+            return false;
+    }
 }
 
 static bool moeserv_device_supports_buft(ggml_backend_dev_t dev, ggml_backend_buffer_type_t buft) {
@@ -253,15 +318,50 @@ static void moeserv_backend_free(ggml_backend_t backend) {
     delete backend;
 }
 
-// Unreachable while `supports_op` is false — the scheduler never assigns us a
-// node, so it never builds a split for us. Aborting rather than returning an
-// error because reaching here means the scheduler and `supports_op` disagree,
-// and a wrong answer computed quietly is worse than a stop.
+// The CPU backend we delegate to, taken from the *host's* registry rather than
+// linked. Linking ggml-cpu would put a second copy of the kernels in this
+// library; asking the registry gets the same instance type llama.cpp is using,
+// built with the same flags, which is what makes delegation bit-identical
+// rather than merely correct.
+static ggml_backend_t moeserv_cpu() {
+    static ggml_backend_t cpu = nullptr;
+    if (!cpu) {
+        cpu = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);
+        if (!cpu) {
+            fprintf(stderr, "%s: no CPU backend in the registry to delegate to\n", MOESERV_NAME);
+        }
+    }
+    return cpu;
+}
+
+// `passthrough` computes by handing the split to that CPU backend. Every tensor
+// involved is host memory — ours by `-ot`, everything else llama.cpp's — so the
+// CPU kernels read them in place with no copy, and the arithmetic is the same
+// arithmetic in the same order as a run without this library.
+//
+// Reported once, because the split's contents are the whole claim of this
+// increment: if the block did not arrive as one piece, or if something outside
+// it did, this line says so without needing GGML_SCHED_DEBUG.
 static enum ggml_status moeserv_backend_graph_compute(ggml_backend_t backend, ggml_cgraph * cgraph) {
     GGML_UNUSED(backend);
-    fprintf(stderr, "%s: graph_compute called with %d nodes, but this build claims no ops\n",
-            MOESERV_NAME, cgraph ? ggml_graph_n_nodes(cgraph) : 0);
-    return GGML_STATUS_FAILED;
+    if (!cgraph) return GGML_STATUS_FAILED;
+
+    static bool reported = false;
+    if (!reported) {
+        reported = true;
+        int counts[GGML_OP_COUNT] = { 0 };
+        const int n = ggml_graph_n_nodes(cgraph);
+        for (int i = 0; i < n; i++) counts[ggml_graph_node(cgraph, i)->op]++;
+        fprintf(stderr, "%s: first split has %d nodes:", MOESERV_NAME, n);
+        for (int o = 0; o < GGML_OP_COUNT; o++) {
+            if (counts[o]) fprintf(stderr, " %s x%d", ggml_op_name((enum ggml_op) o), counts[o]);
+        }
+        fprintf(stderr, "\n");
+    }
+
+    ggml_backend_t cpu = moeserv_cpu();
+    if (!cpu) return GGML_STATUS_FAILED;
+    return ggml_backend_graph_compute(cpu, cgraph);
 }
 
 static const ggml_backend_i moeserv_backend_i = {
@@ -317,11 +417,42 @@ static ggml_backend_dev_t moeserv_reg_get_device(ggml_backend_reg_t reg, size_t 
     return &dev;
 }
 
+// Thread count, forwarded to the CPU backend we delegate to.
+//
+// This matters for correctness, not tidiness. ggml partitions matmul work by
+// `n_threads`, so the summation structure — and therefore the rounding —
+// changes with it (repo CLAUDE.md). A delegated expert matmul running on a
+// different thread count than the rest of the model would not be bit-identical
+// to a stock run, and the whole point of `passthrough` is that it is.
+//
+// llama.cpp asks every backend's reg for this symbol and calls it with the
+// same value it uses everywhere (`llama-context.cpp`), so exposing it is how we
+// learn a number we otherwise could not see.
+static void moeserv_set_n_threads(ggml_backend_t backend, int n_threads) {
+    GGML_UNUSED(backend);
+    ggml_backend_t cpu = moeserv_cpu();
+    if (!cpu) return;
+    ggml_backend_dev_t dev = ggml_backend_get_device(cpu);
+    ggml_backend_reg_t reg = dev ? ggml_backend_dev_backend_reg(dev) : nullptr;
+    if (!reg) return;
+    auto fn = (ggml_backend_set_n_threads_t)
+        ggml_backend_reg_get_proc_address(reg, "ggml_backend_set_n_threads");
+    if (fn) fn(cpu, n_threads);
+}
+
+static void * moeserv_reg_get_proc_address(ggml_backend_reg_t reg, const char * name) {
+    GGML_UNUSED(reg);
+    if (name && strcmp(name, "ggml_backend_set_n_threads") == 0) {
+        return (void *) moeserv_set_n_threads;
+    }
+    return nullptr;
+}
+
 static const ggml_backend_reg_i moeserv_reg_i = {
     /* .get_name         = */ moeserv_reg_get_name,
     /* .get_device_count = */ moeserv_reg_get_device_count,
     /* .get_device       = */ moeserv_reg_get_device,
-    /* .get_proc_address = */ nullptr,
+    /* .get_proc_address = */ moeserv_reg_get_proc_address,
 };
 
 static ggml_backend_reg_t moeserv_reg() {

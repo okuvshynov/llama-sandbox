@@ -77,15 +77,16 @@ anything arranged here, so treat it as a hazard: if `MoE` stops appearing in
 
 ## Correctness
 
-Three layers, none of which depend on `../nano-glm`:
-
-1. `GGML_BACKEND_PATH=... test-backend-ops` — llama.cpp's own per-op
-   conformance suite, which enumerates registered devices and compares each
-   against CPU.
-2. End-to-end output with and without the backend, greedy and fixed seed.
+1. End-to-end output with and without the backend, greedy and fixed seed.
    Bit-identical through `passthrough`; a stated numerical floor after.
-3. Capture replay (`tape`) — real tensors from real runs, checked against
+2. Capture replay (`tape`, not built yet) — real tensors from real runs against
    recorded output.
+
+**`test-backend-ops` does not work for this backend.** It calls `supports_op` on
+every tensor *before allocating any*, so a weight has no buffer yet and our
+ownership guard answers no to everything: the suite prints `Backend MoE: OK`
+over **0/0 tests**. Useful as a smoke test that the buffer type allocates and
+frees (16125 cases, no crash); never quotable as conformance.
 
 ## Status
 
@@ -101,5 +102,16 @@ any host buffer type and computes on our tensors in place, with no copy. So
 weight ownership is proven before a single op is claimed, and `is_host` is
 load-bearing from here on.
 
-Next is `passthrough` in `PLAN.md`, which is now the smaller half: claim the
-block's ops and implement `graph_compute`.
+**`passthrough` done.** The backend claims `MUL_MAT_ID`, `CLAMP`, `GLU` and
+`MUL` — guarded so it only takes ops descending from weights it owns — and
+computes them by handing the split to a CPU backend from the host's registry.
+On DeepSeek-V4-Flash:
+
+    MoE: first split has 13 nodes: MUL x1 MUL_MAT_ID x3 VIEW x6 CLAMP x2 GLU x1
+    sched_reserve: graph splits = 87        (43 layers x 2 + 1)
+    generated text bit-identical to stock
+
+One split per MoE layer, nothing claimed outside it, same bytes out.
+
+Next is `tape` in `PLAN.md`, which the `test-backend-ops` finding promoted from
+convenience to requirement.

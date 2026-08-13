@@ -179,19 +179,51 @@ weight ownership, buffer lifetime, split boundaries, in/out tensor handling.
   op histogram. Silence here would make `dies` undebuggable.
 
 Done when:
-- **`GGML_BACKEND_PATH=... test-backend-ops`** passes. It enumerates registered
-  devices and compares every op against the CPU reference — 42 `MUL_MAT_ID`
-  cases across shapes, quant types and expert counts. This is llama.cpp's own
-  conformance suite and it is free.
-- **End-to-end logits are bit-identical** with and without the backend, for both
-  models, greedy, fixed token ids. Byte comparison, not KL.
-- **`GGML_SCHED_DEBUG=2` shows one split per MoE layer**, and shows nothing
-  claimed outside the block. This is the check for the `cur_backend_id`
-  expansion hazard above, and it is the reason to look at the assignment dump
-  rather than trust the reasoning in this file.
-- The split count and `llama-bench` throughput are recorded, not tuned.
-  `passthrough` is expected to be *slower* than plain CPU — an extra split
-  boundary buys nothing yet.
+- **End-to-end output is bit-identical** with and without the backend, greedy,
+  fixed seed. Byte comparison, not KL.
+- **One split per MoE layer**, and nothing claimed outside the block.
+- The split count and throughput are recorded, not tuned. `passthrough` is
+  expected to be *slower* than plain CPU — an extra split boundary buys nothing
+  yet.
+
+**DONE.** DeepSeek-V4-Flash, `llama-completion`, greedy, fixed seed:
+
+    MoE: first split has 13 nodes: MUL x1 MUL_MAT_ID x3 VIEW x6 CLAMP x2 GLU x1
+    sched_reserve: graph splits = 87
+    BIT-IDENTICAL generated text: 647 chars
+
+The histogram is exactly the expert block — up, gate, down, deepseek4's two
+SwiGLU clamps, the gate, the router-weight multiply — arriving as **one split**.
+87 splits is 43 layers x 2 + 1, i.e. one MoE split per layer alternating with
+CPU and nothing claimed outside.
+
+### `test-backend-ops` does not work here, and that was a planning error
+
+This file said llama.cpp's own conformance suite would give us per-op checking
+for free. It does not, for a structural reason worth keeping.
+
+`supports_op` is called on **every tensor in the context before anything is
+allocated** (`tests/test-backend-ops.cpp:1355`), so a weight has no buffer at
+that moment. Our `supports_op` requires `MUL_MAT_ID`'s `src0` to be *in our
+buffer*, so we answer no to everything, and the suite reports
+`Backend MoE: OK` over **0/0 tests**. A green tick on an empty set — the same
+shape of non-result this project has now hit four times.
+
+The guard is not the thing to change. `MUL_MAT_ID` appears only in MoE blocks,
+so claiming it regardless of ownership would claim blocks whose weights are on
+the CPU, and merely loading the library would alter a run — exactly the property
+`handshake` exists to establish. Relaxing the guard to light up a test would
+trade a real invariant for a green tick.
+
+So the correctness contract loses its cheapest layer and the other two carry it:
+end-to-end byte identity (which `passthrough` passes), and **`tape`**, which is
+now the only per-op check that can see this backend, because it replays real
+tensors that really are in our buffer. That raises `tape` from convenience to
+requirement and it should come next.
+
+What the suite did establish, for what it is worth: the device enumerates, the
+buffer type allocates and frees across 16125 op cases, and nothing crashes.
+That is a smoke test of the buffer, not conformance of the compute.
 
 ## `tape` — capture and replay
 
@@ -235,15 +267,20 @@ numbering them.
 
 ## Correctness contract
 
-Three layers, cheapest first:
+Two layers, not the three this file originally listed:
 
-1. `test-backend-ops` — per-op conformance against CPU, llama.cpp's own.
-2. End-to-end logits, fixed ids, with and without the backend. Bit-identical
+1. End-to-end output, fixed seed, with and without the backend. Bit-identical
    through `passthrough`; a stated floor after.
-3. Capture replay — real tensors from real runs, checked against recorded
-   output.
+2. Capture replay (`tape`) — real tensors from real runs, checked against
+   recorded output. **Load-bearing**, because it is the only per-op check that
+   can see an ownership-gated backend; see the `passthrough` section for why
+   `test-backend-ops` cannot.
 
-None of these depend on `../nano-glm`.
+`test-backend-ops` is still worth running as a smoke test of the buffer type —
+it allocates and frees across 16125 cases — but it reports OK over zero tests
+and must never be quoted as conformance.
+
+Neither layer depends on `../nano-glm`.
 
 ## Scope: two models, on purpose
 
