@@ -340,9 +340,27 @@ Increments, in order:
    the fast path, so the die is simply no faster than 16 CPU cores for one
    token's experts. Decode needs a different idea, not a bigger chunk.
 
-6. The real model. Only worth loading once a configuration wins on the stub —
-   7-9% load-to-load spread cannot confirm a 30% effect cheaply, but it can
-   confirm one this large.
+6. **The real model — done, and the win transferred.** DeepSeek-V4-Flash,
+   150.75 GiB, placement exactly as this plan computed in advance: **9 layers
+   per die, 36 of 43, 7 on the CPU**, 1.48 GiB spare each, 28.69 GiB mirrored
+   per die. Two loads, `--ngl 0 --pp 512 --n 32`:
+
+   | pp512 | per load | mean | spread |
+   |---|---|---|---|
+   | `stock` | 18.49 / 18.49 | 18.49 | 0.0% |
+   | `ours-off` | 17.93 / 18.12 | 18.02 | 1.1% |
+   | **`ours-on`** | 21.92 / 21.75 | **21.84** | 0.8% |
+
+   **Prefill +21.1%** over the same-placement control, **+18.1%** over llama.cpp
+   as shipped, both resolved. Decode resolves nothing (3.48 / 3.42 / 3.45
+   against 1.4-3.5% noise).
+
+   Two things worth keeping. **Prefill measures far better than decode on this
+   machine** — 0.0-1.1% load-to-load against decode's 7-9% — because it is
+   compute-bound rather than paging-bound, so the "the stub is the instrument"
+   rule is a decode rule, not a universal one. And the stub predicted the real
+   model within 6 points (+27% against +21%), which is the first time in this
+   project a stub-measured effect has been confirmed at full scale.
 
 **Gate: `gate.py --tol`, and the tolerance has to be argued rather than picked.**
 The CPU path keeps its `--tol 0` bit-identity check — it does not retire when

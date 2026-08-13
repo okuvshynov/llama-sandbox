@@ -264,8 +264,26 @@ Needs `--build-dir build-vk` and, on that host, the no-op-offload flag — which
 `gate.py` and `bench.py` add for you. See `PLAN.md` for why whole layers, and
 for the 1.25x ceiling that decode faces regardless.
 
-**What the dies are worth so far.** `bench.py --build-dir build-vk --ngl 0` on
-the 4-layer stub, our compute against the same weights on the CPU:
+**What the dies are worth, on the real model.** DeepSeek-V4-Flash, 150.75 GiB,
+36 of 43 expert layers mirrored across the four dies (9 each) and 7 on the CPU.
+`bench.py --build-dir build-vk --ngl 0 --pp 512 --n 32`, two loads:
+
+| pp512 | per load | mean | spread |
+|---|---|---|---|
+| `stock` | 18.49 / 18.49 | 18.49 | 0.0% |
+| `ours-off` | 17.93 / 18.12 | 18.02 | 1.1% |
+| **`ours-on`** | 21.92 / 21.75 | **21.84** | 0.8% |
+
+**Prefill: our compute +21.1%**, and +18.1% against llama.cpp as shipped. The
+repack we forfeit costs 2.5%. All three resolved — prefill is compute-bound and
+measures to ~1% here, unlike decode.
+
+**Decode: nothing resolved.** 3.48 / 3.42 / 3.45 t/s against 1.4-3.5% noise,
+which is what the stub predicted: batch 1 is already on the fast path, so a die
+is no quicker than 16 CPU cores for one token's experts.
+
+**What the dies are worth by batch size.** `bench.py --build-dir build-vk --ngl 0`
+on the 4-layer stub, our compute against the same weights on the CPU:
 
 | batch | 8 | 16 | 32 | 128 | 512 | decode |
 |---|---|---|---|---|---|---|
