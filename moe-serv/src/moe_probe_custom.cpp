@@ -183,8 +183,11 @@ static void repack(const uint8_t * blocks, int64_t k, int64_t m,
                 const uint32_t hi = row[b].qs[j] >> 4;
                 const int64_t k_lo = b * 32 + j;
                 const int64_t k_hi = b * 32 + j + 16;
-                plane[(size_t) (k_lo * (m / 8) + mm / 8)] |= lo << (4 * (mm % 8));
-                plane[(size_t) (k_hi * (m / 8) + mm / 8)] |= hi << (4 * (mm % 8));
+                // k-paired for uvec2 loads (E2): u32 index = ((k/2)*(m/8) +
+                // col_group)*2 + (k&1), so rows k and k+1 sit in one 8-byte
+                // load for a given column group.
+                plane[(size_t) ((((k_lo >> 1) * (m / 8) + mm / 8) << 1) | (k_lo & 1))] |= lo << (4 * (mm % 8));
+                plane[(size_t) ((((k_hi >> 1) * (m / 8) + mm / 8) << 1) | (k_hi & 1))] |= hi << (4 * (mm % 8));
             }
         }
     }
@@ -406,7 +409,7 @@ int run_custom_kernel(int64_t k, int64_t m, int64_t n_used, int reps, int64_t ti
 
     // --- record: warm-up dispatch, then reps back to back --------------------
     const uint32_t pc1[6] = { (uint32_t) k, (uint32_t) m, (uint32_t) tile_k, n_tiles,
-                              (uint32_t) (k * m / 8), (uint32_t) ((k / 32) * m / 4) };
+                              (uint32_t) (k * m / 16), (uint32_t) ((k / 32) * m / 4) };
     const uint32_t pc2[2] = { (uint32_t) m, n_tiles };
     const uint32_t gx1 = (uint32_t) ((m / 8 + 255) / 256);
     const uint32_t gx2 = (uint32_t) ((m + 255) / 256);

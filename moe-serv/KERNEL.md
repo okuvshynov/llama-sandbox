@@ -45,3 +45,19 @@ baseline was conflict-free by construction. Replication only added an OR to
 every one of the 8 reads per u32. Corollary that reorders the queue: the LUT
 read is nearly free, so replacing it with arithmetic decode (~5 ALU ops) is
 now expected to lose, and that experiment is skipped rather than run.
+
+## E2 — paired-k uvec2 loads: kept, +2.3% net, and a diagnosis
+
+One 8-byte load now covers 16 weights (rows k, k+1 x 8 columns); loop
+iterations and load instructions halved.
+
+| shape | before | after |
+|---|---|---|
+| gate/up (tile 128) | 111.9 | **107.0** |
+| down (tile 64/128) | 88.3 | 91.1 |
+
+Net on the block (2x gate/up + down): 312.1 -> 305.1 µs. Kept for the gate/up
+win, but the real yield is the diagnosis: halving global-load instructions
+changed almost nothing, so the limiter is the per-weight decode chain
+(shift+mask+LDS+FMA, ~3 issue slots per weight), not the loads. Next
+experiments should cut ops per weight, not bytes or loads.
