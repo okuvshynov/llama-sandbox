@@ -214,6 +214,37 @@ static inline bool moe_vk_compute(moe_placement & P, moe_mirror & M, moe_vk & V,
         /* .no_alloc   = */ true,
     };
 
+    // What to read back, decided once rather than per chunk.
+    //
+    // The naive answer is "every terminal", and it costs more than the compute
+    // it is collecting: this block's six terminals are views that tile one
+    // parent, so six `ggml_backend_tensor_get` calls fetch 98 KB in 530 µs —
+    // 185 MB/s, which is not bandwidth but six pipeline stalls at ~88 µs each.
+    // Reading the parent once covers exactly the same bytes.
+    //
+    // Generic: walk `view_src` to a root, and redirect only when that root is
+    // itself a node here. A root outside the split is a tensor we uploaded, and
+    // reading it back would be writing over an input.
+    //
+    // Writing the root's whole span is safe even where the views do not tile it
+    // completely: the root is our own output, its host memory is live until its
+    // consumers run, and every byte we write is the value the device computed.
+    std::vector<int> reads;
+    {
+        std::vector<bool> want(n_all, false);
+        for (int i = 0; i < n_nodes; i++) {
+            if (consumed[i] || !host[i]->data) continue;
+            int root = i;
+            while (host[root]->view_src) {
+                auto it = idx.find(host[root]->view_src);
+                if (it == idx.end() || it->second >= n_nodes) break;
+                root = it->second;
+            }
+            want[root] = true;
+        }
+        for (int i = 0; i < n_all; i++) if (want[i]) reads.push_back(i);
+    }
+
     ggml_backend_buffer_type_t buft = ggml_backend_dev_buffer_type(P.devs[dev]);
     if (!V.gallocs[dev]) V.gallocs[dev] = ggml_gallocr_new(buft);
 
@@ -312,8 +343,7 @@ static inline bool moe_vk_compute(moe_placement & P, moe_mirror & M, moe_vk & V,
 
         if (prof) row.compute_us += timer.lap();
 
-        for (int i = 0; i < n_nodes; i++) {
-            if (consumed[i] || !host[i]->data) continue;
+        for (int i : reads) {
             const size_t off = tok_dim[i] >= 0 ? (size_t) t0 * host[i]->nb[tok_dim[i]] : 0;
             ggml_backend_tensor_get(twin[i], (char *) host[i]->data + off,
                                     0, ggml_nbytes(twin[i]));

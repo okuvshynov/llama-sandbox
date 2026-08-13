@@ -146,7 +146,7 @@ Three findings that shape what comes next:
 - **Prefill measures well on the real model** (0.0-1.1% load-to-load), unlike
   decode. The "stub is the instrument" rule is a decode rule.
 
-### `decode` — Planned, next
+### `decode` — Done (single read-back)
 
 Profiled with `MOESERV_PROFILE=<prefix>` (`src/moe_prof.h`), which writes one
 CSV row per split with microsecond phase timings for both paths — `dev = -1` is
@@ -170,10 +170,33 @@ stalling the pipeline. Those six terminals are views that tile one parent
 tensor exactly, so one contiguous read of the parent would do. Projected:
 1125 µs per layer, **+26% against the CPU** — decode's first real win.
 
-So the next step is: when a split's terminals are all views of one node, read
-that node once instead. Generic (walk `view_src` to a root that is itself a node
-here), and it must not change a bit — the six reads and the one read cover the
-same bytes.
+**Fixed, by reading the root once.** Terminals are walked up `view_src` to a
+root that is itself a node here, and that root is read instead of each view —
+generic, and bit-identical, since both cover the same bytes (KLD unchanged at
+6.2e-5). Re-profiled:
+
+| µs per layer | 6 reads | 1 read |
+|---|---|---|
+| compute | 1018 | 1106 |
+| read-back | **530** | **149** |
+| build + alloc + upload + free | 19 | 17 |
+| total | 1578 | **1279** |
+| CPU layer | 1420 | 1403 |
+
+The layer goes from **10% slower than the CPU to 9.7% faster**, and decode on
+the stub from -0.2% to **+6.9%** (net +5.4% against stock), resolved.
+
+**A gap the per-split timer cannot explain, and it is worth being honest about.**
+It accounts for 124 µs/layer saved; end-to-end shows ~575. The timer only sees
+our splits, so the excess is billed to the trunk — plausibly bandwidth and cache
+freed by not streaming 80 MB/layer of experts through the CPU. Same shape as
+`../nano-glm`'s allocator finding: a phase timer attributes work to where it is
+billed, not to what caused it. Unverified.
+
+What this does **not** change is the ceiling: the expert block is ~20% of a
+decode step's bytes, so even a free one is 1.25x. Anything further needs the die
+to be much faster at the block than 1.28x, or the activations never to cross the
+border at all.
 
 Watch out for two things the profile also showed. The **first call costs 306 ms**
 (Vulkan pipeline compilation) and dragged the *mean* to 4730 µs against a median

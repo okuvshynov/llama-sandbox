@@ -296,10 +296,14 @@ take the vector path and beat 16 CPU cores; past that they take the general path
 and lose half. Issuing the block 8 tokens at a time keeps it on the fast path
 always, which is a graph decision rather than a shader.
 
-**Decode is unaffected and will stay that way.** Batch 1 was always on the fast
-path, so a die is simply no faster than 16 CPU cores for one token's experts —
-about 1.45 ms per layer either way, bound by dispatch and transfer rather than
-arithmetic. Decode needs a different idea, not a bigger chunk.
+**Decode needed a different fix, and got one.** Batch 1 was always on the fast
+path, so chunking did nothing; profiling (`MOESERV_PROFILE=<prefix>`, one CSV row
+per split) showed the die winning the arithmetic and losing it back at the
+border — 1018 µs of compute against the CPU's 1420, then 530 µs to read six
+terminals back one at a time. Those six are views tiling one tensor, so reading
+the root once cuts it to 149 µs: the layer goes from 10% slower than the CPU to
+9.7% faster, and stub decode from -0.2% to **+6.9%**. The ~20%-of-bytes ceiling
+still stands, so this is a real gain inside a small budget.
 
 Two flags are not optional when benchmarking this: **`--ngl 0`**, or llama-bench's
 default of 99 quietly offloads the trunk too and the rows stop being comparable;
