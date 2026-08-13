@@ -27,8 +27,9 @@ block is ~20% of the bytes and even a free one caps at 1.25x. That is this
 machine's balance, not the approach's: the trunk's weights are 13.7 GiB and
 would fit on one modern GPU, where they cost a fraction of the 231 ms/token they
 cost on these cores. In that configuration the expert block is most of the time
-— and it currently runs at ~7% of a die's bandwidth, so the headroom is large
-and it is the part worth having.
+— and it currently runs at **7.3% of a die's bandwidth** (74.8 of ~1024 GB/s,
+against the CPU's 52.8 of ~100), so the headroom is large and it is the part
+worth having. See `shaders`.
 
 ## Invariants
 
@@ -244,11 +245,13 @@ is green, and expect the load-to-load problem to be worse there, not better.
   static whole-layer placement look wrong.
 - **`wire`** — in-process or a separate process over a socket. Still undecided,
   and now informed by a measured per-split cost.
-- **`shaders`** — fewer, larger dispatches first: the die's decode time fits
-  ~85 µs per submitted op x 13 nodes almost exactly, which would make it
-  submission-bound rather than bandwidth-bound. Test by varying node count and
-  bytes independently — the profile already records `n_nodes`. Custom kernels
-  only after that.
+- **`shaders`** — the kernel, and it is now the main lever. At batch 1 the die
+  reads 6 experts (80.2 MB exactly, no routing to guess at) in 1072 µs =
+  **74.8 GB/s, 7.3% of its ~1024**; the CPU gets 52.8 of its ~100. The
+  submission-bound theory was tested and **falsified** — per-chunk compute rises
+  3.0-3.6x from 1 token to 8 with the dispatch count unchanged, so it tracks
+  bytes, and the `85 µs x 13 nodes` fit was coincidence. Batching dispatches is
+  therefore not the lever; making `mul_mat_id` read MXFP4 faster is.
 
 ## Links
 
