@@ -119,3 +119,11 @@ First structural win since E2, and it says the kernel was partly
 occupancy-starved after all — tile-64's failure to show it was masked by its
 own added partials traffic, exactly as suspected in the E3 postmortem. Next:
 same lever again (2 cols/thread, 12 waves/SIMD) until it stops paying.
+
+## E7 — two columns per thread (12 waves/SIMD): WORSE, reverted
+
+Gate/up 95.8 -> 103.7, down 88.9 -> 95.2. The occupancy lever saturates at
+E6's 6 waves/SIMD: at four threads per u32 the redundant global traffic
+reaches 4x (each thread uses one byte of its 8-byte load) and per-thread work
+drops below what covers the loop overhead. E6 is the sweet spot of this
+family: 2x redundancy tolerated, 6 waves/SIMD, +10.5%.
