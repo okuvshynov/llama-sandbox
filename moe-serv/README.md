@@ -127,7 +127,15 @@ sidesteps it by keeping the weights in our buffer on both sides.
 python make_stub.py <model-00001-of-000NN.gguf> D:\llms\stub\ds4-L4.gguf --layers 4
 python gate.py                  # ~3 min: bit-identity of our compute
 python gate.py --vs-stock       # ~6 min: and what owning the weights costs
+python gate.py --build-dir build-vk --tol 5e-4    # the Vulkan path
 ```
+
+The Vulkan tolerance is explicit on the command line and the default stays 0, so
+the CPU path keeps its bit-identity check and a number can never be inherited by
+a run that did not intend it. **5e-4 mean KLD is ~14x the measured repack gap**
+(3.6e-5), which is what two correct kernels disagreeing looks like on this
+machine; the Vulkan path measures 8.4e-5, so the tolerance has an order of
+magnitude of headroom and would still catch a difference an order larger.
 
 `gate.py` runs stock `llama-perplexity` twice, both placing the routed experts
 in our buffer, differing only in whether we claim any ops (`MOESERV_DISABLE=1`
@@ -240,6 +248,21 @@ One split per MoE layer, nothing claimed outside it.
 bit-identical to llama.cpp's on the same weights. It also corrected two things
 that had been assumed: `passthrough`'s bit-identity had only ever been checked
 on generated *text*, and `-ot exps=CPU` is not a non-repacked control.
+
+**`dies` increments 1-3 done.** The backend places whole layers on the four Vega
+II dies (9 layers/die, 36 of 43 for DeepSeek-V4-Flash), mirrors their expert
+weights into VRAM at ~3.3 GiB/s, and computes those splits there by rebuilding
+the received graph against the mirror. Layers that do not fit, and any op a die
+declines, fall back to the CPU.
+
+    MoE: placement — 4 of 4 expert layers on 4 device(s), 0 on CPU
+    MoE:   Vulkan0   uploaded  12.75 GiB in 12 tensors
+    MoE: Vulkan0 computed a split (13 nodes)
+    PASS: mean KLD 8.400e-05 within tolerance 1.000e-03
+
+Needs `--build-dir build-vk` and, on that host, the no-op-offload flag — which
+`gate.py` and `bench.py` add for you. See `PLAN.md` for why whole layers, and
+for the 1.25x ceiling that decode faces regardless.
 
 **`tape` removed.** A capture format for the split the backend is handed, built
 to be half of a replay harness; `gate` answered the same question without a

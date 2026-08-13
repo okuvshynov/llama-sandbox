@@ -26,6 +26,7 @@
 
 #include "moe_mirror.h"
 #include "moe_place.h"
+#include "moe_run_vk.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -55,6 +56,7 @@ struct moeserv_buffer {
 // goes, so a process that loads a second model re-probes and re-uploads.
 static moe_placement moeserv_place;
 static moe_mirror    moeserv_mirror;
+static moe_vk        moeserv_vk;
 
 static void moeserv_buffer_free(ggml_backend_buffer_t buffer) {
     auto * ctx = (moeserv_buffer *) buffer->context;
@@ -63,6 +65,7 @@ static void moeserv_buffer_free(ggml_backend_buffer_t buffer) {
     // ones to ask whether we accept a tensor, and freeing the mirror on those
     // would throw away 115 GiB of upload during model loading.
     if (ctx->size > 0) {
+        moe_vk_free(moeserv_vk);
         moe_mirror_free(moeserv_mirror);
         moeserv_place = moe_placement();
     }
@@ -407,6 +410,16 @@ static enum ggml_status moeserv_backend_graph_compute(ggml_backend_t backend, gg
         // First compute is the first moment every weight has been written, and
         // the first moment we know the run will actually use us.
         moe_mirror_upload(moeserv_place, moeserv_mirror, MOESERV_NAME);
+    }
+
+    // A placed layer runs on its die; everything else, and every case the die
+    // declines, falls through to the CPU. The fall-through is the reason this is
+    // one `if` rather than two paths: a layer we cannot run on the GPU must be
+    // slow, never skipped.
+    const int dev = moe_vk_device_for(moeserv_place, moeserv_mirror, cgraph);
+    if (dev >= 0 && moe_vk_compute(moeserv_place, moeserv_mirror, moeserv_vk,
+                                   dev, cgraph, MOESERV_NAME)) {
+        return GGML_STATUS_SUCCESS;
     }
 
     ggml_backend_t cpu = moeserv_cpu();

@@ -265,7 +265,33 @@ Increments, in order:
    allocation fails. It cannot be reached by shrinking the reserve — that
    changes the *plan*, not the outcome of allocating it — and needs a driver
    that reports more free VRAM than it will hand out.
-3. Compute placed layers on their die. Gate moves to `--tol`.
+3. **Done.** Compute placed layers on their die (`src/moe_run_vk.h`): rebuild
+   the received split against the mirror, upload the inputs, compute, read the
+   terminals back. Rebuilt generically from the cgraph — nothing in that file
+   names an op. Measured against the same-placement control on the 4-layer stub:
+
+   | configuration | mean KLD | max KLD | top-1 |
+   |---|---|---|---|
+   | repack gap, CPU vs CPU_REPACK (the yardstick) | 3.6e-5 | 2.1e-3 | 99.804% |
+   | 4 layers on Vulkan0 | 8.4e-5 | 1.13e-2 | 99.804% |
+   | 4 layers, one per die | 8.4e-5 | 1.13e-2 | 99.804% |
+   | 1 layer on Vulkan0, 3 on CPU | 8.1e-5 | 1.11e-2 | 99.216% |
+
+   **Vulkan is 2.3x the repack gap on the mean and 5.4x on the max — the same
+   order**, which is the criterion: the repack gap is two *correct* kernels
+   disagreeing on this machine and model, so a difference of that size is
+   evidence of different rounding and nothing else.
+
+   The four-dies row is identical to the one-die row to every printed digit, so
+   the dies agree with each other exactly. That is the same-arithmetic control
+   `../nano-glm` had to learn to run: without it, a difference between dies would
+   have been charged to Vulkan.
+
+   **Necessary, not sufficient.** End-to-end KLD saturates on a deep model and a
+   mathematically-invariant wrong graph sits inside the precision band (repo
+   `CLAUDE.md`). Four layers is chosen partly because it amplifies less than 43;
+   whether that is enough is still the open question below.
+
 4. Bench, both hosts, decode and prefill.
 
 **Gate: `gate.py --tol`, and the tolerance has to be argued rather than picked.**
