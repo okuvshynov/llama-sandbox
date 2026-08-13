@@ -411,7 +411,8 @@ int run_custom_kernel(int64_t k, int64_t m, int64_t n_used, int reps, int64_t ti
     const uint32_t pc1[6] = { (uint32_t) k, (uint32_t) m, (uint32_t) tile_k, n_tiles,
                               (uint32_t) (k * m / 16), (uint32_t) ((k / 32) * m / 4) };
     const uint32_t pc2[2] = { (uint32_t) m, n_tiles };
-    const uint32_t gx1 = (uint32_t) ((m / 8 + 255) / 256);
+    // E6: two threads per u32 column group (4 columns each).
+    const uint32_t gx1 = (uint32_t) ((m / 8 * 2 + 255) / 256);
     const uint32_t gx2 = (uint32_t) ((m + 255) / 256);
 
     VkCommandBufferAllocateInfo cai = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };

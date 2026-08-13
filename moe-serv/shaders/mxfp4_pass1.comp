@@ -51,7 +51,13 @@ float e8m0_half(uint e) {
 
 void main() {
     const uint tid  = gl_LocalInvocationID.x;
-    const uint tcol = gl_WorkGroupID.x * 256u + tid;   // which u32 column group
+    // E6: four columns per thread — two threads share one u32 column group,
+    // each taking one 16-bit half. Doubles the workgroup count (occupancy 3 ->
+    // 6 waves/SIMD at tile 128) without touching the partials traffic, which
+    // is what makes it a clean test of the occupancy hypothesis.
+    const uint gtid = gl_WorkGroupID.x * 256u + tid;
+    const uint tcol = gtid >> 1u;                      // which u32 column group
+    const uint half_sel = (gtid & 1u) * 16u;           // which 16-bit half of it
     const uint kt   = gl_WorkGroupID.y;                // which K-tile
     const uint e    = gl_WorkGroupID.z;                // which expert slot
 
@@ -67,56 +73,42 @@ void main() {
 
     const uint m8 = pc.M / 8u;
     if (tcol >= m8) return;
+    const uint col0 = tcol * 8u + (half_sel >> 2u);    // first of this thread's 4 columns
 
     const uint wbase = e * pc.w_stride + tcol;
     const uint sbase = e * pc.s_stride;
 
     float a0 = 0.0, a1 = 0.0, a2 = 0.0, a3 = 0.0;
-    float a4 = 0.0, a5 = 0.0, a6 = 0.0, a7 = 0.0;
 
     // 32-element sub-blocks share one scale per column; accumulate the raw
     // sub-sum first and apply the scale once per sub-block, not per weight.
     for (uint sb = 0u; sb < pc.tile_k / 32u; sb++) {
         const uint kb = k0 / 32u + sb;
         float b0 = 0.0, b1 = 0.0, b2 = 0.0, b3 = 0.0;
-        float b4 = 0.0, b5 = 0.0, b6 = 0.0, b7 = 0.0;
 
         for (uint j = 0u; j < 16u; j++) {
             const uint  dk = sb * 32u + 2u * j;
             const float x0 = xs[dk];
             const float x1 = xs[dk + 1u];
             const uvec2 wv = w[wbase + ((k0 + dk) >> 1u) * m8];
-            b0 += x0 * lut[(wv.x >>  0u) & 0xFu] + x1 * lut[(wv.y >>  0u) & 0xFu];
-            b1 += x0 * lut[(wv.x >>  4u) & 0xFu] + x1 * lut[(wv.y >>  4u) & 0xFu];
-            b2 += x0 * lut[(wv.x >>  8u) & 0xFu] + x1 * lut[(wv.y >>  8u) & 0xFu];
-            b3 += x0 * lut[(wv.x >> 12u) & 0xFu] + x1 * lut[(wv.y >> 12u) & 0xFu];
-            b4 += x0 * lut[(wv.x >> 16u) & 0xFu] + x1 * lut[(wv.y >> 16u) & 0xFu];
-            b5 += x0 * lut[(wv.x >> 20u) & 0xFu] + x1 * lut[(wv.y >> 20u) & 0xFu];
-            b6 += x0 * lut[(wv.x >> 24u) & 0xFu] + x1 * lut[(wv.y >> 24u) & 0xFu];
-            b7 += x0 * lut[(wv.x >> 28u) & 0xFu] + x1 * lut[(wv.y >> 28u) & 0xFu];
+            const uint hx = wv.x >> half_sel, hy = wv.y >> half_sel;
+            b0 += x0 * lut[(hx >>  0u) & 0xFu] + x1 * lut[(hy >>  0u) & 0xFu];
+            b1 += x0 * lut[(hx >>  4u) & 0xFu] + x1 * lut[(hy >>  4u) & 0xFu];
+            b2 += x0 * lut[(hx >>  8u) & 0xFu] + x1 * lut[(hy >>  8u) & 0xFu];
+            b3 += x0 * lut[(hx >> 12u) & 0xFu] + x1 * lut[(hy >> 12u) & 0xFu];
         }
 
-        // 8 scale bytes for columns 8*tcol .. 8*tcol+7 at k-block kb.
-        const uint soff = sbase + (kb * pc.M + tcol * 8u) / 4u;
-        const uint sc01 = s[soff];
-        const uint sc23 = s[soff + 1u];
-        a0 += e8m0_half((sc01 >>  0u) & 0xFFu) * b0;
-        a1 += e8m0_half((sc01 >>  8u) & 0xFFu) * b1;
-        a2 += e8m0_half((sc01 >> 16u) & 0xFFu) * b2;
-        a3 += e8m0_half((sc01 >> 24u) & 0xFFu) * b3;
-        a4 += e8m0_half((sc23 >>  0u) & 0xFFu) * b4;
-        a5 += e8m0_half((sc23 >>  8u) & 0xFFu) * b5;
-        a6 += e8m0_half((sc23 >> 16u) & 0xFFu) * b6;
-        a7 += e8m0_half((sc23 >> 24u) & 0xFFu) * b7;
+        // 4 scale bytes for this thread's columns — exactly one u32.
+        const uint sc = s[sbase + (kb * pc.M + col0) / 4u];
+        a0 += e8m0_half((sc >>  0u) & 0xFFu) * b0;
+        a1 += e8m0_half((sc >>  8u) & 0xFFu) * b1;
+        a2 += e8m0_half((sc >> 16u) & 0xFFu) * b2;
+        a3 += e8m0_half((sc >> 24u) & 0xFFu) * b3;
     }
 
-    const uint pbase = ((e * pc.n_tiles + kt) * pc.M) + tcol * 8u;
+    const uint pbase = ((e * pc.n_tiles + kt) * pc.M) + col0;
     p[pbase + 0u] = a0;
     p[pbase + 1u] = a1;
     p[pbase + 2u] = a2;
     p[pbase + 3u] = a3;
-    p[pbase + 4u] = a4;
-    p[pbase + 5u] = a5;
-    p[pbase + 6u] = a6;
-    p[pbase + 7u] = a7;
 }

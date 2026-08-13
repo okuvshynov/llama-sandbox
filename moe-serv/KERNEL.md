@@ -103,3 +103,19 @@ Ledger after five experiments: E2 kept (+2.3%), E1/E3/E4/E5 reverted. The
 inner loop as first written — bfe, broadcast LDS read, FMA — has survived
 every attempt to improve it locally. Remaining untried levers are structural:
 occupancy (E6), packed-f16 math, or accepting 107/91 and integrating.
+
+## E6 — four columns per thread (2 threads share a u32): KEPT
+
+Doubles workgroup count, 3 -> 6 waves/SIMD at tile 128, partials traffic
+unchanged — the clean occupancy test that tile-64 could not be.
+
+| shape | before | after |
+|---|---|---|
+| gate/up (tile 128) | 107.0 | **95.8** |
+| down (tile 128) | 91.1 | **88.9** |
+
+Block: 2x95.8 + 88.9 = 280.5 µs (was 305.1; baseline 312.1; ggml ~700).
+First structural win since E2, and it says the kernel was partly
+occupancy-starved after all — tile-64's failure to show it was masked by its
+own added partials traffic, exactly as suspected in the E3 postmortem. Next:
+same lever again (2 cols/thread, 12 waves/SIMD) until it stops paying.
