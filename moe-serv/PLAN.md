@@ -239,87 +239,75 @@ Order: build a stub, get `gate.py --tol 0` green on the CPU path, then the
 Vulkan path, then `bench.py` prefill. Only load the 583 GiB model once the stub
 is green, and expect the load-to-load problem to be worse there, not better.
 
+### `decode-kernel` — In progress (branch `moe-q40-experiment`)
+
+Decode only, per direction; prefill is parked. The instrument is `moe-probe`
+(`src/moe_probe.cpp`): one `mul_mat_id` at our shapes, synthetic weights,
+optional `--split N` across dies, run under `GGML_VK_PERF_LOGGER=1` to separate
+kernel span from per-call overhead. One type per process — the probe has an
+unexplained cross-type artifact (q4_0 after mxfp4 in one threaded process runs
+steadily 8x slow) that single-type runs avoid.
+
+**The measured story, k=4096 m=2048, 6 of 32 experts, 1 token:**
+
+  | type | bytes | GPU span | span GB/s | G weights/s | lane-cyc/weight |
+  |---|---|---|---|---|---|
+  | f32 | 201.3 MB | 287.0 µs | **701** | 175 | ~40 (memory-limited) |
+  | f16 | 100.7 MB | 285.6 µs | 352 | 176 | ~40 |
+  | q8_0 | 53.5 MB | 149.1 µs | 359 | 337 | ~21 |
+  | q4_0 | 28.3 MB | 118.9 µs | 238 | **423** | ~16.5 |
+  | mxfp4 | 26.7 MB | 163.8 µs | 163 | 307 | ~23 |
+
+  Wall minus span is constant ~185 µs across formats under the logger (~60-140
+  without it): the per-call overhead, separated from the kernel at last.
+
+  - **f32 is bandwidth-bound at ~701 GB/s** — the practical ceiling for this
+    gather (lyrae's dense Metal kernels on the same dies: 720-791).
+  - **Every quantized format is instruction-bound**: 16-23 lane-cycles per
+    weight where a tight unpack+FMA needs ~2-4. mxfp4 carries 7.5x fewer bytes
+    than f32 and converts that into only 1.75x less span.
+  - **f16 is a bad kernel** (span identical to f32 on half the bytes), so
+    kernel quality varies independently of unpacking.
+  - The offset is **not** K-loop latency (halving K at constant bytes changed
+    nothing) and **not** submissions (`MOESERV_PAD_NODES`: 4.5 µs/dispatch;
+    forcing `GGML_VK_MAX_NODES_PER_SUBMIT=1` changed nothing).
+
+**Split across dies works and stacks with kernel work.** Same 6 experts spread
+2,2,1,1 over 4 dies, concurrent, barrier per rep: mxfp4 222 -> 136 µs (1.64x),
+f32 336 -> 170 (1.98x), with a ~60-100 µs concurrent fixed floor — the per-call
+cost overlaps across dies instead of serializing. Same bytes + 4x ALU = faster
+is also independent confirmation of instruction-boundedness. Expert-split
+placement needs no cross-die reduction: the block's terminals are per-slot
+views, so dies write disjoint regions. Capacity unchanged (64 experts/die).
+
+**Design target:** a custom mxfp4 kernel at ~4 cycles/weight puts the span at
+~30-40 µs (converging with 26.7 MB at ~1 TB/s = 27 µs) — **~4-6x on the
+kernel**; after that the ~100 µs overhead dominates and the split/overhead work
+takes over. From lyrae (same dies, Metal, nine documented experiments): the
+batch-1 winner is a **2-pass K-tiled kernel with a partials buffer** (their
+1.66x over MPS; their dense version hit 720-791 GB/s), the single-pass
+one-workgroup-per-row shape was **10x slower**, and fusing into a slow matmul
+lost 6x. Port that structure, fold dequant in via LDS LUT, accumulate packed
+fp16.
+
+Superseded intermediate readings (212 GB/s fits, "the gap is submissions",
+"550 ceiling", 20x format gaps from test-backend-ops shapes) are in git history
+— `68192d3..bae4aeb` — and should not be quoted.
+
+**Correctness unchanged:** synthetic probes measure kernels only; `gate.py`
+against a real checkpoint stays the verdict (synthetic weights never trigger
+the SwiGLU clamp). The q4_0 requantisation's accuracy is still unmeasured and
+decides whether a format change is even available.
+
 ### Later — one line each
 
+- **`prefill`** — parked. Known: chunking to 8 tokens re-reads each expert's
+  weights once per chunk (~34x at pp512); lyrae's gather-scatter (expert-major,
+  8.7x at batch 2048) is the structural fix to evaluate.
 - **`residency`** — which experts sit on which die, once something makes the
-  static whole-layer placement look wrong.
-- **`wire`** — in-process or a separate process over a socket. Still undecided,
-  and now informed by a measured per-split cost.
-- **`submission` — mostly a mirage, corrected by `GGML_VK_PERF_LOGGER`.** The
-  per-node GPU timestamps say the decode block spends **690-780 µs on the GPU**
-  (2x `MUL_MAT_ID_VEC` at ~227 µs, one fused `MUL_MAT_ID_MUL` at ~213 µs, clamps
-  and GLU 24 µs together) against our measured 1106 µs call — so ~2/3 is real
-  kernel time and only ~330-400 µs is CPU-side. The "~730 µs per submission"
-  below was read from ggml-vulkan's flops-per-submit heuristic rather than
-  measured, and was wrong. Two by-products: `MUL_MAT_ID + MUL` is **already
-  fused** by ggml-vulkan, and the elementwise tail is 24 µs, so there was never
-  a fusion win to find. What remains true is the shape of the old text — decode
-  has a floor — but the floor is the kernel, not the driver.
-  The die's compute fits **`710 µs + MB / 212 GB/s`**, so at batch 1 two thirds
-  of the call is fixed. Padding the graph with no-op dispatches
-  (`MOESERV_PAD_NODES`) split that fixed term: **`1107 µs + 4.5 µs x
-  n_dispatches`** — tripling the dispatch count cost 83 µs. So it is **per
-  submission (~730 µs), not per op**, and fusing the block from 7 ops to 3 is
-  worth ~1.6%, against the 1.62x a projection had claimed.
-  The measurement that settled it: `GGML_VK_PERF_LOGGER=1` prints per-node GPU
-  timestamps, and they account for two thirds of the call. Read source, then
-  measure it — this thread corrected itself three times and only the
-  measurements survived.
-- **`shaders` — the ceiling is measured, and the gap is ALU, not bandwidth.**
-  `moe-probe` (`src/moe_probe.cpp`, standalone, synthetic, no model) runs one
-  `mul_mat_id` at our own shapes — k=4096, m=2048, 6 of 32 experts, 1 token:
-
-  | type | MB | µs | GB/s |
-  |---|---|---|---|
-  | f32 | 201.33 | 365.6 | **550.7** |
-  | f16 | 100.66 | 375.8 | 267.9 |
-  | q8_0 | 53.48 | 201.3 | 265.7 |
-  | q4_0 | 28.31 | **167.2** | 169.3 |
-  | mxfp4 | 26.74 | 222.8 | 120.0 |
-
-  **f32 reaches 550 GB/s on this gather**, so the access pattern and the memory
-  system are not the limit. Now read the *time* column: mxfp4 moves **7.5x less
-  data than f32 and still takes 61% as long**. The quantized kernels are not
-  bandwidth-bound at all — they are bound by unpacking. A 4-bit format streaming
-  at 550 GB/s would finish in **48 µs against mxfp4's 223: 4.6x of headroom**,
-  none of it addressable by alignment or coalescing alone.
-
-  So the design earlier sketched around load alignment was aiming at the wrong
-  term. What matters is cost per weight unpacked: a LUT in LDS rather than
-  arithmetic extraction, packed-fp16 accumulation (`V_PK_FMA_F16`, 2x rate on
-  Vega), and `V_DOT4_I32_I8` as the fallback. f16 being *slower than f32* in
-  wall time says kernel quality varies even where there is nothing to unpack.
-
-- **`shaders` (context)** — for decode as well as prefill. **The format
-  is worth ~1.3-1.5x of the block and no more**, measured on the branch
-  `moe-q40-experiment` with two stubs differing only in expert type (built by
-  `llama-quantize --allow-requantize --tensor-type ...exps=<type>` over a *quantized*
-  base ftype — the override is ignored under BF16 or COPY, `llama-quant.cpp:688`):
-
-  | type | n_tok | µs/chunk | GB/s |
-  |---|---|---|---|
-  | mxfp4 | 1 | 1043 | 76.9 |
-  | q4_0 | 1 | **871** | **97.5** |
-  | mxfp4 | 8 | 3880 | 156.8 |
-  | q4_0 | 8 | **2704** | **238.2** |
-
-  So a better-served format buys 16% of decode and 30% of prefill, and even q4_0
-  reaches only ~10-23% of the die's ~1024 GB/s. **`test-backend-ops` predicted a
-  20x gap** between these types (237 vs 11 GB/s) **at its own shapes; ours shows
-  1.3-1.5x** — the strongest argument yet that kernel work must be benchmarked at
-  our shapes and nowhere else. Accuracy of the requantisation is not yet
-  measured. The GPU
-  timestamps put `mul_mat_id` at **~110 GB/s with 6 experts live** and ~210 GB/s
-  with 44, against the die's ~1024: occupancy-limited at decode shapes,
-  bandwidth-limited at prefill ones, and far from either ceiling. Same fit is
-  88% bandwidth at prefill. 212 GB/s
-  is ~21% of the die's ~1024, and `test-backend-ops perf -o MUL_MAT_ID` on this
-  device reaches 237-670 GB/s at batch 1 for f32/q4_0/q4_K, so 2-3x looks
-  reachable. Note those kernels swing **30x with shape** (q6_K: 10 GB/s at
-  m=768, 306 at m=1792) and MXFP4 measures 11.4 GB/s at the shape tested there
-  against our in-situ 212 — so any kernel work must be benchmarked at *our*
-  shapes, with synthetic weights, and validated by `gate.py` on a real
-  checkpoint because synthetic data never triggers the SwiGLU clamp.
+  static placement look wrong.
+- **`wire`** — in-process or a separate process over a socket; informed now by
+  a measured per-call cost.
 
 ## Links
 
