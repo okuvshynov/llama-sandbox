@@ -28,12 +28,14 @@
 #include "ggml-alloc.h"
 #include "ggml-backend.h"
 
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <random>
 #include <string>
+#include <thread>
 #include <vector>
 
 struct probe_args {
@@ -44,6 +46,26 @@ struct probe_args {
     int64_t n_used = 6;
     int64_t n_tokens = 1;
     int     reps = 20;
+    int     split = 1;               // spread n_used experts over this many devices
+};
+
+// Spin barrier for the split path: the waits are tens of microseconds, and a
+// condition variable's wake latency would be a measurable part of what this
+// probe measures.
+struct probe_barrier {
+    std::atomic<int> count{0};
+    std::atomic<int> gen{0};
+    int n;
+    explicit probe_barrier(int n_) : n(n_) {}
+    void arrive() {
+        const int g = gen.load();
+        if (count.fetch_add(1) + 1 == n) {
+            count.store(0);
+            gen.fetch_add(1);
+        } else {
+            while (gen.load() == g) std::this_thread::yield();
+        }
+    }
 };
 
 static ggml_type type_from_name(const char * s) {
@@ -64,6 +86,123 @@ static std::vector<std::string> split_commas(const std::string & s) {
         a = b + 1;
     }
     return out;
+}
+
+// One device's share of a split run: its own context, weights, graph.
+struct dev_graph {
+    ggml_context *        ctx = nullptr;
+    ggml_backend_buffer_t buf = nullptr;
+    ggml_gallocr_t        galloc = nullptr;
+    ggml_cgraph *         gf = nullptr;
+    ggml_backend_t        backend = nullptr;
+
+    void free() {
+        if (galloc) ggml_gallocr_free(galloc);
+        if (buf)    ggml_backend_buffer_free(buf);
+        if (ctx)    ggml_free(ctx);
+        *this = dev_graph{};
+    }
+};
+
+static bool build_dev_graph(ggml_backend_t backend, const probe_args & A, ggml_type type,
+                            int64_t n_used_d, dev_graph & D) {
+    const size_t overhead = 8 * ggml_tensor_overhead() + ggml_graph_overhead() + (1 << 20);
+    ggml_init_params ip = { overhead, nullptr, true };
+    D.ctx = ggml_init(ip);
+    D.backend = backend;
+    if (!D.ctx) return false;
+
+    ggml_tensor * as  = ggml_new_tensor_3d(D.ctx, type, A.k, A.m, A.n_expert);
+    ggml_tensor * b   = ggml_new_tensor_3d(D.ctx, GGML_TYPE_F32, A.k, n_used_d, A.n_tokens);
+    ggml_tensor * ids = ggml_new_tensor_2d(D.ctx, GGML_TYPE_I32, n_used_d, A.n_tokens);
+    ggml_tensor * dst = ggml_mul_mat_id(D.ctx, as, b, ids);
+    D.gf = ggml_new_graph(D.ctx);
+    ggml_build_forward_expand(D.gf, dst);
+
+    ggml_backend_buffer_type_t buft = ggml_backend_get_default_buffer_type(backend);
+    D.buf = ggml_backend_alloc_ctx_tensors_from_buft(D.ctx, buft);
+    if (!D.buf) { D.free(); return false; }
+
+    std::mt19937 rng(1234);
+    std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+    std::vector<float> src(A.k * A.m);
+    for (auto & v : src) v = dist(rng);
+    std::vector<uint8_t> row(ggml_nbytes(as) / A.n_expert);
+    if (type == GGML_TYPE_F32) memcpy(row.data(), src.data(), row.size());
+    else ggml_quantize_chunk(type, src.data(), row.data(), 0, A.m, A.k, nullptr);
+    for (int64_t e = 0; e < A.n_expert; e++) {
+        ggml_backend_tensor_set(as, row.data(), e * row.size(), row.size());
+    }
+    std::vector<float> bv(A.k * n_used_d * A.n_tokens);
+    for (auto & v : bv) v = dist(rng);
+    ggml_backend_tensor_set(b, bv.data(), 0, bv.size() * sizeof(float));
+    std::vector<int32_t> iv(n_used_d * A.n_tokens);
+    for (size_t i = 0; i < iv.size(); i++) iv[i] = (int32_t) (i % A.n_expert);
+    ggml_backend_tensor_set(ids, iv.data(), 0, iv.size() * sizeof(int32_t));
+
+    D.galloc = ggml_gallocr_new(buft);
+    if (!ggml_gallocr_alloc_graph(D.galloc, D.gf)) { D.free(); return false; }
+    return true;
+}
+
+// The split question: the same n_used experts' worth of work, spread over N
+// devices submitted concurrently, with a barrier per rep because in the real
+// model layer L+1 cannot start until every die has finished layer L. Wall time
+// is therefore max-over-dies plus whatever part of the per-call cost is serial
+// on the host — which is exactly the unknown this exists to measure.
+static bool run_split(const std::vector<ggml_backend_t> & backends,
+                      const probe_args & A, ggml_type type) {
+    if (type != GGML_TYPE_F32 && type != GGML_TYPE_F16 && !ggml_is_quantized(type)) return false;
+    if (A.k % ggml_blck_size(type) != 0) return false;
+
+    const int n_dev = (int) backends.size();
+    std::vector<int64_t> share(n_dev, A.n_used / n_dev);
+    for (int64_t i = 0; i < A.n_used % n_dev; i++) share[i]++;   // e.g. 6 over 4 = 2,2,1,1
+
+    std::vector<dev_graph> D(n_dev);
+    for (int d = 0; d < n_dev; d++) {
+        if (share[d] == 0) continue;
+        if (!build_dev_graph(backends[d], A, type, share[d], D[d])) {
+            for (auto & g : D) g.free();
+            return false;
+        }
+    }
+
+    probe_barrier bar(n_dev + 1);
+    std::atomic<bool> stop{false};
+    const int total_reps = A.reps + 2;   // 2 warm-up reps, discarded by timing below
+
+    std::vector<std::thread> threads;
+    for (int d = 0; d < n_dev; d++) {
+        threads.emplace_back([&, d]() {
+            for (int r = 0; r < total_reps && !stop.load(); r++) {
+                bar.arrive();
+                if (D[d].gf) {
+                    ggml_backend_graph_compute(D[d].backend, D[d].gf);
+                    ggml_backend_synchronize(D[d].backend);
+                }
+                bar.arrive();
+            }
+        });
+    }
+
+    double us = 0.0;
+    for (int r = 0; r < total_reps; r++) {
+        const auto t0 = std::chrono::steady_clock::now();
+        bar.arrive();   // release
+        bar.arrive();   // all devices done
+        const double dt = std::chrono::duration<double, std::micro>(
+                              std::chrono::steady_clock::now() - t0).count();
+        if (r >= 2) us += dt;
+    }
+    us /= A.reps;
+    for (auto & t : threads) t.join();
+    for (auto & g : D) g.free();
+
+    const double bytes = (double) A.n_used * A.m * ggml_row_size(type, A.k);
+    printf("  %-7s split=%d %8.2f MB %10.1f us %9.1f GB/s\n",
+           ggml_type_name(type), n_dev, bytes / 1e6, us, bytes / (us * 1e-6) / 1e9);
+    return true;
 }
 
 static bool run_one(ggml_backend_t backend, ggml_backend_buffer_type_t buft,
@@ -168,10 +307,37 @@ int main(int argc, char ** argv) {
         else if (a == "--used")   A.n_used   = atoll(next());
         else if (a == "--tokens") A.n_tokens = atoll(next());
         else if (a == "--reps")   A.reps     = atoi(next());
+        else if (a == "--split")  A.split    = atoi(next());
         else { fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
     }
 
     ggml_backend_load_all();
+
+    if (A.split > 1) {
+        // First `split` GPU devices, in registry order. Each runs its share of
+        // the same total work, concurrently.
+        std::vector<ggml_backend_t> backends;
+        for (size_t i = 0; i < ggml_backend_dev_count() && (int) backends.size() < A.split; i++) {
+            ggml_backend_dev_t d = ggml_backend_dev_get(i);
+            if (ggml_backend_dev_type(d) != GGML_BACKEND_DEVICE_TYPE_GPU) continue;
+            ggml_backend_t b = ggml_backend_dev_init(d, nullptr);
+            if (b) backends.push_back(b);
+        }
+        if ((int) backends.size() < A.split) {
+            fprintf(stderr, "only %zu GPU device(s) available, need %d\n", backends.size(), A.split);
+            return 2;
+        }
+        printf("split over %d devices: mul_mat_id [k=%lld, m=%lld], %lld experts total, "
+               "%lld token(s), %d reps\n", A.split, (long long) A.k, (long long) A.m,
+               (long long) A.n_used, (long long) A.n_tokens, A.reps);
+        for (const std::string & t : split_commas(A.types)) {
+            const ggml_type ty = type_from_name(t.c_str());
+            if (ty == GGML_TYPE_COUNT) { printf("  %-7s unknown type\n", t.c_str()); continue; }
+            if (!run_split(backends, A, ty)) printf("  %-7s unsupported here\n", t.c_str());
+        }
+        for (ggml_backend_t b : backends) ggml_backend_free(b);
+        return 0;
+    }
 
     ggml_backend_t backend = nullptr;
     for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
