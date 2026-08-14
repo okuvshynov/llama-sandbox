@@ -1,0 +1,49 @@
+# Running a Mixture-of-Experts block on four Vega dies — a tutorial
+
+This is a guided tour of `moe-serv` for someone with a CS or math degree and
+little systems experience. By the end you should understand what this project
+computes, on what hardware, through which API, and why each optimization was
+tried — including the ones that failed, which are at least half the lesson.
+
+It is written against one concrete system: one specific model
+(DeepSeek-V4-Flash), one specific machine (a 2019 Mac Pro with four AMD Vega
+II GPU dies, running Windows), one specific host program (llama.cpp).
+Concreteness is the point — every claim here was measured on this system, and
+the numbers are what make the abstract ideas stick.
+
+## Reading order
+
+1. [What a Mixture-of-Experts model is](01-moe.md) — and why the expert
+   weights dominate everything: 137 of 150 GiB, and most of every
+   token's memory traffic.
+2. [The hardware](02-hardware.md) — the four GPU dies, and the vocabulary
+   you need to reason about them: wave, CU, LDS, occupancy, HBM.
+3. [The model and its number format](03-model.md) — DeepSeek-V4-Flash's
+   shapes, and MXFP4, the 4.25-bits-per-weight format the experts are
+   stored in.
+4. [Vulkan, and how a program talks to a GPU](04-vulkan.md) — buffers,
+   memory types, command buffers, queues, fences, and where the
+   microseconds go.
+5. [How the backend plugs into llama.cpp](05-backend.md) — a DLL that an
+   *unmodified* llama.cpp loads, hands 137 GiB of weights to, and asks to
+   compute exactly one thing.
+6. [The optimization campaign](06-optimization.md) — everything tried, with
+   verdicts: what worked, what didn't, and the measurement discipline that
+   separated the two.
+
+## Conventions
+
+Code links point at the exact commit this tutorial was written against
+(`9ef58c9`), so line numbers stay true even as the code moves on:
+
+> [`src/moe_tp.h:711`](https://github.com/okuvshynov/llama-sandbox/blob/9ef58c9d825c58987d36aa70285a6224d9ed8c8b/moe-serv/src/moe_tp.h#L711)
+
+Numbers are quoted with their instrument. "On the stub" means the 4-layer,
+15.78 GiB cut of the model that loads in seconds and measures decode to
+±0.3%; "on the full model" means all 150.75 GiB. Why both exist is part of
+the story ([06](06-optimization.md#measure-honestly)).
+
+Deeper reference material, written for people already working on the project,
+lives one directory up: [`docs/MECHANISM.md`](../docs/MECHANISM.md),
+[`docs/MEASUREMENTS.md`](../docs/MEASUREMENTS.md),
+[`docs/KERNEL.md`](../docs/KERNEL.md), and [`PLAN.md`](../PLAN.md).
