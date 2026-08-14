@@ -747,7 +747,17 @@ static inline bool moe_tp_compute(moe_tp & T, ggml_cgraph * gf, const char * tag
     std::chrono::steady_clock::time_point tt3;
     for (size_t d = 0; d < T.dies.size(); d++) {
         moe_tp_die & D = T.dies[d];
-        MOE_TP_CHECK(vkWaitForFences(D.dev, 1, &D.fence, VK_TRUE, UINT64_MAX));
+        // Poll instead of vkWaitForFences: the blocking wait pays a kernel
+        // wake-up per fence, and vkGetFenceStatus on this driver is a
+        // user-mode read. The CPU is idle here anyway — the trunk is blocked
+        // on this block's output.
+        VkResult f_;
+        while ((f_ = vkGetFenceStatus(D.dev, D.fence)) == VK_NOT_READY) {
+#if defined(_WIN32)
+            YieldProcessor();
+#endif
+        }
+        MOE_TP_CHECK(f_);
         if (d == 0) tt3 = std::chrono::steady_clock::now();
         const float * yp = (const float *) ((const char *) D.io_ptr + T.off_y);
         if (d == 0) {

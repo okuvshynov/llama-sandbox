@@ -170,6 +170,24 @@ standing lessons: the first Vulkan call costs 306 ms of pipeline compile, so
 quote medians; and a phase timer bills work to where it runs, not to what
 caused it. Superseded by `decode-kernel` / `tp-integrate`.
 
+### `border` — Done (this commit)
+
+Two experiments on the TP call's ~460 µs border, one survivor, every verdict
+from interleaved same-day A/Bs — cross-day was disqualified first (stock stub
+decode moved 28.4 -> 30.8 t/s between days, and even the unchanged DLL's phase
+profile moved 429 -> 463). **Threaded per-die submit: refuted.** +0.2% against
+0.4% spread, phase totals equal: `vkQueueSubmit` costs ~35 µs *serialized in
+the driver* whichever thread issues it, so four workers only relocated the
+cost and added their wake latency. **Fence polling: kept** (the 11-line
+survivor): replacing blocking `vkWaitForFences` with `vkGetFenceStatus` spins
+is ~+0.5% on the stub — poll ahead in 6 of 6 pairs *across both pair orders*,
+which matters because in both first A/Bs the second-in-pair had come out
+ahead and a warming artifact would have produced the same table once. Logits
+byte-identical throughout. What remains is structural: ~140 µs serialized
+submit floor plus ~200 µs launch-to-completion latency per call, reachable
+only with fewer submissions per token — and the scheduler hands us one layer
+at a time, so that door is closed from inside the DLL.
+
 ### `breadth` — Planned, after that
 
 Run GLM-5.2 (`glm-dsa`, UD-Q6_K, 583 GiB). The invariants name two models and
@@ -246,8 +264,6 @@ batching / fence polling transfer to hardware where the trunk is fast.
 - **`prefill`** — parked. Known: chunking to 8 tokens re-reads each expert's
   weights once per chunk (~34x at pp512); lyrae's gather-scatter (expert-major,
   8.7x at batch 2048) is the structural fix to evaluate.
-- **`border`** — submit batching and fence polling; the per-call 439 µs is
-  ~3x its GPU arithmetic, capped at a few percent end-to-end here.
 - **`residency`** — parked, assessed 2026-08-13. Full residency is physically
   impossible: 43 layers x 816 MiB = 34.3 GiB per die against 32 GB of HBM, so
   9 layers on the CPU is a wall, not a budget choice. What exists, none of it

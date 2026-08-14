@@ -50,6 +50,12 @@ import os
 import subprocess
 import sys
 
+# llama.cpp's KLD table contains a Δ; when stdout is redirected on Windows it
+# is cp1252 and print() dies mid-report. Replace rather than crash — the gate
+# must never fail for a reason that is not the comparison.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(errors="replace")
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 # Printed unconditionally by moeserv_backend_graph_compute. Unlike llama.cpp's
