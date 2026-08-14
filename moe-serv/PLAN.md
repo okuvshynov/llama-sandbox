@@ -151,7 +151,7 @@ lessons: quote medians (first Vulkan call = 306 ms of pipeline compile), and a
 phase timer bills work to where it runs, not to what caused it. Superseded by
 `decode-kernel` / `tp-integrate`.
 
-### `decode-kernel` — Done (E1-E9, ledger with postmortems in `KERNEL.md`)
+### `decode-kernel` — Done (E1-E9, ledger with postmortems in `docs/KERNEL.md`)
 
 f32 is bandwidth-bound at ~701 GB/s; stock quantized kernels are
 instruction-bound. The custom 2-pass mxfp4 kernel (`shaders/`) runs the
@@ -221,8 +221,11 @@ is green, and expect the load-to-load problem to be worse there, not better.
 
 ## Links
 
-- `README.md` — build, run, how the mechanism works, the numbers, and the things
-  that are not obvious about writing an out-of-tree ggml backend.
+- `README.md` — what this is, build, run, and how to reproduce the current
+  state.
+- `docs/MECHANISM.md` — how llama.cpp is persuaded, and the out-of-tree
+  backend traps. `docs/MEASUREMENTS.md` — every number with its instrument
+  and noise floor. `docs/KERNEL.md` — the kernel experiment ledger.
 - `gate.py` / `bench.py` / `make_stub.py` — each carries its reasoning in its
   header, including the measurement discipline the benchmarks depend on.
 - `../nano-glm/OPTIMIZATION.md` — where the dies' dispatch-bound behaviour, the
