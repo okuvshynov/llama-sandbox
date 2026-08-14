@@ -315,3 +315,25 @@ second definition of the graph, so it was deleted rather than carried. It is in
 `git show 9fe5558` if a per-op comparison is ever needed. What it established
 stands: the block we receive is exactly the expert half of `build_moe_ffn` and
 nothing else.
+
+**`decode-kernel` + `tp-integrate` done** (branch `moe-q40-experiment`). A
+custom 2-pass mxfp4 kernel (`shaders/`, experiments ledgered in `KERNEL.md`)
+runs the block's matmuls 1.5-1.9x faster than ggml's, and the block is computed
+**tensor-parallel across all four dies** — each die holds a column slice of
+gate+up and the matching down k-rows for every expert, the host sums four
+partial vectors — behind `MOESERV_TP=1` (decode only; other shapes fall back).
+Gate on real weights: mean KLD 1.070e-4, 4096 splits, 0 fallbacks. On the full
+model, 34 of 43 layers fit the per-die budget (`MOESERV_TP_BUDGET_MB`, default
+28000) and tg32 resolves at 0.3-1.3% spread:
+
+| config | load 1 | load 2 | mean | vs stock |
+|---|---|---|---|---|
+| `stock` | 3.66 | 3.62 | 3.64 | — |
+| `ours-on` | 3.46 | 3.47 | 3.46 | -4.8% |
+| **`ours-tp`** | 3.89 | 3.94 | **3.92** | **+7.6%** |
+
+Per resident layer the block costs 439 µs against 1.38 ms on the CPU — 3.1x —
+and MoE falls from ~21% of decode time to ~11%. Two of those µs stories are
+worth stealing: map staging buffers once and keep them, and give any buffer the
+CPU *reads* `HOST_CACHED` memory — the plain VISIBLE|COHERENT type on AMD is
+write-combined and reads at ~150 MB/s, which cost 2 ms/call until measured.
