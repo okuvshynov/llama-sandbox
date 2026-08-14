@@ -248,8 +248,18 @@ batching / fence polling transfer to hardware where the trunk is fast.
   8.7x at batch 2048) is the structural fix to evaluate.
 - **`border`** — submit batching and fence polling; the per-call 439 µs is
   ~3x its GPU arithmetic, capped at a few percent end-to-end here.
-- **`residency`** — 9 of 43 layers miss the per-die budget and fall back;
-  worth revisiting only with a smaller format or more careful budgeting.
+- **`residency`** — parked, assessed 2026-08-13. Full residency is physically
+  impossible: 43 layers x 816 MiB = 34.3 GiB per die against 32 GB of HBM, so
+  9 layers on the CPU is a wall, not a budget choice. What exists, none of it
+  taken: raising `MOESERV_TP_BUDGET_MB` toward the die's true allocatable
+  ceiling (~31 GiB?) fits ~38 layers for ~+1.5% at zero code, unmeasured;
+  mixed CPU/die layers — dies take a column share, the CPU computes the rest
+  *between submit and fence-wait*, so the CPU slice overlaps the ~330 µs
+  border — pencil out to ~+3% end-to-end for genuinely fiddly code (the down
+  matrix needs a k-range slice of quantized data; 5-way host sum). The whole
+  9-layer prize is 12.4 ms of a 257 ms token, ≤ +5%, and it is the one
+  optimisation that does not transfer to a fast-trunk target, where border
+  work does.
 - **`wire`** — in-process or a separate process over a socket; informed now by
   a measured per-call cost.
 
