@@ -29,9 +29,10 @@ free block caps at ~1.12x under TP. That is this machine's balance, not the
 approach's: the trunk's weights are 13.7 GiB and would fit on one modern GPU,
 where they cost a fraction of the ~230 ms/token they cost on these cores. In
 that configuration the expert block is most of the time — and it currently runs
-at 439 µs/layer of which only ~113 µs is GPU arithmetic, so the border is still
-~3x the compute and that is the part worth having. See `decode-kernel` and
-`tp-integrate`.
+at ~440 µs/layer of which only ~113 µs is GPU arithmetic. The border is ~3x the
+compute and now measured structural — serialized submits plus launch latency —
+so the next real lever is fewer submissions per token, not cheaper ones. See
+`decode-kernel`, `tp-integrate`, `border`.
 
 ## Invariants
 
@@ -128,67 +129,58 @@ A capture/replay format, superseded by `gate` before it was finished. `git show
 
 ### `bench` — Done (`615d67c`)
 
-`bench.py`. Established the measurement discipline that everything after it
-relied on: **decode on the real model cannot resolve anything below ~10%**
-(7-9% load-to-load against 2-6% effects), so the stub is the instrument and only
-a quantity that transfers may be extrapolated. Prefill turned out to be the
-exception — see `dies`. (The `tp-integrate` run then measured 0.3-1.3%
-load-to-load on the same model, so the floor is not a constant of the machine;
-the rule stays — a run proves its own noise floor, and deltas below it are not
-reported.)
+`bench.py`, and the measurement discipline everything after it relies on: a
+run proves its own noise floor and deltas below it are not reported; the stub
+is the decode instrument (the real model's floor has ranged 0.3-9% by day);
+only a quantity that transfers may be extrapolated. Prefill is the exception —
+it measures to ~1% on the real model.
 
-### `dies` — Done (`f312726`, `11626d1`, `ebf83f6`, `57c5b85`, `b9e0cec`, `6689bdc`)
+### `dies` — Done (`f312726`..`6689bdc`)
 
-The expert block on four Vega II dies, with ggml's own kernels. Whole layers,
-packed in device order, mirrored into VRAM; the rest on the CPU. On
-DeepSeek-V4-Flash that is **9 layers per die, 36 of 43, 7 on the CPU**, exactly
-as the capacity arithmetic predicted before it met the real model.
-
-    pp512        stock 18.49    ours-off 18.02    ours-on 21.84
-    our compute  +21.1%         net vs stock +18.1%        (spreads <= 1.1%)
-
-Three findings that shape what comes next:
-
-- **The cliff.** `ggml_vk_use_mul_mat_vec_id` takes the vector path only at
-  <= 8 tokens (`ggml-vulkan.cpp:10607`). Unchunked, prefill *lost* 51%; issuing
-  the block 8 tokens at a time wins 21-35%. A graph decision, not a shader —
-  which is why `shaders` is now less urgent than it looked.
-- **Decode cannot be fixed by chunking.** Batch 1 is already on the fast path,
-  and a die is no quicker than 16 CPU cores for one token's experts (~1.45 ms
-  per layer either way). The block is also only ~20% of the bytes a decode step
-  reads, capping any decode win at 1.25x.
-- **Prefill measures well on the real model** (0.0-1.1% load-to-load), unlike
-  decode. The "stub is the instrument" rule is a decode rule.
+The block on four Vega II dies with ggml's kernels, whole layers mirrored into
+VRAM (9 per die, 36 of 43 on the real model). Prefill **+21.1%** (net +18.1%
+vs stock) once the block is issued in 8-token chunks —
+`ggml_vk_use_mul_mat_vec_id`'s vector path ends at 8 tokens and the general
+path loses half. Decode stayed flat; that story continues at `decode`.
 
 ### `decode` — Done (single read-back)
 
-The per-split profiler (`MOESERV_PROFILE=<prefix>`, `src/moe_prof.h`) showed
-the die winning the arithmetic (1018 vs 1420 µs/layer) and losing it back to
-six 88 µs read-backs; reading the terminals' common view-root once cut
-read-back 530 -> 149 µs and turned stub decode from flat to **+6.9%**. Two
-standing lessons: the first Vulkan call costs 306 ms of pipeline compile, so
-quote medians; and a phase timer bills work to where it runs, not to what
-caused it. Superseded by `decode-kernel` / `tp-integrate`.
+Six per-terminal read-backs cost 530 µs; reading their common view-root once
+cut that to 149 and turned stub decode from flat to **+6.9%**. Standing
+lessons: quote medians (first Vulkan call = 306 ms of pipeline compile), and a
+phase timer bills work to where it runs, not to what caused it. Superseded by
+`decode-kernel` / `tp-integrate`.
 
-### `border` — Done (this commit)
+### `decode-kernel` — Done (E1-E9, ledger with postmortems in `KERNEL.md`)
 
-Two experiments on the TP call's ~460 µs border, one survivor, every verdict
-from interleaved same-day A/Bs — cross-day was disqualified first (stock stub
-decode moved 28.4 -> 30.8 t/s between days, and even the unchanged DLL's phase
-profile moved 429 -> 463). **Threaded per-die submit: refuted.** +0.2% against
-0.4% spread, phase totals equal: `vkQueueSubmit` costs ~35 µs *serialized in
-the driver* whichever thread issues it, so four workers only relocated the
-cost and added their wake latency. **Fence polling: kept** (the 11-line
-survivor): replacing blocking `vkWaitForFences` with `vkGetFenceStatus` spins
-is ~+0.5% on the stub — poll ahead in 6 of 6 pairs *across both pair orders*,
-which matters because in both first A/Bs the second-in-pair had come out
-ahead and a warming artifact would have produced the same table once. Logits
-byte-identical throughout. What remains is structural: ~140 µs serialized
-submit floor plus ~200 µs launch-to-completion latency per call, reachable
-only with fewer submissions per token — and the scheduler hands us one layer
-at a time, so that door is closed from inside the DLL.
+f32 is bandwidth-bound at ~701 GB/s; stock quantized kernels are
+instruction-bound. The custom 2-pass mxfp4 kernel (`shaders/`) runs the
+block's matmuls 1.5-1.9x faster than ggml's, and **TP-within-expert** beats
+expert-parallel — perfect balance, no cross-die reduction, host sums four
+partials. Full block in the probe: 113 µs/die. q4_0 requantisation accuracy
+unmeasured — parked with the branch question.
 
-### `breadth` — Planned, after that
+### `tp-integrate` — Done (`dbfed68`, `0ae4a45`, `3969696`)
+
+The TP engine in the DLL behind `MOESERV_TP=1` (`src/moe_tp.h`): lazy
+per-layer repack, pre-recorded command buffers, host sum, CPU fallback for
+anything unparseable or over budget. Full model: **3.92 t/s, +7.6% vs stock,
++13.0% vs the ggml path** — 34 of 43 layers resident, the block 3.1x faster
+where resident, MoE down from ~21% to ~11% of decode time. Gate on real
+weights: 1.070e-4. The hard-won specifics (HOST_CACHED for any CPU-read
+buffer, the `-b` pin that makes `--ubatch 1` real, phase-timer numbers) are
+in the commit messages.
+
+### `border` — Done (`36be37a`)
+
+Threaded per-die submit refuted — `vkQueueSubmit` serializes in the driver at
+~35 µs whichever thread issues it. Fence polling kept: ~+0.5% on the stub,
+poll ahead in 6/6 interleaved pairs across both pair orders. The remaining
+border is structural (serialized submit floor + launch latency) and shrinks
+only with fewer submissions per token, which the scheduler's
+one-layer-at-a-time contract forbids. Postmortem in the commit message.
+
+### `breadth` — Planned, next up
 
 Run GLM-5.2 (`glm-dsa`, UD-Q6_K, 583 GiB). The invariants name two models and
 only one has ever been run, so every generalisation this project has made is
@@ -215,67 +207,15 @@ Order: build a stub, get `gate.py --tol 0` green on the CPU path, then the
 Vulkan path, then `bench.py` prefill. Only load the 583 GiB model once the stub
 is green, and expect the load-to-load problem to be worse there, not better.
 
-### `decode-kernel` — Done (branch `moe-q40-experiment`, ledger in `KERNEL.md`)
-
-Nine kernel experiments, one commit each, postmortems in `KERNEL.md`. What
-survived: **f32 is bandwidth-bound at ~701 GB/s** (the practical ceiling for
-this gather; lyrae's dense Metal kernels on the same dies: 720-791) and every
-stock quantized kernel is **instruction-bound** at 16-23 lane-cycles/weight; a
-custom **2-pass K-tiled mxfp4 kernel** (two-plane repack, 16-float LDS LUT, 4
-cols/thread — `shaders/mxfp4_pass1.comp`) runs the block's matmuls at
-95.4/86.5 µs against ggml's 163.8; and **TP-within-expert** — each die holds a
-column slice of gate+up and the matching down k-rows for *all* experts — beats
-expert-parallel: perfect balance, no cross-die reduction, the host sums four
-partial vectors. Full block on 4 dies in the probe: 113 µs/die, max abs 4.3e-4
-against a ggml f32 block reference (`--tp` in `src/moe_probe.cpp`). The q4_0
-requantisation accuracy is still unmeasured — parked with the branch question.
-
-### `tp-integrate` — Done (`dbfed68`, `0ae4a45`, this commit)
-
-The TP engine lives in the DLL behind `MOESERV_TP=1` (`src/moe_tp.h`): its own
-VkInstance beside the host's, lazy per-layer repack (~816 MB/die/layer, paid in
-warm-up), one pre-recorded command buffer per (layer, die), host sum into the
-MUL node. Anything unparseable or over budget falls back to the CPU delegate,
-per the invariant. Gate on real weights: mean KLD 1.070e-4 (tol 5e-4), 4096
-splits, 0 fallbacks — via `gate.py --tp --ubatch 1`, where pinning `-b` to the
-ctx is load-bearing (`n_seq_max = 4` otherwise hands every call 4 tokens and
-the gate passes while testing nothing). Two border fixes found by phase
-timers, worth ~2 ms/call together: persistent mapping, and **HOST_CACHED
-memory for any buffer the CPU reads** — plain VISIBLE|COHERENT is
-write-combined on AMD, ~150 MB/s to read (lyrae's storageModeShared, in
-Vulkan spelling).
-
-**Full model** (tg32, 2 loads/config, spreads 0.3-1.3%):
-
-    stock 3.64    ours-off 3.48    ours-on 3.46    ours-tp 3.92
-    TP vs ours-on +13.0%    TP vs stock +7.6%    repack forfeit -4.4%
-
-34 of 43 layers resident under the 28000 MB/die budget, 9 on the CPU delegate
-(5474/1449 splits — exactly the capacity arithmetic). Per resident layer:
-**439 µs** (stage 4.5, submit 125.1, wait-first 225.7 — containing ~113 µs of
-GPU — wait-rest+sum 83.9) against **1.38 ms** on the CPU delegate: the block
-is 3.1x faster where resident, and MoE falls from ~21% of decode time to
-~11%. Headroom left on this host is bounded — perfect residency ≈ +3%, MoE
-free ≈ +12% — but the border is still ~3x the GPU arithmetic, and submit
-batching / fence polling transfer to hardware where the trunk is fast.
-
 ### Later — one line each
 
 - **`prefill`** — parked. Known: chunking to 8 tokens re-reads each expert's
   weights once per chunk (~34x at pp512); lyrae's gather-scatter (expert-major,
   8.7x at batch 2048) is the structural fix to evaluate.
-- **`residency`** — parked, assessed 2026-08-13. Full residency is physically
-  impossible: 43 layers x 816 MiB = 34.3 GiB per die against 32 GB of HBM, so
-  9 layers on the CPU is a wall, not a budget choice. What exists, none of it
-  taken: raising `MOESERV_TP_BUDGET_MB` toward the die's true allocatable
-  ceiling (~31 GiB?) fits ~38 layers for ~+1.5% at zero code, unmeasured;
-  mixed CPU/die layers — dies take a column share, the CPU computes the rest
-  *between submit and fence-wait*, so the CPU slice overlaps the ~330 µs
-  border — pencil out to ~+3% end-to-end for genuinely fiddly code (the down
-  matrix needs a k-range slice of quantized data; 5-way host sum). The whole
-  9-layer prize is 12.4 ms of a 257 ms token, ≤ +5%, and it is the one
-  optimisation that does not transfer to a fast-trunk target, where border
-  work does.
+- **`residency`** — parked (`032d4c5`): full TP residency is a capacity wall
+  (43 x 816 MiB = 34.3 GiB per die against 32 GB of HBM). Budget raise ~+1.5%
+  and mixed CPU/die layers ~+3% assessed and not taken — the whole prize is
+  ≤ +5% and it is the one optimisation that does not transfer.
 - **`wire`** — in-process or a separate process over a socket; informed now by
   a measured per-call cost.
 
