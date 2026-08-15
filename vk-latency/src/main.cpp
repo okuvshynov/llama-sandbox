@@ -53,6 +53,8 @@ struct Die {
     VkPipeline       pipe = VK_NULL_HANDLE;
     VkCommandBuffer  cb[N_CB] = {};
     VkFence          fence = VK_NULL_HANDLE;
+    bool             has_calib = false;   // VK_EXT_calibrated_timestamps enabled
+    float            ts_period_ns = 0.0f; // limits.timestampPeriod
 };
 
 static std::string exe_dir() {
@@ -282,9 +284,14 @@ static VkDescriptorSet alloc_set(Die &d, VkDescriptorPool pool, VkDescriptorSetL
 // Record one variant. Copies, barrier masks and dispatch order are exactly
 // moe_tp_setup_layer's; only the grids are cut to (1,1,1) — the border is
 // under test, not the arithmetic.
-static void record_tp(TpDie &t, VkCommandBuffer cb, bool copies, bool four, bool big) {
+static void record_tp(TpDie &t, VkCommandBuffer cb, bool copies, bool four, bool big,
+                      VkQueryPool qp = VK_NULL_HANDLE) {
     VkCommandBufferBeginInfo bi = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
     CHECK(vkBeginCommandBuffer(cb, &bi));
+    if (qp) {
+        vkCmdResetQueryPool(cb, qp, 0, 4);
+        vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, qp, 0);
+    }
     VkMemoryBarrier mb = { VK_STRUCTURE_TYPE_MEMORY_BARRIER };
     mb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
     mb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT;
@@ -306,6 +313,7 @@ static void record_tp(TpDie &t, VkCommandBuffer cb, bool copies, bool four, bool
         vkCmdCopyBuffer(cb, t.io.buf, t.ids.buf, 1, &ci);
         vkCmdCopyBuffer(cb, t.io.buf, t.wts.buf, 1, &cw);
         barrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+        if (qp) vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, qp, 1);
     }
     disp(t.p5, big ? t.gu_b : t.gu_s);
     if (four) {
@@ -318,9 +326,11 @@ static void record_tp(TpDie &t, VkCommandBuffer cb, bool copies, bool four, bool
     }
     if (copies) {
         barrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+        if (qp) vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, qp, 2);
         VkBufferCopy cy = { 0, TP_OFF_Y, TP_SLOTS * TP_MOUT * 4 };
         vkCmdCopyBuffer(cb, t.y.buf, t.io.buf, 1, &cy);
     }
+    if (qp) vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, qp, 3);
     CHECK(vkEndCommandBuffer(cb));
 }
 
@@ -476,9 +486,23 @@ int main() {
         qi.queueFamilyIndex = d.qfam;
         qi.queueCount = 1;
         qi.pQueuePriorities = &prio;
+        // Enable calibrated timestamps when the driver has them (this
+        // machine's 2.0.204 driver does). Enabling an extension changes no
+        // timing by itself; the null scenarios above stay comparable.
+        const char *want_ext = "VK_EXT_calibrated_timestamps";
+        uint32_t n_ext = 0;
+        vkEnumerateDeviceExtensionProperties(p, nullptr, &n_ext, nullptr);
+        std::vector<VkExtensionProperties> exts(n_ext);
+        vkEnumerateDeviceExtensionProperties(p, nullptr, &n_ext, exts.data());
+        for (const VkExtensionProperties &e : exts) {
+            if (strcmp(e.extensionName, want_ext) == 0) { d.has_calib = true; break; }
+        }
+        d.ts_period_ns = pp.limits.timestampPeriod;
         VkDeviceCreateInfo di = { VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO };
         di.queueCreateInfoCount = 1;
         di.pQueueCreateInfos = &qi;
+        di.enabledExtensionCount = d.has_calib ? 1 : 0;
+        di.ppEnabledExtensionNames = &want_ext;
         CHECK(vkCreateDevice(p, &di, nullptr, &d.dev));
         vkGetDeviceQueue(d.dev, d.qfam, 0, &d.queue);
 
@@ -794,6 +818,145 @@ int main() {
         }
         spin_stop = true;
         for (std::thread &th : spinners) th.join();
+
+        // ===== calibrated timestamps ======================================
+        // VK_EXT_calibrated_timestamps reads (GPU tick, QPC) as one pair, so
+        // GPU timestamps convert onto the host clock and submit->fence splits
+        // into: launch (submit returned -> GPU cb start), GPU execution
+        // (interior timestamps: copy-in / dispatches / copy-out), and signal
+        // (GPU done -> host sees the fence). State: ballast resident,
+        // spinners stopped.
+        bool all_calib = true;
+        for (Die &d : dies) all_calib = all_calib && d.has_calib;
+        if (!all_calib) {
+            printf("\ncalibrated timestamps: VK_EXT_calibrated_timestamps missing; section skipped\n");
+        } else {
+            LARGE_INTEGER qf;
+            QueryPerformanceFrequency(&qf);
+            const double qpc_to_us = 1e6 / (double)qf.QuadPart;
+            auto qpc_now_us = [qpc_to_us]() {
+                LARGE_INTEGER c;
+                QueryPerformanceCounter(&c);
+                return (double)c.QuadPart * qpc_to_us;
+            };
+
+            struct CalDie {
+                PFN_vkGetCalibratedTimestampsEXT pfn = nullptr;
+                VkQueryPool qp = VK_NULL_HANDLE;
+                VkCommandBuffer cb_null = VK_NULL_HANDLE, cb_tp = VK_NULL_HANDLE;
+            };
+            std::vector<CalDie> cal(tp.size());
+            for (size_t i = 0; i < tp.size(); i++) {
+                Die &d = dies[i];
+                cal[i].pfn = (PFN_vkGetCalibratedTimestampsEXT)
+                    vkGetDeviceProcAddr(d.dev, "vkGetCalibratedTimestampsEXT");
+                VkQueryPoolCreateInfo qpi = { VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO };
+                qpi.queryType = VK_QUERY_TYPE_TIMESTAMP;
+                qpi.queryCount = 4;
+                CHECK(vkCreateQueryPool(d.dev, &qpi, nullptr, &cal[i].qp));
+                VkCommandBufferAllocateInfo cai = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
+                cai.commandPool = d.pool;
+                cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+                cai.commandBufferCount = 2;
+                VkCommandBuffer tcbs[2];
+                CHECK(vkAllocateCommandBuffers(d.dev, &cai, tcbs));
+                cal[i].cb_null = tcbs[0];
+                cal[i].cb_tp = tcbs[1];
+                // null 1-dispatch with q0..q3 (q1/q2 written back to back so
+                // every query is valid; only q3-q0 is meaningful here)
+                VkCommandBufferBeginInfo bi = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+                CHECK(vkBeginCommandBuffer(cal[i].cb_null, &bi));
+                vkCmdResetQueryPool(cal[i].cb_null, cal[i].qp, 0, 4);
+                vkCmdWriteTimestamp(cal[i].cb_null, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, cal[i].qp, 0);
+                vkCmdWriteTimestamp(cal[i].cb_null, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, cal[i].qp, 1);
+                vkCmdBindPipeline(cal[i].cb_null, VK_PIPELINE_BIND_POINT_COMPUTE, d.pipe);
+                vkCmdDispatch(cal[i].cb_null, 1, 1, 1);
+                vkCmdWriteTimestamp(cal[i].cb_null, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, cal[i].qp, 2);
+                vkCmdWriteTimestamp(cal[i].cb_null, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, cal[i].qp, 3);
+                CHECK(vkEndCommandBuffer(cal[i].cb_null));
+                record_tp(tp[i], cal[i].cb_tp, true, true, true, cal[i].qp);
+            }
+
+            struct CalRes {
+                std::vector<double> submit, launch, cin, disp, cout, gpu, signal, total, dev;
+            };
+            auto run_cal = [&](size_t i, VkCommandBuffer cb, int iters, CalRes &r) {
+                Die &d = dies[i];
+                const double tick_us = d.ts_period_ns / 1000.0;
+                VkSubmitInfo si = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
+                si.commandBufferCount = 1;
+                si.pCommandBuffers = &cb;
+                for (int it = 0; it < iters; it++) {
+                    VkCalibratedTimestampInfoEXT ci[2] = {
+                        { VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_EXT, nullptr, VK_TIME_DOMAIN_DEVICE_EXT },
+                        { VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_EXT, nullptr, VK_TIME_DOMAIN_QUERY_PERFORMANCE_COUNTER_EXT },
+                    };
+                    uint64_t base[2], max_dev;
+                    CHECK(cal[i].pfn(d.dev, 2, ci, base, &max_dev));
+                    auto gpu_us = [&](uint64_t g) {
+                        return (double)base[1] * qpc_to_us + (double)(int64_t)(g - base[0]) * tick_us;
+                    };
+                    CHECK(vkResetFences(d.dev, 1, &d.fence));
+                    double t0 = qpc_now_us();
+                    CHECK(vkQueueSubmit(d.queue, 1, &si, d.fence));
+                    double t1 = qpc_now_us();
+                    wait_fence(d, true);
+                    double t2 = qpc_now_us();
+                    uint64_t q[4];
+                    CHECK(vkGetQueryPoolResults(d.dev, cal[i].qp, 0, 4, sizeof(q), q, 8, VK_QUERY_RESULT_64_BIT));
+                    double h0 = gpu_us(q[0]), h1 = gpu_us(q[1]), h2 = gpu_us(q[2]), h3 = gpu_us(q[3]);
+                    r.submit.push_back(t1 - t0);
+                    r.launch.push_back(h0 - t1);
+                    r.cin.push_back(h1 - h0);
+                    r.disp.push_back(h2 - h1);
+                    r.cout.push_back(h3 - h2);
+                    r.gpu.push_back(h3 - h0);
+                    r.signal.push_back(t2 - h3);
+                    r.total.push_back(t2 - t0);
+                    r.dev.push_back((double)max_dev / 1000.0);
+                }
+            };
+
+            for (size_t i = 0; i < tp.size(); i++) {
+                CalRes w;
+                run_cal(i, cal[i].cb_null, WARM, w);
+                run_cal(i, cal[i].cb_tp, WARM, w);
+            }
+
+            printf("\ncalibrated timestamps, null 1-dispatch, per die (us, median [min .. p90]):\n");
+            printf("%-4s %-8s %-28s %-28s %-28s %-28s %-28s\n",
+                   "die", "variant", "submit", "launch", "gpu", "signal", "total");
+            std::vector<CalRes> res_tp(tp.size());
+            for (size_t i = 0; i < tp.size(); i++) {
+                CalRes r;
+                run_cal(i, cal[i].cb_null, ITERS, r);
+                run_cal(i, cal[i].cb_tp, ITERS, res_tp[i]);
+                std::vector<double> *cols[] = { &r.submit, &r.launch, &r.gpu, &r.signal, &r.total };
+                char dnum[8];
+                snprintf(dnum, sizeof(dnum), "%zu", i);
+                print_stat_row(dnum, "null-1d", cols, 5);
+            }
+            printf("\ncalibrated timestamps, TP +bigref, per die (us, median [min .. p90]):\n");
+            printf("%-4s %-8s %-28s %-28s %-28s %-28s %-28s %-28s\n",
+                   "die", "variant", "launch", "gpu copy-in", "gpu disp", "gpu copy-out", "signal", "total");
+            for (size_t i = 0; i < tp.size(); i++) {
+                CalRes &r = res_tp[i];
+                std::vector<double> *cols[] = { &r.launch, &r.cin, &r.disp, &r.cout, &r.signal, &r.total };
+                char dnum[8];
+                snprintf(dnum, sizeof(dnum), "%zu", i);
+                print_stat_row(dnum, "+bigref", cols, 6);
+            }
+            {
+                std::vector<double> all_dev;
+                for (CalRes &r : res_tp) all_dev.insert(all_dev.end(), r.dev.begin(), r.dev.end());
+                Stat sd = stat_of(all_dev);
+                printf("calibration max-deviation: median %.2f us, p90 %.2f us (bound on cross-clock error)\n",
+                       sd.med, sd.p90);
+            }
+            for (size_t i = 0; i < tp.size(); i++) {
+                vkDestroyQueryPool(dies[i].dev, cal[i].qp, nullptr);
+            }
+        }
 
         for (size_t i = 0; i < tp.size(); i++) {
             Die &d = dies[i];

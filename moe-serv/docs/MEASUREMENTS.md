@@ -152,6 +152,21 @@ lives inside moe-serv: `MOESERV_PROFILE` while varying `-t`, and audit what
 besides `vkQueueSubmit` sits inside the submit phase timer. Full tables:
 `vk-latency/README.md`, "The TP-shaped ladder".
 
+Same day, `VK_EXT_calibrated_timestamps` (40 ns tick, 0.04 µs median
+cross-clock deviation) decomposed the round trip. Null dispatch, per die,
+medians: submit 9.3 / **launch 34.5** (submit returned → GPU starts) / GPU
+1.6 / **signal 21** (GPU done → polled fence reads signaled) ≈ 67 total.
+TP-shaped cb: launch 28 / GPU 17.7 (copy-in 6.1, dispatches 8.5, copy-out
+3.0) / signal 22.5 ≈ 79. Two consequences: (a) the border floor is launch +
+signal, both driver-path costs that **overlap across dies** — the 87 µs
+4-die round pays them roughly once; (b) fence signaling costs ~21 µs *after*
+the result bytes are already readable in host-cached memory, so a sentinel
+word written by the cb after the result copy (fence kept only for cb reuse)
+would let the host read ~20 µs earlier per call — a named, unmeasured lever
+for `moe_tp_compute`. Oddity recorded: bigger cbs launch *faster* (28 vs
+34.5), so cb-start cost is not monotone in cb size. Tables:
+`vk-latency/README.md`, "Calibrated decomposition".
+
 ## The correctness ledger
 
 | path | comparison | result |

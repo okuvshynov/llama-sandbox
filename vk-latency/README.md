@@ -129,3 +129,37 @@ the ggml graph executing around each call, the submit thread being a ggml
 compute thread). Next probe accordingly lives inside moe-serv, not here —
 e.g. `MOESERV_PROFILE` while varying `-t`, and checking what besides
 `vkQueueSubmit` sits inside its submit phase timer.
+
+## Calibrated decomposition (2026-08-14)
+
+`VK_EXT_calibrated_timestamps` (present on this driver; 40 ns tick) reads
+a (GPU tick, QPC) pair, so GPU timestamps land on the host clock and the
+opaque submit→fence wait splits into named pieces. Calibration
+max-deviation: **0.04 µs median** — negligible against everything below.
+Per die, medians:
+
+| phase | null 1-dispatch | TP +bigref |
+|---|---|---|
+| submit (host, `vkQueueSubmit`) | 9.3 | ~9 |
+| **launch** (submit returned → GPU starts the cb) | **34.5** | **28** |
+| GPU execution | 1.6 | 17.7 (copy-in 6.1 / dispatches 8.5 / copy-out 3.0) |
+| **signal** (GPU done → polled fence reads signaled) | **21** | **22.5** |
+| total | ~67 | ~79 |
+
+Readings:
+
+- The mystery of the ~59 µs null round trip is solved: it is **35 µs of
+  launch latency plus 21 µs of fence-signal latency** around ~2 µs of
+  GPU time. Both are driver/queue path costs, not GPU work; they are the
+  structural floor on this driver, and they overlap across dies (the
+  87 µs 4-die round = one launch + one signal, roughly, not four).
+- **Fence signaling costs ~21 µs even when the CPU is spinning on
+  `vkGetFenceStatus`** — the copy-back data has long since arrived in
+  host-cached memory by then. That names a concrete lever for moe-serv:
+  don't wait on the fence to *read the result* — have the cb write a
+  sentinel word into the io buffer after the result copy and poll that
+  (or poll a `VkEvent` set after the copy), keeping the fence only for
+  cb-reuse bookkeeping. Potential ~20 µs per layer call.
+- The bigger cb *launches faster* than the null one (28 vs 34.5 µs),
+  echoing the `+desc`-faster-than-null oddity above; whatever the driver
+  does at cb start is not monotone in cb size.

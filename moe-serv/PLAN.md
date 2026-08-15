@@ -194,7 +194,14 @@ real 816 MiB references, 26 GiB ballast, 16 spinning threads) and acquitted
 all of it: full-shape 4-die round 212 µs, +113 µs GPU ≈ 325 vs our 440, submit
 ~11 µs vs our ~31. The residual is process-specific, not Vulkan-work-specific;
 next probe is inside moe-serv (`MOESERV_PROFILE` vs `-t`; audit what besides
-`vkQueueSubmit` the submit phase timer covers).
+`vkQueueSubmit` the submit phase timer covers). Calibrated timestamps
+(`VK_EXT_calibrated_timestamps`, 0.04 µs cross-clock error) then split the
+round trip: submit 9 / **launch 28-35** / GPU / **fence-signal 21** µs — the
+result bytes sit in host-cached memory ~21 µs before a polled fence admits it.
+Named lever for the TP path: have the cb write a sentinel word after the
+result copy and poll that to read results, fence only for cb-reuse
+(~20 µs/layer, unmeasured in moe-serv). Launch+signal overlap across dies, so
+the 4-die round pays them ~once, not 4x.
 
 ### `breadth` — Planned, next up
 
