@@ -36,6 +36,11 @@ compressor), 2 (ratio-4 lightning indexer) and 3 (learned router with
 `--layers 1` is enough for the expert block, which is identical in all of them
 and is the only part this project owns.
 
+For GLM-5.2 (glm-dsa, 79 layers) the map is simpler: layers 0-2 are dense
+(`leading_dense_block_count = 3`), 3-77 are homogeneous MoE, and 78 is a
+NextN/MTP layer the prefix drops — which is why `nextn_predict_layers` is
+edited below. `--layers 5` is the minimum with MoE in it twice (~20 GiB).
+
 Stdlib only, as everything else here is.
 """
 
@@ -267,6 +272,16 @@ def main():
             continue
         if k == b"%s.block_count" % arch.encode():
             v = args.layers
+        elif k == b"%s.nextn_predict_layers" % arch.encode() and v:
+            # NextN/MTP layers live at the TOP of the stack (glm-dsa's blk.78
+            # carries nextn.eh_proj/enorm/hnorm/shared_head_norm), so a prefix
+            # drops them. Keeping the old count would make llama.cpp treat the
+            # stub's last ordinary layer as a NextN layer — missing-tensor
+            # errors at best, a silently uncomputed layer at worst.
+            keep = max(0, args.layers - (n_layer - v))
+            if keep != v:
+                print("  nextn_predict_layers %d -> %d (prefix drops the nextn tail)" % (v, keep))
+                v = keep
         elif t == T_ARR and len(v[1]) == n_layer:
             print("  per-layer array cut to %d: %s" % (args.layers, k.decode()))
             v = (v[0], v[1][:args.layers])

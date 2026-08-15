@@ -55,6 +55,15 @@ python gate.py                                     # CPU path: bit-identical
 python gate.py --build-dir build-vk --tol 5e-4     # ggml-vulkan mirror path
 python gate.py --tp --ubatch 1 --tol 5e-4          # TP path, decode shape
 
+# second architecture (GLM-5.2, q6_K experts): stub is 3 dense + 2 MoE layers.
+# The mirror gate needs the allocation override — one expert tensor is
+# 2520 MiB against the driver's 2 GiB maxMemoryAllocationSize; without it the
+# mirror silently falls back and the gate is green for the wrong reason.
+python make_stub.py <GLM-...-00001-of-00014.gguf> D:\llms\stub\glm-L5.gguf --layers 5
+python gate.py --model D:\llms\stub\glm-L5.gguf    # CPU path: bit-identical
+$env:GGML_VK_FORCE_MAX_ALLOCATION_SIZE = "3221225472"
+python gate.py --model D:\llms\stub\glm-L5.gguf --build-dir build-vk --tol 5e-4
+
 # throughput (stub ~15 min; full model ~2 h)
 python bench.py --model D:\llms\stub\ds4-L4.gguf --tp
 python bench.py --tp                               # full model, decode

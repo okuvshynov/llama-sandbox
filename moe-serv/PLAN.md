@@ -214,32 +214,40 @@ residual; `vkResetFences` and `-t` both acquitted; gate bit-identical after
 the reset/submit timer split). The border is cache-priced, not fixed;
 surviving levers: fewer submissions per token, and the sentinel poll.
 
-### `breadth` — Planned, next up
+### `breadth` — In progress
 
 Run GLM-5.2 (`glm-dsa`, UD-Q6_K, 583 GiB). The invariants name two models and
-only one has ever been run, so every generalisation this project has made is
-currently untested: a second architecture is the cheapest way to find which of
-them were really deepseek4 in disguise.
+only one has ever been run; a second architecture is the cheapest way to find
+which generalisations were really deepseek4 in disguise.
 
-Specifically at risk, in rough order of likelihood:
+Done (2026-08-14), stub level — `D:\llms\stub\glm-L5.gguf`, 5 layers = 3 dense
++ 2 MoE, 18.28 GiB, built by `make_stub.py` after one real fix: glm-dsa's
+last layer is a NextN/MTP layer the prefix drops, so the tool now reduces
+`nextn_predict_layers` to match the kept prefix (printed, like every metadata
+edit). Of the four risks listed when this step was planned:
 
-- **The chunker's token-dimension inference.** It matches each tensor's extents
-  against the ids tensor's token count and refuses when two dimensions match.
-  GLM-5.2 has a different `n_expert_used` and `n_ff_exp`, so both the match and
-  the refusal need to be seen happening.
-- **`supports_op`'s claim set.** glm-dsa gates with sigmoid rather than
-  sqrt-softplus and has no SwiGLU clamp, so its block is a different op sequence
-  — the guard should claim it or decline it cleanly, and "decline" must mean the
-  CPU path, not a wrong answer.
-- **`make_stub.py`'s prefix rule.** Whether GLM-5.2 has per-layer arrays that
-  `get_key_or_arr` sizes to `block_count`, and whether a short prefix is a
-  loadable model at all — deepseek4 needed four layers for reasons specific to
-  its compressor kinds.
-- **Placement arithmetic** at a different expert size and layer count.
+- **`make_stub.py`'s prefix rule** — held; glm-dsa has *no* per-layer arrays
+  at all, and the nextn count was the one metadata edit needed.
+- **The parser / `supports_op` claim set** — generalised without changes: the
+  split is the same 13-node shape (`MUL x1 MUL_MAT_ID x3 VIEW x8 GLU x1`).
+- **CPU delegate** — `gate.py --tol 0` PASS, bit-identical.
+- **ggml-vulkan mirror** — PASS at mean KLD 6.1e-5 (inside the 6.2e-8.4e-5
+  ds4 band), but only after a finding worth the step: one GLM q6_K expert
+  tensor is 2520 MiB and this driver's `maxMemoryAllocationSize` is exactly
+  2 GiB, so ggml-vulkan refuses the buffer and the mirror silently falls back
+  (the tell: a "green" mirror gate that is *bit-identical*). ds4 never hit it
+  — MXFP4 tensors are 1088 MiB. Run configuration for GLM on this machine:
+  `GGML_VK_FORCE_MAX_ALLOCATION_SIZE=3221225472` (spec makes 2 GiB a
+  guarantee floor, not a cap; the driver allocates 2.46 GiB fine, and the
+  gate's KLD is the check that it computes correctly).
+- **Placement arithmetic** — worked as designed (first-fit packed both layers
+  on one die); note "could not hold its share" can mean the per-tensor
+  allocation limit, not VRAM exhaustion.
 
-Order: build a stub, get `gate.py --tol 0` green on the CPU path, then the
-Vulkan path, then `bench.py` prefill. Only load the 583 GiB model once the stub
-is green, and expect the load-to-load problem to be worse there, not better.
+Remaining: `bench.py` on the stub (mirror prefill — does the 8-token chunk
+cliff transfer?), then the 583 GiB model once that is green. TP does not
+apply to this checkpoint: the kernel and repack are MXFP4-specific and GLM's
+experts are q6_K — a q6_K kernel or a requant is a separate decision.
 
 ### Later — one line each
 

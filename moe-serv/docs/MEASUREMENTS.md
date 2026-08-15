@@ -190,6 +190,19 @@ are fewer submissions per token and the sentinel poll (which removes the
 | CPU delegate | byte-equality of `--kl-divergence-base` files | **bit-identical** (`--tol 0`) |
 | ggml-vulkan mirror | mean KLD vs same-placement CPU control | 6.2e-5 – 8.4e-5 across commits |
 | TP, real weights | mean KLD vs same-placement CPU control | **1.070e-4** (build-vk host) / **1.780e-4** (CPU host) |
+| CPU delegate, GLM-5.2 stub | byte-equality, `glm-L5.gguf` | **bit-identical** (`--tol 0`) |
+| ggml-vulkan mirror, GLM-5.2 stub | mean KLD vs same-placement CPU control | **6.1e-5**, top-1 99.02% |
+
+The GLM mirror row needs `GGML_VK_FORCE_MAX_ALLOCATION_SIZE=3221225472` in the
+environment: one q6_K expert tensor is 2520 MiB against the driver's
+`maxMemoryAllocationSize` of exactly 2 GiB, so without the override
+ggml-vulkan refuses the buffer and the mirror **silently falls back to the
+CPU delegate — and the gate goes green anyway**, because the delegate is
+correct. The tell is the direction of the result: a mirror run that comes
+back *bit-identical* did not run on the dies. (Engagement lines that prove it
+did: `uploaded N GiB`, `splits computed — N on device(s)`.) ds4 never hit the
+limit — its MXFP4 tensors are 1088 MiB — which is why this first appeared on
+the second architecture.
 
 The tolerance typed on every Vulkan/TP command line is 5e-4 — ~14x the repack
 gap. The TP number has two spellings because the *host build* is an axis of
