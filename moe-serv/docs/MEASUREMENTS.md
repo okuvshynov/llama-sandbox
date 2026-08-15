@@ -204,6 +204,30 @@ did: `uploaded N GiB`, `splits computed — N on device(s)`.) ds4 never hit the
 limit — its MXFP4 tensors are 1088 MiB — which is why this first appeared on
 the second architecture.
 
+## Breadth: GLM-5.2 stub bench (2026-08-14)
+
+`bench.py --model glm-L5.gguf --build-dir build-vk --pp 512 --n 32`, two
+loads per config, the allocation override set, mirror engagement verified in
+each treated log (`14.77 GiB uploaded`, `334 splits on device(s), 0 on CPU`,
+`512 tokens in chunks of 8` — the ds4 chunking policy unchanged).
+
+| comparison | pp512 | tg32 |
+|---|---|---|
+| ours-off → ours-on | **+6.8%** (168.3 → 179.6, resolved) | **+8.9%** (25.00 → 27.22, resolved) |
+| net vs stock | +9.1%, NOT RESOLVED (== 9.1% noise) | **+9.6%** (24.84 → 27.22, resolved) |
+| stock → ours-off | not resolved | not resolved |
+
+The decode result is a sign flip against ds4, whose full-model mirror decode
+was slightly negative (3.48 → 3.46): on GLM the mirror wins decode outright.
+Candidate mechanisms, not separated: q6_K's per-weight-heavier CPU
+`mul_mat_id` (q6_K gets no CPU_REPACK on x86, so the CPU side runs plain
+kernels), 8+1 experts per token vs 6+1, and the stub's inflated block share
+(2 of 5 layers are MoE vs 43 of 79 on the real model). Stub percentages do
+not transfer to the full model; the sign is the finding. Instrument note:
+this stub's load-to-load spread is 1-9% (ds4's is ~0.3%), and its first load
+is contaminated by the cold 18 GiB disk read (within-run sd ±7.9 vs ±0.25 on
+the second load) — trust second-load spreads, or add loads.
+
 The tolerance typed on every Vulkan/TP command line is 5e-4 — ~14x the repack
 gap. The TP number has two spellings because the *host build* is an axis of
 the run configuration: each reproduces exactly on its own instrument, and the

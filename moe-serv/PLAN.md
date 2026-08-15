@@ -244,10 +244,21 @@ edit). Of the four risks listed when this step was planned:
   on one die); note "could not hold its share" can mean the per-tensor
   allocation limit, not VRAM exhaustion.
 
-Remaining: `bench.py` on the stub (mirror prefill — does the 8-token chunk
-cliff transfer?), then the 583 GiB model once that is green. TP does not
-apply to this checkpoint: the kernel and repack are MXFP4-specific and GLM's
-experts are q6_K — a q6_K kernel or a requant is a separate decision.
+Stub bench (same day, build-vk host, engagement proven per load): chunking
+transfers unchanged (`512 tokens in chunks of 8`); mirror prefill
+ours-off→ours-on **+6.8%** (resolved); mirror decode **+8.9%** / **+9.6% net
+vs stock** (resolved above 1.0-2.5% floors) — a sign flip worth noting, since
+ds4's full-model mirror decode was slightly *negative*. Candidate mechanisms,
+not separated: q6_K's heavier CPU `mul_mat_id` (and no CPU_REPACK for q6_K on
+x86), 8+1 experts/token vs 6+1, and the stub's inflated block share (2 of 5
+layers MoE vs 43 of 79). The percentage does not transfer; the sign makes the
+full-model run interesting. This stub is a noisier instrument than ds4's
+(load-to-load 1-9% vs ~0.3%; first load contaminated by the cold 18 GiB read).
+
+Remaining: the 583 GiB model (expect the load-to-load problem to be worse).
+TP does not apply to this checkpoint: kernel and repack are MXFP4-specific
+and GLM's experts are q6_K — a q6_K kernel or a requant is a separate
+decision.
 
 ### Later — one line each
 
