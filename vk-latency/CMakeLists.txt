@@ -12,14 +12,19 @@ endif()
 
 find_package(Vulkan REQUIRED)
 
-add_custom_command(
-    OUTPUT "${CMAKE_BINARY_DIR}/bin/shaders/null.spv"
-    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/bin/shaders"
-    COMMAND Vulkan::glslc -O -o "${CMAKE_BINARY_DIR}/bin/shaders/null.spv"
-            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/null.comp"
-    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/null.comp"
-    COMMENT "glslc null.comp")
-add_custom_target(vk-latency-shaders DEPENDS "${CMAKE_BINARY_DIR}/bin/shaders/null.spv")
+set(VKL_SHADERS null touch5 touch2 touch3)
+set(VKL_SPV_FILES)
+foreach(sh ${VKL_SHADERS})
+    add_custom_command(
+        OUTPUT "${CMAKE_BINARY_DIR}/bin/shaders/${sh}.spv"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/bin/shaders"
+        COMMAND Vulkan::glslc -O -o "${CMAKE_BINARY_DIR}/bin/shaders/${sh}.spv"
+                "${CMAKE_CURRENT_SOURCE_DIR}/shaders/${sh}.comp"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/${sh}.comp"
+        COMMENT "glslc ${sh}.comp")
+    list(APPEND VKL_SPV_FILES "${CMAKE_BINARY_DIR}/bin/shaders/${sh}.spv")
+endforeach()
+add_custom_target(vk-latency-shaders DEPENDS ${VKL_SPV_FILES})
 
 add_executable(vk-latency src/main.cpp)
 add_dependencies(vk-latency vk-latency-shaders)

@@ -30,12 +30,15 @@ approach's: the trunk's weights are 13.7 GiB and would fit on one modern GPU,
 where they cost a fraction of the ~230 ms/token they cost on these cores. In
 that configuration the expert block is most of the time — and it currently runs
 at ~440 µs/layer of which only ~113 µs is GPU arithmetic. The border is ~3x the
-compute. It was measured structural against our own call shapes, but a
-null-shader baseline (`../vk-latency/`, 2026-08-14) puts the *machine* floor at
-9 µs/submit and 87 µs for a full 4-die round — so most of what we pay scales
-with what the call carries, not with submitting. Two levers now: decompose that
-gap (grow the null command buffer toward ours), and fewer submissions per
-token. See `decode-kernel`, `tp-integrate`, `border`.
+compute. It was measured structural against our own call shapes; a null-shader
+baseline (`../vk-latency/`, 2026-08-14) put the *machine* floor at 9 µs/submit
+and 87 µs for a full 4-die round, and its TP-shaped ladder then rebuilt our
+call ingredient by ingredient and **acquitted the command buffer**: submit
+stays ~9-11 µs through descriptors, copies, big buffer references, 26 GiB
+residency and 16 spinning threads. The residual — ~3x on submit, ~100 µs of
+wait — lives in the moe-serv *process* (mapped model, ggml graph around the
+call), so the next probe is inside moe-serv, plus the standing lever of fewer
+submissions per token. See `decode-kernel`, `tp-integrate`, `border`.
 
 ## Invariants
 
@@ -185,9 +188,13 @@ one-layer-at-a-time contract forbids. Postmortem in the commit message.
 **Amendment (2026-08-14):** "structural" held only relative to our own call —
 `../vk-latency/` (null shader, no ggml) measured the machine floor at
 9 µs/submit, ~59 µs submit→fence, 87 µs for a 4-die round, against our
-~35 µs/submit and ~310 µs non-GPU wait. Most of the border is priced by
-command-buffer content or residency, not by submitting. Cross-day numbers, so
-a lead: grow the null cb toward the TP call's shape one ingredient at a time.
+~35 µs/submit and ~310 µs non-GPU wait. Its TP-shaped ladder then rebuilt our
+cb ingredient by ingredient (descriptors, exact copies+barriers, 4 dispatches,
+real 816 MiB references, 26 GiB ballast, 16 spinning threads) and acquitted
+all of it: full-shape 4-die round 212 µs, +113 µs GPU ≈ 325 vs our 440, submit
+~11 µs vs our ~31. The residual is process-specific, not Vulkan-work-specific;
+next probe is inside moe-serv (`MOESERV_PROFILE` vs `-t`; audit what besides
+`vkQueueSubmit` the submit phase timer covers).
 
 ### `breadth` — Planned, next up
 

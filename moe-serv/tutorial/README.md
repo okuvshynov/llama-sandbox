@@ -60,9 +60,12 @@ this list first and delete the entries the edit absorbs.
   measured the machine floor: **9 µs** per `vkQueueSubmit` (same for 0/1/4
   dispatches), **~59 µs** submit→fence polled, **87 µs** for a 4-die
   submit-all/wait-all round. Our TP call pays ~35 µs/submit and ~310 µs of
-  non-GPU wait — 3-6x above that floor — so most of the border is priced by
-  what the call *carries* (copies, barriers, descriptors, residency), not by
-  submitting and fencing. Affects: [06 "The border"](06-optimization.md#the-border)
+  non-GPU wait — 3-6x above that floor. The same tool's TP-shaped ladder then
+  rebuilt our call ingredient by ingredient and *acquitted the command
+  buffer* (descriptors, copies, dispatches, 816 MiB references, 26 GiB
+  residency, spinning threads — all nearly free): the residual gap is a
+  property of the moe-serv process, not of the submitted Vulkan work.
+  Affects: [06 "The border"](06-optimization.md#the-border)
   ("what remains ... is structural"), [04 "What a call actually looks
   like"](04-vulkan.md#what-a-call-actually-looks-like) ("the fixed cost of
   talking to a GPU at all", the ~35 µs submit figure), and the ~35 µs quoted

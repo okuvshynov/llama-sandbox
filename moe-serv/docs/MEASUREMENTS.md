@@ -136,11 +136,21 @@ choices as `moe_tp.h`) measured the machine floor for these shapes:
 independently confirming the polling verdict above), **87 µs** for a 4-die
 submit-all/wait-all round against 243 µs strictly serial (round trips
 overlap; submits serialize at ~9 µs each). Our ~35 µs submits and ~310 µs of
-non-GPU wait are therefore 3-6x above floor: the border is mostly priced by
-what the call *carries* — copies, barriers, descriptors, residency — not by
-submitting and fencing. Cross-day comparison, so a lead rather than a
-verdict; the decomposition path is to grow vk-latency's command buffer
-toward the TP call's shape one ingredient at a time.
+non-GPU wait are therefore 3-6x above floor. The obvious reading — border
+priced by what the call *carries* — was then **refuted** by the same tool's
+TP-shaped ladder (same day): rebuilding our cb ingredient by ingredient
+(5-binding descriptor sets, the exact copy/barrier pattern, all 4 dispatches,
+real-sized 816 MiB buffer references, 26.3 GiB/die ballast, 16 spinning host
+threads) moved submit only 9 → 11 µs and the full-shape 4-die round to
+212 µs total (stage 2.5 / submit-all 47 under load / wait+sum ~161). Line
+items: copies +14 µs (honest DMA), ballast +12-20 µs wait on the referencing
+cb only, everything else free. 212 + our ~113 µs GPU ≈ 325 against the
+measured ~440: the residual ~100 µs and the ~3x per-submit gap are properties
+of the moe-serv *process* (150 GiB mapped, ggml graph around the call, submit
+thread = ggml compute thread), not of the submitted Vulkan work. Next probe
+lives inside moe-serv: `MOESERV_PROFILE` while varying `-t`, and audit what
+besides `vkQueueSubmit` sits inside the submit phase timer. Full tables:
+`vk-latency/README.md`, "The TP-shaped ladder".
 
 ## The correctness ledger
 

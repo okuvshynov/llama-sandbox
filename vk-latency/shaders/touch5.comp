@@ -1,0 +1,17 @@
+#version 450
+// Null-scale stand-in for moe-serv's pass1 (mxfp4_pass1.comp): same binding
+// count (5 storage buffers) and push-constant size (28 B), one word of work.
+// The border cost of *referencing* buffers is the thing under test, so each
+// buffer is touched once and nothing else happens.
+layout(local_size_x = 64) in;
+layout(binding = 0) readonly  buffer B0 { uint v[]; } plane;
+layout(binding = 1) readonly  buffer B1 { uint v[]; } scale;
+layout(binding = 2) readonly  buffer B2 { uint v[]; } xin;
+layout(binding = 3) writeonly buffer B3 { uint v[]; } part;
+layout(binding = 4) readonly  buffer B4 { uint v[]; } ids;
+layout(push_constant) uniform PC { uint u[7]; } pc;
+void main() {
+    if (gl_GlobalInvocationID.x == 0u) {
+        part.v[0] = plane.v[0] + scale.v[0] + xin.v[0] + ids.v[0] + pc.u[0];
+    }
+}
