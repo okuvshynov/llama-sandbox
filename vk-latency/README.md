@@ -163,3 +163,37 @@ Readings:
 - The bigger cb *launches faster* than the null one (28 vs 34.5 µs),
   echoing the `+desc`-faster-than-null oddity above; whatever the driver
   does at cb start is not monotone in cb size.
+
+## The cold-cache rung (2026-08-14) — the submit gap, solved
+
+The last unexplained item was moe-serv paying ~21-24 µs per submit
+in-process against ~9-11 µs here under every mimicked condition. The one
+condition no prior rung mimicked: moe-serv's calls arrive ~8 ms apart with
+the trunk's memory-streaming compute in between, so the driver's
+submit path runs **cold-cached** every call, while this tool submits every
+~70 µs with everything hot. The rung streams 64 MB through the cache
+before each iteration and repeats the calibrated measurement. Effect
+(medians, per die):
+
+| phase | hot | cold |
+|---|---|---|
+| submit | 9.3 | **17.5-19** |
+| launch | 34.5 | **~55-60** |
+| gpu (TP shape) | 17.7 | ~27-31 |
+| signal | 21 | **25-33** |
+| total (null / TP) | 67 / 79 | ~107 / ~131 |
+
+Cold caches roughly double every host-side phase. And with these numbers
+moe-serv's stub phase profile **reconciles completely** (measured the same
+day with a reset/submit timer split; `vkResetFences` itself is ~2 µs/die,
+innocent, and `-t` 4/8/16 moves submit by <15%): predicted submit
+4×18 ≈ 72 vs measured 82-94; wait-first ≈ launch 57 + GPU ~113 + signal
+~29 ≈ 199 vs measured 190-210; wait-rest+sum ≈ 93 vs measured 59-93.
+There is no residual mystery in the border.
+
+Consequence: the border is not a fixed driver property — it is
+**cache-eviction-priced**, and any host whose CPU does real work between
+calls pays roughly double the hot-loop figures. Levers that survive this
+finding: fewer submissions per token (unchanged), and the sentinel-poll
+idea (the ~25-30 µs cold *signal* is what it removes). Warming the driver
+path between calls is not a lever — the trunk needs those caches.

@@ -96,7 +96,7 @@ struct moe_tp {
     uint64_t n_calls = 0, n_fallback = 0;
     // Per-call border accounting, µs — the probe timed the pipeline inside one
     // submission and could not see any of this.
-    double t_stage = 0, t_submit = 0, t_wait = 0, t_sum = 0;
+    double t_stage = 0, t_reset = 0, t_submit = 0, t_wait = 0, t_sum = 0;
     std::string shader_dir;
     // io buffer offsets
     size_t off_x = 0, off_ids = 0, off_wts = 0, off_y = 0, io_size = 0;
@@ -731,11 +731,20 @@ static inline bool moe_tp_compute(moe_tp & T, ggml_cgraph * gf, const char * tag
         memcpy((char *) D.io_ptr + T.off_wts, c.wts->data, (size_t) T.SLOTS * 4);
     }
     const auto tt1 = std::chrono::steady_clock::now();
+    // Fence resets timed apart from the submits: vk-latency's calibrated
+    // decomposition priced a bare vkQueueSubmit at ~9-11 us while this phase
+    // historically read ~31 us per die, and the reset was the one timed thing
+    // here that the probe kept outside its timed region. No fence is in
+    // flight at this point, so resetting all before submitting any is
+    // equivalent to the old interleaved order.
+    for (moe_tp_die & D : T.dies) {
+        MOE_TP_CHECK(vkResetFences(D.dev, 1, &D.fence));
+    }
+    const auto tt1b = std::chrono::steady_clock::now();
     // Submit all dies, then wait all — the concurrency the split probe priced
     // at ~60-100 us of fixed floor.
     for (size_t d = 0; d < T.dies.size(); d++) {
         moe_tp_die & D = T.dies[d];
-        MOE_TP_CHECK(vkResetFences(D.dev, 1, &D.fence));
         VkSubmitInfo si = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
         si.commandBufferCount = 1;
         si.pCommandBuffers = &L.per_die[d].cb;
@@ -769,7 +778,8 @@ static inline bool moe_tp_compute(moe_tp & T, ggml_cgraph * gf, const char * tag
     const auto tt4 = std::chrono::steady_clock::now();
     using us_t = std::chrono::duration<double, std::micro>;
     T.t_stage  += us_t(tt1 - tt0).count();
-    T.t_submit += us_t(tt2 - tt1).count();
+    T.t_reset  += us_t(tt1b - tt1).count();
+    T.t_submit += us_t(tt2 - tt1b).count();
     T.t_wait   += us_t(tt3 - tt2).count();
     T.t_sum    += us_t(tt4 - tt3).count();
     if (T.n_calls++ == 0) {
@@ -786,7 +796,7 @@ static inline void moe_tp_report(const moe_tp & T, const char * tag) {
     }
     if (T.n_calls) {
         const double n = (double) T.n_calls;
-        fprintf(stderr, "%s-TP: per call us: stage %.1f  submit %.1f  wait-first %.1f  wait-rest+sum %.1f%c",
-                tag, T.t_stage / n, T.t_submit / n, T.t_wait / n, T.t_sum / n, 10);
+        fprintf(stderr, "%s-TP: per call us: stage %.1f  reset %.1f  submit %.1f  wait-first %.1f  wait-rest+sum %.1f%c",
+                tag, T.t_stage / n, T.t_reset / n, T.t_submit / n, T.t_wait / n, T.t_sum / n, 10);
     }
 }

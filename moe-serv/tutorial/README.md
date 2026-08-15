@@ -63,8 +63,12 @@ this list first and delete the entries the edit absorbs.
   non-GPU wait — 3-6x above that floor. The same tool's TP-shaped ladder then
   rebuilt our call ingredient by ingredient and *acquitted the command
   buffer* (descriptors, copies, dispatches, 816 MiB references, 26 GiB
-  residency, spinning threads — all nearly free): the residual gap is a
-  property of the moe-serv process, not of the submitted Vulkan work.
+  residency, spinning threads — all nearly free): the residual gap turned
+  out to be **cache eviction** — the trunk's streaming between calls runs
+  the driver's submit path cold, doubling every host phase (calibrated
+  split: submit 9 / launch 35 / signal 21 hot, ~2x each cold). The border
+  is self-interference-priced, not fixed; on a host whose trunk runs on
+  its own device the same code drops from ~440 to ~310 µs/layer.
   Affects: [06 "The border"](06-optimization.md#the-border)
   ("what remains ... is structural"), [04 "What a call actually looks
   like"](04-vulkan.md#what-a-call-actually-looks-like) ("the fixed cost of

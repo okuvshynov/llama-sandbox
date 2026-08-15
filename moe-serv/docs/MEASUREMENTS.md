@@ -167,6 +167,22 @@ for `moe_tp_compute`. Oddity recorded: bigger cbs launch *faster* (28 vs
 34.5), so cb-start cost is not monotone in cb size. Tables:
 `vk-latency/README.md`, "Calibrated decomposition".
 
+**The submit gap, closed (2026-08-14, same day).** The in-process ~21-24 µs
+per submit against the probe's ~9-11 is **cache eviction**: our calls come
+~8 ms apart with the trunk streaming memory in between, so the driver's
+submit path runs cold every call. Evidence, in order: (a) the submit phase
+timer was split (`moe_tp.h` now reports `reset` separately) —
+`vkResetFences` is ~2 µs/die, innocent; (b) `-t` 4/8/16 moves submit <15% —
+thread count innocent; (c) vk-latency's cold-cache rung (64 MB streamed
+before each iteration) reproduces it: submit 9.3→17.5-19, launch
+34.5→55-60, signal 21→25-33, every host phase roughly doubled. With cold
+figures the stub profile reconciles with no residual: predicted submit
+4×18≈72 vs measured 82-94; wait-first ≈ 57 launch + ~113 GPU + ~29 signal
+≈ 199 vs measured 190-210; wait-rest+sum ≈93 vs measured 59-93. Border
+chapter closed: it is cache-eviction-priced, not fixed; surviving levers
+are fewer submissions per token and the sentinel poll (which removes the
+~25-30 µs cold signal). Gate after the timer split: bit-identical.
+
 ## The correctness ledger
 
 | path | comparison | result |

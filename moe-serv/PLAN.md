@@ -30,7 +30,12 @@ approach's: the trunk's weights are 13.7 GiB and would fit on one modern GPU,
 where they cost a fraction of the ~230 ms/token they cost on these cores. In
 that configuration the expert block is most of the time — and it currently runs
 at ~440 µs/layer of which only ~113 µs is GPU arithmetic. The border is ~3x the
-compute. It was measured structural against our own call shapes; a null-shader
+compute — and roughly half of it is *self-interference*: the trunk's streaming
+evicts the driver's submit path between calls, and every host phase doubles
+cold vs hot (vk-latency's cold-cache rung, 2026-08-14). On a host whose trunk
+runs on its own device the CPU is a warm orchestrator and the same code drops
+to ~310 µs/layer — so quote the *hot* decomposition (9 submit / 35 launch / 21
+signal) when sizing the target machine, not the 440. It was measured structural against our own call shapes; a null-shader
 baseline (`../vk-latency/`, 2026-08-14) put the *machine* floor at 9 µs/submit
 and 87 µs for a full 4-die round, and its TP-shaped ladder then rebuilt our
 call ingredient by ingredient and **acquitted the command buffer**: submit
@@ -201,7 +206,13 @@ result bytes sit in host-cached memory ~21 µs before a polled fence admits it.
 Named lever for the TP path: have the cb write a sentinel word after the
 result copy and poll that to read results, fence only for cb-reuse
 (~20 µs/layer, unmeasured in moe-serv). Launch+signal overlap across dies, so
-the 4-die round pays them ~once, not 4x.
+the 4-die round pays them ~once, not 4x. **Closed (2026-08-14):** the
+remaining in-process gap is cache eviction — the trunk's ~8 ms of streaming
+between calls runs the driver's submit path cold, doubling every host phase
+(vk-latency cold-cache rung reproduces it; stub profile reconciles with no
+residual; `vkResetFences` and `-t` both acquitted; gate bit-identical after
+the reset/submit timer split). The border is cache-priced, not fixed;
+surviving levers: fewer submissions per token, and the sentinel poll.
 
 ### `breadth` — Planned, next up
 
@@ -240,7 +251,11 @@ is green, and expect the load-to-load problem to be worse there, not better.
   and mixed CPU/die layers ~+3% assessed and not taken — the whole prize is
   ≤ +5% and it is the one optimisation that does not transfer.
 - **`wire`** — in-process or a separate process over a socket; informed now by
-  a measured per-call cost.
+  a measured per-call cost, and by the cold-cache finding cutting both ways:
+  a separate *device* for the trunk removes ~130 µs/layer of self-interference
+  for free, but a separate *machine* pays a per-layer network round trip
+  (~150-200 µs even on 10GbE for 16 KB in / 96 KB out, 43 sequential layers)
+  that costs more than the interference it removes.
 
 ## Links
 

@@ -880,13 +880,21 @@ int main() {
             struct CalRes {
                 std::vector<double> submit, launch, cin, disp, cout, gpu, signal, total, dev;
             };
-            auto run_cal = [&](size_t i, VkCommandBuffer cb, int iters, CalRes &r) {
+            // scrub: stream this many bytes through the cache before each
+            // iteration, evicting the driver's submit-path code and data the
+            // way ~8 ms of trunk compute does between moe-serv's calls.
+            std::vector<char> scrub_a(64 << 20, 1), scrub_b(64 << 20, 2);
+            auto run_cal = [&](size_t i, VkCommandBuffer cb, int iters, CalRes &r, size_t scrub = 0) {
                 Die &d = dies[i];
                 const double tick_us = d.ts_period_ns / 1000.0;
                 VkSubmitInfo si = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
                 si.commandBufferCount = 1;
                 si.pCommandBuffers = &cb;
                 for (int it = 0; it < iters; it++) {
+                    if (scrub) {
+                        memcpy(it & 1 ? scrub_a.data() : scrub_b.data(),
+                               it & 1 ? scrub_b.data() : scrub_a.data(), scrub);
+                    }
                     VkCalibratedTimestampInfoEXT ci[2] = {
                         { VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_EXT, nullptr, VK_TIME_DOMAIN_DEVICE_EXT },
                         { VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_EXT, nullptr, VK_TIME_DOMAIN_QUERY_PERFORMANCE_COUNTER_EXT },
@@ -952,6 +960,32 @@ int main() {
                 Stat sd = stat_of(all_dev);
                 printf("calibration max-deviation: median %.2f us, p90 %.2f us (bound on cross-clock error)\n",
                        sd.med, sd.p90);
+            }
+
+            // Cold-cache rung: same calibrated measurement, but each
+            // iteration first streams 64 MB through the cache — the state
+            // moe-serv's submit thread is actually in after ~8 ms of trunk
+            // compute. If the in-process ~21-24 us submits are cache
+            // eviction, they should reappear here.
+            const int COLD_ITERS = 200;
+            printf("\ncold cache (64 MB streamed before every iteration), per die (us, median [min .. p90]):\n");
+            printf("%-4s %-8s %-28s %-28s %-28s %-28s %-28s\n",
+                   "die", "variant", "submit", "launch", "gpu", "signal", "total");
+            for (size_t i = 0; i < tp.size(); i++) {
+                CalRes r;
+                run_cal(i, cal[i].cb_null, COLD_ITERS, r, scrub_a.size());
+                std::vector<double> *cols[] = { &r.submit, &r.launch, &r.gpu, &r.signal, &r.total };
+                char dnum[8];
+                snprintf(dnum, sizeof(dnum), "%zu", i);
+                print_stat_row(dnum, "null-1d", cols, 5);
+            }
+            for (size_t i = 0; i < tp.size(); i++) {
+                CalRes r;
+                run_cal(i, cal[i].cb_tp, COLD_ITERS, r, scrub_a.size());
+                std::vector<double> *cols[] = { &r.submit, &r.launch, &r.gpu, &r.signal, &r.total };
+                char dnum[8];
+                snprintf(dnum, sizeof(dnum), "%zu", i);
+                print_stat_row(dnum, "+bigref", cols, 5);
             }
             for (size_t i = 0; i < tp.size(); i++) {
                 vkDestroyQueryPool(dies[i].dev, cal[i].qp, nullptr);
