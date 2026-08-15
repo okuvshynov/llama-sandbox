@@ -26,8 +26,14 @@ $vcvars = Join-Path $vsPath "VC\Auxiliary\Build\vcvars64.bat"
 $ninja  = Get-Command ninja -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
 if (-not $ninja) { $ninja = Join-Path $vsPath "Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja\ninja.exe" }
 
+# CMAKE_EXPORT_COMPILE_COMMANDS must be passed as -D (a cache variable):
+# llama.cpp sets it as a normal variable inside ggml's directory scope, which
+# exports ggml's own sources but not this project's — build/compile_commands.json
+# then exists, looks plausible, and covers zero moe-serv files. -D makes it
+# global so VS Code's C/C++ extension can resolve our includes (../.vscode/).
 $cfg = "cmake -S `"$here`" -B `"$build`" -G Ninja -DCMAKE_BUILD_TYPE=Release " +
-       "-DCMAKE_MAKE_PROGRAM=`"$ninja`" -DLLAMA_CPP_DIR=`"$LlamaCppDir`""
+       "-DCMAKE_MAKE_PROGRAM=`"$ninja`" -DLLAMA_CPP_DIR=`"$LlamaCppDir`" " +
+       "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"
 
 # Through cmd /c because cmake writes progress to stderr and
 # $ErrorActionPreference = "Stop" turns any native stderr into a terminating
