@@ -47,3 +47,26 @@ Deeper reference material, written for people already working on the project,
 lives one directory up: [`docs/MECHANISM.md`](../docs/MECHANISM.md),
 [`docs/MEASUREMENTS.md`](../docs/MEASUREMENTS.md),
 [`docs/KERNEL.md`](../docs/KERNEL.md), and [`PLAN.md`](../PLAN.md).
+
+## Amendments — learned since the draft, not yet folded in
+
+The chapters are a snapshot; the project keeps moving. Findings that
+qualify or contradict something a chapter says are collected here until the
+next revision pass folds them into the text. When editing a chapter, check
+this list first and delete the entries the edit absorbs.
+
+- **2026-08-14 — the border is mostly not a fixed machine cost.** A
+  standalone null-shader probe ([`vk-latency/`](../../vk-latency/), no ggml)
+  measured the machine floor: **9 µs** per `vkQueueSubmit` (same for 0/1/4
+  dispatches), **~59 µs** submit→fence polled, **87 µs** for a 4-die
+  submit-all/wait-all round. Our TP call pays ~35 µs/submit and ~310 µs of
+  non-GPU wait — 3-6x above that floor — so most of the border is priced by
+  what the call *carries* (copies, barriers, descriptors, residency), not by
+  submitting and fencing. Affects: [06 "The border"](06-optimization.md#the-border)
+  ("what remains ... is structural"), [04 "What a call actually looks
+  like"](04-vulkan.md#what-a-call-actually-looks-like) ("the fixed cost of
+  talking to a GPU at all", the ~35 µs submit figure), and the ~35 µs quoted
+  in [02 "The CPU still matters"](02-hardware.md#the-cpu-still-matters).
+  Cross-day comparison, so a lead, not a verdict; details in
+  [`docs/MEASUREMENTS.md`](../docs/MEASUREMENTS.md) ("The border",
+  amendment) and `vk-latency/README.md`.
