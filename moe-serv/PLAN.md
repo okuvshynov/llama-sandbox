@@ -30,9 +30,12 @@ approach's: the trunk's weights are 13.7 GiB and would fit on one modern GPU,
 where they cost a fraction of the ~230 ms/token they cost on these cores. In
 that configuration the expert block is most of the time — and it currently runs
 at ~440 µs/layer of which only ~113 µs is GPU arithmetic. The border is ~3x the
-compute and now measured structural — serialized submits plus launch latency —
-so the next real lever is fewer submissions per token, not cheaper ones. See
-`decode-kernel`, `tp-integrate`, `border`.
+compute. It was measured structural against our own call shapes, but a
+null-shader baseline (`../vk-latency/`, 2026-08-14) puts the *machine* floor at
+9 µs/submit and 87 µs for a full 4-die round — so most of what we pay scales
+with what the call carries, not with submitting. Two levers now: decompose that
+gap (grow the null command buffer toward ours), and fewer submissions per
+token. See `decode-kernel`, `tp-integrate`, `border`.
 
 ## Invariants
 
@@ -179,6 +182,12 @@ poll ahead in 6/6 interleaved pairs across both pair orders. The remaining
 border is structural (serialized submit floor + launch latency) and shrinks
 only with fewer submissions per token, which the scheduler's
 one-layer-at-a-time contract forbids. Postmortem in the commit message.
+**Amendment (2026-08-14):** "structural" held only relative to our own call —
+`../vk-latency/` (null shader, no ggml) measured the machine floor at
+9 µs/submit, ~59 µs submit→fence, 87 µs for a 4-die round, against our
+~35 µs/submit and ~310 µs non-GPU wait. Most of the border is priced by
+command-buffer content or residency, not by submitting. Cross-day numbers, so
+a lead: grow the null cb toward the TP call's shape one ingredient at a time.
 
 ### `breadth` — Planned, next up
 

@@ -128,6 +128,20 @@ order flip was the discriminating run). The remaining ~340 µs of border is
 structural: serialized submit floor plus launch-to-completion latency,
 reachable only with fewer submissions per token.
 
+**Amendment (2026-08-14)**: a standalone null-shader probe
+(`../../vk-latency/`, raw Vulkan, no ggml, same queue-family and polling
+choices as `moe_tp.h`) measured the machine floor for these shapes:
+**9 µs per `vkQueueSubmit`** (identical for 0/1/4 dispatches per cb),
+**~59 µs** submit→fence polled (~65 blocking — poll saves ~6 µs/fence,
+independently confirming the polling verdict above), **87 µs** for a 4-die
+submit-all/wait-all round against 243 µs strictly serial (round trips
+overlap; submits serialize at ~9 µs each). Our ~35 µs submits and ~310 µs of
+non-GPU wait are therefore 3-6x above floor: the border is mostly priced by
+what the call *carries* — copies, barriers, descriptors, residency — not by
+submitting and fencing. Cross-day comparison, so a lead rather than a
+verdict; the decomposition path is to grow vk-latency's command buffer
+toward the TP call's shape one ingredient at a time.
+
 ## The correctness ledger
 
 | path | comparison | result |

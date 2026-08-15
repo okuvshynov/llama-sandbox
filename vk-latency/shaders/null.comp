@@ -1,0 +1,5 @@
+#version 450
+// The null shader: one workgroup, no bindings, no work. Anything the timer
+// sees around a dispatch of this is the cost of *asking*, not of computing.
+layout(local_size_x = 64) in;
+void main() {}
