@@ -88,3 +88,27 @@ The decision-relevant deltas versus the Windows/Vulkan integration:
    border shrinks proportionally, the TP path's +7.6% over stock should
    improve here. Needs the real model (in transfer) + a llama.cpp HIP build
    to confirm.
+
+## ROCm 5.7.1 vs 6.3.4, same-day interleaved A/B (2026-08-17)
+
+6.3.4 installed side-by-side (llama.cpp requires >= 6.1; 6.3 is the last
+release whose stock rocBLAS ships gfx906 Tensile kernels — 156 files
+confirmed present). Both binaries from the same source, each resolving its
+own runtime via soname (libamdhip64.so.5 vs .so.6). Three pairs per row,
+alternating; all 30 runs pass the correctness gate.
+
+| row | ROCm 5.7.1 | ROCm 6.3.4 | verdict |
+|---|---|---|---|
+| gate/up matmul | 105.2-106.1 µs | 106.6-107.0 µs | +1.3%, resolved (LLVM 18 lands 36 vgprs vs 35) |
+| down matmul | 81.3-81.7 | 81.2-81.4 | tie |
+| TP block GPU /die | 118.7-118.8 | 118.4-118.6 | tie |
+| null round trip, polled | 8.7 | 10.1-11.4 | **+2 µs, resolved** |
+| 4-die null round | 40.6-42.6 | 46.2-46.9 | **+5 µs, resolved** |
+| tp4 layer wall | 263-266 | **296-300** | **+13%, resolved** |
+
+Compute transfers unchanged; the 6.3 runtime's dispatch path costs ~2 µs
+more per round trip and ~33 µs more on the full 4-die TP layer (16 launches
++ 12 async copies per rep, so a per-call overhead of this size compounds).
+Still 4-6x below RADV Vulkan on every row. Consequence: build llama.cpp
+against 6.3.4, but keep 5.7.1 installed — it is the cheaper runtime for the
+custom backend, and the A/B costs one extra `HIPCC=` build.
