@@ -18,3 +18,5 @@ A collection of experiments related to LLM inference.
 * [checksums](checksums/) - SHA-256 manifests for the models everything here measures against, plus the tools to localize corruption when a copy goes wrong
 * [moe-offload](moe-offload/) - cross-platform (Vulkan) measurement of what a GPU charges to run MoE routed experts while the trunk stays on CPU: per-phase dispatch/transfer/fence costs, macOS MoltenVK vs Windows AMD driver
 * [moe-serv](moe-serv/) - a ggml backend, loaded into unmodified llama.cpp via `GGML_BACKEND_PATH`, that takes ownership of the routed expert weights and computes the whole MoE block — so the experts can be tuned or moved elsewhere without a trunk of our own
+* [vk-latency](vk-latency/) - standalone raw-Vulkan probe of the submission-latency floor (null shader, TP-shaped ladder, calibrated timestamps) that decomposed moe-serv's per-call border into launch/signal/cache-eviction line items
+* [hip-moe](hip-moe/) - the moe-serv kernels rerun on Linux/ROCm, same four Vega II dies: HIP ports of the 2-pass MXFP4 vecmat and TP block plus null-kernel latency floors — compute at parity with Vulkan, launch/sync floors 5-7x cheaper
