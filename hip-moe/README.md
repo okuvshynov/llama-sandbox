@@ -112,3 +112,33 @@ more per round trip and ~33 µs more on the full 4-die TP layer (16 launches
 Still 4-6x below RADV Vulkan on every row. Consequence: build llama.cpp
 against 6.3.4, but keep 5.7.1 installed — it is the cheaper runtime for the
 custom backend, and the A/B costs one extra `HIPCC=` build.
+
+## Stock llama.cpp on ROCm 6.3.4 (2026-08-17)
+
+Built master `60eeeb608` (2026-08-17) with the HIP backend against the
+side-by-side 6.3.4 — the version gate (>= 6.1) and the hipBLAS 2.0 API rule
+out 5.7. The recipe that keeps the alternatives symlink and the 5.7 install
+out of the build:
+
+    ROCM_PATH=/opt/rocm-6.3.4 HIP_PATH=/opt/rocm-6.3.4 \
+    HIPCXX=/opt/rocm-6.3.4/lib/llvm/bin/clang++ \
+    cmake -S . -B build-hip -DGGML_HIP=ON -DAMDGPU_TARGETS=gfx906 \
+          -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=/opt/rocm-6.3.4 \
+          -DLLAMA_CURL=OFF
+    cmake --build build-hip -j16
+
+Validation, no model needed:
+
+- All four dies enumerate: `4x gfx906, 32752 MiB each (131 GB), wave 64`.
+- `test-backend-ops test -b ROCm0`: **12,926/12,926 passed**. The
+  "not supported" lines (f16 ABS/SGN/NEG variants etc.) are declined ops
+  that fall back to CPU — normal for any backend, not gfx906 rot.
+- `SOLVE_TRI` passes on every shape — the one op with an open gfx906 issue
+  upstream (rocBLAS strsm fallback); this master carries the custom-kernel
+  path, so the known landmine is already defused.
+
+Carried-over discipline for when the models arrive: a GPU-enabled build is
+NOT a CPU baseline (bit-exact gates keep using CPU-only builds, as
+logit-kld forces), and watch `sched_reserve: graph splits` whenever an op
+falls back — backend-specific-op fallbacks are what shattered prefill on
+the Windows Vulkan build.
