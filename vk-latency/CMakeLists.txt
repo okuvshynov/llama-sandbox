@@ -12,13 +12,21 @@ endif()
 
 find_package(Vulkan REQUIRED)
 
+# CMake < 3.24 has no glslc component / Vulkan::glslc target; fall back to
+# whatever glslc is on PATH (e.g. ~/.local/bin from the LunarG tarball).
+if (TARGET Vulkan::glslc)
+    set(VKL_GLSLC Vulkan::glslc)
+else()
+    find_program(VKL_GLSLC glslc REQUIRED)
+endif()
+
 set(VKL_SHADERS null touch5 touch2 touch3)
 set(VKL_SPV_FILES)
 foreach(sh ${VKL_SHADERS})
     add_custom_command(
         OUTPUT "${CMAKE_BINARY_DIR}/bin/shaders/${sh}.spv"
         COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/bin/shaders"
-        COMMAND Vulkan::glslc -O -o "${CMAKE_BINARY_DIR}/bin/shaders/${sh}.spv"
+        COMMAND ${VKL_GLSLC} -O -o "${CMAKE_BINARY_DIR}/bin/shaders/${sh}.spv"
                 "${CMAKE_CURRENT_SOURCE_DIR}/shaders/${sh}.comp"
         DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/${sh}.comp"
         COMMENT "glslc ${sh}.comp")

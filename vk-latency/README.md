@@ -197,3 +197,48 @@ calls pays roughly double the hot-loop figures. Levers that survive this
 finding: fewer submissions per token (unchanged), and the sentinel-poll
 idea (the ~25-30 µs cold *signal* is what it removes). Warming the driver
 path between calls is not a lever — the trunk needs those caches.
+
+## Linux/RADV on the same silicon (2026-08-17)
+
+Same machine, new OS/driver stack: Ubuntu 22.04 + Mesa 23.2 RADV against
+Windows + the AMD proprietary driver. The port needed four `#ifdef`s (QPC →
+`CLOCK_MONOTONIC` as the calibrated host domain, `YieldProcessor` →
+`_mm_pause`, exe path, path separators) and nothing else; all four dies
+enumerate and every rung runs. Two full-ladder runs, medians stable to ~2%
+except where noted. Warm figures, null 1-dispatch, calibrated:
+
+| per die, µs | Windows/AMD | Linux/RADV | HIP/ROCm (hip-moe) |
+|---|---|---|---|
+| submit | 9.3 | **6.5-7** | 0.8 (launch, sustained) |
+| launch | 34.5 | **26-29** | — |
+| signal | 21 | **10-12** | — |
+| total round, polled | ~67 | **~48** | **8.3** |
+| poll vs block saving | ~6 µs | ~1-5 µs (noisier) | ~1 µs |
+| 4-die round | 87 | **65** | 42 |
+| TP-shaped round, 4 dies | 212 | **~180** | — |
+
+RADV shaves every host-side phase — signal is halved, launch ~20% cheaper —
+so the Vulkan border on Linux sits ~30% below Windows. But the ordering
+that matters is the third column: a HIP null round trip is **6x cheaper
+than RADV's** and 8x cheaper than the AMD driver's. If the integration ever
+moves to Linux, the border argument favors HIP over Vulkan regardless of
+which OS's Vulkan driver is used.
+
+Two RADV-specific observations, both from the calibrated tables:
+
+- **The TP-shaped cb's *dispatch* time is ~2x Windows** (gpu disp 18.4 µs
+  vs 8.5, copy-in 7.7 vs 6.1, copy-out 1.3 vs 3.0 — net gpu 27.4 vs 17.7).
+  These are the tiny `touch*` shaders, so this is per-dispatch overhead or
+  codegen, not bandwidth; worth re-checking with the real mxfp4 kernel
+  before reading anything into it (hip-moe's real-kernel numbers were ±10%
+  of the Vulkan ones, so real compute is fine).
+- **Calibration is looser**: max-deviation median 2.76 µs vs 0.04 on
+  Windows, and cold-run signal medians occasionally go negative at the min —
+  per-phase splits carry ±3 µs here, fine for 20-100 µs phases.
+
+The cold-cache rung reproduces the Windows mechanism with a larger launch
+penalty: launch 26-29 → ~105 µs median (bimodal, min ~54), signal 11 →
+55-70, total ~48 → 134-225. The border being cache-eviction-priced is
+OS-independent, as predicted — and RADV's cold launch is *worse* than the
+AMD driver's (~55-60), so an in-process Linux/Vulkan border would not keep
+much of the warm-figure advantage.

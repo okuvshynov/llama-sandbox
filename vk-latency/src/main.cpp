@@ -15,8 +15,15 @@
 
 #include <vulkan/vulkan.h>
 
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#else
+#include <immintrin.h>
+#include <time.h>
+#include <unistd.h>
+#define YieldProcessor() _mm_pause()
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -58,9 +65,15 @@ struct Die {
 };
 
 static std::string exe_dir() {
+#ifdef _WIN32
     char buf[MAX_PATH];
     GetModuleFileNameA(nullptr, buf, MAX_PATH);
     std::string s(buf);
+#else
+    char buf[4096];
+    const ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    std::string s(buf, n > 0 ? (size_t) n : 0);
+#endif
     return s.substr(0, s.find_last_of("\\/"));
 }
 
@@ -457,7 +470,7 @@ int main() {
     std::vector<VkPhysicalDevice> phys(n_phys);
     CHECK(vkEnumeratePhysicalDevices(inst, &n_phys, phys.data()));
 
-    std::vector<char> spv = read_file(exe_dir() + "\\shaders\\null.spv");
+    std::vector<char> spv = read_file(exe_dir() + "/shaders/null.spv");
 
     std::vector<Die> dies;
     for (VkPhysicalDevice p : phys) {
@@ -644,9 +657,9 @@ int main() {
 
     // ===== TP-shaped ladder ===============================================
     {
-        std::vector<char> spv5 = read_file(exe_dir() + "\\shaders\\touch5.spv");
-        std::vector<char> spv2 = read_file(exe_dir() + "\\shaders\\touch2.spv");
-        std::vector<char> spv3 = read_file(exe_dir() + "\\shaders\\touch3.spv");
+        std::vector<char> spv5 = read_file(exe_dir() + "/shaders/touch5.spv");
+        std::vector<char> spv2 = read_file(exe_dir() + "/shaders/touch2.spv");
+        std::vector<char> spv3 = read_file(exe_dir() + "/shaders/touch3.spv");
         std::vector<TpDie> tp(dies.size());
         for (size_t i = 0; i < dies.size(); i++) {
             if (!setup_tp(dies[i], spv5, spv2, spv3, tp[i])) {
@@ -831,14 +844,27 @@ int main() {
         if (!all_calib) {
             printf("\ncalibrated timestamps: VK_EXT_calibrated_timestamps missing; section skipped\n");
         } else {
+#ifdef _WIN32
             LARGE_INTEGER qf;
             QueryPerformanceFrequency(&qf);
-            const double qpc_to_us = 1e6 / (double)qf.QuadPart;
+            const double qpc_to_us = 1e6 / (double)qf.QuadPart;   // host tick -> us
             auto qpc_now_us = [qpc_to_us]() {
                 LARGE_INTEGER c;
                 QueryPerformanceCounter(&c);
                 return (double)c.QuadPart * qpc_to_us;
             };
+            const VkTimeDomainEXT host_domain = VK_TIME_DOMAIN_QUERY_PERFORMANCE_COUNTER_EXT;
+#else
+            // Linux host domain is CLOCK_MONOTONIC and its timestamps are
+            // plain nanoseconds, so the tick->us factor is a constant.
+            const double qpc_to_us = 1e-3;                        // host tick -> us
+            auto qpc_now_us = []() {
+                timespec ts;
+                clock_gettime(CLOCK_MONOTONIC, &ts);
+                return (double)ts.tv_sec * 1e6 + (double)ts.tv_nsec * 1e-3;
+            };
+            const VkTimeDomainEXT host_domain = VK_TIME_DOMAIN_CLOCK_MONOTONIC_EXT;
+#endif
 
             struct CalDie {
                 PFN_vkGetCalibratedTimestampsEXT pfn = nullptr;
@@ -897,7 +923,7 @@ int main() {
                     }
                     VkCalibratedTimestampInfoEXT ci[2] = {
                         { VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_EXT, nullptr, VK_TIME_DOMAIN_DEVICE_EXT },
-                        { VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_EXT, nullptr, VK_TIME_DOMAIN_QUERY_PERFORMANCE_COUNTER_EXT },
+                        { VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_EXT, nullptr, host_domain },
                     };
                     uint64_t base[2], max_dev;
                     CHECK(cal[i].pfn(d.dev, 2, ci, base, &max_dev));
