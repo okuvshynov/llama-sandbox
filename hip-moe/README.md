@@ -183,3 +183,25 @@ the 13 CPU expert layers (the dominant remaining cost), the idle pipeline,
 and the custom kernel (2.5x over ggml's *Vulkan* mxfp4 kernel; whether
 ggml's HIP kernel leaves the same gap is one `test-backend-ops perf -o
 MUL_MAT_ID` away).
+
+## The KLD gate on ncmoe 13 (2026-08-17)
+
+`llama-perplexity -f gate_corpus.txt -c 512`, CPU base (`-ngl 0
+--no-op-offload`) vs the serving config (`-ngl 99 -ncmoe 13 -ts 19/8/8/8`):
+**mean KLD 8.0e-3 ± 0.7e-3, top-1 96.3 ± 0.8%**, PPL 6.18 vs 6.23 at
+99.78% log-correlation.
+
+The MoE-only yardsticks (repack 3.6e-5, mirror 6-8e-5, TP 1-1.8e-4) do not
+apply: those varied only the expert matmuls, while this swaps the entire
+stack's arithmetic. The recorded precedent for a full-stack swap is the
+Apple-clang vs MSVC gap on the same CPU — 8.85e-3 mean KL, 96.67% top-1 —
+and this result has the same magnitude and shape (median 4.4e-3, smooth
+tail, no position-dependent spikes; the corrupt-weights tell is absent).
+Verdict: two correct implementations disagreeing through 43 layers of
+rounding. Config cleared.
+
+Boundary of the claim, per the repo's own lesson: end-to-end KL at this
+depth saturates and cannot certify kernel exactness — per-op correctness
+rests on the 12,926-test backend suite and the token-identical greedy
+smoke; this gate rules out the gross failure modes (wrong op, bad weights,
+broken placement).
