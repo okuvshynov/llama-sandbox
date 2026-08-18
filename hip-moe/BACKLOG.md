@@ -48,9 +48,12 @@ on HIP (poll-vs-block gap ~1 µs), frees a core.
 
 ## Housekeeping
 
-- perf installed mid-session (linux-tools-generic, invoke the versioned
-  binary directly — the T2 kernel has no matching package); sample the
-  EP bench wait phase to visually confirm the ROCm spin loop.
+- ~~perf spin verification~~ DONE 2026-08-18: 6 s / 4576 samples during
+  the EP wait phase put ~55% of cycles in one ~48-byte loop in
+  libhsa-runtime64 (the completion-signal spin-wait) vs 3.4% in the
+  bench's own code — the pegged core polls ~16x more than it computes.
+  (perf note: use /usr/lib/linux-tools/5.15.0-*/perf directly; the
+  wrapper refuses the T2 kernel.)
 - Windows-side SHA-256 cross-check of the DS-V4-Flash transfer against
   checksums/DS-V4-Flash-0731-UD-Q8_K_XL.sha256 (Linux-side manifest).
 - Apple SSD (nvme0) health check from macOS someday — Linux no longer
