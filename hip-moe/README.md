@@ -398,3 +398,29 @@ the pre-fix margin. Remaining known cost: the router round trip (~350 µs
 of readback-sync, killable by keeping partition on-die). Lesson for any
 integration and for the earlier tp4/EP numbers alike: on ROCm, staging
 buffers must be pinned or every "async" copy is a serialization point.
+
+## On-die partitioning: a measured null (2026-08-18)
+
+`--ondie` restructures the step so the post-routing traffic is tiny: full x
+goes to every die before routing (overlapped with the router), each die
+gathers its pair inputs on-device (`get_rows`), folds pairs into per-token
+partials with a [P, n] weight-matrix matmul, and the shared-expert readback
+leaves the critical path. Gate green at every n. Result vs pinned host
+partition: **+7%/+4%/tie/-3% at n=1/4/6/8** — a null.
+
+Why, from the phases: the router phase only fell 452 → 422 µs (the sh_out
+readback was worth ~30), while prep grew 86 → 226 (twelve tiny uploads +
+the weight-matrix build cost more than the two bulk uploads they replaced)
+and the gather/concat/fold chain added 20-130 µs to each die's graph (die 3
+at n=4: solo 619 → 751).
+
+The refined cost map after pinning: EP D=4 carries **~420 µs of serial
+router dependency** (x upload + router compute + sync + tiny reads —
+nothing downstream can start earlier) plus ~60 µs of readback tail. The
+remaining attacks are architectural, not plumbing: replicate routing on
+every die (parallel, zero round trip — blocked on ggml having no on-device
+stream compaction for per-die pair selection), or fuse routing into the
+per-die expert graphs. Both are integration designs, out of scope for this
+instrument. Pinned host partition stays the recommended EP configuration;
+`--ondie` remains in the tree as the documented null, with its small n=8
+edge where the fold matmul amortizes.

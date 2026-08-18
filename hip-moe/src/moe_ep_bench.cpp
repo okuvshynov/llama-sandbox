@@ -153,6 +153,8 @@ struct die_graph_t {
     ggml_cgraph * gf = nullptr;
     ggml_tensor * xs = nullptr, * ids = nullptr;
     std::vector<ggml_tensor *> outs;   // one per <=CHUNK-pair dispatch
+    // --ondie variant: full-x input + on-die gather and pair->token fold
+    ggml_tensor * x_full = nullptr, * tok = nullptr, * wmat = nullptr, * partial = nullptr;
     ggml_gallocr_t galloc = nullptr;
     int64_t P = 0;
 };
@@ -203,6 +205,59 @@ static die_graph_t build_die_graph(ggml_tensor * gate_e, ggml_tensor * up_e, ggm
     return g;
 }
 
+// --ondie: the die receives the FULL x (uploaded before routing) and, after
+// routing, only tiny per-pair metadata: token index, local expert id, and a
+// [P, n] weight matrix. It gathers its pair inputs with get_rows, runs the
+// chunked pipeline, and folds pairs into per-token partials with one small
+// matmul — so the readback is a fixed [n_embd, n] and the host reduce is a
+// plain sum (exact: the fold matrix carries the router weights).
+static die_graph_t build_die_graph_ondie(ggml_tensor * gate_e, ggml_tensor * up_e, ggml_tensor * down_e,
+                                         ggml_backend_t backend, int64_t P, int64_t n) {
+    die_graph_t g;
+    g.P = P;
+    if (P == 0) return g;
+    const int64_t n_chunks = (P + CHUNK - 1) / CHUNK;
+    ggml_init_params ip = { (24 + 10 * (size_t) n_chunks) * ggml_tensor_overhead() + ggml_graph_overhead(),
+                            nullptr, true };
+    g.ctx = ggml_init(ip);
+    ggml_context * ctx = g.ctx;
+    g.gf = ggml_new_graph(ctx);
+
+    g.x_full = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, N_EMBD, n);
+    g.tok    = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, P);
+    g.ids    = ggml_new_tensor_2d(ctx, GGML_TYPE_I32, 1, P);
+    g.wmat   = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, P, n);
+    for (ggml_tensor * t : { g.x_full, g.tok, g.ids, g.wmat }) ggml_set_input(t);
+
+    ggml_tensor * xg = ggml_get_rows(ctx, g.x_full, g.tok);              // [n_embd, P]
+    xg = ggml_reshape_3d(ctx, xg, N_EMBD, 1, P);
+
+    ggml_tensor * pairs2d = nullptr;                                     // [n_embd, P]
+    for (int64_t off = 0; off < P; off += CHUNK) {
+        const int64_t c = std::min(CHUNK, P - off);
+        ggml_tensor * xs_v  = ggml_view_3d(ctx, xg, N_EMBD, 1, c,
+                                           xg->nb[1], xg->nb[2], off * xg->nb[2]);
+        ggml_tensor * ids_v = ggml_view_2d(ctx, g.ids, 1, c, g.ids->nb[1], off * g.ids->nb[1]);
+        ggml_tensor * up   = ggml_mul_mat_id(ctx, up_e,   xs_v, ids_v);
+        ggml_tensor * gate = ggml_mul_mat_id(ctx, gate_e, xs_v, ids_v);
+        up   = ggml_clamp(ctx, up,   -CLAMP, CLAMP);
+        gate = ggml_clamp(ctx, gate, -INFINITY, CLAMP);
+        ggml_tensor * h   = ggml_swiglu_split(ctx, gate, up);
+        ggml_tensor * out = ggml_mul_mat_id(ctx, down_e, h, ids_v);      // [n_embd, 1, c]
+        out = ggml_reshape_2d(ctx, out, N_EMBD, c);
+        pairs2d = pairs2d ? ggml_concat(ctx, pairs2d, out, 1) : out;
+    }
+    // fold pairs -> tokens: partial[i, t] = sum_p pairs[i, p] * wmat[p, t]
+    ggml_tensor * pairsT = ggml_cont(ctx, ggml_transpose(ctx, pairs2d)); // [P, n_embd]
+    g.partial = ggml_mul_mat(ctx, pairsT, g.wmat);                       // [n_embd, n]
+    ggml_set_output(g.partial);
+    ggml_build_forward_expand(g.gf, g.partial);
+
+    g.galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
+    if (!ggml_gallocr_alloc_graph(g.galloc, g.gf)) { fprintf(stderr, "ondie graph alloc failed\n"); exit(2); }
+    return g;
+}
+
 static double median(std::vector<double> v) {
     std::sort(v.begin(), v.end());
     return v[v.size() / 2];
@@ -218,13 +273,17 @@ int main(int argc, char ** argv) {
     bool reorder = false;   // fuse upload->launch per die; submit all
                             // readbacks before the first sync
     bool pinned  = false;   // stage xs/ids/out in pinned host memory
+    bool ondie   = false;   // full-x upload before routing, on-die gather +
+                            // pair->token fold, tiny post-routing metadata,
+                            // shared-expert readback off the critical path
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--dies") && i + 1 < argc) n_dies = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--reps") && i + 1 < argc) reps = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--no-check")) check = false;
         else if (!strcmp(argv[i], "--reorder")) reorder = true;
         else if (!strcmp(argv[i], "--pinned")) pinned = true;
-        else { fprintf(stderr, "usage: %s [--dies 2|4] [--reps N] [--no-check] [--reorder] [--pinned]\n", argv[0]); return 2; }
+        else if (!strcmp(argv[i], "--ondie")) { ondie = true; pinned = true; }
+        else { fprintf(stderr, "usage: %s [--dies 2|4] [--reps N] [--no-check] [--reorder] [--pinned] [--ondie]\n", argv[0]); return 2; }
     }
     const int64_t E_PER = N_EXPERT / n_dies;
 
@@ -342,7 +401,9 @@ int main(int argc, char ** argv) {
 
         std::vector<die_graph_t> dg(n_dies);
         for (int d = 0; d < n_dies; d++)
-            dg[d] = build_die_graph(gate_e[d], up_e[d], down_e[d], dies[d], (int64_t) pairs[d].size());
+            dg[d] = ondie
+                ? build_die_graph_ondie(gate_e[d], up_e[d], down_e[d], dies[d], (int64_t) pairs[d].size(), n)
+                : build_die_graph(gate_e[d], up_e[d], down_e[d], dies[d], (int64_t) pairs[d].size());
 
         std::vector<std::vector<float>> xs_h(n_dies), out_h(n_dies);
         std::vector<std::vector<int32_t>> lid_h(n_dies);
@@ -373,7 +434,90 @@ int main(int argc, char ** argv) {
         }
         std::vector<float> y((size_t) (N_EMBD * n));
 
-        auto one_rep = [&](double * ph) {
+        // ondie staging: one pinned x (portable across devices), pinned sh +
+        // per-die partial, and tiny per-die tok/lids/wmat regions
+        ggml_backend_buffer_t opin = nullptr;
+        float * x_pin = nullptr, * sh_pin = nullptr;
+        std::vector<float *> part_p(n_dies), wm_p(n_dies);
+        std::vector<int32_t *> tok_p(n_dies), lid2_p(n_dies);
+        if (ondie) {
+            const size_t nb_x = (size_t) N_EMBD * n * 4;
+            size_t total = 2 * nb_x;                       // x + sh
+            std::vector<size_t> off(n_dies);
+            for (int d = 0; d < n_dies; d++) {
+                off[d] = total;
+                const size_t P = pairs[d].size();
+                total += nb_x + ((P * 4 + 63) / 64 * 64) * 2 + (size_t) P * n * 4 + 64;
+            }
+            ggml_backend_buffer_type_t hbuft =
+                ggml_backend_dev_host_buffer_type(ggml_backend_get_device(dies[0]));
+            opin = ggml_backend_buft_alloc_buffer(hbuft, total);
+            char * base = (char *) ggml_backend_buffer_get_base(opin);
+            x_pin  = (float *) base;
+            sh_pin = (float *) (base + nb_x);
+            for (int d = 0; d < n_dies; d++) {
+                const size_t P = pairs[d].size(), pal = (P * 4 + 63) / 64 * 64;
+                char * b = base + off[d];
+                part_p[d] = (float *) b;
+                tok_p[d]  = (int32_t *) (b + nb_x);
+                lid2_p[d] = (int32_t *) (b + nb_x + pal);
+                wm_p[d]   = (float *) (b + nb_x + 2 * pal);
+            }
+            memcpy(x_pin, x.data(), nb_x);
+        }
+
+        auto one_rep_ondie = [&](double * ph) {
+            const size_t nb_x = (size_t) N_EMBD * n * 4;
+            double t0 = now_us();
+            // x to every die + router compute, all queued before any wait
+            for (int d = 0; d < n_dies; d++)
+                if (dg[d].P) ggml_backend_tensor_set_async(dies[d], dg[d].x_full, x_pin, 0, nb_x);
+            ggml_backend_tensor_set_async(dies[0], r.x, x_pin, 0, nb_x);
+            ggml_backend_graph_compute_async(dies[0], r.gf);
+            ggml_backend_synchronize(dies[0]);
+            ggml_backend_tensor_get(r.ids_out, ids.data(), 0, ids.size() * 4);
+            ggml_backend_tensor_get(r.w_out, wts.data(), 0, wts.size() * 4);
+            double t1 = now_us();
+
+            std::vector<int> fill(n_dies, 0);
+            for (int d = 0; d < n_dies; d++)
+                if (dg[d].P) memset(wm_p[d], 0, pairs[d].size() * n * 4);
+            for (int64_t t = 0; t < n; t++)
+                for (int64_t s = 0; s < N_USED; s++) {
+                    const int e = ids[t * N_USED + s], d = e / (int) E_PER;
+                    const int p = fill[d]++;
+                    lid2_p[d][p] = e % (int) E_PER;
+                    tok_p[d][p] = (int) t;
+                    wm_p[d][t * (int64_t) pairs[d].size() + p] = wts[t * N_USED + s];
+                }
+            for (int d = 0; d < n_dies; d++) {
+                if (!dg[d].P) continue;
+                const size_t P = pairs[d].size();
+                ggml_backend_tensor_set_async(dies[d], dg[d].tok,  tok_p[d],  0, P * 4);
+                ggml_backend_tensor_set_async(dies[d], dg[d].ids,  lid2_p[d], 0, P * 4);
+                ggml_backend_tensor_set_async(dies[d], dg[d].wmat, wm_p[d],   0, P * n * 4);
+                ggml_backend_graph_compute_async(dies[d], dg[d].gf);
+            }
+            double t2 = now_us();
+            double t3 = t2;   // submit fused into prep above
+
+            for (int d = 0; d < n_dies; d++)
+                if (dg[d].P) ggml_backend_tensor_get_async(dies[d], dg[d].partial, part_p[d], 0, nb_x);
+            ggml_backend_tensor_get_async(dies[0], r.sh_out, sh_pin, 0, nb_x);
+            for (int d = 0; d < n_dies; d++)
+                if (dg[d].P) ggml_backend_synchronize(dies[d]);
+            ggml_backend_synchronize(dies[0]);
+
+            memcpy(y.data(), sh_pin, nb_x);
+            for (int d = 0; d < n_dies; d++) {
+                if (!dg[d].P) continue;
+                for (size_t i = 0; i < y.size(); i++) y[i] += part_p[d][i];
+            }
+            double t4 = now_us();
+            ph[0] = t1 - t0; ph[1] = t2 - t1; ph[2] = t3 - t2; ph[3] = t4 - t3; ph[4] = t4 - t0;
+        };
+
+        auto one_rep_classic = [&](double * ph) {
             double t0 = now_us();
             ggml_backend_tensor_set_async(dies[0], r.x, x.data(), 0, x.size() * 4);
             ggml_backend_graph_compute_async(dies[0], r.gf);
@@ -448,6 +592,7 @@ int main(int argc, char ** argv) {
             double t4 = now_us();
             ph[0] = t1 - t0; ph[1] = t2 - t1; ph[2] = t3 - t2; ph[3] = t4 - t3; ph[4] = t4 - t0;
         };
+        auto one_rep = [&](double * ph) { ondie ? one_rep_ondie(ph) : one_rep_classic(ph); };
 
         double ph[5];
         for (int i = 0; i < 3; i++) one_rep(ph);   // warmup
@@ -545,6 +690,7 @@ int main(int argc, char ** argv) {
             if (dg[d].P) { ggml_gallocr_free(dg[d].galloc); ggml_free(dg[d].ctx); }
             if (pin[d]) ggml_backend_buffer_free(pin[d]);
         }
+        if (opin) ggml_backend_buffer_free(opin);
         ggml_gallocr_free(r.galloc); ggml_free(r.ctx);
     }
 
