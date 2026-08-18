@@ -142,3 +142,44 @@ NOT a CPU baseline (bit-exact gates keep using CPU-only builds, as
 logit-kld forces), and watch `sched_reserve: graph splits` whenever an op
 falls back — backend-specific-op fallbacks are what shattered prefill on
 the Windows Vulkan build.
+
+## The model arrives: full-model baselines (2026-08-17)
+
+Model: DS-V4-Flash-0731-UD-Q8_K_XL, 150.75 GiB, verified sizes + Linux
+SHA-256 manifest (`checksums/DS-V4-Flash-0731-UD-Q8_K_XL.sha256`; Windows
+cross-check pending). Stub regenerated with `moe-serv/make_stub.py` —
+15.78 GiB, byte count matching the Windows instrument, layout check ok.
+All rows: stock llama.cpp `build-hip`, `-lm none -t 16 -r 3..5`, two loads
+per quoted config. Smokes first: stub loads across all four dies
+(engagement from the memory breakdown), CPU and GPU greedy decodes agree
+token-for-token over 24 tokens (weak, sampler-level — the KLD gate is still
+owed), and the DS4-specific ops (HC_COMB, LIGHTNING_INDEXER) exist under
+HIP because the backend compiles the CUDA sources — the ops whose absence
+crippled the Vulkan backend.
+
+| tg32, full model | t/s |
+|---|---|
+| Windows stock (CPU) | 3.46-3.64, 7-9% load-to-load |
+| Windows best ever (moe-serv TP) | 3.92 |
+| Linux stock CPU (`-ngl 0 -nopo 1`) | 3.50 / 3.59 |
+| Linux `-ngl 99 -ncmoe 14 -ts 19/8/8/8` | 9.78 / 9.88 |
+| Linux `-ngl 99 -ncmoe 13 -ts 19/8/8/8` | **10.12 / 10.00** |
+
+pp512: 18.25 stock -> **76.4-76.7** at ncmoe 13 (Windows mirror best: 21.84).
+Stub decode: CPU 30.2-30.5 (Windows band reproduced), full offload **89 t/s**.
+`-ncmoe 12` OOMs under every viable `-ts` (9 heavy layers on one die is
+31+ GiB before compute buffers) — ncmoe 13 is the capacity frontier of the
+simple layer split. The `-ts` weighting exists because `-ncmoe` strips
+experts from the *head* layers: die 0 absorbs all 13 light layers plus six
+heavy ones (~24.5 GiB), dies 1-3 take eight heavy layers each (~28 GiB).
+
+What the 10 t/s is and is not: stock llama.cpp, layer-split pipeline
+(`-sm layer`) — no EP, no TP, three of four dies idle at any decode
+instant, ggml's own HIP mul_mat_id for the on-die experts, CPU experts for
+the first 13 layers. The 2.6x over the Windows-best is bought entirely by
+capacity: experts in HBM instead of streaming through 75 GB/s DDR4, plus a
+trunk that could never leave the CPU under Vulkan. Levers not yet pulled:
+the 13 CPU expert layers (the dominant remaining cost), the idle pipeline,
+and the custom kernel (2.5x over ggml's *Vulkan* mxfp4 kernel; whether
+ggml's HIP kernel leaves the same gap is one `test-backend-ops perf -o
+MUL_MAT_ID` away).
