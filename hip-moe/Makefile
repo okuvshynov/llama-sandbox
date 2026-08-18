@@ -20,3 +20,9 @@ clean:
 	rm -rf bin
 
 .PHONY: all clean
+
+bin/moe-ep-bench: src/moe_ep_bench.cpp
+	@mkdir -p bin
+	g++ -O2 -std=c++17 -I$(LLAMA)/ggml/include -o $@ $< \
+	    -L$(LLAMA)/build-hip/bin -lggml -lggml-base \
+	    -Wl,-rpath,$(LLAMA)/build-hip/bin

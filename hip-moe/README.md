@@ -310,3 +310,47 @@ already in the repo's lesson book: `ggml_argsort_top_k` returns a view
 view protects nothing), and a plain relative tolerance manufactures
 failures on near-zero elements of +-hundreds-scale sums (gate normalized
 by reference RMS instead).
+
+## moe-ep-bench: expert parallelism on the Pro shape (2026-08-18)
+
+`make bin/moe-ep-bench` — the same V4-Pro layer distributed EP-style: die d
+owns experts [d·384/D, (d+1)·384/D), router + shared expert on die 0, and
+each step routes on-die, reads ids/weights back, partitions (token, slot)
+pairs by owner, runs a compact `mul_mat_id` batch per die (`--dies 2|4`),
+and host-reduces the weighted outputs — moe-serv's run_device_compact on
+stock kernels. Phase timers split router / prep+upload / submit / wait+read;
+per-die pair counts and solo compute times show imbalance; a Monte-Carlo
+pass through the real router gives its expectation. Sanity: CPU backend
+with routing held fixed, all n green.
+
+µs/token, chunked (see below), vs the single-die bench as D=1:
+
+| n | 1 die | EP D=2 | EP D=4 |
+|---|---|---|---|
+| 1 | 785 | 916 | 1071 |
+| 2 | 570 | 695 | 640 |
+| 4 | 548 | 500 | **421** |
+| 6 | 528 | 459 | **374** |
+| 8 | 514 | 429 | **376** |
+
+- **The compact layout has an 8-pair cliff on HIP.** `mul_mat_id` keeps its
+  MMVQ fast path only while dst->ne[2] stays under a per-type cap
+  (`get_mmvq_mmid_max_batch`); the compact form puts P there, and 9 pairs
+  cost 3x what 8 do (2662 vs 683 µs). The standard [6, n] layout never
+  trips it — which is why the single-die bench and the earlier "no HIP
+  8-token cliff" verdict saw nothing. Fix: issue ≤8-pair chunks (moe-serv's
+  chunking lesson, HIP edition) — restores ~82 µs/pair linearity for
+  +16 µs of submissions.
+- **EP loses at n=1, wins 27-29% at verify batches** (crossover n≈2-4;
+  D=4 ≥ D=2 above it).
+- **Communication dominates, not imbalance.** At D=4 n=8: compute critical
+  path 1072 µs, everything else ~1930 (router round trip 684, host
+  partition+upload 646, submits 92, readback ~480) — 64% of EP's time.
+  Imbalance: measured sample max/ideal 1.08; Monte-Carlo expectation 1.30
+  at D=4 n=8 (1.88 at n=1, falling with batch; D=2: 1.11-1.30) — ~30% of
+  the compute phase, ~10% end-to-end, shrinking exactly where EP is viable.
+
+Consequence: EP on stock kernels is compute-viable at speculative
+verification batch sizes, and its budget is the border family again —
+host round trips, staging, per-die submissions — the parts an integration
+would attack by keeping routing on-die and overlapping transfers.
