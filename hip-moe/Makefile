@@ -13,7 +13,7 @@ bin/hip-moe-bench: src/main.hip
 bin/moe-ggml-bench: src/moe_ggml_bench.cpp
 	@mkdir -p bin
 	g++ -O2 -std=c++17 -I$(LLAMA)/ggml/include -o $@ $< \
-	    -L$(LLAMA)/build-hip/bin -lggml -lggml-base \
+	    -L$(LLAMA)/build-hip/bin -lggml -lggml-base -lggml-cpu \
 	    -Wl,-rpath,$(LLAMA)/build-hip/bin
 
 clean:
@@ -24,5 +24,5 @@ clean:
 bin/moe-ep-bench: src/moe_ep_bench.cpp
 	@mkdir -p bin
 	g++ -O2 -std=c++17 -I$(LLAMA)/ggml/include -o $@ $< \
-	    -L$(LLAMA)/build-hip/bin -lggml -lggml-base \
+	    -L$(LLAMA)/build-hip/bin -lggml -lggml-base -lggml-cpu \
 	    -Wl,-rpath,$(LLAMA)/build-hip/bin

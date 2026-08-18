@@ -25,6 +25,7 @@
 #include "ggml.h"
 #include "ggml-alloc.h"
 #include "ggml-backend.h"
+#include "ggml-cpu.h"
 
 #include <chrono>
 #include <cinttypes>
@@ -210,20 +211,28 @@ static void set_input(graph_t & g, int64_t n_tokens) {
 
 int main(int argc, char ** argv) {
     bool check = true;
-    int reps = 100;
+    bool cpu_mode = false;   // run the sweep on the CPU backend instead —
+                             // the CPU-offloaded-experts number for hybrid
+                             // placements of models too big for VRAM
+    int reps = 100, threads = 16;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--no-check")) check = false;
+        else if (!strcmp(argv[i], "--cpu")) { cpu_mode = true; check = false; }
         else if (!strcmp(argv[i], "--reps") && i + 1 < argc) reps = atoi(argv[++i]);
-        else { fprintf(stderr, "usage: %s [--no-check] [--reps N]\n", argv[0]); return 2; }
+        else if (!strcmp(argv[i], "--threads") && i + 1 < argc) threads = atoi(argv[++i]);
+        else { fprintf(stderr, "usage: %s [--no-check] [--cpu] [--threads N] [--reps N]\n", argv[0]); return 2; }
     }
 
     const char * dir = getenv("GGML_BACKEND_DIR");
     ggml_backend_load_all_from_path(dir ? dir : "/home/oleksandr/projects/llama.cpp/build-hip/bin");
 
-    ggml_backend_dev_t dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU);
-    if (!dev) { fprintf(stderr, "no GPU device (set GGML_BACKEND_DIR)\n"); return 2; }
+    ggml_backend_dev_t dev = ggml_backend_dev_by_type(
+        cpu_mode ? GGML_BACKEND_DEVICE_TYPE_CPU : GGML_BACKEND_DEVICE_TYPE_GPU);
+    if (!dev) { fprintf(stderr, "no device (set GGML_BACKEND_DIR)\n"); return 2; }
     ggml_backend_t gpu = ggml_backend_dev_init(dev, nullptr);
-    printf("device: %s (%s)\n", ggml_backend_dev_name(dev), ggml_backend_dev_description(dev));
+    if (cpu_mode) ggml_backend_cpu_set_n_threads(gpu, threads);
+    printf("device: %s (%s)%s\n", ggml_backend_dev_name(dev), ggml_backend_dev_description(dev),
+           cpu_mode ? " [CPU mode]" : "");
 
     const double bytes_per_mat_gu = (double) ggml_row_size(GGML_TYPE_MXFP4, N_EMBD) * N_FF;
     const double bytes_per_expert = 2 * bytes_per_mat_gu

@@ -102,7 +102,7 @@ struct router_t {
 
 static router_t build_router(ggml_context * wctx, ggml_tensor * gate_inp, ggml_tensor * exp_probs_b,
                              ggml_tensor * sh_gate, ggml_tensor * sh_up, ggml_tensor * sh_down,
-                             ggml_backend_t backend, int64_t n) {
+                             ggml_backend_t backend, int64_t n, bool with_shared = true) {
     (void) wctx;
     router_t r;
     ggml_init_params ip = { 64 * ggml_tensor_overhead() + ggml_graph_overhead(), nullptr, true };
@@ -133,14 +133,19 @@ static router_t build_router(ggml_context * wctx, ggml_tensor * gate_inp, ggml_t
     ggml_set_output(r.w_out);
     ggml_build_forward_expand(r.gf, r.w_out);
 
-    ggml_tensor * sg = ggml_mul_mat(ctx, sh_gate, r.x);
-    ggml_tensor * su = ggml_mul_mat(ctx, sh_up, r.x);
-    su = ggml_clamp(ctx, su, -CLAMP, CLAMP);
-    sg = ggml_clamp(ctx, sg, -INFINITY, CLAMP);
-    ggml_tensor * sh = ggml_swiglu_split(ctx, sg, su);
-    r.sh_out = ggml_mul_mat(ctx, sh_down, sh);         // [n_embd, n]
-    ggml_set_output(r.sh_out);
-    ggml_build_forward_expand(r.gf, r.sh_out);
+    if (with_shared) {
+        ggml_tensor * sg = ggml_mul_mat(ctx, sh_gate, r.x);
+        ggml_tensor * su = ggml_mul_mat(ctx, sh_up, r.x);
+        su = ggml_clamp(ctx, su, -CLAMP, CLAMP);
+        sg = ggml_clamp(ctx, sg, -INFINITY, CLAMP);
+        ggml_tensor * sh = ggml_swiglu_split(ctx, sg, su);
+        r.sh_out = ggml_mul_mat(ctx, sh_down, sh);     // [n_embd, n]
+        ggml_set_output(r.sh_out);
+        ggml_build_forward_expand(r.gf, r.sh_out);
+    } else {
+        r.sh_out = nullptr;   // --shared-late: shared expert runs as its own
+                              // graph, launched with the expert wave
+    }
 
     r.galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
     if (!ggml_gallocr_alloc_graph(r.galloc, r.gf)) { fprintf(stderr, "router alloc failed\n"); exit(2); }
@@ -203,6 +208,38 @@ static die_graph_t build_die_graph(ggml_tensor * gate_e, ggml_tensor * up_e, ggm
     g.galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
     if (!ggml_gallocr_alloc_graph(g.galloc, g.gf)) { fprintf(stderr, "die graph alloc failed\n"); exit(2); }
     return g;
+}
+
+// --shared-late: the shared expert as its own graph on die 0. It depends
+// only on x, so it can run concurrently with the routed-expert wave instead
+// of inside the serial router phase — die 0 has slack (its expert slice
+// finishes before the fullest die), so the ~200 us mostly comes for free.
+struct shared_graph_t {
+    ggml_context * ctx = nullptr;
+    ggml_cgraph * gf = nullptr;
+    ggml_tensor * x = nullptr, * out = nullptr;
+    ggml_gallocr_t galloc = nullptr;
+};
+
+static shared_graph_t build_shared_graph(ggml_tensor * sh_gate, ggml_tensor * sh_up, ggml_tensor * sh_down,
+                                         ggml_backend_t backend, int64_t n) {
+    shared_graph_t s;
+    ggml_init_params ip = { 24 * ggml_tensor_overhead() + ggml_graph_overhead(), nullptr, true };
+    s.ctx = ggml_init(ip);
+    s.gf = ggml_new_graph(s.ctx);
+    s.x = ggml_new_tensor_2d(s.ctx, GGML_TYPE_F32, N_EMBD, n);
+    ggml_set_input(s.x);
+    ggml_tensor * sg = ggml_mul_mat(s.ctx, sh_gate, s.x);
+    ggml_tensor * su = ggml_mul_mat(s.ctx, sh_up, s.x);
+    su = ggml_clamp(s.ctx, su, -CLAMP, CLAMP);
+    sg = ggml_clamp(s.ctx, sg, -INFINITY, CLAMP);
+    ggml_tensor * h = ggml_swiglu_split(s.ctx, sg, su);
+    s.out = ggml_mul_mat(s.ctx, sh_down, h);
+    ggml_set_output(s.out);
+    ggml_build_forward_expand(s.gf, s.out);
+    s.galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
+    if (!ggml_gallocr_alloc_graph(s.galloc, s.gf)) { fprintf(stderr, "shared graph alloc failed\n"); exit(2); }
+    return s;
 }
 
 // --ondie: the die receives the FULL x (uploaded before routing) and, after
@@ -276,6 +313,9 @@ int main(int argc, char ** argv) {
     bool ondie   = false;   // full-x upload before routing, on-die gather +
                             // pair->token fold, tiny post-routing metadata,
                             // shared-expert readback off the critical path
+    bool shared_late = false; // shared expert as its own graph, launched
+                              // with the expert wave instead of inside the
+                              // serial router phase
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--dies") && i + 1 < argc) n_dies = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--reps") && i + 1 < argc) reps = atoi(argv[++i]);
@@ -283,8 +323,10 @@ int main(int argc, char ** argv) {
         else if (!strcmp(argv[i], "--reorder")) reorder = true;
         else if (!strcmp(argv[i], "--pinned")) pinned = true;
         else if (!strcmp(argv[i], "--ondie")) { ondie = true; pinned = true; }
-        else { fprintf(stderr, "usage: %s [--dies 2|4] [--reps N] [--no-check] [--reorder] [--pinned] [--ondie]\n", argv[0]); return 2; }
+        else if (!strcmp(argv[i], "--shared-late")) { shared_late = true; pinned = true; }
+        else { fprintf(stderr, "usage: %s [--dies 2|4] [--reps N] [--no-check] [--reorder] [--pinned] [--ondie] [--shared-late]\n", argv[0]); return 2; }
     }
+    if (ondie && shared_late) { fprintf(stderr, "--ondie and --shared-late are mutually exclusive\n"); return 2; }
     const int64_t E_PER = N_EXPERT / n_dies;
 
     const char * bdir = getenv("GGML_BACKEND_DIR");
@@ -379,7 +421,10 @@ int main(int argc, char ** argv) {
     printf("\n%-3s %-14s %10s | %8s %8s %8s %8s | %10s %10s\n",
            "n", "pairs/die", "solo us", "router", "prep", "submit", "wait+rd", "us/graph", "us/token");
     for (int64_t n : {1, 2, 4, 6, 8}) {
-        router_t r = build_router(wctx[0], gate_inp, exp_probs_b, sh_gate, sh_up, sh_down, dies[0], n);
+        router_t r = build_router(wctx[0], gate_inp, exp_probs_b, sh_gate, sh_up, sh_down, dies[0], n,
+                                  /*with_shared*/ !shared_late);
+        shared_graph_t sgr{};
+        if (shared_late) sgr = build_shared_graph(sh_gate, sh_up, sh_down, dies[0], n);
 
         std::mt19937 rng(42);
         std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
@@ -433,6 +478,21 @@ int main(int argc, char ** argv) {
             }
         }
         std::vector<float> y((size_t) (N_EMBD * n));
+
+        // classic-path pinned staging for the router's x (it was still
+        // pageable after the --pinned fix) and for the late shared output
+        ggml_backend_buffer_t rpin = nullptr;
+        float * xr_pin = nullptr, * shl_pin = nullptr;
+        if (pinned && !ondie) {
+            const size_t nb_x = (size_t) N_EMBD * n * 4;
+            ggml_backend_buffer_type_t hbuft =
+                ggml_backend_dev_host_buffer_type(ggml_backend_get_device(dies[0]));
+            rpin = ggml_backend_buft_alloc_buffer(hbuft, 2 * nb_x);
+            char * b = (char *) ggml_backend_buffer_get_base(rpin);
+            xr_pin = (float *) b;
+            shl_pin = (float *) (b + nb_x);
+            memcpy(xr_pin, x.data(), nb_x);
+        }
 
         // ondie staging: one pinned x (portable across devices), pinned sh +
         // per-die partial, and tiny per-die tok/lids/wmat regions
@@ -519,12 +579,18 @@ int main(int argc, char ** argv) {
 
         auto one_rep_classic = [&](double * ph) {
             double t0 = now_us();
-            ggml_backend_tensor_set_async(dies[0], r.x, x.data(), 0, x.size() * 4);
+            const float * xsrc = xr_pin ? xr_pin : x.data();
+            ggml_backend_tensor_set_async(dies[0], r.x, xsrc, 0, x.size() * 4);
+            if (shared_late) ggml_backend_tensor_set_async(dies[0], sgr.x, xsrc, 0, x.size() * 4);
             ggml_backend_graph_compute_async(dies[0], r.gf);
             ggml_backend_synchronize(dies[0]);
             ggml_backend_tensor_get(r.ids_out, ids.data(), 0, ids.size() * 4);
             ggml_backend_tensor_get(r.w_out, wts.data(), 0, wts.size() * 4);
-            ggml_backend_tensor_get(r.sh_out, y.data(), 0, y.size() * 4);   // y := shared
+            if (shared_late) {
+                memset(y.data(), 0, y.size() * 4);
+            } else {
+                ggml_backend_tensor_get(r.sh_out, y.data(), 0, y.size() * 4);   // y := shared
+            }
             double t1 = now_us();
 
             std::vector<int> fill(n_dies, 0);
@@ -556,8 +622,10 @@ int main(int argc, char ** argv) {
                 for (int d = 0; d < n_dies; d++)
                     if (dg[d].P) ggml_backend_graph_compute_async(dies[d], dg[d].gf);
             }
+            if (shared_late) ggml_backend_graph_compute_async(dies[0], sgr.gf);
             double t3 = now_us();
 
+            if (shared_late) ggml_backend_tensor_get_async(dies[0], sgr.out, shl_pin, 0, y.size() * 4);
             if (reorder) {
                 // submit every readback, then wait — no sync between submits
                 for (int d = 0; d < n_dies; d++) {
@@ -581,6 +649,7 @@ int main(int argc, char ** argv) {
                     ggml_backend_synchronize(dies[d]);
                 }
             }
+            if (shared_late && !dg[0].P) ggml_backend_synchronize(dies[0]);
             for (int d = 0; d < n_dies; d++)
                 for (size_t p = 0; p < pairs[d].size(); p++) {
                     const int t = pairs[d][p].first;
@@ -589,6 +658,8 @@ int main(int argc, char ** argv) {
                     float * dst = y.data() + (size_t) t * N_EMBD;
                     for (int64_t i = 0; i < N_EMBD; i++) dst[i] += wt * src[i];
                 }
+            if (shared_late)
+                for (size_t i = 0; i < y.size(); i++) y[i] += shl_pin[i];
             double t4 = now_us();
             ph[0] = t1 - t0; ph[1] = t2 - t1; ph[2] = t3 - t2; ph[3] = t4 - t3; ph[4] = t4 - t0;
         };
@@ -658,7 +729,7 @@ int main(int argc, char ** argv) {
                 }
             // y currently holds shared + routed from the last rep; subtract shared
             std::vector<float> sh((size_t) (N_EMBD * n));
-            ggml_backend_tensor_get(r.sh_out, sh.data(), 0, sh.size() * 4);
+            ggml_backend_tensor_get(shared_late ? sgr.out : r.sh_out, sh.data(), 0, sh.size() * 4);
             double rms_ref = 0, rms_diff = 0;
             for (size_t i = 0; i < yref.size(); i++) {
                 const double a = y[i] - sh[i], b = yref[i];
@@ -691,6 +762,8 @@ int main(int argc, char ** argv) {
             if (pin[d]) ggml_backend_buffer_free(pin[d]);
         }
         if (opin) ggml_backend_buffer_free(opin);
+        if (rpin) ggml_backend_buffer_free(rpin);
+        if (sgr.ctx) { ggml_gallocr_free(sgr.galloc); ggml_free(sgr.ctx); }
         ggml_gallocr_free(r.galloc); ggml_free(r.ctx);
     }
 

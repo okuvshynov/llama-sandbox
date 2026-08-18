@@ -424,3 +424,38 @@ per-die expert graphs. Both are integration designs, out of scope for this
 instrument. Pinned host partition stays the recommended EP configuration;
 `--ondie` remains in the tree as the documented null, with its small n=8
 edge where the fold matmul amortizes.
+
+## Shared expert off the critical path, and the CPU-offload yardstick (2026-08-18)
+
+**`--shared-late`** (EP): the shared expert depends only on x, so it runs as
+its own die-0 graph launched with the expert wave instead of inside the
+serial router phase. The router phase fell exactly as predicted (451 →
+246 µs — the true serial floor of centralized routing: x upload + routing
+compute + sync + tiny reads), but only about a third of the evicted ~200 µs
+was net gain: die 0 running its expert slice + shared (~650 µs) becomes the
+critical path over die 3 (615), so the wait phase absorbed the rest. Net:
+**-5 to -6.5% at n=2-6** (n=4: 315 µs/token, n=6: 276), +6% at n=1, tie at
+n=8. Gate green. Dynamic shared placement (replicate 35 MB per die, pick
+the least-loaded) was arithmetic-checked and buys nothing — die 0 already
+is the least loaded at n=4, and at n=8 the shared work (~3.4
+pairs-equivalent) overloads any die. Best config: shared-late for n=2-6,
+plain pinned at the edges. Also a free-rider null: pinning the router's x
+upload was worth ~nothing (452 → 451) — pageable staging only hurt at
+volume.
+
+**`--cpu` on moe-ggml-bench**: the same Pro-shape MoE layer through the
+ggml CPU backend (16 threads, plain mxfp4 path — no CPU_REPACK, so mildly
+pessimistic vs llama.cpp serving):
+
+| n | µs/token | GB/s |
+|---|---|---|
+| 1 | 4465 | 55 |
+| 4 | 3503 | 58 |
+| 8 | 3179 | 59 |
+
+Bandwidth-bound at ~59 GB/s effective, weak batch amortization (-29%/token
+by n=8, pure expert-union effect). Cross-checks against Flash serving
+(1.4 ms/layer × 2.8× expert bytes ≈ 3.9 ms). The hybrid-placement
+yardstick: every Pro MoE layer offloaded to CPU costs ~4.5 ms/token at
+decode vs 0.3-0.8 ms on-die — a 6-12× penalty per displaced layer, which
+is why the ncmoe count dominates serving throughput.
