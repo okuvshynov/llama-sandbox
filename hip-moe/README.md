@@ -205,3 +205,21 @@ depth saturates and cannot certify kernel exactness — per-op correctness
 rests on the 12,926-test backend suite and the token-identical greedy
 smoke; this gate rules out the gross failure modes (wrong op, bad weights,
 broken placement).
+
+## The custom-kernel question, closed (2026-08-17)
+
+`test-backend-ops perf -o MUL_MAT_ID -b ROCm0`, mxfp4 decode case
+(n=1, m=k=2880, 4 of 32 experts): **63.2 µs = 279 GB/s**. Our custom
+kernel's own band at its shapes is 253-330 GB/s — ggml's HIP mul_mat_id
+lands inside it. The Vulkan-era 2.5x gap (ggml-vk ~163 GB/s) was a
+ggml-vulkan weakness, not a ggml weakness; the CUDA-derived MMVQ kernels
+on gfx906 already sit at the same latency-bound ~280 GB/s decode plateau
+the E1-E8 ledger mapped. Porting the 2-pass kernel to HIP would buy ~0%.
+
+Batch scaling is also healthy — n=8 costs 48 µs/token, n=512 reaches
+7.4 TFLOPS — so there is no HIP analog of the Vulkan 8-token vector-path
+cliff that forced moe-serv's 8-token chunking.
+
+Remaining levers on this stack, in order of expected value: the 13 CPU
+expert layers (dominant), the 3-of-4-idle layer-split pipeline, and
+nothing else — the kernel and the border are both settled.
