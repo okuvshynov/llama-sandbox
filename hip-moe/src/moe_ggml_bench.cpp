@@ -50,6 +50,8 @@ static const int     N_BATCH_MAX = 8;
 struct weights_t {
     ggml_context * ctx = nullptr;
     ggml_backend_buffer_t buf = nullptr;
+    ggml_context * ctx2 = nullptr;               // mxfp4 tensors when a
+    ggml_backend_buffer_t buf2 = nullptr;        // buft override is in play
     ggml_tensor * gate_inp, * exp_probs_b;
     ggml_tensor * gate_exps, * up_exps, * down_exps;
     ggml_tensor * sh_gate, * sh_up, * sh_down;
@@ -77,22 +79,37 @@ static void fill_tensor(ggml_tensor * t, const char * name) {
     ggml_backend_tensor_set(t, data.data(), 0, nbytes);
 }
 
-static weights_t make_weights(ggml_backend_t backend) {
+static weights_t make_weights(ggml_backend_t backend, ggml_backend_buffer_type_t mx_buft = nullptr) {
     weights_t w;
     ggml_init_params ip = { 16 * ggml_tensor_overhead(), nullptr, /*no_alloc*/ true };
     w.ctx = ggml_init(ip);
 
     w.gate_inp    = ggml_new_tensor_2d(w.ctx, GGML_TYPE_F32,   N_EMBD, N_EXPERT);
     w.exp_probs_b = ggml_new_tensor_1d(w.ctx, GGML_TYPE_F32,   N_EXPERT);
-    w.gate_exps   = ggml_new_tensor_3d(w.ctx, GGML_TYPE_MXFP4, N_EMBD, N_FF, N_EXPERT);
-    w.up_exps     = ggml_new_tensor_3d(w.ctx, GGML_TYPE_MXFP4, N_EMBD, N_FF, N_EXPERT);
-    w.down_exps   = ggml_new_tensor_3d(w.ctx, GGML_TYPE_MXFP4, N_FF, N_EMBD, N_EXPERT);
-    w.sh_gate     = ggml_new_tensor_2d(w.ctx, GGML_TYPE_MXFP4, N_EMBD, N_FF);
-    w.sh_up       = ggml_new_tensor_2d(w.ctx, GGML_TYPE_MXFP4, N_EMBD, N_FF);
-    w.sh_down     = ggml_new_tensor_2d(w.ctx, GGML_TYPE_MXFP4, N_FF, N_EMBD);
+
+    // mxfp4 tensors go into mx_buft when given (e.g. CPU_REPACK — the layout
+    // llama.cpp serving actually runs); f32 router tensors stay in the
+    // backend's default buffer.
+    ggml_context * mctx = w.ctx;
+    if (mx_buft) {
+        w.ctx2 = ggml_init(ip);
+        mctx = w.ctx2;
+    }
+    w.gate_exps   = ggml_new_tensor_3d(mctx, GGML_TYPE_MXFP4, N_EMBD, N_FF, N_EXPERT);
+    w.up_exps     = ggml_new_tensor_3d(mctx, GGML_TYPE_MXFP4, N_EMBD, N_FF, N_EXPERT);
+    w.down_exps   = ggml_new_tensor_3d(mctx, GGML_TYPE_MXFP4, N_FF, N_EMBD, N_EXPERT);
+    w.sh_gate     = ggml_new_tensor_2d(mctx, GGML_TYPE_MXFP4, N_EMBD, N_FF);
+    w.sh_up       = ggml_new_tensor_2d(mctx, GGML_TYPE_MXFP4, N_EMBD, N_FF);
+    w.sh_down     = ggml_new_tensor_2d(mctx, GGML_TYPE_MXFP4, N_FF, N_EMBD);
 
     w.buf = ggml_backend_alloc_ctx_tensors(w.ctx, backend);
     if (!w.buf) { fprintf(stderr, "weight buffer allocation failed\n"); exit(2); }
+    if (mx_buft) {
+        w.buf2 = ggml_backend_alloc_ctx_tensors_from_buft(w.ctx2, mx_buft);
+        if (!w.buf2) { fprintf(stderr, "mxfp4 buffer allocation failed (%s)\n",
+                               ggml_backend_buft_name(mx_buft)); exit(2); }
+        printf("mxfp4 weights in buffer: %s\n", ggml_backend_buffer_name(w.buf2));
+    }
 
     fill_tensor(w.gate_inp,    "gate_inp");
     fill_tensor(w.exp_probs_b, "exp_probs_b");
@@ -214,14 +231,19 @@ int main(int argc, char ** argv) {
     bool cpu_mode = false;   // run the sweep on the CPU backend instead —
                              // the CPU-offloaded-experts number for hybrid
                              // placements of models too big for VRAM
+    bool repack = false;     // CPU mode with mxfp4 weights in the CPU_REPACK
+                             // buffer type — what llama.cpp serving runs;
+                             // the sanity gate then compares repack vs plain
     int reps = 100, threads = 16;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--no-check")) check = false;
-        else if (!strcmp(argv[i], "--cpu")) { cpu_mode = true; check = false; }
+        else if (!strcmp(argv[i], "--cpu")) { cpu_mode = true; }
+        else if (!strcmp(argv[i], "--repack")) { repack = true; cpu_mode = true; }
         else if (!strcmp(argv[i], "--reps") && i + 1 < argc) reps = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--threads") && i + 1 < argc) threads = atoi(argv[++i]);
-        else { fprintf(stderr, "usage: %s [--no-check] [--cpu] [--threads N] [--reps N]\n", argv[0]); return 2; }
+        else { fprintf(stderr, "usage: %s [--no-check] [--cpu] [--repack] [--threads N] [--reps N]\n", argv[0]); return 2; }
     }
+    if (cpu_mode && !repack) check = false;   // plain-CPU vs CPU is a self-comparison
 
     const char * dir = getenv("GGML_BACKEND_DIR");
     ggml_backend_load_all_from_path(dir ? dir : "/home/oleksandr/projects/llama.cpp/build-hip/bin");
@@ -242,8 +264,22 @@ int main(int argc, char ** argv) {
            "routed experts %.2f GiB\n\n",
            N_EXPERT, N_EMBD, N_FF, N_USED, N_EXPERT * bytes_per_expert / (1u << 30));
 
+    ggml_backend_buffer_type_t mx_buft = nullptr;
+    if (repack) {
+        ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(dev);
+        auto get_extra = (ggml_backend_dev_get_extra_bufts_t)
+            ggml_backend_reg_get_proc_address(reg, "ggml_backend_dev_get_extra_bufts");
+        if (get_extra) {
+            for (ggml_backend_buffer_type_t * b = get_extra(dev); b && *b; b++) {
+                printf("extra buft: %s\n", ggml_backend_buft_name(*b));
+                if (strstr(ggml_backend_buft_name(*b), "REPACK")) mx_buft = *b;
+            }
+        }
+        if (!mx_buft) { fprintf(stderr, "no REPACK buffer type on this build/ISA\n"); return 2; }
+    }
+
     printf("loading weights to device...\n");
-    weights_t w = make_weights(gpu);
+    weights_t w = make_weights(gpu, mx_buft);
 
     // --- sanity: n=1 on the CPU backend vs the GPU ---------------------------
     if (check) {
@@ -281,6 +317,7 @@ int main(int argc, char ** argv) {
                rms_ref, rms_diff / rms_ref, max_abs / rms_ref, ok ? "ok" : "SUSPECT");
         free_graph(gg); free_graph(gc);
         ggml_backend_buffer_free(wc.buf); ggml_free(wc.ctx);
+        if (wc.buf2) { ggml_backend_buffer_free(wc.buf2); ggml_free(wc.ctx2); }
         ggml_backend_free(cpu);
         if (!ok) return 1;
     }
@@ -309,6 +346,7 @@ int main(int argc, char ** argv) {
         free_graph(g);
     }
 
+    if (w.buf2) { ggml_backend_buffer_free(w.buf2); ggml_free(w.ctx2); }
     ggml_backend_buffer_free(w.buf);
     ggml_free(w.ctx);
     ggml_backend_free(gpu);

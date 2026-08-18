@@ -7,11 +7,12 @@ README.md; this file holds what we chose not to do yet.
 
 Add `--cpu-experts K` to moe-ep-bench: the CPU as a fifth EP target owning
 K (cold) experts, its ggml graph launched concurrently with the GPU wave.
-Prediction to falsify, from measured numbers (2026-08-18): a distinct cold
-expert costs ~600-650 µs on CPU (35 MB at 59 GB/s), the n=4 GPU wave is a
-~650 µs umbrella — so ONE distinct cold expert per step hides almost
-completely, the second sticks out ~600 µs (+30% step). Expected tax for
-"1-2 cold pairs/step" placement: 5-15% mean, with 1.3-1.65 ms jitter.
+Prediction to falsify, from measured numbers (2026-08-18,
+repack-corrected): a distinct cold expert costs ~450-470 µs on CPU (35 MB
+at 78 GB/s with CPU_REPACK — stage the CPU experts repacked), the n=4 GPU
+wave is a ~650 µs umbrella — so ONE distinct cold expert hides with
+margin, the second sticks out only ~300 µs. Expected tax for "1-2 cold
+pairs/step" placement: ~3-8% mean.
 Design constraints already known: CPU graph on ~14-15 threads, blocking
 GPU sync (+1 µs on HIP per latency bench), overlap mandatory. Also
 verify: two tokens hitting the SAME cold expert read it once (~free).

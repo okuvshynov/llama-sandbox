@@ -459,3 +459,34 @@ by n=8, pure expert-union effect). Cross-checks against Flash serving
 yardstick: every Pro MoE layer offloaded to CPU costs ~4.5 ms/token at
 decode vs 0.3-0.8 ms on-die — a 6-12× penalty per displaced layer, which
 is why the ncmoe count dominates serving throughput.
+
+## The repacked CPU kernels: the yardstick corrected (2026-08-18)
+
+`--repack` on moe-ggml-bench puts the mxfp4 tensors in the CPU_REPACK
+buffer type (fetched via `ggml_backend_dev_get_extra_bufts`, the same
+route llama.cpp serving takes; engagement proven by the per-tensor
+`repack ... with mxfp4_8x8` lines and the buffer name). Gate green
+against the plain path.
+
+| n | plain µs/token | repack µs/token | GB/s |
+|---|---|---|---|
+| 1 | 4465 | **3297** | 74.5 |
+| 4 | 3503 | **2585** | 78 |
+| 8 | 3179 | **2392** | 79 |
+
+Repack is worth a consistent **~26%**, and the bandwidth column names the
+mechanism: 74-80 GB/s effective vs the plain path's 59 — the repacked GEMM
+removes the dequant inefficiency and runs at the machine's streaming
+ceiling (nano-glm sustained 75; the 4 KiB-page probe 100). Corrected
+yardsticks: a CPU-offloaded Pro MoE layer costs **~3.3 ms/token at
+decode, ~2.4 ms at n=8**; a distinct cold expert ~450-470 µs — so in the
+mixed-placement umbrella arithmetic one cold expert hides under the
+~650 µs GPU wave with margin, two stick out only ~300 µs, and the
+expected tax for a "1-2 cold pairs per batch" placement drops to ~3-8%.
+
+Gate curiosity, recorded so nobody re-derives it: the repack-vs-plain
+diff statistics printed identical to the GPU-vs-plain gate's (2.310e-4
+to four digits). Both MMVQ and repack quantize activations to q8_1 while
+the plain path quantizes differently, so both comparisons are dominated
+by the same shared activation-quantization term; the 26% speed gap is
+what proves the code paths differ.
