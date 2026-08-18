@@ -490,3 +490,39 @@ to four digits). Both MMVQ and repack quantize activations to q8_1 while
 the plain path quantizes differently, so both comparisons are dominated
 by the same shared activation-quantization term; the 26% speed gap is
 what proves the code paths differ.
+
+## CPU threads: SMT is the last free lever, and the memory question closes (2026-08-18)
+
+Thread/affinity sweep at n=4 (`--tsweep`, in-process; affinity as the
+process axis): scaling is near-linear 8→16 threads (49.5→81.8 GB/s — each
+core sustains only ~6 GB/s of demand misses), **32 threads (full SMT)
+wins** by +14% over 16 (SMT doubles the outstanding-miss slots the GEMM
+needs), affinity (`OMP_PROC_BIND=spread OMP_PLACES=cores`) is a null, and
+**20 threads is a trap**: 71 GB/s, *worse* than 16 — asymmetric SMT
+occupancy (4 cores doubled, 12 not) makes ggml's even row-split straggle.
+Oversubscription must be symmetric.
+
+Variance study, 5 independent loads at 32 threads (the house discipline —
+and it paid: fresh runs beat the mid-sweep figure by ~5%, the same
+cycling-state effect that made earlier 16-thread runs disagree):
+
+| n | µs/token (5 loads) | spread | GB/s |
+|---|---|---|---|
+| 1 | 2644-2692 | 1.8% | 91-93 |
+| 4 | **2140-2160** | 0.9% | 97.5-98.4 |
+| 8 | 1994-2010 | 0.8% | 94-95 |
+
+**The memory-access question is closed by saturation**: 92-98 GB/s against
+the machine's measured 100-107 GB/s streaming ceiling (140.8 theoretical —
+never reached by any software on this machine, including the dedicated
+probe). Software prefetch is dead (the perf counters already showed the
+HW prefetcher covering ~13/14 lines at demand time; the residual gap is
+smaller than plausible graph overhead), and x86 offers no non-temporal
+loads on write-back memory anyway — PREFETCHNTA only limits pollution.
+
+Final CPU yardsticks (repack + 32 threads, cumulatively -40% from the
+plain-16-thread starting point, all configuration and zero custom code):
+a CPU-offloaded Pro MoE layer costs **2.65 / 2.15 / 2.00 ms/token at
+n=1/4/8**; a distinct cold expert **~380-400 µs** — two of them (~780 µs)
+barely stick out past the 650 µs GPU wave, putting the mixed-placement
+tax for a "1-2 cold pairs" batch at **~2-5%**.

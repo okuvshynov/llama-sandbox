@@ -234,13 +234,19 @@ int main(int argc, char ** argv) {
     bool repack = false;     // CPU mode with mxfp4 weights in the CPU_REPACK
                              // buffer type — what llama.cpp serving runs;
                              // the sanity gate then compares repack vs plain
-    int reps = 100, threads = 16;
+    int reps = 100, threads = 16, only_n = 0;
+    std::vector<int> tsweep;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--no-check")) check = false;
+        else if (!strcmp(argv[i], "--only") && i + 1 < argc) only_n = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--cpu")) { cpu_mode = true; }
         else if (!strcmp(argv[i], "--repack")) { repack = true; cpu_mode = true; }
         else if (!strcmp(argv[i], "--reps") && i + 1 < argc) reps = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--threads") && i + 1 < argc) threads = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--tsweep") && i + 1 < argc) {
+            for (char * tok = strtok(argv[++i], ","); tok; tok = strtok(nullptr, ","))
+                tsweep.push_back(atoi(tok));
+        }
         else { fprintf(stderr, "usage: %s [--no-check] [--cpu] [--repack] [--threads N] [--reps N]\n", argv[0]); return 2; }
     }
     if (cpu_mode && !repack) check = false;   // plain-CPU vs CPU is a self-comparison
@@ -323,9 +329,13 @@ int main(int argc, char ** argv) {
     }
 
     // --- the sweep -----------------------------------------------------------
-    printf("\n%-3s %12s %12s %10s %14s %10s\n",
-           "n", "us/graph", "us/token", "uniq exp", "bytes/graph", "GB/s");
+    if (tsweep.empty()) tsweep.push_back(threads);
+    printf("\n%-3s %-3s %12s %12s %10s %14s %10s\n",
+           "t", "n", "us/graph", "us/token", "uniq exp", "bytes/graph", "GB/s");
+    for (int t : tsweep) {
+    if (cpu_mode) ggml_backend_cpu_set_n_threads(gpu, t);
     for (int64_t n = 1; n <= N_BATCH_MAX; n++) {
+        if (only_n && n != only_n) continue;
         graph_t g = build_graph(w, gpu, n);
         set_input(g, n);
 
@@ -341,9 +351,10 @@ int main(int argc, char ** argv) {
         std::set<int32_t> uniq(ids.begin(), ids.end());
 
         const double bytes = uniq.size() * bytes_per_expert + bytes_shared;
-        printf("%-3" PRId64 " %12.1f %12.1f %10zu %14.0f %10.1f\n",
-               n, us, us / n, uniq.size(), bytes, bytes / us / 1e3);
+        printf("%-3d %-3" PRId64 " %12.1f %12.1f %10zu %14.0f %10.1f\n",
+               t, n, us, us / n, uniq.size(), bytes, bytes / us / 1e3);
         free_graph(g);
+    }
     }
 
     if (w.buf2) { ggml_backend_buffer_free(w.buf2); ggml_free(w.ctx2); }
