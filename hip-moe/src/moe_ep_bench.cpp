@@ -212,11 +212,19 @@ int main(int argc, char ** argv) {
     setvbuf(stdout, nullptr, _IOLBF, 0);
     int n_dies = 4, reps = 50;
     bool check = true;
+    // Fixes named by the rocprofv3 timeline (2026-08-18): the sequential
+    // per-die upload loop staggers die starts (~60% realized concurrency at
+    // n=4), and pageable staging makes hipMemcpyAsync block (~87 us/call).
+    bool reorder = false;   // fuse upload->launch per die; submit all
+                            // readbacks before the first sync
+    bool pinned  = false;   // stage xs/ids/out in pinned host memory
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--dies") && i + 1 < argc) n_dies = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--reps") && i + 1 < argc) reps = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--no-check")) check = false;
-        else { fprintf(stderr, "usage: %s [--dies 2|4] [--reps N] [--no-check]\n", argv[0]); return 2; }
+        else if (!strcmp(argv[i], "--reorder")) reorder = true;
+        else if (!strcmp(argv[i], "--pinned")) pinned = true;
+        else { fprintf(stderr, "usage: %s [--dies 2|4] [--reps N] [--no-check] [--reorder] [--pinned]\n", argv[0]); return 2; }
     }
     const int64_t E_PER = N_EXPERT / n_dies;
 
@@ -343,6 +351,26 @@ int main(int argc, char ** argv) {
             out_h[d].resize(pairs[d].size() * N_EMBD);
             lid_h[d].resize(pairs[d].size());
         }
+        // staging pointers: the vectors above, or carved out of a pinned
+        // host buffer so the async copies are actually asynchronous
+        std::vector<ggml_backend_buffer_t> pin(n_dies, nullptr);
+        std::vector<float *> xs_p(n_dies), out_p(n_dies);
+        std::vector<int32_t *> id_p(n_dies);
+        for (int d = 0; d < n_dies; d++) {
+            const size_t P = pairs[d].size();
+            xs_p[d] = xs_h[d].data(); out_p[d] = out_h[d].data(); id_p[d] = lid_h[d].data();
+            if (pinned && P) {
+                const size_t nb_xs = P * N_EMBD * 4, nb_out = nb_xs;
+                const size_t nb_id = (P * 4 + 63) / 64 * 64;
+                ggml_backend_buffer_type_t hbuft =
+                    ggml_backend_dev_host_buffer_type(ggml_backend_get_device(dies[d]));
+                pin[d] = ggml_backend_buft_alloc_buffer(hbuft, nb_xs + nb_out + nb_id);
+                char * base = (char *) ggml_backend_buffer_get_base(pin[d]);
+                xs_p[d]  = (float *) base;
+                out_p[d] = (float *) (base + nb_xs);
+                id_p[d]  = (int32_t *) (base + nb_xs + nb_out);
+            }
+        }
         std::vector<float> y((size_t) (N_EMBD * n));
 
         auto one_rep = [&](double * ph) {
@@ -360,34 +388,60 @@ int main(int argc, char ** argv) {
                 for (int64_t s = 0; s < N_USED; s++) {
                     const int e = ids[t * N_USED + s], d = e / (int) E_PER;
                     const int p = fill[d]++;
-                    lid_h[d][p] = e % (int) E_PER;
-                    memcpy(xs_h[d].data() + (size_t) p * N_EMBD, x.data() + (size_t) t * N_EMBD, N_EMBD * 4);
+                    id_p[d][p] = e % (int) E_PER;
+                    memcpy(xs_p[d] + (size_t) p * N_EMBD, x.data() + (size_t) t * N_EMBD, N_EMBD * 4);
                 }
-            for (int d = 0; d < n_dies; d++) {
-                if (!dg[d].P) continue;
-                ggml_backend_tensor_set_async(dies[d], dg[d].xs, xs_h[d].data(), 0, xs_h[d].size() * 4);
-                ggml_backend_tensor_set_async(dies[d], dg[d].ids, lid_h[d].data(), 0, lid_h[d].size() * 4);
+            if (reorder) {
+                // fused per-die pipeline: die d computes while die d+1 uploads
+                for (int d = 0; d < n_dies; d++) {
+                    if (!dg[d].P) continue;
+                    ggml_backend_tensor_set_async(dies[d], dg[d].xs, xs_p[d], 0, pairs[d].size() * N_EMBD * 4);
+                    ggml_backend_tensor_set_async(dies[d], dg[d].ids, id_p[d], 0, pairs[d].size() * 4);
+                    ggml_backend_graph_compute_async(dies[d], dg[d].gf);
+                }
+            } else {
+                for (int d = 0; d < n_dies; d++) {
+                    if (!dg[d].P) continue;
+                    ggml_backend_tensor_set_async(dies[d], dg[d].xs, xs_p[d], 0, pairs[d].size() * N_EMBD * 4);
+                    ggml_backend_tensor_set_async(dies[d], dg[d].ids, id_p[d], 0, pairs[d].size() * 4);
+                }
             }
             double t2 = now_us();
 
-            for (int d = 0; d < n_dies; d++)
-                if (dg[d].P) ggml_backend_graph_compute_async(dies[d], dg[d].gf);
+            if (!reorder) {
+                for (int d = 0; d < n_dies; d++)
+                    if (dg[d].P) ggml_backend_graph_compute_async(dies[d], dg[d].gf);
+            }
             double t3 = now_us();
 
-            for (int d = 0; d < n_dies; d++) {
-                if (!dg[d].P) continue;
-                size_t off = 0;
-                for (ggml_tensor * o : dg[d].outs) {
-                    ggml_backend_tensor_get_async(dies[d], o, out_h[d].data() + off, 0, ggml_nbytes(o));
-                    off += (size_t) ggml_nelements(o);
+            if (reorder) {
+                // submit every readback, then wait — no sync between submits
+                for (int d = 0; d < n_dies; d++) {
+                    if (!dg[d].P) continue;
+                    size_t off = 0;
+                    for (ggml_tensor * o : dg[d].outs) {
+                        ggml_backend_tensor_get_async(dies[d], o, out_p[d] + off, 0, ggml_nbytes(o));
+                        off += (size_t) ggml_nelements(o);
+                    }
                 }
-                ggml_backend_synchronize(dies[d]);
+                for (int d = 0; d < n_dies; d++)
+                    if (dg[d].P) ggml_backend_synchronize(dies[d]);
+            } else {
+                for (int d = 0; d < n_dies; d++) {
+                    if (!dg[d].P) continue;
+                    size_t off = 0;
+                    for (ggml_tensor * o : dg[d].outs) {
+                        ggml_backend_tensor_get_async(dies[d], o, out_p[d] + off, 0, ggml_nbytes(o));
+                        off += (size_t) ggml_nelements(o);
+                    }
+                    ggml_backend_synchronize(dies[d]);
+                }
             }
             for (int d = 0; d < n_dies; d++)
                 for (size_t p = 0; p < pairs[d].size(); p++) {
                     const int t = pairs[d][p].first;
                     const float wt = wts[pairs[d][p].second];
-                    const float * src = out_h[d].data() + p * N_EMBD;
+                    const float * src = out_p[d] + p * N_EMBD;
                     float * dst = y.data() + (size_t) t * N_EMBD;
                     for (int64_t i = 0; i < N_EMBD; i++) dst[i] += wt * src[i];
                 }
@@ -487,8 +541,10 @@ int main(int argc, char ** argv) {
                median(phases[0]), median(phases[1]), median(phases[2]), median(phases[3]),
                tot, tot / n);
 
-        for (int d = 0; d < n_dies; d++)
+        for (int d = 0; d < n_dies; d++) {
             if (dg[d].P) { ggml_gallocr_free(dg[d].galloc); ggml_free(dg[d].ctx); }
+            if (pin[d]) ggml_backend_buffer_free(pin[d]);
+        }
         ggml_gallocr_free(r.galloc); ggml_free(r.ctx);
     }
 

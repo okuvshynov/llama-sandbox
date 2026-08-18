@@ -354,3 +354,47 @@ Consequence: EP on stock kernels is compute-viable at speculative
 verification batch sizes, and its budget is the border family again —
 host round trips, staging, per-die submissions — the parts an integration
 would attack by keeping routing on-die and overlapping transfers.
+
+## Profiling EP, and the pinned-staging fix (2026-08-18)
+
+`rocprofv3 --hip-trace --kernel-trace --memory-copy-trace` (ROCm 6.3.4,
+`GGML_CUDA_DISABLE_GRAPHS=1` for per-kernel readability) on the D=4 run;
+analysis from the CSVs, pftrace kept for perfetto. What the timeline showed
+at n=4: per-die kernels run gapless (the router's ~20-kernel chain is only
+~130 µs of GPU), but dies 1-3 overlapped at just **1.74-1.85x of 3** —
+~340 µs of staggered starts — and the host API told the story: 20
+`hipMemcpyAsync` calls averaging **87 µs each**, the signature of pageable
+staging making "async" copies block. Also priced: 89 launches/step with
+hipGraphs off vs ~5 with them on (submit phase 451 vs 82 µs) — keep EP
+graphs capture-friendly.
+
+The fix A/B (2x2: `--reorder` x `--pinned`, 50 reps, D=4, µs/graph):
+
+| n | base | reorder | pinned | both |
+|---|---|---|---|---|
+| 1 | 1056 | 1001 | **809** | 819 |
+| 4 | 1680 | 1662 | **1298** | 1364 |
+| 8 | 3012 | 2806 | **2135** | 2164 |
+
+**Pinned staging is the whole lever; the submission reorder is a null**
+(and slightly negative on top of pinned). The diagnosis refines honestly:
+the die-start stagger was never loop order — it was pageable copies
+serializing the upload loop as a side effect. With staging in pinned host
+buffers (`ggml_backend_dev_host_buffer_type`), the plain loop overlaps
+everything on its own. Sanity gate green at every n on the pinned path.
+
+Final EP table, pinned, µs/token vs the single die:
+
+| n | 1 die | D=2 | D=4 |
+|---|---|---|---|
+| 1 | 785 | 782 | 809 |
+| 2 | 570 | 598 | 500 |
+| 4 | 548 | 417 | **324** |
+| 6 | 528 | 407 | **296** |
+| 8 | 514 | 380 | **267** |
+
+EP is now at parity at n=1 and wins **41-48% at verify batches** — double
+the pre-fix margin. Remaining known cost: the router round trip (~350 µs
+of readback-sync, killable by keeping partition on-die). Lesson for any
+integration and for the earlier tp4/EP numbers alike: on ROCm, staging
+buffers must be pinned or every "async" copy is a serialization point.
