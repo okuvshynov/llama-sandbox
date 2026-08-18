@@ -223,3 +223,56 @@ cliff that forced moe-serv's 8-token chunking.
 Remaining levers on this stack, in order of expected value: the 13 CPU
 expert layers (dominant), the 3-of-4-idle layer-split pipeline, and
 nothing else — the kernel and the border are both settled.
+
+## DSpark speculative decoding (2026-08-17)
+
+Unsloth ships a DSpark drafter extracted from the official checkpoint
+(`dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf`, 10.9 GB, arch dflash; our
+build b10472 clears every version window on the card). Q8_0 over BF16:
+acceptance measured identical upstream, and gfx906 has no native BF16 —
+Q8_0 reads half the bytes on the drafting critical path.
+
+Geometry that made it fit: the target keeps its full ncmoe-13 placement;
+the drafter's MXFP4 experts stay in host RAM (`--spec-draft-cpu-moe`) with
+only its dense side (~1.5 GB) on the dies. Without that, the drafter tries
+a single 10.2 GiB allocation on die 0 and the server dies; the target's
+`-ts` does not shape the draft model.
+
+Sweep, llama-server, 6 prompts x 512 greedy tokens each (Python, JS, C,
+technical prose, short story, math proof), base 9.84 +- 0.02:
+
+| n_max | mean t/s | speedup | acceptance |
+|---|---|---|---|
+| 2 | 13.71 | 1.39x | 0.78 |
+| **3** | **15.06** | **1.53x** | 0.76 |
+| 4 | 12.48 | 1.27x | 0.58 |
+| 5 | 11.71 | 1.19x | 0.51 |
+| 8 | crash | — | — |
+
+n=3 is the optimum, same as upstream's B200 measurements; the falloff past
+3 is steeper here (verify batches are relatively costlier with 13 expert
+layers on the CPU). Content matters: creative prose is the consistent
+floor (story: 0.66 at n=3, 0.39 at n=4); within code/technical prompts,
+run-to-run variance swamps language differences because each config
+generates different text. Peak observed: 16.4 t/s. **n_max > 5 does not
+degrade — it kills the server**: the documented clamp-to-5 warning fires,
+then the first request aborts with `MUL_MAT failed, ROCm error` (worth an
+upstream report; something still sizes off the unclamped value). Caveat
+carried from upstream #25618: speculative greedy output is not
+bit-identical to non-speculative — KLD gates must hold the spec axis
+fixed.
+
+## DVFS: a measured null (2026-08-17)
+
+rocm-smi shows sclk swinging 1000-1730 MHz as the layer-split pipeline
+moves between dies, raising the ramp-latency question. Pinned
+(`--setperflevel high`, verified 1730 MHz on all dies) vs same-day auto,
+two loads each, ncmoe 13: tg32 10.19/10.17 vs 10.12/10.00, pp512
+77.0 vs 76.6 — +1% decode, inside the load-to-load band, NOT RESOLVED.
+The governor keeps up with this workload's burst structure; pinning is
+not worth the idle power, and the probe numbers' pinned-clock rep loops
+were not flattering the kernels.
+
+Bottom line for the stack: **15.1 t/s mean / 16.4 peak decode** on the
+150.75 GiB model — 3.8-4.2x the Windows-best 3.92 — from stock llama.cpp,
+capacity placement, and the repo's own drafter.
