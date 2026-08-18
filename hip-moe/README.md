@@ -276,3 +276,37 @@ were not flattering the kernels.
 Bottom line for the stack: **15.1 t/s mean / 16.4 peak decode** on the
 150.75 GiB model — 3.8-4.2x the Windows-best 3.92 — from stock llama.cpp,
 capacity placement, and the repo's own drafter.
+
+## moe-ggml-bench: one V4-Pro MoE layer through llama.cpp's kernels (2026-08-18)
+
+`make bin/moe-ggml-bench` — a standalone transcription of `build_moe_ffn`'s
+deepseek4 path at DeepSeek-V4-Pro-0813 shapes (7168→3072, 384 experts,
+top-6 sqrt-softplus routing with selection bias, norm + 2.5 scale, clamped
+SwiGLU, +1 shared expert), synthetic MXFP4 weights (12.55 GiB, fits one
+die), llama.cpp's own HIP kernels via the ggml backend API. Batch 1..8 —
+the speculative-verification regime. Sanity: same graph on the CPU backend
+with routing held fixed, scale-aware gate (rms(diff)/rms(ref) 2.3e-4, two
+correct kernels).
+
+| n | µs/graph | µs/token | uniq experts | eff. GB/s |
+|---|---|---|---|---|
+| 1 | 785 | 785 | 6 | 313 |
+| 2 | 1139 | 570 | 12 | 400 |
+| 4 | 2192 | 548 | 23 | 384 |
+| 6 | 3166 | 528 | 32 | 366 |
+| 8 | 4115 | 514 | 41 | 358 |
+
+Findings: the Pro shape runs *better* than Flash's (313-400 GB/s vs 279 —
+bigger matmuls amortize dispatch); per-token cost falls only 35% by n=8
+because random routing keeps 48 draws ~85% distinct (41 unique of 384) —
+real correlated routing reuses more, so the batch benefit here is a lower
+bound. Extrapolated: 61 layers ≈ 48 ms/token of MoE at n=1 (~20 t/s
+ceiling before trunk), ~31 ms in the n=8 verify regime — Pro is 3x Flash
+per layer, tracking its 3x expert bytes (245 vs ~82 MB/token).
+
+Two instrument traps hit and fixed before trusting any number, both
+already in the repo's lesson book: `ggml_argsort_top_k` returns a view
+(post-compute readback needs a `ggml_cont` snapshot — an output flag on a
+view protects nothing), and a plain relative tolerance manufactures
+failures on near-zero elements of +-hundreds-scale sums (gate normalized
+by reference RMS instead).
