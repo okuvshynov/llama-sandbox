@@ -1,0 +1,21 @@
+cpu streaming, 8 GiB buffer, best of 5 passes
+t         GB/s
+4        192.3
+8        217.4
+12       227.2
+16       246.5
+20       246.6
+24       245.4
+32       246.7
+
+gpu: Apple M2 Ultra
+gpu streaming, 8 GiB buffer, 262144 threads, 5 passes
+  pass 0: 713.6 GB/s (12.04 ms GPU)
+  pass 1: 696.0 GB/s (12.34 ms GPU)
+  pass 2: 706.3 GB/s (12.16 ms GPU)
+  pass 3: 715.8 GB/s (12.00 ms GPU)
+  pass 4: 720.5 GB/s (11.92 ms GPU)
+
+floor: null dispatch, same encoder, x1000: 1.24 us each (GPU time)
+floor: encode+commit+wait round trip, x200: 154.0 us each (wall)
+floor: sustained encode+commit, wait last, x1000: 17.92 us each (wall)

@@ -1,0 +1,97 @@
+ggml_metal_device_init: tensor API disabled for pre-M5 and pre-A19 devices
+ggml_metal_library_init: using embedded metal library
+ggml_metal_library_init: loaded in 0.010 sec
+ggml_metal_rsets_init: creating a residency set collection (keep_alive = 180 s)
+ggml_metal_device_init: GPU name:   MTL0 (Apple M2 Ultra)
+ggml_metal_device_init: GPU family: MTLGPUFamilyApple8  (1008)
+ggml_metal_device_init: GPU family: MTLGPUFamilyCommon3 (3003)
+ggml_metal_device_init: GPU family: MTLGPUFamilyMetal4  (5002)
+ggml_metal_device_init: simdgroup reduction   = true
+ggml_metal_device_init: simdgroup matrix mul. = true
+ggml_metal_device_init: has unified memory    = true
+ggml_metal_device_init: has bfloat            = true
+ggml_metal_device_init: has tensor            = false
+ggml_metal_device_init: use residency sets    = true
+ggml_metal_device_init: use shared buffers    = true
+ggml_metal_device_init: recommendedMaxWorkingSetSize  = 173173.08 MB
+ggml_metal_init: allocating
+ggml_metal_init: found device: Apple M2 Ultra
+ggml_metal_init: picking default device: Apple M2 Ultra
+ggml_metal_init: use fusion         = true
+ggml_metal_init: use concurrency    = true
+ggml_metal_init: use graph optimize = true
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_mul_mv_f32_f32_4', name = 'kernel_mul_mv_f32_f32_4_nsg=4_ne12=1_r2=1_r3=1'
+ggml_metal_library_compile_pipeline: loaded kernel_mul_mv_f32_f32_4_nsg=4_ne12=1_r2=1_r3=1      0x104e16f80 | th_max =  768 | th_width =   32
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_unary_f32_f32_4', name = 'kernel_unary_f32_f32_4_op=115_cnt=1'
+ggml_metal_library_compile_pipeline: loaded kernel_unary_f32_f32_4_op=115_cnt=1           0x104e17a80 | th_max = 1024 | th_width =   32
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_unary_f32_f32_4', name = 'kernel_unary_f32_f32_4_op=14_cnt=1'
+ggml_metal_library_compile_pipeline: loaded kernel_unary_f32_f32_4_op=14_cnt=1            0x104e18580 | th_max = 1024 | th_width =   32
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_bin_fuse_f32_f32_f32_4', name = 'kernel_bin_fuse_f32_f32_f32_4_op=0_nf=1_rb=1_cb=0'
+ggml_metal_library_compile_pipeline: loaded kernel_bin_fuse_f32_f32_f32_4_op=0_nf=1_rb=1_cb=0      0x104e1b080 | th_max = 1024 | th_width =   32
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_argsort_f32_i32_desc', name = 'kernel_argsort_f32_i32_desc'
+ggml_metal_library_compile_pipeline: loaded kernel_argsort_f32_i32_desc                   0x104e18d80 | th_max = 1024 | th_width =   32
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_argsort_merge_f32_i32_desc', name = 'kernel_argsort_merge_f32_i32_desc'
+ggml_metal_library_compile_pipeline: loaded kernel_argsort_merge_f32_i32_desc             0x104e19080 | th_max = 1024 | th_width =   32
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_cpy_i32_i32', name = 'kernel_cpy_i32_i32'
+ggml_metal_library_compile_pipeline: loaded kernel_cpy_i32_i32                            0x104e19380 | th_max = 1024 | th_width =   32
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_get_rows_f32', name = 'kernel_get_rows_f32'
+ggml_metal_library_compile_pipeline: loaded kernel_get_rows_f32                           0xb0046c000 | th_max = 1024 | th_width =   32
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_sum_rows_f32_f32', name = 'kernel_sum_rows_f32_f32_op=10'
+ggml_metal_library_compile_pipeline: loaded kernel_sum_rows_f32_f32_op=10                 0xb0046c300 | th_max = 1024 | th_width =   32
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_unary_f32_f32', name = 'kernel_unary_f32_f32_op=12_cnt=1'
+ggml_metal_library_compile_pipeline: loaded kernel_unary_f32_f32_op=12_cnt=1              0xb0046c600 | th_max = 1024 | th_width =   32
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_bin_fuse_f32_f32_f32', name = 'kernel_bin_fuse_f32_f32_f32_op=3_nf=1_rb=1_cb=1'
+ggml_metal_library_compile_pipeline: loaded kernel_bin_fuse_f32_f32_f32_op=3_nf=1_rb=1_cb=1      0xb0046c900 | th_max = 1024 | th_width =   32
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_unary_f32_f32', name = 'kernel_unary_f32_f32_op=10_cnt=1'
+ggml_metal_library_compile_pipeline: loaded kernel_unary_f32_f32_op=10_cnt=1              0xb0046cc00 | th_max = 1024 | th_width =   32
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_mul_mv_id_mxfp4_f32', name = 'kernel_mul_mv_id_mxfp4_f32_nsg=2'
+ggml_metal_library_compile_pipeline: loaded kernel_mul_mv_id_mxfp4_f32_nsg=2              0xb0046cf00 | th_max = 1024 | th_width =   32
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_unary_f32_f32_4', name = 'kernel_unary_f32_f32_4_op=12_cnt=1'
+ggml_metal_library_compile_pipeline: loaded kernel_unary_f32_f32_4_op=12_cnt=1            0xb0046d200 | th_max = 1024 | th_width =   32
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_swiglu_f32', name = 'kernel_swiglu_f32'
+ggml_metal_library_compile_pipeline: loaded kernel_swiglu_f32                             0xb0046d500 | th_max = 1024 | th_width =   32
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_bin_fuse_f32_f32_f32', name = 'kernel_bin_fuse_f32_f32_f32_op=2_nf=1_rb=0_cb=1'
+ggml_metal_library_compile_pipeline: loaded kernel_bin_fuse_f32_f32_f32_op=2_nf=1_rb=0_cb=1      0xb0046d800 | th_max = 1024 | th_width =   32
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_bin_fuse_f32_f32_f32_4', name = 'kernel_bin_fuse_f32_f32_f32_4_op=0_nf=5_rb=1_cb=0'
+ggml_metal_library_compile_pipeline: loaded kernel_bin_fuse_f32_f32_f32_4_op=0_nf=5_rb=1_cb=0      0xb0046db00 | th_max = 1024 | th_width =   32
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_mul_mv_mxfp4_f32', name = 'kernel_mul_mv_mxfp4_f32_nsg=2_ne12=1_r2=1_r3=1'
+ggml_metal_library_compile_pipeline: loaded kernel_mul_mv_mxfp4_f32_nsg=2_ne12=1_r2=1_r3=1      0xb0046de00 | th_max = 1024 | th_width =   32
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_mul_mv_ext_f32_f32_r1_2', name = 'kernel_mul_mv_ext_f32_f32_r1_2_nsg=2_nxpsg=16_ne12=1_r2=1_r3=1'
+ggml_metal_library_compile_pipeline: loaded kernel_mul_mv_ext_f32_f32_r1_2_nsg=2_nxpsg=16_ne12=1_r2=1_r3=1      0xb0046e100 | th_max =  832 | th_width =   32
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_bin_fuse_f32_f32_f32', name = 'kernel_bin_fuse_f32_f32_f32_op=3_nf=1_rb=0_cb=1'
+ggml_metal_library_compile_pipeline: loaded kernel_bin_fuse_f32_f32_f32_op=3_nf=1_rb=0_cb=1      0xb0046e400 | th_max = 1024 | th_width =   32
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_unary_f32_f32_4', name = 'kernel_unary_f32_f32_4_op=12_cnt=0'
+ggml_metal_library_compile_pipeline: loaded kernel_unary_f32_f32_4_op=12_cnt=0            0xb0046e700 | th_max = 1024 | th_width =   32
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_bin_fuse_f32_f32_f32_4', name = 'kernel_bin_fuse_f32_f32_f32_4_op=0_nf=5_rb=0_cb=0'
+ggml_metal_library_compile_pipeline: loaded kernel_bin_fuse_f32_f32_f32_4_op=0_nf=5_rb=0_cb=0      0xb0046ea00 | th_max = 1024 | th_width =   32
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_mul_mv_ext_mxfp4_f32_r1_2', name = 'kernel_mul_mv_ext_mxfp4_f32_r1_2_nsg=2_nxpsg=16_ne12=1_r2=1_r3=1'
+ggml_metal_library_compile_pipeline: loaded kernel_mul_mv_ext_mxfp4_f32_r1_2_nsg=2_nxpsg=16_ne12=1_r2=1_r3=1      0xb0046ed00 | th_max =  704 | th_width =   32
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_bin_fuse_f32_f32_f32_4', name = 'kernel_bin_fuse_f32_f32_f32_4_op=0_nf=1_rb=0_cb=0'
+ggml_metal_library_compile_pipeline: loaded kernel_bin_fuse_f32_f32_f32_4_op=0_nf=1_rb=0_cb=0      0xb0046f000 | th_max = 1024 | th_width =   32
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_mul_mv_ext_f32_f32_r1_3', name = 'kernel_mul_mv_ext_f32_f32_r1_3_nsg=2_nxpsg=8_ne12=1_r2=1_r3=1'
+ggml_metal_library_compile_pipeline: loaded kernel_mul_mv_ext_f32_f32_r1_3_nsg=2_nxpsg=8_ne12=1_r2=1_r3=1      0xb0046f300 | th_max =  704 | th_width =   32
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_mul_mv_ext_mxfp4_f32_r1_3', name = 'kernel_mul_mv_ext_mxfp4_f32_r1_3_nsg=2_nxpsg=8_ne12=1_r2=1_r3=1'
+ggml_metal_library_compile_pipeline: loaded kernel_mul_mv_ext_mxfp4_f32_r1_3_nsg=2_nxpsg=8_ne12=1_r2=1_r3=1      0xb0046f600 | th_max =  704 | th_width =   32
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_mul_mv_ext_f32_f32_r1_4', name = 'kernel_mul_mv_ext_f32_f32_r1_4_nsg=2_nxpsg=8_ne12=1_r2=1_r3=1'
+ggml_metal_library_compile_pipeline: loaded kernel_mul_mv_ext_f32_f32_r1_4_nsg=2_nxpsg=8_ne12=1_r2=1_r3=1      0xb0046f900 | th_max =  640 | th_width =   32
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_mul_mv_ext_mxfp4_f32_r1_4', name = 'kernel_mul_mv_ext_mxfp4_f32_r1_4_nsg=2_nxpsg=8_ne12=1_r2=1_r3=1'
+ggml_metal_library_compile_pipeline: loaded kernel_mul_mv_ext_mxfp4_f32_r1_4_nsg=2_nxpsg=8_ne12=1_r2=1_r3=1      0xb0046fc00 | th_max =  640 | th_width =   32
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_mul_mv_ext_f32_f32_r1_5', name = 'kernel_mul_mv_ext_f32_f32_r1_5_nsg=2_nxpsg=8_ne12=1_r2=1_r3=1'
+ggml_metal_library_compile_pipeline: loaded kernel_mul_mv_ext_f32_f32_r1_5_nsg=2_nxpsg=8_ne12=1_r2=1_r3=1      0xb004b8000 | th_max =  640 | th_width =   32
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_mul_mv_ext_mxfp4_f32_r1_5', name = 'kernel_mul_mv_ext_mxfp4_f32_r1_5_nsg=2_nxpsg=8_ne12=1_r2=1_r3=1'
+ggml_metal_library_compile_pipeline: loaded kernel_mul_mv_ext_mxfp4_f32_r1_5_nsg=2_nxpsg=8_ne12=1_r2=1_r3=1      0xb004b8300 | th_max =  640 | th_width =   32
+ggml_metal_free: deallocating
+device: MTL0 (Apple M2 Ultra)
+V4-Pro MoE layer: 384x(7168->3072), top-6+1 shared, routed experts 12.55 GiB
+
+loading weights to device...
+
+t   n       us/graph     us/token   uniq exp    bytes/graph       GB/s
+16  1          809.6        809.6          6      245661696      303.5
+16  2         1185.4        592.7         12      456228864      384.9
+16  3         1597.9        532.6         16      596606976      373.4
+16  4         1935.4        483.9         22      807174144      417.1
+16  5         2308.4        461.7         26      947552256      410.5
+16  6         2652.7        442.1         34     1228308480      463.0
+16  7         3035.5        433.6         39     1403781120      462.5
+16  8         3333.8        416.7         44     1579253760      473.7

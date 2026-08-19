@@ -1,0 +1,38 @@
+ggml_metal_device_init: tensor API disabled for pre-M5 and pre-A19 devices
+ggml_metal_library_init: using embedded metal library
+ggml_metal_library_init: loaded in 0.013 sec
+ggml_metal_rsets_init: creating a residency set collection (keep_alive = 180 s)
+ggml_metal_device_init: GPU name:   MTL0 (Apple M2 Ultra)
+ggml_metal_device_init: GPU family: MTLGPUFamilyApple8  (1008)
+ggml_metal_device_init: GPU family: MTLGPUFamilyCommon3 (3003)
+ggml_metal_device_init: GPU family: MTLGPUFamilyMetal4  (5002)
+ggml_metal_device_init: simdgroup reduction   = true
+ggml_metal_device_init: simdgroup matrix mul. = true
+ggml_metal_device_init: has unified memory    = true
+ggml_metal_device_init: has bfloat            = true
+ggml_metal_device_init: has tensor            = false
+ggml_metal_device_init: use residency sets    = true
+ggml_metal_device_init: use shared buffers    = true
+ggml_metal_device_init: recommendedMaxWorkingSetSize  = 173173.08 MB
+repack: repack tensor  with mxfp4_4x4
+repack: repack tensor  with mxfp4_4x4
+repack: repack tensor  with mxfp4_4x4
+repack: repack tensor  with mxfp4_4x4
+repack: repack tensor  with mxfp4_4x4
+repack: repack tensor  with mxfp4_4x4
+device: CPU (Apple M2 Ultra) [CPU mode]
+V4-Pro MoE layer: 384x(7168->3072), top-6+1 shared, routed experts 12.55 GiB
+
+extra buft: CPU_REPACK
+loading weights to device...
+mxfp4 weights in buffer: CPU_REPACK
+
+t   n       us/graph     us/token     min us/g   uniq exp    bytes/graph       GB/s
+16  1         2267.2       2267.2       1202.1          6      245661696      108.4
+16  2         2487.2       1243.6       2150.8         12      456228864      183.4
+16  3         3163.6       1054.5       3027.8         17      631701504      199.7
+16  4         3817.8        954.4       3733.0         23      842268672      220.6
+16  5         4658.6        931.7       4583.2         27      982646784      210.9
+16  6         6084.1       1014.0       5610.8         33     1193213952      196.1
+16  7         6666.3        952.3       6569.0         39     1403781120      210.6
+16  8         7305.3        913.2       7140.5         42     1509064704      206.6

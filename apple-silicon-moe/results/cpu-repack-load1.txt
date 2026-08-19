@@ -1,0 +1,39 @@
+ggml_metal_device_init: tensor API disabled for pre-M5 and pre-A19 devices
+ggml_metal_library_init: using embedded metal library
+ggml_metal_library_init: loaded in 0.013 sec
+ggml_metal_rsets_init: creating a residency set collection (keep_alive = 180 s)
+ggml_metal_device_init: GPU name:   MTL0 (Apple M2 Ultra)
+ggml_metal_device_init: GPU family: MTLGPUFamilyApple8  (1008)
+ggml_metal_device_init: GPU family: MTLGPUFamilyCommon3 (3003)
+ggml_metal_device_init: GPU family: MTLGPUFamilyMetal4  (5002)
+ggml_metal_device_init: simdgroup reduction   = true
+ggml_metal_device_init: simdgroup matrix mul. = true
+ggml_metal_device_init: has unified memory    = true
+ggml_metal_device_init: has bfloat            = true
+ggml_metal_device_init: has tensor            = false
+ggml_metal_device_init: use residency sets    = true
+ggml_metal_device_init: use shared buffers    = true
+ggml_metal_device_init: recommendedMaxWorkingSetSize  = 173173.08 MB
+repack: repack tensor  with mxfp4_4x4
+repack: repack tensor  with mxfp4_4x4
+repack: repack tensor  with mxfp4_4x4
+repack: repack tensor  with mxfp4_4x4
+repack: repack tensor  with mxfp4_4x4
+repack: repack tensor  with mxfp4_4x4
+device: CPU (Apple M2 Ultra) [CPU mode]
+V4-Pro MoE layer: 384x(7168->3072), top-6+1 shared, routed experts 12.55 GiB
+
+extra buft: CPU_REPACK
+loading weights to device...
+mxfp4 weights in buffer: CPU_REPACK
+sanity: n=1 vs CPU backend... rms(ref) 6.643e+01  rms(diff)/rms(ref) 1.900e-07  max|diff|/rms(ref) 1.148e-06  ok
+
+t   n       us/graph     us/token   uniq exp    bytes/graph       GB/s
+16  1         3195.9       3195.9          6      245661696       76.9
+16  2         3981.9       1990.9         12      456228864      114.6
+16  3         5646.6       1882.2         17      631701504      111.9
+16  4         8180.7       2045.2         22      807174144       98.7
+16  5         6344.9       1269.0         27      982646784      154.9
+16  6         7001.2       1166.9         34     1228308480      175.4
+16  7         8218.5       1174.1         40     1438875648      175.1
+16  8         7877.4        984.7         42     1509064704      191.6

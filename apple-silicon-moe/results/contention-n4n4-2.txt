@@ -1,0 +1,92 @@
+ggml_metal_device_init: tensor API disabled for pre-M5 and pre-A19 devices
+ggml_metal_library_init: using embedded metal library
+ggml_metal_library_init: loaded in 0.016 sec
+ggml_metal_rsets_init: creating a residency set collection (keep_alive = 180 s)
+ggml_metal_device_init: GPU name:   MTL0 (Apple M2 Ultra)
+ggml_metal_device_init: GPU family: MTLGPUFamilyApple8  (1008)
+ggml_metal_device_init: GPU family: MTLGPUFamilyCommon3 (3003)
+ggml_metal_device_init: GPU family: MTLGPUFamilyMetal4  (5002)
+ggml_metal_device_init: simdgroup reduction   = true
+ggml_metal_device_init: simdgroup matrix mul. = true
+ggml_metal_device_init: has unified memory    = true
+ggml_metal_device_init: has bfloat            = true
+ggml_metal_device_init: has tensor            = false
+ggml_metal_device_init: use residency sets    = true
+ggml_metal_device_init: use shared buffers    = true
+ggml_metal_device_init: recommendedMaxWorkingSetSize  = 173173.08 MB
+ggml_metal_init: allocating
+ggml_metal_init: found device: Apple M2 Ultra
+ggml_metal_init: picking default device: Apple M2 Ultra
+ggml_metal_init: use fusion         = true
+ggml_metal_init: use concurrency    = true
+ggml_metal_init: use graph optimize = true
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_mul_mv_ext_f32_f32_r1_4', name = 'kernel_mul_mv_ext_f32_f32_r1_4_nsg=2_nxpsg=8_ne12=1_r2=1_r3=1'
+ggml_metal_library_compile_pipeline: loaded kernel_mul_mv_ext_f32_f32_r1_4_nsg=2_nxpsg=8_ne12=1_r2=1_r3=1      0x1036dc700 | th_max =  640 | th_width =   32
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_unary_f32_f32_4', name = 'kernel_unary_f32_f32_4_op=115_cnt=1'
+ggml_metal_library_compile_pipeline: loaded kernel_unary_f32_f32_4_op=115_cnt=1           0x1036dd200 | th_max = 1024 | th_width =   32
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_unary_f32_f32_4', name = 'kernel_unary_f32_f32_4_op=14_cnt=1'
+ggml_metal_library_compile_pipeline: loaded kernel_unary_f32_f32_4_op=14_cnt=1            0x1036dd800 | th_max = 1024 | th_width =   32
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_bin_fuse_f32_f32_f32_4', name = 'kernel_bin_fuse_f32_f32_f32_4_op=0_nf=1_rb=1_cb=0'
+ggml_metal_library_compile_pipeline: loaded kernel_bin_fuse_f32_f32_f32_4_op=0_nf=1_rb=1_cb=0      0x1036e0b40 | th_max = 1024 | th_width =   32
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_argsort_f32_i32_desc', name = 'kernel_argsort_f32_i32_desc'
+ggml_metal_library_compile_pipeline: loaded kernel_argsort_f32_i32_desc                   0x1036de840 | th_max = 1024 | th_width =   32
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_argsort_merge_f32_i32_desc', name = 'kernel_argsort_merge_f32_i32_desc'
+ggml_metal_library_compile_pipeline: loaded kernel_argsort_merge_f32_i32_desc             0x1036deb40 | th_max = 1024 | th_width =   32
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_cpy_i32_i32', name = 'kernel_cpy_i32_i32'
+ggml_metal_library_compile_pipeline: loaded kernel_cpy_i32_i32                            0x1036dee40 | th_max = 1024 | th_width =   32
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_get_rows_f32', name = 'kernel_get_rows_f32'
+ggml_metal_library_compile_pipeline: loaded kernel_get_rows_f32                           0xc21834000 | th_max = 1024 | th_width =   32
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_sum_rows_f32_f32', name = 'kernel_sum_rows_f32_f32_op=10'
+ggml_metal_library_compile_pipeline: loaded kernel_sum_rows_f32_f32_op=10                 0xc21834300 | th_max = 1024 | th_width =   32
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_unary_f32_f32', name = 'kernel_unary_f32_f32_op=12_cnt=1'
+ggml_metal_library_compile_pipeline: loaded kernel_unary_f32_f32_op=12_cnt=1              0xc21834600 | th_max = 1024 | th_width =   32
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_bin_fuse_f32_f32_f32', name = 'kernel_bin_fuse_f32_f32_f32_op=3_nf=1_rb=0_cb=1'
+ggml_metal_library_compile_pipeline: loaded kernel_bin_fuse_f32_f32_f32_op=3_nf=1_rb=0_cb=1      0xc21834900 | th_max = 1024 | th_width =   32
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_unary_f32_f32', name = 'kernel_unary_f32_f32_op=10_cnt=1'
+ggml_metal_library_compile_pipeline: loaded kernel_unary_f32_f32_op=10_cnt=1              0xc21834c00 | th_max = 1024 | th_width =   32
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_mul_mv_id_mxfp4_f32', name = 'kernel_mul_mv_id_mxfp4_f32_nsg=2'
+ggml_metal_library_compile_pipeline: loaded kernel_mul_mv_id_mxfp4_f32_nsg=2              0xc21834f00 | th_max = 1024 | th_width =   32
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_unary_f32_f32_4', name = 'kernel_unary_f32_f32_4_op=12_cnt=0'
+ggml_metal_library_compile_pipeline: loaded kernel_unary_f32_f32_4_op=12_cnt=0            0xc21835200 | th_max = 1024 | th_width =   32
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_swiglu_f32', name = 'kernel_swiglu_f32'
+ggml_metal_library_compile_pipeline: loaded kernel_swiglu_f32                             0xc21835500 | th_max = 1024 | th_width =   32
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_bin_fuse_f32_f32_f32', name = 'kernel_bin_fuse_f32_f32_f32_op=2_nf=1_rb=0_cb=1'
+ggml_metal_library_compile_pipeline: loaded kernel_bin_fuse_f32_f32_f32_op=2_nf=1_rb=0_cb=1      0xc21835800 | th_max = 1024 | th_width =   32
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_bin_fuse_f32_f32_f32_4', name = 'kernel_bin_fuse_f32_f32_f32_4_op=0_nf=5_rb=0_cb=0'
+ggml_metal_library_compile_pipeline: loaded kernel_bin_fuse_f32_f32_f32_4_op=0_nf=5_rb=0_cb=0      0xc21835b00 | th_max = 1024 | th_width =   32
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_mul_mv_ext_mxfp4_f32_r1_4', name = 'kernel_mul_mv_ext_mxfp4_f32_r1_4_nsg=2_nxpsg=8_ne12=1_r2=1_r3=1'
+ggml_metal_library_compile_pipeline: loaded kernel_mul_mv_ext_mxfp4_f32_r1_4_nsg=2_nxpsg=8_ne12=1_r2=1_r3=1      0xc21835e00 | th_max =  640 | th_width =   32
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_unary_f32_f32_4', name = 'kernel_unary_f32_f32_4_op=12_cnt=1'
+ggml_metal_library_compile_pipeline: loaded kernel_unary_f32_f32_4_op=12_cnt=1            0xc21836100 | th_max = 1024 | th_width =   32
+ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_bin_fuse_f32_f32_f32_4', name = 'kernel_bin_fuse_f32_f32_f32_4_op=0_nf=1_rb=0_cb=0'
+ggml_metal_library_compile_pipeline: loaded kernel_bin_fuse_f32_f32_f32_4_op=0_nf=1_rb=0_cb=0      0xc21836400 | th_max = 1024 | th_width =   32
+repack: repack tensor  with mxfp4_4x4
+repack: repack tensor  with mxfp4_4x4
+repack: repack tensor  with mxfp4_4x4
+repack: repack tensor  with mxfp4_4x4
+repack: repack tensor  with mxfp4_4x4
+repack: repack tensor  with mxfp4_4x4
+gpu: MTL0 (Apple M2 Ultra)   cpu: CPU, 16 threads
+loading weight sets (13.5 GiB each)...
+mxfp4 weights in buffer: CPU_REPACK
+solo phases (4.0 s each)...
+concurrent phase (4.0 s)...
+
+side           n      solo us/g    conc us/g      tax  solo GB/s  conc GB/s
+Metal          4         1962.2       2094.5     6.7%      429.2      402.1
+CPU(repack)    4         3972.9      30323.2   663.3%      220.8       28.9
+combined streaming: solo-sum 650.1 GB/s, concurrent 431.1 GB/s
+/Users/oleksandr/projects/3rd/llama.cpp/ggml/src/ggml-metal/ggml-metal-device.m:657: GGML_ASSERT([rsets->data count] == 0) failed
+WARNING: Using native backtrace. Set GGML_BACKTRACE_LLDB for more info.
+WARNING: GGML_BACKTRACE_LLDB may cause native MacOS Terminal.app to crash.
+See: https://github.com/ggml-org/llama.cpp/pull/17869
+0   libggml-base.0.20.2.dylib           0x0000000102eb1380 ggml_print_backtrace + 276
+1   libggml-base.0.20.2.dylib           0x0000000102eb156c ggml_abort + 156
+2   libggml-metal.0.20.2.dylib          0x00000001031ba42c ggml_metal_device_init + 0
+3   libggml-metal.0.20.2.dylib          0x00000001031bb060 ggml_metal_device_free + 24
+4   libggml-metal.0.20.2.dylib          0x00000001031bce54 _ZNSt3__16vectorINS_10unique_ptrI17ggml_metal_device25ggml_metal_device_deleterEENS_9allocatorIS4_EEED1B8ne190102Ev + 72
+5   libsystem_c.dylib                   0x00000001813d47dc __cxa_finalize_ranges + 416
+6   libsystem_c.dylib                   0x00000001813d45dc exit + 44
+7   libdyld.dylib                       0x000000018111c2e4 _ZNK5dyld416LibSystemHelpers6getenvEPKc + 0
+8   dyld                                0x00000001811545f0 _ZNK5dyld423LibSystemHelpersWrapper4exitEi + 164
+9   dyld                                0x0000000181154514 start + 7040

@@ -1,0 +1,30 @@
+ggml_metal_device_init: tensor API disabled for pre-M5 and pre-A19 devices
+ggml_metal_library_init: using embedded metal library
+ggml_metal_library_init: loaded in 0.010 sec
+ggml_metal_rsets_init: creating a residency set collection (keep_alive = 180 s)
+ggml_metal_device_init: GPU name:   MTL0 (Apple M2 Ultra)
+ggml_metal_device_init: GPU family: MTLGPUFamilyApple8  (1008)
+ggml_metal_device_init: GPU family: MTLGPUFamilyCommon3 (3003)
+ggml_metal_device_init: GPU family: MTLGPUFamilyMetal4  (5002)
+ggml_metal_device_init: simdgroup reduction   = true
+ggml_metal_device_init: simdgroup matrix mul. = true
+ggml_metal_device_init: has unified memory    = true
+ggml_metal_device_init: has bfloat            = true
+ggml_metal_device_init: has tensor            = false
+ggml_metal_device_init: use residency sets    = true
+ggml_metal_device_init: use shared buffers    = true
+ggml_metal_device_init: recommendedMaxWorkingSetSize  = 173173.08 MB
+device: CPU (Apple M2 Ultra) [CPU mode]
+V4-Pro MoE layer: 384x(7168->3072), top-6+1 shared, routed experts 12.55 GiB
+
+loading weights to device...
+
+t   n       us/graph     us/token   uniq exp    bytes/graph       GB/s
+16  1         3008.7       3008.7          6      245661696       81.6
+16  2         4690.6       2345.3         12      456228864       97.3
+16  3         4933.9       1644.6         17      631701504      128.0
+16  4         6425.7       1606.4         23      842268672      131.1
+16  5         8523.4       1704.7         27      982646784      115.3
+16  6        12853.7       2142.3         33     1193213952       92.8
+16  7        10561.2       1508.7         39     1403781120      132.9
+16  8        10213.4       1276.7         42     1509064704      147.8

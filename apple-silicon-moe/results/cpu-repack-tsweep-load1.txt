@@ -1,0 +1,70 @@
+ggml_metal_device_init: tensor API disabled for pre-M5 and pre-A19 devices
+ggml_metal_library_init: using embedded metal library
+ggml_metal_library_init: loaded in 0.010 sec
+ggml_metal_rsets_init: creating a residency set collection (keep_alive = 180 s)
+ggml_metal_device_init: GPU name:   MTL0 (Apple M2 Ultra)
+ggml_metal_device_init: GPU family: MTLGPUFamilyApple8  (1008)
+ggml_metal_device_init: GPU family: MTLGPUFamilyCommon3 (3003)
+ggml_metal_device_init: GPU family: MTLGPUFamilyMetal4  (5002)
+ggml_metal_device_init: simdgroup reduction   = true
+ggml_metal_device_init: simdgroup matrix mul. = true
+ggml_metal_device_init: has unified memory    = true
+ggml_metal_device_init: has bfloat            = true
+ggml_metal_device_init: has tensor            = false
+ggml_metal_device_init: use residency sets    = true
+ggml_metal_device_init: use shared buffers    = true
+ggml_metal_device_init: recommendedMaxWorkingSetSize  = 173173.08 MB
+repack: repack tensor  with mxfp4_4x4
+repack: repack tensor  with mxfp4_4x4
+repack: repack tensor  with mxfp4_4x4
+repack: repack tensor  with mxfp4_4x4
+repack: repack tensor  with mxfp4_4x4
+repack: repack tensor  with mxfp4_4x4
+device: CPU (Apple M2 Ultra) [CPU mode]
+V4-Pro MoE layer: 384x(7168->3072), top-6+1 shared, routed experts 12.55 GiB
+
+extra buft: CPU_REPACK
+loading weights to device...
+mxfp4 weights in buffer: CPU_REPACK
+
+t   n       us/graph     us/token   uniq exp    bytes/graph       GB/s
+8   1         3401.6       3401.6          6      245661696       72.2
+8   2         4754.9       2377.4         12      456228864       95.9
+8   3         6278.9       2093.0         17      631701504      100.6
+8   4         7495.9       1874.0         22      807174144      107.7
+8   5         9338.4       1867.7         27      982646784      105.2
+8   6        11219.7       1870.0         34     1228308480      109.5
+8   7        12812.7       1830.4         40     1438875648      112.3
+8   8        13795.7       1724.5         42     1509064704      109.4
+12  1         2189.7       2189.7          6      245661696      112.2
+12  2         3262.3       1631.2         12      456228864      139.8
+12  3         4878.1       1626.0         17      631701504      129.5
+12  4         5531.5       1382.9         22      807174144      145.9
+12  5         6708.2       1341.6         27      982646784      146.5
+12  6         7974.6       1329.1         34     1228308480      154.0
+12  7         9064.3       1294.9         40     1438875648      158.7
+12  8        10180.8       1272.6         42     1509064704      148.2
+16  1         1460.9       1460.9          6      245661696      168.2
+16  2         2698.0       1349.0         12      456228864      169.1
+16  3         3548.4       1182.8         17      631701504      178.0
+16  4         4633.2       1158.3         22      807174144      174.2
+16  5         5200.5       1040.1         27      982646784      189.0
+16  6         9064.7       1510.8         34     1228308480      135.5
+16  7        11758.1       1679.7         40     1438875648      122.4
+16  8         7705.1        963.1         42     1509064704      195.9
+20  1         2776.7       2776.7          6      245661696       88.5
+20  2         4018.4       2009.2         12      456228864      113.5
+20  3         5796.6       1932.2         17      631701504      109.0
+20  4         7559.7       1889.9         22      807174144      106.8
+20  5         9065.6       1813.1         27      982646784      108.4
+20  6        11108.3       1851.4         34     1228308480      110.6
+20  7        12413.7       1773.4         40     1438875648      115.9
+20  8        13801.4       1725.2         42     1509064704      109.3
+24  1         3067.0       3067.0          6      245661696       80.1
+24  2         4337.6       2168.8         12      456228864      105.2
+24  3         5744.7       1914.9         17      631701504      110.0
+24  4         6939.5       1734.9         22      807174144      116.3
+24  5        12597.7       2519.5         27      982646784       78.0
+24  6        22382.3       3730.4         34     1228308480       54.9
+24  7        12800.6       1828.7         40     1438875648      112.4
+24  8        13156.9       1644.6         42     1509064704      114.7

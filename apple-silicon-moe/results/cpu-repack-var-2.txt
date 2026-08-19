@@ -1,0 +1,38 @@
+ggml_metal_device_init: tensor API disabled for pre-M5 and pre-A19 devices
+ggml_metal_library_init: using embedded metal library
+ggml_metal_library_init: loaded in 0.010 sec
+ggml_metal_rsets_init: creating a residency set collection (keep_alive = 180 s)
+ggml_metal_device_init: GPU name:   MTL0 (Apple M2 Ultra)
+ggml_metal_device_init: GPU family: MTLGPUFamilyApple8  (1008)
+ggml_metal_device_init: GPU family: MTLGPUFamilyCommon3 (3003)
+ggml_metal_device_init: GPU family: MTLGPUFamilyMetal4  (5002)
+ggml_metal_device_init: simdgroup reduction   = true
+ggml_metal_device_init: simdgroup matrix mul. = true
+ggml_metal_device_init: has unified memory    = true
+ggml_metal_device_init: has bfloat            = true
+ggml_metal_device_init: has tensor            = false
+ggml_metal_device_init: use residency sets    = true
+ggml_metal_device_init: use shared buffers    = true
+ggml_metal_device_init: recommendedMaxWorkingSetSize  = 173173.08 MB
+repack: repack tensor  with mxfp4_4x4
+repack: repack tensor  with mxfp4_4x4
+repack: repack tensor  with mxfp4_4x4
+repack: repack tensor  with mxfp4_4x4
+repack: repack tensor  with mxfp4_4x4
+repack: repack tensor  with mxfp4_4x4
+device: CPU (Apple M2 Ultra) [CPU mode]
+V4-Pro MoE layer: 384x(7168->3072), top-6+1 shared, routed experts 12.55 GiB
+
+extra buft: CPU_REPACK
+loading weights to device...
+mxfp4 weights in buffer: CPU_REPACK
+
+t   n       us/graph     us/token   uniq exp    bytes/graph       GB/s
+16  1         2642.0       2642.0          6      245661696       93.0
+16  2         3711.8       1855.9         12      456228864      122.9
+16  3         4385.6       1461.9         17      631701504      144.0
+16  4         5228.9       1307.2         23      842268672      161.1
+16  5         5848.1       1169.6         27      982646784      168.0
+16  6         7278.7       1213.1         33     1193213952      163.9
+16  7         7748.1       1106.9         39     1403781120      181.2
+16  8         7973.2        996.7         42     1509064704      189.3
