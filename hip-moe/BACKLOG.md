@@ -3,20 +3,44 @@
 Open items with enough context to pick up cold. Closed work lives in
 README.md; this file holds what we chose not to do yet.
 
-## Mixed CPU+GPU EP: the umbrella hypothesis
+## ~~Mixed CPU+GPU EP: the umbrella hypothesis~~ DONE 2026-08-20
 
-Add `--cpu-experts K` to moe-ep-bench: the CPU as a fifth EP target owning
-K (cold) experts, its ggml graph launched concurrently with the GPU wave.
-Prediction to falsify, from measured numbers (2026-08-18,
-repack+32-thread-corrected): a distinct cold expert costs ~380-400 µs on
-CPU (35 MB at ~92 GB/s, CPU_REPACK, 32 threads — symmetric SMT only, 20
-threads is a measured trap), the n=4 GPU wave is a ~650 µs umbrella — so
-ONE cold expert hides with margin and even TWO (~780 µs) barely stick
-out. Expected tax for "1-2 cold pairs/step" placement: ~2-5% mean.
-Design constraints already known: CPU graph threads must be a symmetric
-SMT count (32 alone, fewer if sharing cores with other work), blocking
-GPU sync (+1 µs on HIP per latency bench), overlap mandatory. Also
-verify: two tokens hitting the SAME cold expert read it once (~free).
+Measured (README "the umbrella, measured"): pairs hide while their summed
+serial cost stays under the wave — C=1 at n≥2 and C=2 at n≥6 cost
++0.6-3.5%; one pair past capacity costs +33-76%. Both quantitative
+predictions were wrong: a lone cold expert is ~600 µs (46-72 GB/s — one
+35 MB stream never reaches the 92-98 GB/s wall), and same-expert pairs
+are NOT free (~250 µs marginal): repack forward_mul_mat_id is one gemv
+per routed row, no grouped gemm (repack.cpp:4498). Viability criterion:
+K ≲ 20 of 384 under uniform routing (E[C] and capacity both linear in n);
+the trade only clearly wins with real routing skew. Follow-ups spawned
+below.
+
+## Cold-expert follow-ups (from the umbrella measurement)
+
+- Grouped-gemm mul_mat_id on the CPU repack path: when multiple rows hit
+  one expert, the kernel could stream weights once (gemm) instead of once
+  per row (gemv). Would cut the C>1 same-expert cost ~in half and is an
+  upstream-shaped change — check whether ggml's plain (non-repack) CPU
+  mul_mat_id already does this before proposing.
+- Real-routing coldness: the design goal is miss TOLERANCE (cold experts
+  rarely hit; hide 1-2 misses when they happen), and the umbrella
+  measurement prices exactly that — a within-capacity miss is +0.6-3.5%
+  on its step, amortized cost = hit rate x ~30-50 µs. What's missing is
+  the hit rate: on the real DS-V4-Flash (or Pro) collect per-expert hit
+  histograms over a corpus; the coldest-K tail's cumulative hit rate then
+  gives mean tax and P(over capacity) directly, and licenses K larger
+  than the uniform-routing ceiling (~20). The chat.sh server + a hooked
+  ids dump would do it. Deferred indefinitely (2026-08-20): the histogram
+  is specific to each model and even each quant of a model, so it belongs
+  to a concrete deployment, not to this proof of concept — the PoC
+  numbers above (per-miss price, capacity, over-capacity bound) are the
+  transferable result.
+- Scheduler config is part of the result: default GOMP (no pinning, no
+  passive) was the only configuration that worked under overlap;
+  GOMP_CPU_AFFINITY=0-15 starves the main thread (+133% instrument tax),
+  OMP_WAIT_POLICY=passive runs at 35 GB/s and segfaulted. If llama.cpp
+  serving with CPU experts shows mystery slowdowns, look here first.
 
 ## Architectural EP: kill the ~246 µs serial routing floor
 

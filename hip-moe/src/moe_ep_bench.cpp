@@ -21,22 +21,45 @@
 // inputs (through the real router weights) reports the *expected* max load,
 // since one x sample is one draw from the multinomial.
 //
+// --cpu-experts K: the umbrella experiment (BACKLOG.md). Experts with id >=
+// 384-K are "cold": they live ONLY on the CPU (CPU_REPACK buffer, the layout
+// llama.cpp serving runs), and their pairs are computed by a persistent
+// worker thread CONCURRENTLY with the GPU wave. Hypothesis under test: a
+// cold expert hides under the GPU wave, so a placement that spills
+// rarely-hit experts to host RAM costs a few percent, not the 6-12x of a
+// CPU-displaced layer. Per n the bench runs an INTERLEAVED A/B — an all-GPU
+// baseline config and the cold config alternate rep by rep, same routing —
+// because sequential passes drift by ~5% (GPU clocks ramp during the first
+// pass), which would swamp a 2-5% effect. A standalone table prices C cold
+// pairs on the CPU solo, distinct-vs-same expert. --probe computes the
+// realized cold-pair counts for the bench's fixed inputs on the host (no
+// GPU) so K can be chosen to actually intersect the routing.
+// Note: the CPU graph's inputs are re-set every rep — ggml_gallocr recycles
+// INPUT tensors' memory mid-graph (only OUTPUT flags protect), so a
+// set-once-compute-many graph reads garbage from rep 2 on.
+//
 // Sanity: the full graph on the CPU backend with routing held fixed, gate
 // normalized by reference RMS (both sides quantize activations).
 
 #include "ggml.h"
 #include "ggml-alloc.h"
 #include "ggml-backend.h"
+#include "ggml-cpu.h"
 
 #include <algorithm>
 #include <chrono>
 #include <cinttypes>
 #include <cmath>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
+#include <mutex>
 #include <random>
+#include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 static const int64_t N_EMBD   = 7168;
@@ -91,6 +114,69 @@ static void fill_slice(ggml_tensor * t, const char * name, size_t full_bytes,
     const size_t per_expert = full_bytes / N_EXPERT;
     ggml_backend_tensor_set(t, data.data() + e0 * per_expert, 0, ne * per_expert);
 }
+
+// Host-side replica of the router math (also used by the Monte-Carlo pass):
+// top-6 expert ids for one token.
+static void route_host(const float * W, const float * B, const float * x, int * out_ids) {
+    std::vector<std::pair<float,int>> sc(N_EXPERT);
+    for (int64_t e = 0; e < N_EXPERT; e++) {
+        double acc = 0;
+        for (int64_t k = 0; k < N_EMBD; k++) acc += (double) W[e * N_EMBD + k] * x[k];
+        const double sp = acc > 20 ? acc : log1p(exp(acc));
+        sc[e] = { (float) (sqrt(sp) + B[e]), (int) e };
+    }
+    std::partial_sort(sc.begin(), sc.begin() + N_USED, sc.end(),
+                      [](auto & a, auto & b) { return a.first > b.first; });
+    for (int64_t j = 0; j < N_USED; j++) out_ids[j] = sc[j].second;
+}
+
+// --- persistent CPU worker: the fifth EP target's launch mechanism ----------
+// ggml's CPU backend computes synchronously, so overlap with the GPU wave
+// needs a host thread. A cv-woken persistent worker (the apple-silicon-moe
+// pattern) keeps the per-step handoff at ~10-20 us instead of a thread
+// create; it also keeps one OpenMP team owned by one thread across reps.
+struct cpu_worker_t {
+    std::mutex m;
+    std::condition_variable cv;
+    bool go = false, done = true, quit = false;
+    std::function<void()> job;
+    double wall = 0;
+    std::thread th;
+
+    void start() { th = std::thread([this] { loop(); }); }
+    void loop() {
+        std::unique_lock<std::mutex> lk(m);
+        while (true) {
+            cv.wait(lk, [&] { return go || quit; });
+            if (quit) return;
+            go = false;
+            lk.unlock();
+            const double t0 = now_us();
+            job();
+            const double t1 = now_us();
+            lk.lock();
+            wall = t1 - t0;
+            done = true;
+            cv.notify_all();
+        }
+    }
+    void submit(const std::function<void()> & j) {
+        std::lock_guard<std::mutex> lk(m);
+        job = j;
+        done = false;
+        go = true;
+        cv.notify_all();
+    }
+    double wait() {
+        std::unique_lock<std::mutex> lk(m);
+        cv.wait(lk, [&] { return done; });
+        return wall;
+    }
+    void stop() {
+        { std::lock_guard<std::mutex> lk(m); quit = true; cv.notify_all(); }
+        if (th.joinable()) th.join();
+    }
+};
 
 // --- router + shared expert graph on die 0 ----------------------------------
 struct router_t {
@@ -316,6 +402,9 @@ int main(int argc, char ** argv) {
     bool shared_late = false; // shared expert as its own graph, launched
                               // with the expert wave instead of inside the
                               // serial router phase
+    int cpu_experts = 0;    // K: experts [384-K, 384) live on the CPU only
+    int cpu_threads = 16;   // threads for the CPU cold-expert graph
+    bool probe = false;     // host-only: realized cold pairs per (n, K)
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--dies") && i + 1 < argc) n_dies = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--reps") && i + 1 < argc) reps = atoi(argv[++i]);
@@ -324,10 +413,53 @@ int main(int argc, char ** argv) {
         else if (!strcmp(argv[i], "--pinned")) pinned = true;
         else if (!strcmp(argv[i], "--ondie")) { ondie = true; pinned = true; }
         else if (!strcmp(argv[i], "--shared-late")) { shared_late = true; pinned = true; }
-        else { fprintf(stderr, "usage: %s [--dies 2|4] [--reps N] [--no-check] [--reorder] [--pinned] [--ondie] [--shared-late]\n", argv[0]); return 2; }
+        else if (!strcmp(argv[i], "--cpu-experts") && i + 1 < argc) cpu_experts = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--cpu-threads") && i + 1 < argc) cpu_threads = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--probe")) probe = true;
+        else { fprintf(stderr, "usage: %s [--dies 2|4] [--reps N] [--no-check] [--reorder] [--pinned] [--ondie] [--shared-late] [--cpu-experts K] [--cpu-threads T] [--probe]\n", argv[0]); return 2; }
     }
     if (ondie && shared_late) { fprintf(stderr, "--ondie and --shared-late are mutually exclusive\n"); return 2; }
-    const int64_t E_PER = N_EXPERT / n_dies;
+    if (cpu_experts < 0 || cpu_experts > N_EXPERT / 2) { fprintf(stderr, "--cpu-experts out of range\n"); return 2; }
+    if (cpu_experts > 0) {
+        if (ondie) { fprintf(stderr, "--cpu-experts is incompatible with --ondie\n"); return 2; }
+        pinned = true; shared_late = true;   // A/B against the best known base config
+    }
+    const int64_t E_PER  = N_EXPERT / n_dies;
+    const int64_t E_COLD = N_EXPERT - cpu_experts;   // first cold expert id
+
+    // --probe: which K actually intersects the bench's fixed routing? Pure
+    // host arithmetic on the deterministic streams — seconds, no GPU.
+    if (probe) {
+        auto gi = gen_bytes("gate_inp", (size_t) N_EMBD * N_EXPERT * 4, false);
+        auto eb = gen_bytes("exp_probs_b", (size_t) N_EXPERT * 4, false);
+        const float * W = (const float *) gi.data();
+        const float * B = (const float *) eb.data();
+        const std::vector<int> Ks = { 8, 16, 32, 48, 64, 96, 128, 192 };
+        printf("realized cold pairs for the fixed bench inputs (host router replica), by K:\n");
+        printf("%-3s", "n");
+        for (int K : Ks) printf("  K=%-4d", K);
+        printf("\n");
+        for (int64_t n : {1, 2, 4, 6, 8}) {
+            std::mt19937 rng(42);
+            std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+            std::vector<float> x((size_t) (N_EMBD * n));
+            for (auto & v : x) v = dist(rng);
+            std::vector<int> hit;
+            int ids6[N_USED];
+            for (int64_t t = 0; t < n; t++) {
+                route_host(W, B, x.data() + (size_t) t * N_EMBD, ids6);
+                for (int64_t j = 0; j < N_USED; j++) hit.push_back(ids6[j]);
+            }
+            printf("%-3" PRId64, n);
+            for (int K : Ks) {
+                int c = 0;
+                for (int e : hit) if (e >= N_EXPERT - K) c++;
+                printf("  %-6d", c);
+            }
+            printf("\n");
+        }
+        return 0;
+    }
 
     const char * bdir = getenv("GGML_BACKEND_DIR");
     ggml_backend_load_all_from_path(bdir ? bdir : "/home/oleksandr/projects/llama.cpp/build-hip/bin");
@@ -380,6 +512,73 @@ int main(int argc, char ** argv) {
     fill_full(sh_up, "sh_up");
     fill_full(sh_down, "sh_down");
 
+    // --- CPU as the fifth EP target: cold experts in CPU_REPACK -------------
+    ggml_backend_t cpu = nullptr;
+    ggml_context * kctx = nullptr;
+    ggml_backend_buffer_t kbuf = nullptr;
+    ggml_tensor * k_gate = nullptr, * k_up = nullptr, * k_down = nullptr;
+    cpu_worker_t worker;
+    if (cpu_experts > 0) {
+        ggml_backend_dev_t cdev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
+        cpu = ggml_backend_dev_init(cdev, nullptr);
+        ggml_backend_cpu_set_n_threads(cpu, cpu_threads);
+        ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(cdev);
+        auto get_extra = (ggml_backend_dev_get_extra_bufts_t)
+            ggml_backend_reg_get_proc_address(reg, "ggml_backend_dev_get_extra_bufts");
+        ggml_backend_buffer_type_t mx_buft = nullptr;
+        if (get_extra)
+            for (ggml_backend_buffer_type_t * b = get_extra(cdev); b && *b; b++)
+                if (strstr(ggml_backend_buft_name(*b), "REPACK")) mx_buft = *b;
+        if (!mx_buft) { fprintf(stderr, "no REPACK buffer type on this build/ISA\n"); return 2; }
+
+        ggml_init_params ip = { 8 * ggml_tensor_overhead(), nullptr, true };
+        kctx = ggml_init(ip);
+        k_gate = ggml_new_tensor_3d(kctx, GGML_TYPE_MXFP4, N_EMBD, N_FF, cpu_experts);
+        k_up   = ggml_new_tensor_3d(kctx, GGML_TYPE_MXFP4, N_EMBD, N_FF, cpu_experts);
+        k_down = ggml_new_tensor_3d(kctx, GGML_TYPE_MXFP4, N_FF, N_EMBD, cpu_experts);
+        kbuf = ggml_backend_alloc_ctx_tensors_from_buft(kctx, mx_buft);
+        if (!kbuf) { fprintf(stderr, "cold-expert buffer alloc failed\n"); return 2; }
+        printf("cold experts [%" PRId64 ", %" PRId64 ") on CPU: buffer %s, %d threads (%.2f GiB)\n",
+               E_COLD, N_EXPERT, ggml_backend_buffer_name(kbuf), cpu_threads,
+               (double) (ggml_nbytes(k_gate) + ggml_nbytes(k_up) + ggml_nbytes(k_down)) / (1u << 30));
+        fill_slice(k_gate, "gate_exps", full_gu, E_COLD, cpu_experts);
+        fill_slice(k_up,   "up_exps",   full_gu, E_COLD, cpu_experts);
+        fill_slice(k_down, "down_exps", full_dn, E_COLD, cpu_experts);
+        worker.start();
+
+        // Cold-expert price list, solo: C pairs on the CPU graph with no GPU
+        // activity — distinct experts (C weight reads) vs the same expert C
+        // times (tests whether the kernel amortizes repeated experts).
+        const double bytes_per_exp = 2.0 * ggml_row_size(GGML_TYPE_MXFP4, N_EMBD) * N_FF
+                                   + (double) ggml_row_size(GGML_TYPE_MXFP4, N_FF) * N_EMBD;
+        printf("\ncold-expert CPU cost solo (%.1f MB/expert):\n", bytes_per_exp / 1e6);
+        printf("%-3s %12s %8s %14s\n", "C", "distinct us", "GB/s", "same-expert us");
+        for (int c = 1; c <= 4 && c <= cpu_experts; c++) {
+            die_graph_t g = build_die_graph(k_gate, k_up, k_down, cpu, c);
+            std::vector<float> sx((size_t) c * N_EMBD);
+            std::mt19937 srng(11);
+            std::uniform_real_distribution<float> sdist(-1.0f, 1.0f);
+            for (auto & v : sx) v = sdist(srng);
+            auto run_med = [&](const std::vector<int32_t> & idv) {
+                // inputs re-set every compute: gallocr recycles INPUT memory
+                std::function<void()> job = [&]() {
+                    ggml_backend_tensor_set(g.xs, sx.data(), 0, sx.size() * 4);
+                    ggml_backend_tensor_set(g.ids, idv.data(), 0, idv.size() * 4);
+                    ggml_backend_graph_compute(cpu, g.gf);
+                };
+                for (int i = 0; i < 5; i++) { worker.submit(job); worker.wait(); }
+                std::vector<double> ts;
+                for (int i = 0; i < 20; i++) { worker.submit(job); ts.push_back(worker.wait()); }
+                return median(ts);
+            };
+            std::vector<int32_t> id_dist(c), id_same(c, 0);
+            for (int i = 0; i < c; i++) id_dist[i] = i;
+            const double td = run_med(id_dist), tsm = run_med(id_same);
+            printf("%-3d %12.0f %8.1f %14.0f\n", c, td, c * bytes_per_exp / td / 1e3, tsm);
+            ggml_gallocr_free(g.galloc); ggml_free(g.ctx);
+        }
+    }
+
     // --- Monte-Carlo expected imbalance through the real router -------------
     {
         auto gi = gen_bytes("gate_inp", (size_t) N_EMBD * N_EXPERT * 4, false);
@@ -391,35 +590,37 @@ int main(int argc, char ** argv) {
         const int S = 200;
         printf("\nexpected imbalance, %d random tokens through the real router "
                "(ideal per-die share = 6n/%d):\n", S, n_dies);
-        printf("%-3s %14s %14s\n", "n", "E[max pairs]", "E[max]/ideal");
+        printf("%-3s %14s %14s", "n", "E[max pairs]", "E[max]/ideal");
+        if (cpu_experts > 0) printf(" %14s", "E[cpu pairs]");
+        printf("\n");
         for (int64_t n : {1, 2, 4, 6, 8}) {
-            double sum_max = 0;
+            double sum_max = 0, sum_cold = 0;
             std::vector<float> x(N_EMBD);
+            int ids6[N_USED];
             for (int s = 0; s < S; s++) {
                 std::vector<int> load(n_dies, 0);
                 for (int64_t t = 0; t < n; t++) {
                     for (auto & v : x) v = dist(rng);
-                    std::vector<std::pair<float,int>> sc(N_EXPERT);
-                    for (int64_t e = 0; e < N_EXPERT; e++) {
-                        double acc = 0;
-                        for (int64_t k = 0; k < N_EMBD; k++) acc += (double) W[e * N_EMBD + k] * x[k];
-                        const double sp = acc > 20 ? acc : log1p(exp(acc));
-                        sc[e] = { (float) (sqrt(sp) + B[e]), (int) e };
+                    route_host(W, B, x.data(), ids6);
+                    for (int64_t j = 0; j < N_USED; j++) {
+                        load[ids6[j] / E_PER]++;
+                        if (ids6[j] >= E_COLD) sum_cold += 1;
                     }
-                    std::partial_sort(sc.begin(), sc.begin() + N_USED, sc.end(),
-                                      [](auto & a, auto & b) { return a.first > b.first; });
-                    for (int64_t j = 0; j < N_USED; j++) load[sc[j].second / E_PER]++;
                 }
                 sum_max += *std::max_element(load.begin(), load.end());
             }
             const double ideal = (double) N_USED * n / n_dies;
-            printf("%-3" PRId64 " %14.2f %14.2f\n", n, sum_max / S, sum_max / S / ideal);
+            printf("%-3" PRId64 " %14.2f %14.2f", n, sum_max / S, sum_max / S / ideal);
+            if (cpu_experts > 0) printf(" %14.2f", sum_cold / S);
+            printf("\n");
         }
     }
 
     // --- the sweep -----------------------------------------------------------
-    printf("\n%-3s %-14s %10s | %8s %8s %8s %8s | %10s %10s\n",
+    printf("\n%-3s %-14s %10s | %8s %8s %8s %8s | %10s %10s",
            "n", "pairs/die", "solo us", "router", "prep", "submit", "wait+rd", "us/graph", "us/token");
+    if (cpu_experts > 0) printf(" | %-6s %8s %8s", "cpu", "cpu-solo", "cpu-wall");
+    printf("\n");
     for (int64_t n : {1, 2, 4, 6, 8}) {
         router_t r = build_router(wctx[0], gate_inp, exp_probs_b, sh_gate, sh_up, sh_down, dies[0], n,
                                   /*with_shared*/ !shared_late);
@@ -439,100 +640,160 @@ int main(int argc, char ** argv) {
         ggml_backend_tensor_get(r.ids_out, ids.data(), 0, ids.size() * 4);
         ggml_backend_tensor_get(r.w_out, wts.data(), 0, wts.size() * 4);
 
-        std::vector<std::vector<std::pair<int,int>>> pairs(n_dies);  // (token, slot)
-        for (int64_t t = 0; t < n; t++)
-            for (int64_t s = 0; s < N_USED; s++)
-                pairs[ids[t * N_USED + s] / E_PER].push_back({ (int) t, (int) (t * N_USED + s) });
+        // Per-configuration state. With --cpu-experts two configurations are
+        // built — all-GPU baseline and cold-enabled — and their reps are
+        // INTERLEAVED in one loop: sequential passes drift ~5% (GPU clock
+        // ramp), which would drown the effect under test.
+        struct cfg_t {
+            bool cold = false;
+            std::vector<std::vector<std::pair<int,int>>> pairs;
+            std::vector<std::pair<int,int>> kpairs;
+            size_t kP = 0, k_uniq = 0;
+            std::vector<die_graph_t> dg;
+            die_graph_t kg;
+            std::vector<float> xs_c, out_c;
+            std::vector<int32_t> ids_c;
+            std::function<void()> cpu_job;
+            std::vector<std::vector<float>> xs_h, out_h;
+            std::vector<std::vector<int32_t>> lid_h;
+            std::vector<ggml_backend_buffer_t> pin;
+            std::vector<float *> xs_p, out_p;
+            std::vector<int32_t *> id_p;
+            std::vector<float> y;
+            ggml_backend_buffer_t rpin = nullptr;
+            float * xr_pin = nullptr, * shl_pin = nullptr;
+            ggml_backend_buffer_t opin = nullptr;
+            float * x_pin = nullptr, * sh_pin = nullptr;
+            std::vector<float *> part_p, wm_p;
+            std::vector<int32_t *> tok_p, lid2_p;
+            std::vector<double> solo;
+            double cpu_solo = 0;
+            std::vector<std::vector<double>> phases;
+        };
+        std::vector<cfg_t> cfgs(cpu_experts > 0 ? 2 : 1);
 
-        std::vector<die_graph_t> dg(n_dies);
-        for (int d = 0; d < n_dies; d++)
-            dg[d] = ondie
-                ? build_die_graph_ondie(gate_e[d], up_e[d], down_e[d], dies[d], (int64_t) pairs[d].size(), n)
-                : build_die_graph(gate_e[d], up_e[d], down_e[d], dies[d], (int64_t) pairs[d].size());
+        for (size_t ci = 0; ci < cfgs.size(); ci++) {
+            cfg_t & c = cfgs[ci];
+            c.cold = ci == 1;
+            c.phases.resize(6);
+            c.pairs.resize(n_dies);
+            for (int64_t t = 0; t < n; t++)
+                for (int64_t s = 0; s < N_USED; s++) {
+                    const int e = ids[t * N_USED + s];
+                    if (c.cold && e >= E_COLD) c.kpairs.push_back({ (int) t, (int) (t * N_USED + s) });
+                    else c.pairs[e / E_PER].push_back({ (int) t, (int) (t * N_USED + s) });
+                }
+            c.kP = c.kpairs.size();
+            if (c.kP) {
+                std::set<int> u;
+                for (auto & pr : c.kpairs) u.insert(ids[pr.second]);
+                c.k_uniq = u.size();
+            }
 
-        std::vector<std::vector<float>> xs_h(n_dies), out_h(n_dies);
-        std::vector<std::vector<int32_t>> lid_h(n_dies);
-        for (int d = 0; d < n_dies; d++) {
-            xs_h[d].resize(pairs[d].size() * N_EMBD);
-            out_h[d].resize(pairs[d].size() * N_EMBD);
-            lid_h[d].resize(pairs[d].size());
-        }
-        // staging pointers: the vectors above, or carved out of a pinned
-        // host buffer so the async copies are actually asynchronous
-        std::vector<ggml_backend_buffer_t> pin(n_dies, nullptr);
-        std::vector<float *> xs_p(n_dies), out_p(n_dies);
-        std::vector<int32_t *> id_p(n_dies);
-        for (int d = 0; d < n_dies; d++) {
-            const size_t P = pairs[d].size();
-            xs_p[d] = xs_h[d].data(); out_p[d] = out_h[d].data(); id_p[d] = lid_h[d].data();
-            if (pinned && P) {
-                const size_t nb_xs = P * N_EMBD * 4, nb_out = nb_xs;
-                const size_t nb_id = (P * 4 + 63) / 64 * 64;
+            c.dg.resize(n_dies);
+            for (int d = 0; d < n_dies; d++)
+                c.dg[d] = ondie
+                    ? build_die_graph_ondie(gate_e[d], up_e[d], down_e[d], dies[d], (int64_t) c.pairs[d].size(), n)
+                    : build_die_graph(gate_e[d], up_e[d], down_e[d], dies[d], (int64_t) c.pairs[d].size());
+
+            if (c.kP) {
+                c.kg = build_die_graph(k_gate, k_up, k_down, cpu, (int64_t) c.kP);
+                c.xs_c.resize(c.kP * N_EMBD);
+                c.out_c.resize(c.kP * N_EMBD);
+                c.ids_c.resize(c.kP);
+                // the CPU side of a step: inputs re-set every rep (gallocr
+                // recycles INPUT memory mid-graph), compute, outputs out
+                cfg_t * cp = &c;
+                c.cpu_job = [cp, this_cpu = cpu]() {
+                    ggml_backend_tensor_set(cp->kg.xs, cp->xs_c.data(), 0, cp->xs_c.size() * 4);
+                    ggml_backend_tensor_set(cp->kg.ids, cp->ids_c.data(), 0, cp->ids_c.size() * 4);
+                    ggml_backend_graph_compute(this_cpu, cp->kg.gf);
+                    size_t off = 0;
+                    for (ggml_tensor * o : cp->kg.outs) {
+                        ggml_backend_tensor_get(o, cp->out_c.data() + off, 0, ggml_nbytes(o));
+                        off += (size_t) ggml_nelements(o);
+                    }
+                };
+            }
+
+            c.xs_h.resize(n_dies); c.out_h.resize(n_dies); c.lid_h.resize(n_dies);
+            for (int d = 0; d < n_dies; d++) {
+                c.xs_h[d].resize(c.pairs[d].size() * N_EMBD);
+                c.out_h[d].resize(c.pairs[d].size() * N_EMBD);
+                c.lid_h[d].resize(c.pairs[d].size());
+            }
+            // staging pointers: the vectors above, or carved out of a pinned
+            // host buffer so the async copies are actually asynchronous
+            c.pin.assign(n_dies, nullptr);
+            c.xs_p.resize(n_dies); c.out_p.resize(n_dies); c.id_p.resize(n_dies);
+            for (int d = 0; d < n_dies; d++) {
+                const size_t P = c.pairs[d].size();
+                c.xs_p[d] = c.xs_h[d].data(); c.out_p[d] = c.out_h[d].data(); c.id_p[d] = c.lid_h[d].data();
+                if (pinned && P) {
+                    const size_t nb_xs = P * N_EMBD * 4, nb_out = nb_xs;
+                    const size_t nb_id = (P * 4 + 63) / 64 * 64;
+                    ggml_backend_buffer_type_t hbuft =
+                        ggml_backend_dev_host_buffer_type(ggml_backend_get_device(dies[d]));
+                    c.pin[d] = ggml_backend_buft_alloc_buffer(hbuft, nb_xs + nb_out + nb_id);
+                    char * base = (char *) ggml_backend_buffer_get_base(c.pin[d]);
+                    c.xs_p[d]  = (float *) base;
+                    c.out_p[d] = (float *) (base + nb_xs);
+                    c.id_p[d]  = (int32_t *) (base + nb_xs + nb_out);
+                }
+            }
+            c.y.resize((size_t) (N_EMBD * n));
+
+            // classic-path pinned staging for the router's x (it was still
+            // pageable after the --pinned fix) and for the late shared output
+            if (pinned && !ondie) {
+                const size_t nb_x = (size_t) N_EMBD * n * 4;
                 ggml_backend_buffer_type_t hbuft =
-                    ggml_backend_dev_host_buffer_type(ggml_backend_get_device(dies[d]));
-                pin[d] = ggml_backend_buft_alloc_buffer(hbuft, nb_xs + nb_out + nb_id);
-                char * base = (char *) ggml_backend_buffer_get_base(pin[d]);
-                xs_p[d]  = (float *) base;
-                out_p[d] = (float *) (base + nb_xs);
-                id_p[d]  = (int32_t *) (base + nb_xs + nb_out);
+                    ggml_backend_dev_host_buffer_type(ggml_backend_get_device(dies[0]));
+                c.rpin = ggml_backend_buft_alloc_buffer(hbuft, 2 * nb_x);
+                char * b = (char *) ggml_backend_buffer_get_base(c.rpin);
+                c.xr_pin = (float *) b;
+                c.shl_pin = (float *) (b + nb_x);
+                memcpy(c.xr_pin, x.data(), nb_x);
+            }
+
+            // ondie staging: one pinned x (portable across devices), pinned
+            // sh + per-die partial, and tiny per-die tok/lids/wmat regions
+            if (ondie) {
+                const size_t nb_x = (size_t) N_EMBD * n * 4;
+                size_t total = 2 * nb_x;                       // x + sh
+                std::vector<size_t> off(n_dies);
+                for (int d = 0; d < n_dies; d++) {
+                    off[d] = total;
+                    const size_t P = c.pairs[d].size();
+                    total += nb_x + ((P * 4 + 63) / 64 * 64) * 2 + (size_t) P * n * 4 + 64;
+                }
+                ggml_backend_buffer_type_t hbuft =
+                    ggml_backend_dev_host_buffer_type(ggml_backend_get_device(dies[0]));
+                c.opin = ggml_backend_buft_alloc_buffer(hbuft, total);
+                char * base = (char *) ggml_backend_buffer_get_base(c.opin);
+                c.x_pin  = (float *) base;
+                c.sh_pin = (float *) (base + nb_x);
+                c.part_p.resize(n_dies); c.wm_p.resize(n_dies);
+                c.tok_p.resize(n_dies); c.lid2_p.resize(n_dies);
+                for (int d = 0; d < n_dies; d++) {
+                    const size_t P = c.pairs[d].size(), pal = (P * 4 + 63) / 64 * 64;
+                    char * b = base + off[d];
+                    c.part_p[d] = (float *) b;
+                    c.tok_p[d]  = (int32_t *) (b + nb_x);
+                    c.lid2_p[d] = (int32_t *) (b + nb_x + pal);
+                    c.wm_p[d]   = (float *) (b + nb_x + 2 * pal);
+                }
+                memcpy(c.x_pin, x.data(), nb_x);
             }
         }
-        std::vector<float> y((size_t) (N_EMBD * n));
 
-        // classic-path pinned staging for the router's x (it was still
-        // pageable after the --pinned fix) and for the late shared output
-        ggml_backend_buffer_t rpin = nullptr;
-        float * xr_pin = nullptr, * shl_pin = nullptr;
-        if (pinned && !ondie) {
-            const size_t nb_x = (size_t) N_EMBD * n * 4;
-            ggml_backend_buffer_type_t hbuft =
-                ggml_backend_dev_host_buffer_type(ggml_backend_get_device(dies[0]));
-            rpin = ggml_backend_buft_alloc_buffer(hbuft, 2 * nb_x);
-            char * b = (char *) ggml_backend_buffer_get_base(rpin);
-            xr_pin = (float *) b;
-            shl_pin = (float *) (b + nb_x);
-            memcpy(xr_pin, x.data(), nb_x);
-        }
-
-        // ondie staging: one pinned x (portable across devices), pinned sh +
-        // per-die partial, and tiny per-die tok/lids/wmat regions
-        ggml_backend_buffer_t opin = nullptr;
-        float * x_pin = nullptr, * sh_pin = nullptr;
-        std::vector<float *> part_p(n_dies), wm_p(n_dies);
-        std::vector<int32_t *> tok_p(n_dies), lid2_p(n_dies);
-        if (ondie) {
-            const size_t nb_x = (size_t) N_EMBD * n * 4;
-            size_t total = 2 * nb_x;                       // x + sh
-            std::vector<size_t> off(n_dies);
-            for (int d = 0; d < n_dies; d++) {
-                off[d] = total;
-                const size_t P = pairs[d].size();
-                total += nb_x + ((P * 4 + 63) / 64 * 64) * 2 + (size_t) P * n * 4 + 64;
-            }
-            ggml_backend_buffer_type_t hbuft =
-                ggml_backend_dev_host_buffer_type(ggml_backend_get_device(dies[0]));
-            opin = ggml_backend_buft_alloc_buffer(hbuft, total);
-            char * base = (char *) ggml_backend_buffer_get_base(opin);
-            x_pin  = (float *) base;
-            sh_pin = (float *) (base + nb_x);
-            for (int d = 0; d < n_dies; d++) {
-                const size_t P = pairs[d].size(), pal = (P * 4 + 63) / 64 * 64;
-                char * b = base + off[d];
-                part_p[d] = (float *) b;
-                tok_p[d]  = (int32_t *) (b + nb_x);
-                lid2_p[d] = (int32_t *) (b + nb_x + pal);
-                wm_p[d]   = (float *) (b + nb_x + 2 * pal);
-            }
-            memcpy(x_pin, x.data(), nb_x);
-        }
-
-        auto one_rep_ondie = [&](double * ph) {
+        auto one_rep_ondie = [&](cfg_t & c, double * ph) {
             const size_t nb_x = (size_t) N_EMBD * n * 4;
             double t0 = now_us();
             // x to every die + router compute, all queued before any wait
             for (int d = 0; d < n_dies; d++)
-                if (dg[d].P) ggml_backend_tensor_set_async(dies[d], dg[d].x_full, x_pin, 0, nb_x);
-            ggml_backend_tensor_set_async(dies[0], r.x, x_pin, 0, nb_x);
+                if (c.dg[d].P) ggml_backend_tensor_set_async(dies[d], c.dg[d].x_full, c.x_pin, 0, nb_x);
+            ggml_backend_tensor_set_async(dies[0], r.x, c.x_pin, 0, nb_x);
             ggml_backend_graph_compute_async(dies[0], r.gf);
             ggml_backend_synchronize(dies[0]);
             ggml_backend_tensor_get(r.ids_out, ids.data(), 0, ids.size() * 4);
@@ -541,45 +802,46 @@ int main(int argc, char ** argv) {
 
             std::vector<int> fill(n_dies, 0);
             for (int d = 0; d < n_dies; d++)
-                if (dg[d].P) memset(wm_p[d], 0, pairs[d].size() * n * 4);
+                if (c.dg[d].P) memset(c.wm_p[d], 0, c.pairs[d].size() * n * 4);
             for (int64_t t = 0; t < n; t++)
                 for (int64_t s = 0; s < N_USED; s++) {
                     const int e = ids[t * N_USED + s], d = e / (int) E_PER;
                     const int p = fill[d]++;
-                    lid2_p[d][p] = e % (int) E_PER;
-                    tok_p[d][p] = (int) t;
-                    wm_p[d][t * (int64_t) pairs[d].size() + p] = wts[t * N_USED + s];
+                    c.lid2_p[d][p] = e % (int) E_PER;
+                    c.tok_p[d][p] = (int) t;
+                    c.wm_p[d][t * (int64_t) c.pairs[d].size() + p] = wts[t * N_USED + s];
                 }
             for (int d = 0; d < n_dies; d++) {
-                if (!dg[d].P) continue;
-                const size_t P = pairs[d].size();
-                ggml_backend_tensor_set_async(dies[d], dg[d].tok,  tok_p[d],  0, P * 4);
-                ggml_backend_tensor_set_async(dies[d], dg[d].ids,  lid2_p[d], 0, P * 4);
-                ggml_backend_tensor_set_async(dies[d], dg[d].wmat, wm_p[d],   0, P * n * 4);
-                ggml_backend_graph_compute_async(dies[d], dg[d].gf);
+                if (!c.dg[d].P) continue;
+                const size_t P = c.pairs[d].size();
+                ggml_backend_tensor_set_async(dies[d], c.dg[d].tok,  c.tok_p[d],  0, P * 4);
+                ggml_backend_tensor_set_async(dies[d], c.dg[d].ids,  c.lid2_p[d], 0, P * 4);
+                ggml_backend_tensor_set_async(dies[d], c.dg[d].wmat, c.wm_p[d],   0, P * n * 4);
+                ggml_backend_graph_compute_async(dies[d], c.dg[d].gf);
             }
             double t2 = now_us();
             double t3 = t2;   // submit fused into prep above
 
             for (int d = 0; d < n_dies; d++)
-                if (dg[d].P) ggml_backend_tensor_get_async(dies[d], dg[d].partial, part_p[d], 0, nb_x);
-            ggml_backend_tensor_get_async(dies[0], r.sh_out, sh_pin, 0, nb_x);
+                if (c.dg[d].P) ggml_backend_tensor_get_async(dies[d], c.dg[d].partial, c.part_p[d], 0, nb_x);
+            ggml_backend_tensor_get_async(dies[0], r.sh_out, c.sh_pin, 0, nb_x);
             for (int d = 0; d < n_dies; d++)
-                if (dg[d].P) ggml_backend_synchronize(dies[d]);
+                if (c.dg[d].P) ggml_backend_synchronize(dies[d]);
             ggml_backend_synchronize(dies[0]);
 
-            memcpy(y.data(), sh_pin, nb_x);
+            memcpy(c.y.data(), c.sh_pin, nb_x);
             for (int d = 0; d < n_dies; d++) {
-                if (!dg[d].P) continue;
-                for (size_t i = 0; i < y.size(); i++) y[i] += part_p[d][i];
+                if (!c.dg[d].P) continue;
+                for (size_t i = 0; i < c.y.size(); i++) c.y[i] += c.part_p[d][i];
             }
             double t4 = now_us();
             ph[0] = t1 - t0; ph[1] = t2 - t1; ph[2] = t3 - t2; ph[3] = t4 - t3; ph[4] = t4 - t0;
+            ph[5] = 0;
         };
 
-        auto one_rep_classic = [&](double * ph) {
+        auto one_rep_classic = [&](cfg_t & c, double * ph) {
             double t0 = now_us();
-            const float * xsrc = xr_pin ? xr_pin : x.data();
+            const float * xsrc = c.xr_pin ? c.xr_pin : x.data();
             ggml_backend_tensor_set_async(dies[0], r.x, xsrc, 0, x.size() * 4);
             if (shared_late) ggml_backend_tensor_set_async(dies[0], sgr.x, xsrc, 0, x.size() * 4);
             ggml_backend_graph_compute_async(dies[0], r.gf);
@@ -587,120 +849,157 @@ int main(int argc, char ** argv) {
             ggml_backend_tensor_get(r.ids_out, ids.data(), 0, ids.size() * 4);
             ggml_backend_tensor_get(r.w_out, wts.data(), 0, wts.size() * 4);
             if (shared_late) {
-                memset(y.data(), 0, y.size() * 4);
+                memset(c.y.data(), 0, c.y.size() * 4);
             } else {
-                ggml_backend_tensor_get(r.sh_out, y.data(), 0, y.size() * 4);   // y := shared
+                ggml_backend_tensor_get(r.sh_out, c.y.data(), 0, c.y.size() * 4);   // y := shared
             }
             double t1 = now_us();
 
             std::vector<int> fill(n_dies, 0);
+            int kf = 0;
             for (int64_t t = 0; t < n; t++)
                 for (int64_t s = 0; s < N_USED; s++) {
-                    const int e = ids[t * N_USED + s], d = e / (int) E_PER;
+                    const int e = ids[t * N_USED + s];
+                    if (c.cold && e >= E_COLD) {
+                        c.ids_c[kf] = e - (int32_t) E_COLD;
+                        memcpy(c.xs_c.data() + (size_t) kf * N_EMBD, x.data() + (size_t) t * N_EMBD, N_EMBD * 4);
+                        kf++;
+                        continue;
+                    }
+                    const int d = e / (int) E_PER;
                     const int p = fill[d]++;
-                    id_p[d][p] = e % (int) E_PER;
-                    memcpy(xs_p[d] + (size_t) p * N_EMBD, x.data() + (size_t) t * N_EMBD, N_EMBD * 4);
+                    c.id_p[d][p] = e % (int) E_PER;
+                    memcpy(c.xs_p[d] + (size_t) p * N_EMBD, x.data() + (size_t) t * N_EMBD, N_EMBD * 4);
                 }
+            // cold pairs launch first: the CPU is the slow target, the GPU
+            // wave is the umbrella it must hide under
+            if (c.kP) worker.submit(c.cpu_job);
             if (reorder) {
                 // fused per-die pipeline: die d computes while die d+1 uploads
                 for (int d = 0; d < n_dies; d++) {
-                    if (!dg[d].P) continue;
-                    ggml_backend_tensor_set_async(dies[d], dg[d].xs, xs_p[d], 0, pairs[d].size() * N_EMBD * 4);
-                    ggml_backend_tensor_set_async(dies[d], dg[d].ids, id_p[d], 0, pairs[d].size() * 4);
-                    ggml_backend_graph_compute_async(dies[d], dg[d].gf);
+                    if (!c.dg[d].P) continue;
+                    ggml_backend_tensor_set_async(dies[d], c.dg[d].xs, c.xs_p[d], 0, c.pairs[d].size() * N_EMBD * 4);
+                    ggml_backend_tensor_set_async(dies[d], c.dg[d].ids, c.id_p[d], 0, c.pairs[d].size() * 4);
+                    ggml_backend_graph_compute_async(dies[d], c.dg[d].gf);
                 }
             } else {
                 for (int d = 0; d < n_dies; d++) {
-                    if (!dg[d].P) continue;
-                    ggml_backend_tensor_set_async(dies[d], dg[d].xs, xs_p[d], 0, pairs[d].size() * N_EMBD * 4);
-                    ggml_backend_tensor_set_async(dies[d], dg[d].ids, id_p[d], 0, pairs[d].size() * 4);
+                    if (!c.dg[d].P) continue;
+                    ggml_backend_tensor_set_async(dies[d], c.dg[d].xs, c.xs_p[d], 0, c.pairs[d].size() * N_EMBD * 4);
+                    ggml_backend_tensor_set_async(dies[d], c.dg[d].ids, c.id_p[d], 0, c.pairs[d].size() * 4);
                 }
             }
             double t2 = now_us();
 
             if (!reorder) {
                 for (int d = 0; d < n_dies; d++)
-                    if (dg[d].P) ggml_backend_graph_compute_async(dies[d], dg[d].gf);
+                    if (c.dg[d].P) ggml_backend_graph_compute_async(dies[d], c.dg[d].gf);
             }
             if (shared_late) ggml_backend_graph_compute_async(dies[0], sgr.gf);
             double t3 = now_us();
 
-            if (shared_late) ggml_backend_tensor_get_async(dies[0], sgr.out, shl_pin, 0, y.size() * 4);
+            if (shared_late) ggml_backend_tensor_get_async(dies[0], sgr.out, c.shl_pin, 0, c.y.size() * 4);
             if (reorder) {
                 // submit every readback, then wait — no sync between submits
                 for (int d = 0; d < n_dies; d++) {
-                    if (!dg[d].P) continue;
+                    if (!c.dg[d].P) continue;
                     size_t off = 0;
-                    for (ggml_tensor * o : dg[d].outs) {
-                        ggml_backend_tensor_get_async(dies[d], o, out_p[d] + off, 0, ggml_nbytes(o));
+                    for (ggml_tensor * o : c.dg[d].outs) {
+                        ggml_backend_tensor_get_async(dies[d], o, c.out_p[d] + off, 0, ggml_nbytes(o));
                         off += (size_t) ggml_nelements(o);
                     }
                 }
                 for (int d = 0; d < n_dies; d++)
-                    if (dg[d].P) ggml_backend_synchronize(dies[d]);
+                    if (c.dg[d].P) ggml_backend_synchronize(dies[d]);
             } else {
                 for (int d = 0; d < n_dies; d++) {
-                    if (!dg[d].P) continue;
+                    if (!c.dg[d].P) continue;
                     size_t off = 0;
-                    for (ggml_tensor * o : dg[d].outs) {
-                        ggml_backend_tensor_get_async(dies[d], o, out_p[d] + off, 0, ggml_nbytes(o));
+                    for (ggml_tensor * o : c.dg[d].outs) {
+                        ggml_backend_tensor_get_async(dies[d], o, c.out_p[d] + off, 0, ggml_nbytes(o));
                         off += (size_t) ggml_nelements(o);
                     }
                     ggml_backend_synchronize(dies[d]);
                 }
             }
-            if (shared_late && !dg[0].P) ggml_backend_synchronize(dies[0]);
+            if (shared_late && !c.dg[0].P) ggml_backend_synchronize(dies[0]);
             for (int d = 0; d < n_dies; d++)
-                for (size_t p = 0; p < pairs[d].size(); p++) {
-                    const int t = pairs[d][p].first;
-                    const float wt = wts[pairs[d][p].second];
-                    const float * src = out_p[d] + p * N_EMBD;
-                    float * dst = y.data() + (size_t) t * N_EMBD;
+                for (size_t p = 0; p < c.pairs[d].size(); p++) {
+                    const int t = c.pairs[d][p].first;
+                    const float wt = wts[c.pairs[d][p].second];
+                    const float * src = c.out_p[d] + p * N_EMBD;
+                    float * dst = c.y.data() + (size_t) t * N_EMBD;
                     for (int64_t i = 0; i < N_EMBD; i++) dst[i] += wt * src[i];
                 }
             if (shared_late)
-                for (size_t i = 0; i < y.size(); i++) y[i] += shl_pin[i];
+                for (size_t i = 0; i < c.y.size(); i++) c.y[i] += c.shl_pin[i];
+            // the cold pairs: GPU work is done and reduced — now collect the
+            // CPU's partials (ideally it finished under the wave)
+            double cw = 0;
+            if (c.kP) {
+                cw = worker.wait();
+                for (size_t p = 0; p < c.kP; p++) {
+                    const int t = c.kpairs[p].first;
+                    const float wt = wts[c.kpairs[p].second];
+                    const float * src = c.out_c.data() + p * N_EMBD;
+                    float * dst = c.y.data() + (size_t) t * N_EMBD;
+                    for (int64_t i = 0; i < N_EMBD; i++) dst[i] += wt * src[i];
+                }
+            }
             double t4 = now_us();
             ph[0] = t1 - t0; ph[1] = t2 - t1; ph[2] = t3 - t2; ph[3] = t4 - t3; ph[4] = t4 - t0;
+            ph[5] = cw;
         };
-        auto one_rep = [&](double * ph) { ondie ? one_rep_ondie(ph) : one_rep_classic(ph); };
+        auto one_rep = [&](cfg_t & c, double * ph) { ondie ? one_rep_ondie(c, ph) : one_rep_classic(c, ph); };
 
-        double ph[5];
-        for (int i = 0; i < 3; i++) one_rep(ph);   // warmup
+        double ph[6];
+        for (cfg_t & c : cfgs)
+            for (int i = 0; i < 3; i++) one_rep(c, ph);   // warmup
 
-        // solo compute per die: the imbalance in time
-        std::vector<double> solo(n_dies, 0);
-        for (int d = 0; d < n_dies; d++) {
-            if (!dg[d].P) continue;
-            const double t0 = now_us();
-            for (int i = 0; i < 10; i++) {
-                ggml_backend_graph_compute_async(dies[d], dg[d].gf);
-                ggml_backend_synchronize(dies[d]);
+        for (cfg_t & c : cfgs) {
+            // solo compute per die: the imbalance in time
+            c.solo.assign(n_dies, 0);
+            for (int d = 0; d < n_dies; d++) {
+                if (!c.dg[d].P) continue;
+                const double t0 = now_us();
+                for (int i = 0; i < 10; i++) {
+                    ggml_backend_graph_compute_async(dies[d], c.dg[d].gf);
+                    ggml_backend_synchronize(dies[d]);
+                }
+                c.solo[d] = (now_us() - t0) / 10;
             }
-            solo[d] = (now_us() - t0) / 10;
+            // solo CPU cost of this configuration's cold pairs (through the
+            // worker, so the handoff is included — the deployed path)
+            if (c.kP) {
+                std::vector<double> ts;
+                for (int i = 0; i < 10; i++) { worker.submit(c.cpu_job); ts.push_back(worker.wait()); }
+                c.cpu_solo = median(ts);
+            }
         }
 
-        std::vector<std::vector<double>> phases(5);
-        for (int i = 0; i < reps; i++) {
-            one_rep(ph);
-            for (int k = 0; k < 5; k++) phases[k].push_back(ph[k]);
-        }
+        // the measurement: configurations alternate rep by rep
+        for (int i = 0; i < reps; i++)
+            for (cfg_t & c : cfgs) {
+                one_rep(c, ph);
+                for (int k = 0; k < 6; k++) c.phases[k].push_back(ph[k]);
+            }
 
-        // sanity vs the CPU backend, routing held fixed
+        // sanity vs the CPU backend, routing held fixed (per configuration —
+        // the cold path is new arithmetic and must be covered)
         if (check) {
             ggml_backend_dev_t cdev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
-            ggml_backend_t cpu = ggml_backend_dev_init(cdev, nullptr);
+            ggml_backend_t ccpu = ggml_backend_dev_init(cdev, nullptr);
             ggml_init_params ip = { 16 * ggml_tensor_overhead(), nullptr, true };
             ggml_context * cctx = ggml_init(ip);
             ggml_tensor * c_gate = ggml_new_tensor_3d(cctx, GGML_TYPE_MXFP4, N_EMBD, N_FF, N_EXPERT);
             ggml_tensor * c_up   = ggml_new_tensor_3d(cctx, GGML_TYPE_MXFP4, N_EMBD, N_FF, N_EXPERT);
             ggml_tensor * c_down = ggml_new_tensor_3d(cctx, GGML_TYPE_MXFP4, N_FF, N_EMBD, N_EXPERT);
-            ggml_backend_buffer_t cbuf = ggml_backend_alloc_ctx_tensors(cctx, cpu);
+            ggml_backend_buffer_t cbuf = ggml_backend_alloc_ctx_tensors(cctx, ccpu);
             fill_full(c_gate, "gate_exps");
             fill_full(c_up, "up_exps");
             fill_full(c_down, "down_exps");
 
-            die_graph_t cg = build_die_graph(c_gate, c_up, c_down, cpu, N_USED * n);
+            die_graph_t cg = build_die_graph(c_gate, c_up, c_down, ccpu, N_USED * n);
             std::vector<float> cxs((size_t) (N_USED * n * N_EMBD));
             std::vector<int32_t> cid((size_t) (N_USED * n));
             for (int64_t t = 0; t < n; t++)
@@ -711,7 +1010,7 @@ int main(int argc, char ** argv) {
                 }
             ggml_backend_tensor_set(cg.xs, cxs.data(), 0, cxs.size() * 4);
             ggml_backend_tensor_set(cg.ids, cid.data(), 0, cid.size() * 4);
-            ggml_backend_graph_compute(cpu, cg.gf);
+            ggml_backend_graph_compute(ccpu, cg.gf);
             std::vector<float> cout((size_t) (N_USED * n * N_EMBD));
             size_t coff = 0;
             for (ggml_tensor * o : cg.outs) {
@@ -730,43 +1029,74 @@ int main(int argc, char ** argv) {
             // y currently holds shared + routed from the last rep; subtract shared
             std::vector<float> sh((size_t) (N_EMBD * n));
             ggml_backend_tensor_get(shared_late ? sgr.out : r.sh_out, sh.data(), 0, sh.size() * 4);
-            double rms_ref = 0, rms_diff = 0;
-            for (size_t i = 0; i < yref.size(); i++) {
-                const double a = y[i] - sh[i], b = yref[i];
-                rms_ref += b * b; rms_diff += (a - b) * (a - b);
-            }
-            rms_ref = sqrt(rms_ref / yref.size());
-            rms_diff = sqrt(rms_diff / yref.size());
-            if (rms_diff / rms_ref > 1e-2) {
-                printf("n=%" PRId64 ": SANITY SUSPECT rms(diff)/rms(ref) = %.3e\n", n, rms_diff / rms_ref);
-                return 1;
+            for (cfg_t & c : cfgs) {
+                double rms_ref = 0, rms_diff = 0;
+                for (size_t i = 0; i < yref.size(); i++) {
+                    const double a = c.y[i] - sh[i], b = yref[i];
+                    rms_ref += b * b; rms_diff += (a - b) * (a - b);
+                }
+                rms_ref = sqrt(rms_ref / yref.size());
+                rms_diff = sqrt(rms_diff / yref.size());
+                if (rms_diff / rms_ref > 1e-2) {
+                    printf("n=%" PRId64 " (%s): SANITY SUSPECT rms(diff)/rms(ref) = %.3e\n",
+                           n, c.cold ? "cold" : "base", rms_diff / rms_ref);
+                    return 1;
+                }
             }
             ggml_gallocr_free(cg.galloc); ggml_free(cg.ctx);
             ggml_backend_buffer_free(cbuf); ggml_free(cctx);
-            ggml_backend_free(cpu);
+            ggml_backend_free(ccpu);
         }
 
-        char pstr[64] = "", sstr[64] = "";
-        for (int d = 0; d < n_dies; d++) {
-            snprintf(pstr + strlen(pstr), sizeof(pstr) - strlen(pstr), "%s%zu", d ? "/" : "", pairs[d].size());
-            snprintf(sstr + strlen(sstr), sizeof(sstr) - strlen(sstr), "%s%.0f", d ? "/" : "", solo[d]);
+        for (cfg_t & c : cfgs) {
+            char pstr[64] = "", sstr[64] = "";
+            for (int d = 0; d < n_dies; d++) {
+                snprintf(pstr + strlen(pstr), sizeof(pstr) - strlen(pstr), "%s%zu", d ? "/" : "", c.pairs[d].size());
+                snprintf(sstr + strlen(sstr), sizeof(sstr) - strlen(sstr), "%s%.0f", d ? "/" : "", c.solo[d]);
+            }
+            const double tot = median(c.phases[4]);
+            printf("%-3" PRId64 " %-14s %10s | %8.1f %8.1f %8.1f %8.1f | %10.1f %10.1f",
+                   n, pstr, sstr,
+                   median(c.phases[0]), median(c.phases[1]), median(c.phases[2]), median(c.phases[3]),
+                   tot, tot / n);
+            if (cpu_experts > 0) {
+                if (c.kP) {
+                    char cstr[32];
+                    snprintf(cstr, sizeof(cstr), "%zu/%zu", c.kP, c.k_uniq);
+                    printf(" | %-6s %8.0f %8.0f", cstr, c.cpu_solo, median(c.phases[5]));
+                } else {
+                    printf(" | %-6s %8s %8s", c.cold ? "0" : "-", "-", "-");
+                }
+            }
+            printf("\n");
         }
-        const double tot = median(phases[4]);
-        printf("%-3" PRId64 " %-14s %10s | %8.1f %8.1f %8.1f %8.1f | %10.1f %10.1f\n",
-               n, pstr, sstr,
-               median(phases[0]), median(phases[1]), median(phases[2]), median(phases[3]),
-               tot, tot / n);
+        if (cfgs.size() == 2) {
+            const double base_tot = median(cfgs[0].phases[4]);
+            const double cold_tot = median(cfgs[1].phases[4]);
+            const double tax = cold_tot - base_tot;
+            printf("    cold tax at n=%" PRId64 ": %+.1f us/graph (%+.1f%%), %zu pairs / %zu unique cold experts on CPU\n",
+                   n, tax, 100.0 * tax / base_tot, cfgs[1].kP, cfgs[1].k_uniq);
+        }
 
-        for (int d = 0; d < n_dies; d++) {
-            if (dg[d].P) { ggml_gallocr_free(dg[d].galloc); ggml_free(dg[d].ctx); }
-            if (pin[d]) ggml_backend_buffer_free(pin[d]);
+        for (cfg_t & c : cfgs) {
+            for (int d = 0; d < n_dies; d++) {
+                if (c.dg[d].P) { ggml_gallocr_free(c.dg[d].galloc); ggml_free(c.dg[d].ctx); }
+                if (c.pin[d]) ggml_backend_buffer_free(c.pin[d]);
+            }
+            if (c.kg.P) { ggml_gallocr_free(c.kg.galloc); ggml_free(c.kg.ctx); }
+            if (c.opin) ggml_backend_buffer_free(c.opin);
+            if (c.rpin) ggml_backend_buffer_free(c.rpin);
         }
-        if (opin) ggml_backend_buffer_free(opin);
-        if (rpin) ggml_backend_buffer_free(rpin);
         if (sgr.ctx) { ggml_gallocr_free(sgr.galloc); ggml_free(sgr.ctx); }
         ggml_gallocr_free(r.galloc); ggml_free(r.ctx);
     }
 
+    if (cpu_experts > 0) {
+        worker.stop();
+        ggml_backend_buffer_free(kbuf);
+        ggml_free(kctx);
+        ggml_backend_free(cpu);
+    }
     for (int d = 0; d < n_dies; d++) {
         ggml_backend_buffer_free(wbuf[d]);
         ggml_free(wctx[d]);

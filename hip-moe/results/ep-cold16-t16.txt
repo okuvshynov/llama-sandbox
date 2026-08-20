@@ -1,0 +1,97 @@
+ggml_cuda_init: found 4 ROCm devices (Total VRAM: 131008 MiB):
+  Device 0: AMD Radeon Graphics, gfx906:sramecc-:xnack- (0x906), VMM: no, Wave Size: 64, VRAM: 32752 MiB
+  Device 1: AMD Radeon Graphics, gfx906:sramecc-:xnack- (0x906), VMM: no, Wave Size: 64, VRAM: 32752 MiB
+  Device 2: AMD Radeon Graphics, gfx906:sramecc-:xnack- (0x906), VMM: no, Wave Size: 64, VRAM: 32752 MiB
+  Device 3: AMD Radeon Graphics, gfx906:sramecc-:xnack- (0x906), VMM: no, Wave Size: 64, VRAM: 32752 MiB
+EP over 4 dies, 96 experts each (3.14 GiB/die)
+loading weight slices...
+cold experts [368, 384) on CPU: buffer CPU_REPACK, 16 threads (0.52 GiB)
+repack: repack tensor  with mxfp4_8x8
+repack: repack tensor  with mxfp4_8x8
+repack: repack tensor  with mxfp4_8x8
+
+cold-expert CPU cost solo (35.1 MB/expert):
+C    distinct us     GB/s same-expert us
+1            726     48.3            592
+2            983     71.4            624
+3           1233     85.4            808
+4           1650     85.1           1077
+
+expected imbalance, 200 random tokens through the real router (ideal per-die share = 6n/4):
+n     E[max pairs]   E[max]/ideal   E[cpu pairs]
+1             2.83           1.88           0.31
+2             4.74           1.58           0.54
+4             8.63           1.44           1.03
+6            12.19           1.35           1.40
+8            15.58           1.30           2.03
+
+n   pairs/die         solo us |   router     prep   submit  wait+rd |   us/graph   us/token | cpu    cpu-solo cpu-wall
+ggml_backend_cuda_graph_compute: CUDA graph warmup complete
+ggml_backend_cuda_graph_compute: CUDA graph warmup complete
+ggml_backend_cuda_graph_compute: CUDA graph warmup complete
+ggml_backend_cuda_graph_compute: CUDA graph warmup complete
+ggml_backend_cuda_graph_compute: CUDA graph warmup complete
+ggml_backend_cuda_graph_compute: CUDA graph warmup complete
+1   1/2/1/2        162/240/177/236 |    236.2     66.4     91.1    400.2 |      795.5      795.5 | -             -        -
+ggml_backend_cuda_graph_compute: CUDA graph warmup complete
+ggml_backend_cuda_graph_compute: CUDA graph warmup complete
+ggml_backend_cuda_graph_compute: CUDA graph warmup complete
+ggml_backend_cuda_graph_compute: CUDA graph warmup complete
+1   1/2/1/2        166/246/174/239 |    234.1     66.0     91.0    400.7 |      795.4      795.4 | 0             -        -
+    cold tax at n=1: -0.1 us/graph (-0.0%), 0 pairs / 0 unique cold experts on CPU
+ggml_backend_cuda_graph_compute: CUDA graph warmup complete
+ggml_backend_cuda_graph_compute: CUDA graph warmup reset
+ggml_backend_cuda_graph_compute: CUDA graph warmup complete
+ggml_backend_cuda_graph_compute: CUDA graph warmup complete
+ggml_backend_cuda_graph_compute: CUDA graph warmup complete
+ggml_backend_cuda_graph_compute: CUDA graph warmup complete
+ggml_backend_cuda_graph_compute: CUDA graph warmup complete
+2   2/2/4/4        223/236/387/394 |    236.8     71.3     94.2    521.7 |      923.1      461.6 | -             -        -
+ggml_backend_cuda_graph_compute: CUDA graph warmup reset
+ggml_backend_cuda_graph_compute: CUDA graph warmup complete
+ggml_backend_cuda_graph_compute: CUDA graph warmup complete
+ggml_backend_cuda_graph_compute: CUDA graph warmup complete
+ggml_backend_cuda_graph_compute: CUDA graph warmup complete
+2   2/2/4/4        223/244/401/392 |    234.6     70.4     96.7    515.9 |      916.6      458.3 | 0             -        -
+    cold tax at n=2: -6.5 us/graph (-0.7%), 0 pairs / 0 unique cold experts on CPU
+ggml_backend_cuda_graph_compute: CUDA graph warmup complete
+ggml_backend_cuda_graph_compute: CUDA graph warmup complete
+ggml_backend_cuda_graph_compute: CUDA graph warmup complete
+ggml_backend_cuda_graph_compute: CUDA graph warmup complete
+ggml_backend_cuda_graph_compute: CUDA graph warmup complete
+ggml_backend_cuda_graph_compute: CUDA graph warmup complete
+4   5/6/6/7        447/543/532/614 |    256.8     93.4    103.8    879.0 |     1327.5      331.9 | -             -        -
+ggml_backend_cuda_graph_compute: CUDA graph warmup complete
+ggml_backend_cuda_graph_compute: CUDA graph warmup complete
+ggml_backend_cuda_graph_compute: CUDA graph warmup complete
+ggml_backend_cuda_graph_compute: CUDA graph warmup complete
+4   5/6/6/7        457/558/542/742 |    245.9     88.2     99.5    823.1 |     1256.2      314.1 | 0             -        -
+    cold tax at n=4: -71.3 us/graph (-5.4%), 0 pairs / 0 unique cold experts on CPU
+ggml_backend_cuda_graph_compute: CUDA graph warmup complete
+ggml_backend_cuda_graph_compute: CUDA graph warmup reset
+ggml_backend_cuda_graph_compute: CUDA graph warmup complete
+ggml_backend_cuda_graph_compute: CUDA graph warmup complete
+ggml_backend_cuda_graph_compute: CUDA graph warmup complete
+ggml_backend_cuda_graph_compute: CUDA graph warmup complete
+ggml_backend_cuda_graph_compute: CUDA graph warmup complete
+6   8/8/9/11       717/685/794/910 |    288.9    102.7    111.5   1165.3 |     1672.4      278.7 | -             -        -
+ggml_backend_cuda_graph_compute: CUDA graph warmup reset
+ggml_backend_cuda_graph_compute: CUDA graph warmup complete
+ggml_backend_cuda_graph_compute: CUDA graph warmup complete
+ggml_backend_cuda_graph_compute: CUDA graph warmup complete
+ggml_backend_cuda_graph_compute: CUDA graph warmup complete
+6   8/8/9/11       666/685/794/912 |    286.4    102.7    112.6   1139.9 |     1643.0      273.8 | 0             -        -
+    cold tax at n=6: -29.3 us/graph (-1.8%), 0 pairs / 0 unique cold experts on CPU
+ggml_backend_cuda_graph_compute: CUDA graph warmup complete
+ggml_backend_cuda_graph_compute: CUDA graph warmup complete
+ggml_backend_cuda_graph_compute: CUDA graph warmup complete
+ggml_backend_cuda_graph_compute: CUDA graph warmup complete
+ggml_backend_cuda_graph_compute: CUDA graph warmup complete
+ggml_backend_cuda_graph_compute: CUDA graph warmup complete
+8   12/10/13/13    985/862/1065/1052 |    293.2    122.3    125.2   1642.9 |     2185.0      273.1 | -             -        -
+ggml_backend_cuda_graph_compute: CUDA graph warmup complete
+ggml_backend_cuda_graph_compute: CUDA graph warmup complete
+ggml_backend_cuda_graph_compute: CUDA graph warmup complete
+ggml_backend_cuda_graph_compute: CUDA graph warmup complete
+8   12/10/13/13    1075/943/1057/1066 |    298.2    118.9    123.1   1625.3 |     2165.2      270.7 | 0             -        -
+    cold tax at n=8: -19.8 us/graph (-0.9%), 0 pairs / 0 unique cold experts on CPU

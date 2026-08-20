@@ -525,4 +525,104 @@ plain-16-thread starting point, all configuration and zero custom code):
 a CPU-offloaded Pro MoE layer costs **2.65 / 2.15 / 2.00 ms/token at
 n=1/4/8**; a distinct cold expert **~380-400 µs** — two of them (~780 µs)
 barely stick out past the 650 µs GPU wave, putting the mixed-placement
-tax for a "1-2 cold pairs" batch at **~2-5%**.
+tax for a "1-2 cold pairs" batch at **~2-5%**. (Both cold-expert claims
+were later measured directly and corrected — see the umbrella chapter
+below: a lone expert runs well under saturation, and the estimate that
+follows from that is the per-pair price, not the per-expert one.)
+
+## Mixed CPU+GPU EP: the umbrella, measured (2026-08-20)
+
+The BACKLOG experiment: the CPU as a fifth EP target owning K "cold"
+experts. `--cpu-experts K` on moe-ep-bench puts experts [384-K, 384) on
+the CPU **only** (CPU_REPACK buffer — the layout llama.cpp serving runs),
+and a persistent cv-woken worker thread computes their pairs concurrently
+with the GPU wave. Instrument details that turned out to be load-bearing:
+
+- **The A/B is interleaved rep by rep**, not sequential passes: with
+  identical work in both arms (a run whose cold set caught zero pairs),
+  sequential passes read a -5.4% "tax" at n=4 — GPU clock ramp across the
+  first pass. Interleaved, the same null reads -0.5 to +0.4%, an order of
+  magnitude under the effects being measured.
+- **`--probe` replicates the router on the host** (seconds, no GPU) and
+  prints realized cold pairs per (n, K) for the bench's fixed inputs —
+  the first run used K=16, which intersects the routing exactly nowhere,
+  and measured nothing. Choose K from the probe, not from E[C].
+- The CPU graph's inputs are re-set every rep: ggml_gallocr recycles
+  INPUT tensors' memory mid-graph (the apple-silicon-moe lesson; only
+  OUTPUT flags protect).
+
+**Result: the umbrella is real but shallow — cold pairs hide while their
+summed serial CPU cost stays under the GPU wave, and every pair costs a
+full ~550-600 µs, distinct expert or not:**
+
+| n | GPU wave (µs) | cold pairs C | cpu-wall (µs) | cold tax |
+|---|---|---|---|---|
+| 2 | ~510 | 1 | 517-596 | **+1.4-1.5%** |
+| 4 | ~860 | 1 | 490-589 | **+1.4-3.5%** |
+| 6 | ~1220 | 2 | 1184 | **+0.8%** |
+| 8 | ~1720 | 2 | 1197 | **+0.9%** |
+| 2 | ~500 | 3 | 1356 | +67% |
+| 4 | ~900 | 3 | 1751 | +47% |
+| 6 | ~1290 | 5 | 2906 | +76% |
+| 8 | ~1840 | 5 | 2861 | +33% |
+
+(Top half K=32/48, bottom K=64; D=4, 16 CPU threads, default scheduling,
+50 interleaved reps per arm, sanity gate green on every configuration
+including the cold path.)
+
+Mechanisms behind the numbers, each checked directly:
+
+- **No same-expert amortization.** The repack `forward_mul_mat_id` runs
+  one gemv per routed row (repack.cpp:4498) — rows are grouped per expert
+  only to order the loop. Two pairs on the SAME cold expert cost ~250 µs
+  marginal (an L3-warmed re-stream), not ~0. The backlog's "read it once,
+  ~free" assumed a kernel that doesn't exist.
+- **A lone expert doesn't reach the wall.** Solo price list (16 threads):
+  1 distinct expert 488-1003 µs across runs (46-72 GB/s — placement
+  lottery; pinning fixes the solo number), 2-4 experts 82-86 GB/s. The
+  ~380-400 µs/expert yardstick assumed the saturated 92-98 GB/s regime,
+  which one 35 MB stream never enters.
+- **Stealing shrinks the umbrella.** The die that loses pairs to the CPU
+  gets faster (681→390 µs at n=4/K=64), so cover is thinnest exactly when
+  it's needed.
+- **Capacity law.** Wave ≈ 215·n µs and pair ≈ 600 µs give a hiding
+  capacity of ~n/2.8 pairs, while E[C] = 6nK/384 = nK/64 — both linear in
+  n, so the viability criterion is on K alone: **K ≲ 20 hides in
+  expectation at any batch size**, and larger n makes it more reliable
+  (binomial spread narrows relative to capacity).
+- **The serving trade.** The intended use case is miss tolerance, not
+  offload: the cold set is chosen for genuine rarity, so most steps have
+  C=0 and the design question is what the occasional miss costs. The
+  answer measured here: a miss within capacity costs +0.6-3.5% *on the
+  step it occurs*, so the amortized cost is (per-step hit rate) x
+  ~30-50 µs — for a cold set hit once every few steps per layer, well
+  under 1% mean — and an over-capacity burst is a bounded one-step hiccup
+  (~600 µs per excess pair), not a persistent tax. Misses in different
+  layers each hide under their own layer's wave, so the per-layer
+  analysis is the right unit and taxes add linearly. The worst-case
+  bound, for calibration: under *uniform* routing (this synthetic
+  router), folding measured tax(C) through Binomial(6n, K/384) at n=4
+  gives ≈ +3.5% mean for K=8 and ≈ +10% for K=16 — i.e. a cold set that
+  isn't actually cold gets expensive fast, which is why the K ≲ 20
+  criterion above is the uniform-routing ceiling and a measured hit
+  histogram on the real model is what licenses a larger K.
+
+Two more scheduler traps for the ledger, both hit while chasing this:
+
+- **`GOMP_CPU_AFFINITY=0-15` (one thread per core) poisons the whole
+  step**: prep 83→503-707 µs and wait+rd ×2.5 at n≥6 — the 16 pinned OMP
+  threads own every physical core, so the main thread's prep and the ROCm
+  busy-wait spinner starve; measured "tax" hit +133% with the CPU job
+  itself finishing in ~525 µs. (Pinning *did* fix the single-expert solo
+  cost, 714→488 µs — placement helps the worker and strangles everyone
+  else.)
+- **`OMP_WAIT_POLICY=passive` is worse**: the CPU side drops to 35 GB/s
+  (team wake latency on every graph) and the run segfaulted on the first
+  cold rep. Default GOMP (spin-then-sleep) with no pinning is the right
+  configuration; the scheduler needs the freedom more than the worker
+  needs the affinity.
+
+One measurement footnote: the per-config `cpu-solo` column (measured
+right after a GPU-only phase) reads 1.5-2x the in-loop `cpu-wall` —
+the cores are cold when it runs (frequency ramp), so `cpu-wall`, taken
+inside the alternating loop, is the deployed number.
