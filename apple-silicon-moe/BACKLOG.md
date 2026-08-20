@@ -37,6 +37,21 @@ a batched-expert layout question follows (Metal has no MMVQ-style cliff
 documented — find where batch amortization actually comes from, since GB/s
 climbs 303→473 across n=1→8).
 
+## DVFS-aware split arithmetic for the full pipeline
+
+moe-split-bench's 17-21% single-layer win is measured with the GPU at
+partial duty cycle (its own DVFS-depressed clocks). In a 61-layer decode
+pipeline the GPU would run near-continuously (its next layer starts as soon
+as the CPU partial arrives), so per-layer GPU time should drop toward the
+hot-clock pro-rata figure and the split win should GROW — but the CPU side
+then also runs continuously and the contention tax (~15%) applies in full.
+Model both and re-measure with a 2-3 layer chain before quoting a
+whole-model number. Also: the split currently rebuilds nothing per request
+(fixed routing); real serving re-partitions per token — the host partition
+loop is ~1 µs but the per-side graph SHAPES change (P varies ±3-4), which
+needs either shape-padded graphs or gallocr reserve at max-P (measured
+cost of neither yet).
+
 ## Scheduler traps: upstream relevance
 
 Two macOS behaviors measured here that llama.cpp serving with `--prio` may

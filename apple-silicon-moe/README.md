@@ -124,10 +124,51 @@ concurrent (4627/4) vs Metal's ~558 (2231/4) — a 2.1× penalty per displaced
 layer, far better than the 6–12× the Vega machine charges over PCIe, and
 the CPU side adds real throughput instead of merely hiding under a wave.
 
+## Splitting one request between GPU and CPU (2026-08-19, `moe-split-bench`)
+
+The latency question: one n=4 request, one layer — partition its ~22 unique
+experts between Metal and CPU (compact per-pair `mul_mat_id`, the hip-moe EP
+layout, pair→token fold on-graph via a [P, n] weight matrix), router on the
+CPU, both sides concurrent, host combine. Sanity-gated against the CPU
+standard graph every configuration.
+
+Winner (two loads, 3% apart): **k=17 of 22 experts on GPU, shared expert +
+router + 5 experts on CPU, wall 1606-1656 µs vs Metal-alone 1938-1945 —
+17-21% faster**, and 2.4× CPU-alone. Both sides finish together (GPU busy
+~1410, CPU ~1340-1390, router 115-120 serial). With the shared expert on the
+GPU instead, the optimum shifts to k=14 and the win shrinks to ~11%: the
+shared expert is better spent on the side that also owns the router.
+
+What the sweep taught, beyond the number:
+
+- **GPU DVFS is the anti-split force.** The shared-expert-only Metal graph
+  runs 474 µs in a tight loop but ~1060 µs inside the split loop — at
+  partial duty cycle the GPU never ramps, so its work does not shrink
+  pro-rata as experts move off it. This is also the measured size of the
+  "sporadic request" tax the roundtrip estimates warned about.
+- **Idle FIFO spinners poison the other side** (third scheduler trap): the
+  first harness had worker threads busy-spinning at FIFO priority between
+  epochs, and each side's spinner stole a P core from the side still
+  working (CPU wall mean 2× its floor). Condition-variable wakeups
+  (~10-20 µs) fixed it. Related: with cv-sleeping workers, pool poll=100
+  beats poll=0 — the router's ~10 small nodes pay per-node wake latency
+  otherwise (router 250 µs → 117 µs).
+- **`ggml_gallocr` recycles INPUT tensors' memory mid-graph** (only
+  OUTPUT-flagged tensors are protected, `ggml-alloc.c`). A graph whose
+  inputs are set once and computed many times reads garbage from rep 2 on
+  if later nodes reuse the slot — the CPU repack `mul_mat_id` asserted on
+  out-of-range expert ids; Metal read the same garbage silently. Fix:
+  allocate inputs in their own static buffer (`input_buf_t`), llama.cpp's
+  own pattern. `moe_ggml_bench` is unaffected (its x is consumed by the
+  graph-final shared expert, so nothing after it can reuse the slot; its
+  ids-as-input graphs compute exactly once).
+
 ## Status / next
 
 - [x] Port moe-ggml-bench, sanity gates green
 - [x] Ceilings: CPU 246 GB/s, GPU ~710 GB/s, Metal floors
 - [x] 5-load variance: Metal (≤4%), CPU repack prio2/poll100 (≤3% at n≥2)
 - [x] Contention: ~15% mutual tax at the winning config, 568 GB/s combined
-- [ ] BACKLOG: n=1 bimodality, contention n-sweep, Metal overhead decomposition
+- [x] Split one request GPU+CPU: 17-21% latency win at k=17/22, shared+router on CPU
+- [ ] BACKLOG: n=1 bimodality, contention n-sweep, Metal overhead decomposition,
+      DVFS-aware split arithmetic for the full 61-layer pipeline

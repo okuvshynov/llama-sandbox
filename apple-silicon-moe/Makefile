@@ -7,7 +7,7 @@ CXXFLAGS = -O2 -std=c++17 -I$(LLAMA)/ggml/include
 LDFLAGS  = -L$(LLAMA)/build/bin -lggml -lggml-base -lggml-cpu \
            -Wl,-rpath,$(LLAMA)/build/bin
 
-all: bin/moe-ggml-bench bin/ceilings bin/moe-contention-bench
+all: bin/moe-ggml-bench bin/ceilings bin/moe-contention-bench bin/moe-split-bench
 
 bin/moe-contention-bench: src/moe_contention_bench.cpp
 	@mkdir -p bin
@@ -25,3 +25,7 @@ clean:
 	rm -rf bin
 
 .PHONY: all clean
+
+bin/moe-split-bench: src/moe_split_bench.cpp
+	@mkdir -p bin
+	clang++ $(CXXFLAGS) -o $@ $< $(LDFLAGS)
