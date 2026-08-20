@@ -626,3 +626,36 @@ One measurement footnote: the per-config `cpu-solo` column (measured
 right after a GPU-only phase) reads 1.5-2x the in-loop `cpu-wall` —
 the cores are cold when it runs (frequency ramp), so `cpu-wall`, taken
 inside the alternating loop, is the deployed number.
+
+### The latency surface: batch size x misses
+
+Everything above folded into one table — expected step latency in µs for
+the whole batch (divide by n for per-token), by batch size and by C =
+pairs served from CPU RAM. Measured cells plain (from the four runs in
+results/); `~` cells filled by the calibrated model
+`fixed(n) + max(wave(n), cpu(C)) + ~30 µs overlap friction`, with
+cpu(C) = the measured in-loop walls 550/1190/1550/~2200/2880 for C=1..5
+(treat `~` as ±15-20% — the per-pair CPU cost itself varied 450-580 µs
+across runs, and the model's worst miss vs a measured cell was n=2/C=3:
+predicted ~2175, measured 1635):
+
+| n | E[activated experts]† | C=0 | C=1 | C=2 | C=3 | C=4 | C=5 |
+|---|---|---|---|---|---|---|---|
+| 1 | 6 + 1sh | 795 | 1037 | ~1610 | ~1970 | ~2620 | ~3300 |
+| 2 | 11.9 + 1sh | 925 | 940 | ~1640 | 1635 | ~2650 | ~3330 |
+| 4 | 23.5 + 1sh | 1315 | 1345 | ~1680 | 2064 | ~2690 | ~3370 |
+| 6 | 34.6 + 1sh | 1745 | 1780 | 1756 | ~2115 | ~2765 | 3345 |
+| 8 | 45.4 + 1sh | 2300 | 2323 | 2314 | ~2330 | ~2815 | 3279 |
+
+† expected distinct routed experts activated per step under uniform
+routing, 384·(1−(63/64)^n) — each token picks 6 distinct; the shared
+expert is always on. At n=4 a step touches ~23 of 384 experts, which is
+why a cold tail is rarely intersected at all.
+
+The staircase boundary is the umbrella: cells at ≈ the C=0 baseline
+(+0.5-3.5%) are hidden misses — C=1 from n=2 up, C=2 from n=6 up, and
+C=3 should hide at n=8 (a model prediction; the fixed inputs never
+produced that cell in a run). Past the boundary the GPU wave is
+irrelevant and latency is the serial CPU chain. n=1 is the worst regime:
+the wave is only ~400 µs, so even one miss sticks out (+30%) — one more
+argument for the speculative-verification serving shape.
