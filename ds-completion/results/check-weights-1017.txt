@@ -1,0 +1,332 @@
+# 1043 GGUF tensors in 9 shards, 96085 HF tensors
+== hyper-parameters (GGUF vs config.json)
+  ok   block_count                                40
+  ok   embedding_length                           5120
+  ok   attention.head_count                       64
+  ok   attention.key_length                       512
+  ok   rope.dimension_count                       64
+  ok   attention.q_lora_rank                      1280
+  ok   attention.output_group_count               8
+  ok   attention.output_lora_rank                 1024
+  ok   attention.sliding_window                   128
+  ok   attention.compress_ratios                  [43 values]
+  ok   attention.compress_rope_freq_base          160000
+  ok   rope.freq_base                             10000
+  ok   rope.scaling.factor                        16
+  ok   rope.scaling.original_context_length       65536
+  ok   rope.scaling.yarn_beta_fast                32
+  ok   rope.scaling.yarn_beta_slow                1
+  ok   attention.layer_norm_rms_epsilon           1e-20
+  ok   expert_count                               384
+  ok   expert_used_count                          6
+  ok   expert_shared_count                        1
+  ok   expert_feed_forward_length                 2304
+  ok   expert_weights_scale                       1.5
+  ok   expert_weights_norm                        True
+  ok   swiglu_clamp_exp                           [40 values]
+  ok   swiglu_clamp_shexp                         [40 values]
+  ok   attention.indexer.head_count               32
+  ok   attention.indexer.key_length               128
+  ok   attention.indexer.top_k                    512
+  ok   attention.kv_source_layers                 [2, 8, 14, 20]
+  ok   attention.indexer.source_layers            [2, 8, 14, 20, 24, 28, 32, 36]
+  ok   attention.indexer.candidate_source_layer   20
+  ok   attention.indexer.candidate_top_k_blocks   2048
+  ok   attention.indexer.candidate_block_size     8
+  ok   hyper_connection.count                     4
+  ok   hyper_connection.sinkhorn_iterations       20
+  ok   hyper_connection.epsilon                   1e-06
+  ok   ple.layers                                 [1, 14]
+  ok   ple.ngram_size                             4
+  ok   ple.heads_per_ngram                        8
+  ok   embedding_length_per_layer_input           256
+  ok   engram.vocab_size                          16000000
+  ok   engram.pad_token_id                        2
+  ok   engram.compressed_vocab_size               99092
+  info expert_gating_func = 4 (config: sqrtsoftplus)
+  ok   vocab size                                 129280
+== engram hash constants (GGUF vs reference engram.py recomputed)
+  ok   ple.head_vocab_sizes                       48 values
+  ok   ple.head_offsets                           48 values
+  ok   ple.layer_multipliers                      8 values
+  ok   engram.token_map                           129280 -> 99092 ids (0.5s)
+== global tensors
+  ok   token_embd.weight                            (129280, 5120)         exact
+  ok   output.weight                                (129280, 5120)         exact
+  ok   output_norm.weight                           (5120,)                exact
+== engram table (per_layer_token_embd = layer tables concatenated)
+  ok   layer 1: rows 0..384006167, 3584 rows checked exact
+  ok   layer 14: rows 384006168..768022849, 3584 rows checked exact
+  ok   table has 768022850 rows = sum of layer tables
+== layer 0
+  ok   attn_kv.weight                               (512, 5120)            exact
+  ok   attn_kv_a_norm.weight                        (512,)                 exact
+  ok   attn_norm.weight                             (5120,)                exact
+  ok   attn_output_a.weight                         (8192, 4096)           exact
+  ok   attn_output_b.weight                         (5120, 8192)           exact
+  ok   attn_q_a.weight                              (1280, 5120)           exact
+  ok   attn_q_a_norm.weight                         (1280,)                exact
+  ok   attn_q_b.weight                              (32768, 1280)          exact
+  ok   attn_sinks.weight                            (64,)                  exact
+  ok   exp_probs_b.bias                             (384,)                 exact
+  ok   exp_probs_b_vl.bias                          (384,)                 exact
+  ok   ffn_down_exps.weight                         10 of 384 experts exact
+  ok   ffn_down_shexp.weight                        (5120, 2304)           exact
+  ok   ffn_gate_exps.weight                         10 of 384 experts exact
+  ok   ffn_gate_inp.weight                          (384, 5120)            exact
+  ok   ffn_gate_shexp.weight                        (2304, 5120)           exact
+  ok   ffn_norm.weight                              (5120,)                exact
+  ok   ffn_up_exps.weight                           10 of 384 experts exact
+  ok   ffn_up_shexp.weight                          (2304, 5120)           exact
+  ok   hc_attn_base.weight                          (24,)                  exact
+  ok   hc_attn_fn.weight                            (24, 20480)            exact
+  ok   hc_attn_scale.weight                         (3,)                   exact
+  ok   hc_ffn_base.weight                           (24,)                  exact
+  ok   hc_ffn_fn.weight                             (24, 20480)            exact
+  ok   hc_ffn_scale.weight                          (3,)                   exact
+  ok   all 2334 HF tensors of the layer are used
+== layer 1
+  ok   attn_kv.weight                               (512, 5120)            exact
+  ok   attn_kv_a_norm.weight                        (512,)                 exact
+  ok   attn_norm.weight                             (5120,)                exact
+  ok   attn_output_a.weight                         (8192, 4096)           exact
+  ok   attn_output_b.weight                         (5120, 8192)           exact
+  ok   attn_q_a.weight                              (1280, 5120)           exact
+  ok   attn_q_a_norm.weight                         (1280,)                exact
+  ok   attn_q_b.weight                              (32768, 1280)          exact
+  ok   attn_sinks.weight                            (64,)                  exact
+  ok   engram_gate.weight                           (4, 5120)              exact
+  ok   engram_kv.weight                             (25600, 6144)          exact
+  ok   exp_probs_b.bias                             (384,)                 exact
+  ok   exp_probs_b_vl.bias                          (384,)                 exact
+  ok   ffn_down_exps.weight                         10 of 384 experts exact
+  ok   ffn_down_shexp.weight                        (5120, 2304)           exact
+  ok   ffn_gate_exps.weight                         10 of 384 experts exact
+  ok   ffn_gate_inp.weight                          (384, 5120)            exact
+  ok   ffn_gate_shexp.weight                        (2304, 5120)           exact
+  ok   ffn_norm.weight                              (5120,)                exact
+  ok   ffn_up_exps.weight                           10 of 384 experts exact
+  ok   ffn_up_shexp.weight                          (2304, 5120)           exact
+  ok   hc_attn_base.weight                          (24,)                  exact
+  ok   hc_attn_fn.weight                            (24, 20480)            exact
+  ok   hc_attn_scale.weight                         (3,)                   exact
+  ok   hc_ffn_base.weight                           (24,)                  exact
+  ok   hc_ffn_fn.weight                             (24, 20480)            exact
+  ok   hc_ffn_scale.weight                          (3,)                   exact
+  ok   all 2338 HF tensors of the layer are used
+== layer 2
+  ok   attn_compressor_gate.weight                  (512, 5120)            exact
+  ok   attn_compressor_kv.weight                    (512, 5120)            exact
+  ok   attn_compressor_norm.weight                  (512,)                 exact
+  ok   attn_kv.weight                               (512, 5120)            exact
+  ok   attn_kv_a_norm.weight                        (512,)                 exact
+  ok   attn_norm.weight                             (5120,)                exact
+  ok   attn_output_a.weight                         (8192, 4096)           exact
+  ok   attn_output_b.weight                         (5120, 8192)           exact
+  ok   attn_q_a.weight                              (1280, 5120)           exact
+  ok   attn_q_a_norm.weight                         (1280,)                exact
+  ok   attn_q_b.weight                              (32768, 1280)          exact
+  ok   attn_sinks.weight                            (64,)                  exact
+  ok   exp_probs_b.bias                             (384,)                 exact
+  ok   exp_probs_b_vl.bias                          (384,)                 exact
+  ok   ffn_down_exps.weight                         10 of 384 experts exact
+  ok   ffn_down_shexp.weight                        (5120, 2304)           exact
+  ok   ffn_gate_exps.weight                         10 of 384 experts exact
+  ok   ffn_gate_inp.weight                          (384, 5120)            exact
+  ok   ffn_gate_shexp.weight                        (2304, 5120)           exact
+  ok   ffn_norm.weight                              (5120,)                exact
+  ok   ffn_up_exps.weight                           10 of 384 experts exact
+  ok   ffn_up_shexp.weight                          (2304, 5120)           exact
+  ok   hc_attn_base.weight                          (24,)                  exact
+  ok   hc_attn_fn.weight                            (24, 20480)            exact
+  ok   hc_attn_scale.weight                         (3,)                   exact
+  ok   hc_ffn_base.weight                           (24,)                  exact
+  ok   hc_ffn_fn.weight                             (24, 20480)            exact
+  ok   hc_ffn_scale.weight                          (3,)                   exact
+  ok   indexer.attn_k.weight                        (128, 512)             exact
+  ok   indexer.attn_q_b.weight                      (4096, 1280)           exact
+  ok   indexer.k_norm.weight                        (128,)                 exact
+  ok   indexer.proj.weight                          (32, 5120)             exact
+  ok   all 2342 HF tensors of the layer are used
+== layer 3
+  ok   attn_kv.weight                               (512, 5120)            exact
+  ok   attn_kv_a_norm.weight                        (512,)                 exact
+  ok   attn_norm.weight                             (5120,)                exact
+  ok   attn_output_a.weight                         (8192, 4096)           exact
+  ok   attn_output_b.weight                         (5120, 8192)           exact
+  ok   attn_q_a.weight                              (1280, 5120)           exact
+  ok   attn_q_a_norm.weight                         (1280,)                exact
+  ok   attn_q_b.weight                              (32768, 1280)          exact
+  ok   attn_sinks.weight                            (64,)                  exact
+  ok   exp_probs_b.bias                             (384,)                 exact
+  ok   exp_probs_b_vl.bias                          (384,)                 exact
+  ok   ffn_down_exps.weight                         10 of 384 experts exact
+  ok   ffn_down_shexp.weight                        (5120, 2304)           exact
+  ok   ffn_gate_exps.weight                         10 of 384 experts exact
+  ok   ffn_gate_inp.weight                          (384, 5120)            exact
+  ok   ffn_gate_shexp.weight                        (2304, 5120)           exact
+  ok   ffn_norm.weight                              (5120,)                exact
+  ok   ffn_up_exps.weight                           10 of 384 experts exact
+  ok   ffn_up_shexp.weight                          (2304, 5120)           exact
+  ok   hc_attn_base.weight                          (24,)                  exact
+  ok   hc_attn_fn.weight                            (24, 20480)            exact
+  ok   hc_attn_scale.weight                         (3,)                   exact
+  ok   hc_ffn_base.weight                           (24,)                  exact
+  ok   hc_ffn_fn.weight                             (24, 20480)            exact
+  ok   hc_ffn_scale.weight                          (3,)                   exact
+  ok   all 2334 HF tensors of the layer are used
+== layer 14
+  ok   attn_compressor_gate.weight                  (512, 5120)            exact
+  ok   attn_compressor_kv.weight                    (512, 5120)            exact
+  ok   attn_compressor_norm.weight                  (512,)                 exact
+  ok   attn_kv.weight                               (512, 5120)            exact
+  ok   attn_kv_a_norm.weight                        (512,)                 exact
+  ok   attn_norm.weight                             (5120,)                exact
+  ok   attn_output_a.weight                         (8192, 4096)           exact
+  ok   attn_output_b.weight                         (5120, 8192)           exact
+  ok   attn_q_a.weight                              (1280, 5120)           exact
+  ok   attn_q_a_norm.weight                         (1280,)                exact
+  ok   attn_q_b.weight                              (32768, 1280)          exact
+  ok   attn_sinks.weight                            (64,)                  exact
+  ok   engram_gate.weight                           (4, 5120)              exact
+  ok   engram_kv.weight                             (25600, 6144)          exact
+  ok   exp_probs_b.bias                             (384,)                 exact
+  ok   exp_probs_b_vl.bias                          (384,)                 exact
+  ok   ffn_down_exps.weight                         10 of 384 experts exact
+  ok   ffn_down_shexp.weight                        (5120, 2304)           exact
+  ok   ffn_gate_exps.weight                         10 of 384 experts exact
+  ok   ffn_gate_inp.weight                          (384, 5120)            exact
+  ok   ffn_gate_shexp.weight                        (2304, 5120)           exact
+  ok   ffn_norm.weight                              (5120,)                exact
+  ok   ffn_up_exps.weight                           10 of 384 experts exact
+  ok   ffn_up_shexp.weight                          (2304, 5120)           exact
+  ok   hc_attn_base.weight                          (24,)                  exact
+  ok   hc_attn_fn.weight                            (24, 20480)            exact
+  ok   hc_attn_scale.weight                         (3,)                   exact
+  ok   hc_ffn_base.weight                           (24,)                  exact
+  ok   hc_ffn_fn.weight                             (24, 20480)            exact
+  ok   hc_ffn_scale.weight                          (3,)                   exact
+  ok   indexer.attn_k.weight                        (128, 512)             exact
+  ok   indexer.attn_q_b.weight                      (4096, 1280)           exact
+  ok   indexer.k_norm.weight                        (128,)                 exact
+  ok   indexer.proj.weight                          (32, 5120)             exact
+  ok   all 2346 HF tensors of the layer are used
+== layer 20
+  ok   attn_compressor_kv.weight                    (512, 5120)            exact
+  ok   attn_compressor_norm.weight                  (512,)                 exact
+  ok   attn_kv.weight                               (512, 5120)            exact
+  ok   attn_kv_a_norm.weight                        (512,)                 exact
+  ok   attn_norm.weight                             (5120,)                exact
+  ok   attn_output_a.weight                         (8192, 4096)           exact
+  ok   attn_output_b.weight                         (5120, 8192)           exact
+  ok   attn_q_a.weight                              (1280, 5120)           exact
+  ok   attn_q_a_norm.weight                         (1280,)                exact
+  ok   attn_q_b.weight                              (32768, 1280)          exact
+  ok   attn_sinks.weight                            (64,)                  exact
+  ok   exp_probs_b.bias                             (384,)                 exact
+  ok   exp_probs_b_vl.bias                          (384,)                 exact
+  ok   ffn_down_exps.weight                         10 of 384 experts exact
+  ok   ffn_down_shexp.weight                        (5120, 2304)           exact
+  ok   ffn_gate_exps.weight                         10 of 384 experts exact
+  ok   ffn_gate_inp.weight                          (384, 5120)            exact
+  ok   ffn_gate_shexp.weight                        (2304, 5120)           exact
+  ok   ffn_norm.weight                              (5120,)                exact
+  ok   ffn_up_exps.weight                           10 of 384 experts exact
+  ok   ffn_up_shexp.weight                          (2304, 5120)           exact
+  ok   hc_attn_base.weight                          (24,)                  exact
+  ok   hc_attn_fn.weight                            (24, 20480)            exact
+  ok   hc_attn_scale.weight                         (3,)                   exact
+  ok   hc_ffn_base.weight                           (24,)                  exact
+  ok   hc_ffn_fn.weight                             (24, 20480)            exact
+  ok   hc_ffn_scale.weight                          (3,)                   exact
+  ok   indexer.attn_k.weight                        (128, 512)             exact
+  ok   indexer.attn_q_b.weight                      (4096, 1280)           exact
+  ok   indexer.k_norm.weight                        (128,)                 exact
+  ok   indexer.proj.weight                          (32, 5120)             exact
+  ok   all 2341 HF tensors of the layer are used
+== layer 21
+  ok   attn_kv.weight                               (512, 5120)            exact
+  ok   attn_kv_a_norm.weight                        (512,)                 exact
+  ok   attn_norm.weight                             (5120,)                exact
+  ok   attn_output_a.weight                         (8192, 4096)           exact
+  ok   attn_output_b.weight                         (5120, 8192)           exact
+  ok   attn_q_a.weight                              (1280, 5120)           exact
+  ok   attn_q_a_norm.weight                         (1280,)                exact
+  ok   attn_q_b.weight                              (32768, 1280)          exact
+  ok   attn_sinks.weight                            (64,)                  exact
+  ok   exp_probs_b.bias                             (384,)                 exact
+  ok   exp_probs_b_vl.bias                          (384,)                 exact
+  ok   ffn_down_exps.weight                         10 of 384 experts exact
+  ok   ffn_down_shexp.weight                        (5120, 2304)           exact
+  ok   ffn_gate_exps.weight                         10 of 384 experts exact
+  ok   ffn_gate_inp.weight                          (384, 5120)            exact
+  ok   ffn_gate_shexp.weight                        (2304, 5120)           exact
+  ok   ffn_norm.weight                              (5120,)                exact
+  ok   ffn_up_exps.weight                           10 of 384 experts exact
+  ok   ffn_up_shexp.weight                          (2304, 5120)           exact
+  ok   hc_attn_base.weight                          (24,)                  exact
+  ok   hc_attn_fn.weight                            (24, 20480)            exact
+  ok   hc_attn_scale.weight                         (3,)                   exact
+  ok   hc_ffn_base.weight                           (24,)                  exact
+  ok   hc_ffn_fn.weight                             (24, 20480)            exact
+  ok   hc_ffn_scale.weight                          (3,)                   exact
+  ok   all 2334 HF tensors of the layer are used
+== layer 24
+  ok   attn_kv.weight                               (512, 5120)            exact
+  ok   attn_kv_a_norm.weight                        (512,)                 exact
+  ok   attn_norm.weight                             (5120,)                exact
+  ok   attn_output_a.weight                         (8192, 4096)           exact
+  ok   attn_output_b.weight                         (5120, 8192)           exact
+  ok   attn_q_a.weight                              (1280, 5120)           exact
+  ok   attn_q_a_norm.weight                         (1280,)                exact
+  ok   attn_q_b.weight                              (32768, 1280)          exact
+  ok   attn_sinks.weight                            (64,)                  exact
+  ok   exp_probs_b.bias                             (384,)                 exact
+  ok   exp_probs_b_vl.bias                          (384,)                 exact
+  ok   ffn_down_exps.weight                         10 of 384 experts exact
+  ok   ffn_down_shexp.weight                        (5120, 2304)           exact
+  ok   ffn_gate_exps.weight                         10 of 384 experts exact
+  ok   ffn_gate_inp.weight                          (384, 5120)            exact
+  ok   ffn_gate_shexp.weight                        (2304, 5120)           exact
+  ok   ffn_norm.weight                              (5120,)                exact
+  ok   ffn_up_exps.weight                           10 of 384 experts exact
+  ok   ffn_up_shexp.weight                          (2304, 5120)           exact
+  ok   hc_attn_base.weight                          (24,)                  exact
+  ok   hc_attn_fn.weight                            (24, 20480)            exact
+  ok   hc_attn_scale.weight                         (3,)                   exact
+  ok   hc_ffn_base.weight                           (24,)                  exact
+  ok   hc_ffn_fn.weight                             (24, 20480)            exact
+  ok   hc_ffn_scale.weight                          (3,)                   exact
+  ok   indexer.attn_q_b.weight                      (4096, 1280)           exact
+  ok   indexer.proj.weight                          (32, 5120)             exact
+  ok   all 2337 HF tensors of the layer are used
+== layer 39
+  ok   attn_kv.weight                               (512, 5120)            exact
+  ok   attn_kv_a_norm.weight                        (512,)                 exact
+  ok   attn_norm.weight                             (5120,)                exact
+  ok   attn_output_a.weight                         (8192, 4096)           exact
+  ok   attn_output_b.weight                         (5120, 8192)           exact
+  ok   attn_q_a.weight                              (1280, 5120)           exact
+  ok   attn_q_a_norm.weight                         (1280,)                exact
+  ok   attn_q_b.weight                              (32768, 1280)          exact
+  ok   attn_sinks.weight                            (64,)                  exact
+  ok   exp_probs_b.bias                             (384,)                 exact
+  ok   exp_probs_b_vl.bias                          (384,)                 exact
+  ok   ffn_down_exps.weight                         10 of 384 experts exact
+  ok   ffn_down_shexp.weight                        (5120, 2304)           exact
+  ok   ffn_gate_exps.weight                         10 of 384 experts exact
+  ok   ffn_gate_inp.weight                          (384, 5120)            exact
+  ok   ffn_gate_shexp.weight                        (2304, 5120)           exact
+  ok   ffn_norm.weight                              (5120,)                exact
+  ok   ffn_up_exps.weight                           10 of 384 experts exact
+  ok   ffn_up_shexp.weight                          (2304, 5120)           exact
+  ok   hc_attn_base.weight                          (24,)                  exact
+  ok   hc_attn_fn.weight                            (24, 20480)            exact
+  ok   hc_attn_scale.weight                         (3,)                   exact
+  ok   hc_ffn_base.weight                           (24,)                  exact
+  ok   hc_ffn_fn.weight                             (24, 20480)            exact
+  ok   hc_ffn_scale.weight                          (3,)                   exact
+  ok   all 2334 HF tensors of the layer are used
+# fetched 6.25 GB from https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017/resolve/main/
+
+ALL OK (522s)
