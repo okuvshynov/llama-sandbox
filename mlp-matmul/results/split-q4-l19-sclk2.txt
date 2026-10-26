@@ -1,0 +1,495 @@
+# card0 perf=manual sclk=[2: 1204Mhz *] mclk=[0: 1000Mhz * (DPM disabled)]
+# card1 perf=manual sclk=[2: 1204Mhz *] mclk=[0: 1000Mhz * (DPM disabled)]
+# card2 perf=manual sclk=[2: 1204Mhz *] mclk=[0: 1000Mhz * (DPM disabled)]
+# card3 perf=manual sclk=[2: 1204Mhz *] mclk=[0: 1000Mhz * (DPM disabled)]
+# file data/q4-l19.gguf  (Qwen3.8-27B-UD-Q4_K_XL.gguf, layer 19)
+# configs 0/0,1/0,2/0,1,2,3   modes row,k   min-time 0.30s   slice stream R=16
+
+== blk.19.ffn_gate.weight  iq4_xs  K=5120 -> M=17408  45.16 MiB
+  reference ... 1.2s
+
+  -- mode row   (merge: concatenate rows)
+  dies          N    slice comp_ser comp_thr   e2e_ser   e2e_thr   speedup          relerr vs 1-die
+  0             1    116.6    144.2    146.7     182.2     185.5     1.00x    ok  3.72e-03 baseline
+                    phases: launch 17.9  h2d 20.2  d2h 22.0  merge 2.8  (us; bytes h2d 20K d2h 68K)
+  0             2    147.9    179.5    180.0     228.9     226.8     1.00x    ok  3.71e-03 baseline
+                    phases: launch 17.6  h2d 22.0  d2h 25.3  merge 3.0  (us; bytes h2d 40K d2h 136K)
+  0             3    226.5    261.2    257.2     314.4     308.3     1.00x    ok  3.72e-03 baseline
+                    phases: launch 17.9  h2d 23.2  d2h 31.1  merge 3.1  (us; bytes h2d 60K d2h 204K)
+  0             4    237.6    268.8    269.6     326.6     325.2     1.00x    ok  3.69e-03 baseline
+                    phases: launch 18.1  h2d 22.4  d2h 35.1  merge 3.5  (us; bytes h2d 80K d2h 272K)
+  0             8    339.9    371.7    372.3     455.9     455.5     1.00x    ok  3.69e-03 baseline
+                    phases: launch 17.9  h2d 28.2  d2h 54.4  merge 3.7  (us; bytes h2d 160K d2h 544K)
+  0            16    578.4    615.3    614.8     755.2     751.6     1.00x    ok  3.71e-03 baseline
+                    phases: launch 18.0  h2d 41.2  d2h 93.8  merge 4.6  (us; bytes h2d 320K d2h 1088K)
+  0            32    814.0    849.2    850.9    1095.7    1096.0     1.00x    ok  3.73e-03 baseline
+                    phases: launch 18.0  h2d 64.7  d2h 171.5  merge 10.0  (us; bytes h2d 640K d2h 2176K)
+  0            64   1496.3   1593.2   1592.8    2059.0    2060.0     1.00x    ok  3.74e-03 baseline
+                    phases: launch 22.2  h2d 112.2  d2h 328.4  merge 20.1  (us; bytes h2d 1280K d2h 4352K)
+  0           128   2485.5   2522.7   2584.1    3537.3    3537.8     1.00x    ok  3.75e-03 baseline
+                    phases: launch 21.7  h2d 207.0  d2h 640.5  merge 57.9  (us; bytes h2d 2560K d2h 8704K)
+  0           256   4453.6   4533.1   4530.1    6489.7    6509.4     1.00x    ok  3.75e-03 baseline
+                    phases: launch 19.0  h2d 396.6  d2h 1265.6  merge 225.0  (us; bytes h2d 5120K d2h 17408K)
+  0           512   8430.7   8463.7   8464.2   12529.2   12523.6     1.00x    ok  3.76e-03 baseline
+                    phases: launch 19.3  h2d 776.9  d2h 2514.2  merge 768.6  (us; bytes h2d 10240K d2h 34816K)
+  0,1           1     63.0    113.1    100.2     167.7     134.6     1.35x    ok  3.72e-03 bit-identical
+                    phases: launch 34.6  h2d 38.1  d2h 37.9  merge 2.4  (us; bytes h2d 40K d2h 68K)
+  0,1           2     82.8    124.8    118.6     193.5     161.9     1.40x    ok  3.71e-03 bit-identical
+                    phases: launch 35.1  h2d 42.0  d2h 42.0  merge 3.0  (us; bytes h2d 80K d2h 136K)
+  0,1           3    124.9    166.7    158.3     244.7     209.2     1.47x    ok  3.72e-03 bit-identical
+                    phases: launch 36.8  h2d 42.0  d2h 44.8  merge 2.8  (us; bytes h2d 120K d2h 204K)
+  0,1           4    129.8    175.2    166.5     256.2     223.9     1.45x    ok  3.69e-03 bit-identical
+                    phases: launch 37.8  h2d 43.0  d2h 49.0  merge 3.2  (us; bytes h2d 160K d2h 272K)
+  0,1           8    181.9    228.6    218.2     315.7     306.3     1.49x    ok  3.69e-03 bit-identical
+                    phases: launch 37.2  h2d 55.3  d2h 66.7  merge 3.5  (us; bytes h2d 320K d2h 544K)
+  0,1          16    391.3    436.4    429.0     565.4     590.6     1.33x    ok  3.71e-03 bit-identical
+                    phases: launch 38.4  h2d 79.1  d2h 106.0  merge 5.8  (us; bytes h2d 640K d2h 1088K)
+  0,1          32    547.4    595.4    585.6     832.9     876.4     1.32x    ok  3.73e-03 bit-identical
+                    phases: launch 35.1  h2d 125.1  d2h 181.7  merge 8.6  (us; bytes h2d 1280K d2h 2176K)
+  0,1          64    999.9   1045.9   1039.2    1565.3    1680.4     1.32x    ok  3.74e-03 bit-identical
+                    phases: launch 35.9  h2d 219.3  d2h 338.3  merge 19.8  (us; bytes h2d 2560K d2h 4352K)
+  0,1         128   1505.2   1668.9   1669.5    2772.3    2802.6     1.28x    ok  3.75e-03 bit-identical
+                    phases: launch 33.4  h2d 409.3  d2h 651.7  merge 60.5  (us; bytes h2d 5120K d2h 8704K)
+  0,1         256   2493.9   2621.8   2624.1    4944.0    4974.2     1.31x    ok  3.75e-03 bit-identical
+                    phases: launch 34.1  h2d 788.9  d2h 1302.5  merge 230.2  (us; bytes h2d 10240K d2h 17408K)
+  0,1         512   4474.9   4588.3   4503.6    9299.9    9343.4     1.35x    ok  3.76e-03 bit-identical
+                    phases: launch 34.7  h2d 1566.2  d2h 2544.5  merge 774.5  (us; bytes h2d 20480K d2h 34816K)
+  0,2           1     62.4    110.7     98.8     168.2     134.5     1.35x    ok  3.72e-03 bit-identical
+                    phases: launch 34.3  h2d 38.4  d2h 37.4  merge 2.7  (us; bytes h2d 40K d2h 68K)
+  0,2           2     85.5    125.6    119.0     192.1     158.1     1.43x    ok  3.71e-03 bit-identical
+                    phases: launch 34.5  h2d 39.8  d2h 40.1  merge 2.6  (us; bytes h2d 80K d2h 136K)
+  0,2           3    125.0    165.3    159.0     240.9     204.9     1.50x    ok  3.72e-03 bit-identical
+                    phases: launch 35.7  h2d 41.8  d2h 41.8  merge 2.9  (us; bytes h2d 120K d2h 204K)
+  0,2           4    125.1    175.8    166.4     254.0     216.0     1.51x    ok  3.69e-03 bit-identical
+                    phases: launch 36.3  h2d 41.5  d2h 42.0  merge 2.9  (us; bytes h2d 160K d2h 272K)
+  0,2           8    181.7    227.1    218.7     318.3     281.7     1.62x    ok  3.69e-03 bit-identical
+                    phases: launch 34.9  h2d 42.5  d2h 49.4  merge 3.4  (us; bytes h2d 320K d2h 544K)
+  0,2          16    391.3    437.5    428.9     564.6     529.2     1.42x    ok  3.71e-03 bit-identical
+                    phases: launch 34.8  h2d 56.2  d2h 69.9  merge 5.5  (us; bytes h2d 640K d2h 1088K)
+  0,2          32    547.3    594.7    585.2     790.6     755.9     1.45x    ok  3.73e-03 bit-identical
+                    phases: launch 35.8  h2d 78.6  d2h 108.2  merge 8.0  (us; bytes h2d 1280K d2h 2176K)
+  0,2          64    995.4   1053.6   1038.8    1404.4    1352.5     1.52x    ok  3.74e-03 bit-identical
+                    phases: launch 35.7  h2d 126.8  d2h 186.7  merge 17.0  (us; bytes h2d 2560K d2h 4352K)
+  0,2         128   1496.8   1602.7   1597.9    2245.9    2236.3     1.58x    ok  3.75e-03 bit-identical
+                    phases: launch 35.8  h2d 221.6  d2h 343.6  merge 60.4  (us; bytes h2d 5120K d2h 8704K)
+  0,2         256   2489.4   2599.1   2593.8    3926.8    3925.5     1.65x    ok  3.75e-03 bit-identical
+                    phases: launch 35.7  h2d 411.4  d2h 656.0  merge 226.8  (us; bytes h2d 10240K d2h 17408K)
+  0,2         512   4470.4   4575.9   4568.5    7422.8    7407.0     1.69x    ok  3.76e-03 bit-identical
+                    phases: launch 35.8  h2d 791.3  d2h 1309.7  merge 765.5  (us; bytes h2d 20480K d2h 34816K)
+  0,1,2,3       1     38.2    121.7     77.7     232.8     108.6     1.68x    ok  3.72e-03 bit-identical
+                    phases: launch 66.9  h2d 65.3  d2h 63.4  merge 2.7  (us; bytes h2d 80K d2h 68K)
+  0,1,2,3       2     46.6    127.0     84.5     247.3     125.9     1.80x    ok  3.71e-03 bit-identical
+                    phases: launch 68.6  h2d 67.9  d2h 64.4  merge 2.5  (us; bytes h2d 160K d2h 136K)
+  0,1,2,3       3     65.6    145.8    107.2     265.0     152.0     2.03x    ok  3.72e-03 bit-identical
+                    phases: launch 67.5  h2d 72.3  d2h 65.5  merge 2.6  (us; bytes h2d 240K d2h 204K)
+  0,1,2,3       4     71.9    153.2    113.3     276.8     163.0     2.00x    ok  3.69e-03 bit-identical
+                    phases: launch 68.4  h2d 72.3  d2h 67.5  merge 2.9  (us; bytes h2d 320K d2h 272K)
+  0,1,2,3       8    106.1    183.6    157.3     323.5     221.6     2.06x    ok  3.69e-03 bit-identical
+                    phases: launch 66.9  h2d 80.3  d2h 75.9  merge 3.4  (us; bytes h2d 640K d2h 544K)
+  0,1,2,3      16    204.4    284.4    260.4     450.2     380.9     1.97x    ok  3.71e-03 bit-identical
+                    phases: launch 69.6  h2d 103.5  d2h 92.8  merge 6.3  (us; bytes h2d 1280K d2h 1088K)
+  0,1,2,3      32    279.6    359.9    328.7     595.9     545.8     2.01x    ok  3.73e-03 bit-identical
+                    phases: launch 69.2  h2d 151.9  d2h 130.6  merge 11.4  (us; bytes h2d 2560K d2h 2176K)
+  0,1,2,3      64    499.3    579.6    548.0    1006.1     953.9     2.16x    ok  3.74e-03 bit-identical
+                    phases: launch 69.0  h2d 247.2  d2h 210.0  merge 23.6  (us; bytes h2d 5120K d2h 4352K)
+  0,1,2,3     128   1000.0   1086.4   1048.5    1924.9    1947.4     1.84x    ok  3.75e-03 bit-identical
+                    phases: launch 73.6  h2d 437.1  d2h 365.5  merge 64.4  (us; bytes h2d 10240K d2h 8704K)
+  0,1,2,3     256   1502.2   1650.0   1559.9    3353.6    3384.9     1.94x    ok  3.75e-03 bit-identical
+                    phases: launch 65.5  h2d 815.7  d2h 678.5  merge 258.1  (us; bytes h2d 20480K d2h 17408K)
+  0,1,2,3     512   2517.9   2674.7   2653.8    6235.5    6211.7     2.02x    ok  3.76e-03 bit-identical
+                    phases: launch 70.1  h2d 1642.1  d2h 1369.6  merge 747.4  (us; bytes h2d 40960K d2h 34816K)
+
+  -- mode k   (merge: sum of partials)
+  dies          N    slice comp_ser comp_thr   e2e_ser   e2e_thr   speedup          relerr vs 1-die
+  0,1           1     87.2    128.7    122.8     191.3     159.6     1.14x    ok  3.72e-03 1.1e-07 rel (12515/17408 differ)
+                    phases: launch 36.6  h2d 36.5  d2h 41.9  merge 2.8  (us; bytes h2d 20K d2h 136K)
+  0,1           2    102.8    151.7    143.7     219.1     195.7     1.16x    ok  3.71e-03 1.0e-07 rel (25003/34816 differ)
+                    phases: launch 35.7  h2d 37.5  d2h 48.6  merge 4.4  (us; bytes h2d 40K d2h 272K)
+  0,1           3    128.0    174.3    164.2     248.3     231.5     1.33x    ok  3.72e-03 1.0e-07 rel (37499/52224 differ)
+                    phases: launch 36.5  h2d 38.9  d2h 56.1  merge 6.1  (us; bytes h2d 60K d2h 408K)
+  0,1           4    151.6    197.7    188.4     281.4     267.6     1.22x    ok  3.69e-03 1.0e-07 rel (49841/69632 differ)
+                    phases: launch 37.2  h2d 39.9  d2h 64.9  merge 7.7  (us; bytes h2d 80K d2h 544K)
+  0,1           8    219.6    263.6    256.8     405.6     387.8     1.17x    ok  3.69e-03 1.0e-07 rel (99218/139264 differ)
+                    phases: launch 35.6  h2d 43.0  d2h 104.5  merge 14.0  (us; bytes h2d 160K d2h 1088K)
+  0,1          16    301.2    348.4    339.8     572.1     574.1     1.31x    ok  3.71e-03 2.2e-07 rel (236697/278528 differ)
+                    phases: launch 36.7  h2d 52.4  d2h 181.8  merge 26.8  (us; bytes h2d 320K d2h 2176K)
+  0,1          32    419.2    467.1    458.3     903.8     927.1     1.21x    ok  3.73e-03 2.2e-07 rel (473678/557056 differ)
+                    phases: launch 36.3  h2d 76.7  d2h 338.1  merge 61.4  (us; bytes h2d 640K d2h 4352K)
+  0,1          64    759.2    805.1    796.7    1665.1    1707.4     1.24x    ok  3.74e-03 2.2e-07 rel (947910/1114112 differ)
+                    phases: launch 36.9  h2d 124.4  d2h 651.1  merge 126.5  (us; bytes h2d 1280K d2h 8704K)
+  0,1         128   1258.5   1376.4   1369.7    3180.2    3195.4     1.11x    ok  3.75e-03 2.2e-07 rel (1895384/2228224 differ)
+                    phases: launch 34.8  h2d 219.3  d2h 1296.7  merge 241.5  (us; bytes h2d 2560K d2h 17408K)
+  0,1         256   2257.7   2375.1   2383.5    6045.4    6077.5     1.07x    ok  3.75e-03 2.2e-07 rel (3790558/4456448 differ)
+                    phases: launch 33.6  h2d 409.6  d2h 2554.0  merge 689.1  (us; bytes h2d 5120K d2h 34816K)
+  0,1         512   4266.6   4383.7   4386.6   11807.6   11787.3     1.06x    ok  3.76e-03 2.2e-07 rel (7580048/8912896 differ)
+                    phases: launch 37.1  h2d 788.1  d2h 5039.4  merge 1501.7  (us; bytes h2d 10240K d2h 69632K)
+  0,2           1     87.2    129.8    122.9     191.6     157.8     1.15x    ok  3.72e-03 1.1e-07 rel (12515/17408 differ)
+                    phases: launch 34.5  h2d 36.4  d2h 39.6  merge 2.9  (us; bytes h2d 20K d2h 136K)
+  0,2           2    107.5    152.7    143.1     223.3     189.6     1.20x    ok  3.71e-03 1.0e-07 rel (25003/34816 differ)
+                    phases: launch 34.9  h2d 38.0  d2h 42.0  merge 4.4  (us; bytes h2d 40K d2h 272K)
+  0,2           3    128.6    175.3    164.9     255.7     219.6     1.40x    ok  3.72e-03 1.0e-07 rel (37499/52224 differ)
+                    phases: launch 35.7  h2d 39.1  d2h 45.7  merge 6.1  (us; bytes h2d 60K d2h 408K)
+  0,2           4    151.8    199.4    187.9     287.2     252.3     1.29x    ok  3.69e-03 1.0e-07 rel (49841/69632 differ)
+                    phases: launch 35.8  h2d 39.9  d2h 49.9  merge 7.7  (us; bytes h2d 80K d2h 544K)
+  0,2           8    219.9    266.7    256.3     398.5     351.4     1.30x    ok  3.69e-03 1.0e-07 rel (99218/139264 differ)
+                    phases: launch 35.9  h2d 41.9  d2h 68.5  merge 14.0  (us; bytes h2d 160K d2h 1088K)
+  0,2          16    297.6    350.5    343.3     542.0     505.0     1.49x    ok  3.71e-03 2.2e-07 rel (236697/278528 differ)
+                    phases: launch 34.7  h2d 42.4  d2h 109.0  merge 26.8  (us; bytes h2d 320K d2h 2176K)
+  0,2          32    415.5    471.3    459.0     798.9     817.6     1.37x    ok  3.73e-03 2.2e-07 rel (473678/557056 differ)
+                    phases: launch 35.8  h2d 54.7  d2h 185.9  merge 62.6  (us; bytes h2d 640K d2h 4352K)
+  0,2          64    759.7    809.7    796.2    1396.0    1371.9     1.50x    ok  3.74e-03 2.2e-07 rel (947910/1114112 differ)
+                    phases: launch 36.2  h2d 79.2  d2h 343.6  merge 122.0  (us; bytes h2d 1280K d2h 8704K)
+  0,2         128   1254.0   1311.7   1298.2    2435.7    2426.4     1.46x    ok  3.75e-03 2.2e-07 rel (1895384/2228224 differ)
+                    phases: launch 35.1  h2d 126.5  d2h 655.9  merge 239.0  (us; bytes h2d 2560K d2h 17408K)
+  0,2         256   2259.1   2348.3   2428.4    4691.2    4669.3     1.39x    ok  3.75e-03 2.2e-07 rel (3790558/4456448 differ)
+                    phases: launch 33.5  h2d 221.5  d2h 1304.3  merge 685.9  (us; bytes h2d 5120K d2h 34816K)
+  0,2         512   4271.7   4441.9   4439.7    9000.6    8959.3     1.40x    ok  3.76e-03 2.2e-07 rel (7580048/8912896 differ)
+                    phases: launch 35.2  h2d 411.2  d2h 2554.3  merge 1480.6  (us; bytes h2d 10240K d2h 69632K)
+  0,1,2,3       1     70.7    150.8    112.7     272.5     151.6     1.20x    ok  3.72e-03 1.1e-07 rel (12633/17408 differ)
+                    phases: launch 67.4  h2d 62.4  d2h 67.9  merge 4.4  (us; bytes h2d 20K d2h 272K)
+  0,1,2,3       2     92.1    168.3    139.1     300.6     188.9     1.20x    ok  3.71e-03 1.1e-07 rel (25177/34816 differ)
+                    phases: launch 67.5  h2d 62.7  d2h 75.2  merge 7.5  (us; bytes h2d 40K d2h 544K)
+  0,1,2,3       3    113.2    186.6    162.4     329.4     224.2     1.38x    ok  3.72e-03 1.1e-07 rel (37862/52224 differ)
+                    phases: launch 68.0  h2d 63.7  d2h 83.9  merge 10.7  (us; bytes h2d 60K d2h 816K)
+  0,1,2,3       4    132.9    211.0    180.3     361.2     264.7     1.23x    ok  3.69e-03 1.1e-07 rel (50456/69632 differ)
+                    phases: launch 68.4  h2d 64.9  d2h 92.8  merge 13.9  (us; bytes h2d 80K d2h 1088K)
+  0,1,2,3       8    144.2    225.2    192.0     412.5     342.4     1.33x    ok  3.69e-03 1.1e-07 rel (101075/139264 differ)
+                    phases: launch 68.6  h2d 68.7  d2h 131.9  merge 26.6  (us; bytes h2d 160K d2h 2176K)
+  0,1,2,3      16    160.5    237.3    208.5     544.4     527.8     1.42x    ok  3.71e-03 2.4e-07 rel (244141/278528 differ)
+                    phases: launch 68.9  h2d 73.0  d2h 211.5  merge 52.0  (us; bytes h2d 320K d2h 4352K)
+  0,1,2,3      32    220.1    298.9    268.8     836.9     809.6     1.35x    ok  3.73e-03 2.4e-07 rel (488073/557056 differ)
+                    phases: launch 69.9  h2d 80.8  d2h 367.6  merge 138.6  (us; bytes h2d 640K d2h 8704K)
+  0,1,2,3      64    390.4    470.5    438.3    1471.8    1464.5     1.41x    ok  3.74e-03 2.4e-07 rel (976056/1114112 differ)
+                    phases: launch 69.4  h2d 103.6  d2h 680.1  merge 219.7  (us; bytes h2d 1280K d2h 17408K)
+  0,1,2,3     128    643.1    725.8    699.3    2763.8    2721.3     1.30x    ok  3.75e-03 2.4e-07 rel (1952619/2228224 differ)
+                    phases: launch 71.8  h2d 152.7  d2h 1369.9  merge 576.8  (us; bytes h2d 2560K d2h 34816K)
+  0,1,2,3     256   1155.1   1235.2   1200.6    5353.1    5284.2     1.23x    ok  3.75e-03 2.4e-07 rel (3904621/4456448 differ)
+                    phases: launch 69.4  h2d 247.4  d2h 2619.4  merge 1206.8  (us; bytes h2d 5120K d2h 69632K)
+  0,1,2,3     512   2180.5   2334.4   2223.5   10411.2   10267.0     1.22x    ok  3.76e-03 2.4e-07 rel (7807798/8912896 differ)
+                    phases: launch 66.7  h2d 435.7  d2h 5114.6  merge 2552.4  (us; bytes h2d 10240K d2h 139264K)
+
+== blk.19.ffn_up.weight  iq4_xs  K=5120 -> M=17408  45.16 MiB
+  reference ... 1.2s
+
+  -- mode row   (merge: concatenate rows)
+  dies          N    slice comp_ser comp_thr   e2e_ser   e2e_thr   speedup          relerr vs 1-die
+  0             1    113.6    144.0    144.9     178.6     179.1     1.00x    ok  3.77e-03 baseline
+                    phases: launch 17.9  h2d 20.1  d2h 22.0  merge 2.7  (us; bytes h2d 20K d2h 68K)
+  0             2    139.8    174.3    174.9     222.2     216.3     1.00x    ok  3.76e-03 baseline
+                    phases: launch 18.9  h2d 22.1  d2h 25.3  merge 3.1  (us; bytes h2d 40K d2h 136K)
+  0             3    225.9    256.6    257.9     308.4     309.3     1.00x    ok  3.77e-03 baseline
+                    phases: launch 17.9  h2d 22.1  d2h 29.5  merge 3.0  (us; bytes h2d 60K d2h 204K)
+  0             4    237.6    268.3    268.7     325.7     325.2     1.00x    ok  3.76e-03 baseline
+                    phases: launch 17.9  h2d 22.2  d2h 35.0  merge 3.0  (us; bytes h2d 80K d2h 272K)
+  0             8    340.7    371.9    372.0     452.4     452.7     1.00x    ok  3.76e-03 baseline
+                    phases: launch 18.3  h2d 28.1  d2h 54.3  merge 3.4  (us; bytes h2d 160K d2h 544K)
+  0            16    579.1    615.1    615.2     750.8     751.5     1.00x    ok  3.75e-03 baseline
+                    phases: launch 19.0  h2d 40.8  d2h 93.5  merge 4.7  (us; bytes h2d 320K d2h 1088K)
+  0            32    813.9    849.6    850.2    1094.5    1094.6     1.00x    ok  3.75e-03 baseline
+                    phases: launch 18.6  h2d 64.6  d2h 171.9  merge 7.9  (us; bytes h2d 640K d2h 2176K)
+  0            64   1491.7   1527.4   1528.3    1993.4    1993.3     1.00x    ok  3.76e-03 baseline
+                    phases: launch 18.8  h2d 112.2  d2h 328.1  merge 16.4  (us; bytes h2d 1280K d2h 4352K)
+  0           128   2481.8   2511.2   2513.2    3463.5    3464.2     1.00x    ok  3.76e-03 baseline
+                    phases: launch 17.1  h2d 207.1  d2h 640.5  merge 55.2  (us; bytes h2d 2560K d2h 8704K)
+  0           256   4448.2   4484.8   4486.0    6429.7    6429.4     1.00x    ok  3.76e-03 baseline
+                    phases: launch 19.5  h2d 396.7  d2h 1265.5  merge 219.1  (us; bytes h2d 5120K d2h 17408K)
+  0           512   8433.8   8590.4   8587.8   12652.9   12651.1     1.00x    ok  3.76e-03 baseline
+                    phases: launch 18.2  h2d 776.9  d2h 2512.7  merge 770.5  (us; bytes h2d 10240K d2h 34816K)
+  0,1           1     62.9    111.8     98.4     167.6     133.1     1.34x    ok  3.77e-03 bit-identical
+                    phases: launch 34.5  h2d 38.9  d2h 38.6  merge 2.1  (us; bytes h2d 40K d2h 68K)
+  0,1           2     83.1    124.6    118.0     188.8     159.2     1.36x    ok  3.76e-03 bit-identical
+                    phases: launch 34.8  h2d 42.6  d2h 42.5  merge 2.7  (us; bytes h2d 80K d2h 136K)
+  0,1           3    121.9    166.5    161.6     242.2     211.7     1.46x    ok  3.77e-03 bit-identical
+                    phases: launch 34.4  h2d 42.3  d2h 44.8  merge 3.1  (us; bytes h2d 120K d2h 204K)
+  0,1           4    130.4    176.8    170.6     258.3     228.4     1.42x    ok  3.76e-03 bit-identical
+                    phases: launch 35.2  h2d 44.3  d2h 50.0  merge 3.5  (us; bytes h2d 160K d2h 272K)
+  0,1           8    185.5    227.2    218.6     317.3     307.1     1.47x    ok  3.76e-03 bit-identical
+                    phases: launch 35.8  h2d 54.8  d2h 65.4  merge 3.5  (us; bytes h2d 320K d2h 544K)
+  0,1          16    386.8    438.6    429.7     564.5     586.6     1.33x    ok  3.75e-03 bit-identical
+                    phases: launch 36.2  h2d 78.1  d2h 104.9  merge 5.7  (us; bytes h2d 640K d2h 1088K)
+  0,1          32    548.3    593.5    586.1     831.8     876.6     1.32x    ok  3.75e-03 bit-identical
+                    phases: launch 36.6  h2d 124.9  d2h 181.9  merge 7.7  (us; bytes h2d 1280K d2h 2176K)
+  0,1          64   1001.1   1045.3   1039.0    1561.0    1594.7     1.28x    ok  3.76e-03 bit-identical
+                    phases: launch 35.9  h2d 220.7  d2h 338.6  merge 19.4  (us; bytes h2d 2560K d2h 4352K)
+  0,1         128   1502.1   1612.2   1608.8    2706.9    2746.1     1.28x    ok  3.76e-03 bit-identical
+                    phases: launch 34.9  h2d 409.5  d2h 652.3  merge 59.8  (us; bytes h2d 5120K d2h 8704K)
+  0,1         256   2493.1   2640.7   2627.1    4977.6    4979.5     1.29x    ok  3.76e-03 bit-identical
+                    phases: launch 34.0  h2d 793.5  d2h 1298.2  merge 224.4  (us; bytes h2d 10240K d2h 17408K)
+  0,1         512   4464.7   4528.9   4587.3    9295.2    9418.5     1.36x    ok  3.76e-03 bit-identical
+                    phases: launch 37.2  h2d 1579.8  d2h 2543.0  merge 760.2  (us; bytes h2d 20480K d2h 34816K)
+  0,2           1     62.8    112.5     98.7     167.3     132.9     1.34x    ok  3.77e-03 bit-identical
+                    phases: launch 33.7  h2d 37.5  d2h 36.9  merge 1.9  (us; bytes h2d 40K d2h 68K)
+  0,2           2     83.0    125.1    118.1     188.7     157.3     1.38x    ok  3.76e-03 bit-identical
+                    phases: launch 35.0  h2d 39.4  d2h 40.1  merge 2.9  (us; bytes h2d 80K d2h 136K)
+  0,2           3    121.9    166.8    157.3     242.9     203.6     1.51x    ok  3.77e-03 bit-identical
+                    phases: launch 35.9  h2d 41.4  d2h 41.6  merge 3.0  (us; bytes h2d 120K d2h 204K)
+  0,2           4    130.3    175.7    165.8     256.2     214.5     1.52x    ok  3.76e-03 bit-identical
+                    phases: launch 35.0  h2d 41.9  d2h 41.9  merge 3.0  (us; bytes h2d 160K d2h 272K)
+  0,2           8    182.4    233.3    218.6     318.4     281.2     1.61x    ok  3.76e-03 bit-identical
+                    phases: launch 39.3  h2d 44.8  d2h 50.2  merge 3.6  (us; bytes h2d 320K d2h 544K)
+  0,2          16    391.7    444.5    428.6     568.0     528.7     1.42x    ok  3.75e-03 bit-identical
+                    phases: launch 39.5  h2d 56.4  d2h 70.1  merge 6.1  (us; bytes h2d 640K d2h 1088K)
+  0,2          32    547.8    596.6    584.5     793.3     756.0     1.45x    ok  3.75e-03 bit-identical
+                    phases: launch 35.3  h2d 78.5  d2h 107.9  merge 8.1  (us; bytes h2d 1280K d2h 2176K)
+  0,2          64   1000.3   1053.1   1036.8    1406.6    1348.2     1.48x    ok  3.76e-03 bit-identical
+                    phases: launch 35.9  h2d 126.4  d2h 185.9  merge 18.4  (us; bytes h2d 2560K d2h 4352K)
+  0,2         128   1502.2   1621.4   1618.9    2259.5    2257.5     1.53x    ok  3.76e-03 bit-identical
+                    phases: launch 34.9  h2d 222.6  d2h 343.3  merge 60.2  (us; bytes h2d 5120K d2h 8704K)
+  0,2         256   2492.4   2611.9   2611.1    3939.9    3941.0     1.63x    ok  3.76e-03 bit-identical
+                    phases: launch 33.7  h2d 411.9  d2h 655.2  merge 227.6  (us; bytes h2d 10240K d2h 17408K)
+  0,2         512   4468.3   4586.2   4586.3    7428.9    7420.5     1.70x    ok  3.76e-03 bit-identical
+                    phases: launch 35.5  h2d 791.5  d2h 1296.3  merge 764.1  (us; bytes h2d 20480K d2h 34816K)
+  0,1,2,3       1     38.7    119.0     75.0     232.3     107.9     1.65x    ok  3.77e-03 bit-identical
+                    phases: launch 68.3  h2d 64.5  d2h 62.6  merge 2.5  (us; bytes h2d 80K d2h 68K)
+  0,1,2,3       2     46.6    128.6     85.2     244.9     127.5     1.70x    ok  3.76e-03 bit-identical
+                    phases: launch 68.8  h2d 68.0  d2h 64.4  merge 3.1  (us; bytes h2d 160K d2h 136K)
+  0,1,2,3       3     66.2    145.3    107.5     264.9     152.1     2.03x    ok  3.77e-03 bit-identical
+                    phases: launch 70.9  h2d 72.1  d2h 65.4  merge 3.2  (us; bytes h2d 240K d2h 204K)
+  0,1,2,3       4     72.0    152.7    114.8     276.2     163.6     1.99x    ok  3.76e-03 bit-identical
+                    phases: launch 67.9  h2d 72.7  d2h 67.9  merge 2.9  (us; bytes h2d 320K d2h 272K)
+  0,1,2,3       8    101.8    183.1    152.9     322.2     220.5     2.05x    ok  3.76e-03 bit-identical
+                    phases: launch 67.8  h2d 80.8  d2h 76.3  merge 3.4  (us; bytes h2d 640K d2h 544K)
+  0,1,2,3      16    204.0    284.4    263.5     452.0     374.2     2.01x    ok  3.75e-03 bit-identical
+                    phases: launch 73.0  h2d 102.0  d2h 93.0  merge 6.3  (us; bytes h2d 1280K d2h 1088K)
+  0,1,2,3      32    279.8    366.6    338.3     597.6     547.5     2.00x    ok  3.75e-03 bit-identical
+                    phases: launch 69.4  h2d 151.2  d2h 130.1  merge 10.7  (us; bytes h2d 2560K d2h 2176K)
+  0,1,2,3      64    495.2    580.6    547.7    1004.9     956.1     2.08x    ok  3.76e-03 bit-identical
+                    phases: launch 70.8  h2d 247.7  d2h 210.9  merge 24.9  (us; bytes h2d 5120K d2h 4352K)
+  0,1,2,3     128   1001.1   1086.2   1051.2    1923.8    1952.4     1.80x    ok  3.76e-03 bit-identical
+                    phases: launch 69.4  h2d 436.4  d2h 366.8  merge 63.6  (us; bytes h2d 10240K d2h 8704K)
+  0,1,2,3     256   1509.5   1606.0   1561.3    3315.6    3271.6     1.97x    ok  3.76e-03 bit-identical
+                    phases: launch 70.2  h2d 815.6  d2h 679.6  merge 234.3  (us; bytes h2d 20480K d2h 17408K)
+  0,1,2,3     512   2519.4   2643.5   2663.6    6242.0    6233.1     2.03x    ok  3.76e-03 bit-identical
+                    phases: launch 66.3  h2d 1639.0  d2h 1368.2  merge 774.2  (us; bytes h2d 40960K d2h 34816K)
+
+  -- mode k   (merge: sum of partials)
+  dies          N    slice comp_ser comp_thr   e2e_ser   e2e_thr   speedup          relerr vs 1-die
+  0,1           1     90.3    128.7    124.0     191.4     163.8     1.09x    ok  3.77e-03 1.1e-07 rel (12529/17408 differ)
+                    phases: launch 34.4  h2d 36.1  d2h 41.4  merge 3.0  (us; bytes h2d 20K d2h 136K)
+  0,1           2    110.7    152.5    144.2     220.6     198.5     1.09x    ok  3.76e-03 1.1e-07 rel (24982/34816 differ)
+                    phases: launch 35.9  h2d 37.6  d2h 49.1  merge 4.3  (us; bytes h2d 40K d2h 272K)
+  0,1           3    131.7    171.9    164.9     251.1     235.8     1.31x    ok  3.77e-03 1.1e-07 rel (37412/52224 differ)
+                    phases: launch 36.0  h2d 40.1  d2h 56.2  merge 5.9  (us; bytes h2d 60K d2h 408K)
+  0,1           4    152.2    197.8    188.5     280.7     268.5     1.21x    ok  3.76e-03 1.0e-07 rel (49837/69632 differ)
+                    phases: launch 35.9  h2d 41.8  d2h 64.4  merge 7.5  (us; bytes h2d 80K d2h 544K)
+  0,1           8    219.7    266.6    257.2     391.2     387.8     1.17x    ok  3.76e-03 1.0e-07 rel (99695/139264 differ)
+                    phases: launch 35.3  h2d 42.9  d2h 104.7  merge 14.0  (us; bytes h2d 160K d2h 1088K)
+  0,1          16    304.7    351.4    345.1     577.0     577.3     1.30x    ok  3.75e-03 2.2e-07 rel (236844/278528 differ)
+                    phases: launch 35.5  h2d 53.6  d2h 181.6  merge 26.8  (us; bytes h2d 320K d2h 2176K)
+  0,1          32    422.3    466.5    458.9     906.8     937.8     1.21x    ok  3.75e-03 2.2e-07 rel (473740/557056 differ)
+                    phases: launch 36.9  h2d 77.1  d2h 338.2  merge 61.4  (us; bytes h2d 640K d2h 4352K)
+  0,1          64    759.2    803.8    796.6    1663.5    1705.0     1.20x    ok  3.76e-03 2.2e-07 rel (947413/1114112 differ)
+                    phases: launch 35.6  h2d 124.5  d2h 651.2  merge 122.8  (us; bytes h2d 1280K d2h 8704K)
+  0,1         128   1260.2   1397.3   1376.5    3201.4    3203.9     1.08x    ok  3.76e-03 2.2e-07 rel (1894214/2228224 differ)
+                    phases: launch 33.3  h2d 219.8  d2h 1300.2  merge 234.5  (us; bytes h2d 2560K d2h 17408K)
+  0,1         256   2261.6   2398.4   2384.0    6093.0    6081.4     1.06x    ok  3.76e-03 2.2e-07 rel (3788193/4456448 differ)
+                    phases: launch 33.4  h2d 409.9  d2h 2554.1  merge 689.2  (us; bytes h2d 5120K d2h 34816K)
+  0,1         512   4265.8   4380.3   4375.7   11761.3   11747.2     1.08x    ok  3.76e-03 2.2e-07 rel (7575666/8912896 differ)
+                    phases: launch 34.7  h2d 790.3  d2h 5039.3  merge 1497.6  (us; bytes h2d 10240K d2h 69632K)
+  0,2           1     86.6    129.6    123.2     193.2     158.6     1.13x    ok  3.77e-03 1.1e-07 rel (12529/17408 differ)
+                    phases: launch 34.5  h2d 36.7  d2h 40.3  merge 2.9  (us; bytes h2d 20K d2h 136K)
+  0,2           2    107.6    155.6    143.3     226.2     189.9     1.14x    ok  3.76e-03 1.1e-07 rel (24982/34816 differ)
+                    phases: launch 35.1  h2d 37.6  d2h 41.7  merge 4.4  (us; bytes h2d 40K d2h 272K)
+  0,2           3    128.4    177.1    163.8     255.6     218.2     1.41x    ok  3.77e-03 1.1e-07 rel (37412/52224 differ)
+                    phases: launch 38.6  h2d 39.1  d2h 44.8  merge 6.0  (us; bytes h2d 60K d2h 408K)
+  0,2           4    151.7    200.1    187.6     285.8     250.6     1.30x    ok  3.76e-03 1.0e-07 rel (49837/69632 differ)
+                    phases: launch 36.7  h2d 39.4  d2h 49.3  merge 7.6  (us; bytes h2d 80K d2h 544K)
+  0,2           8    219.6    266.2    256.4     394.3     350.4     1.29x    ok  3.76e-03 1.0e-07 rel (99695/139264 differ)
+                    phases: launch 35.5  h2d 41.9  d2h 69.9  merge 13.9  (us; bytes h2d 160K d2h 1088K)
+  0,2          16    301.2    351.6    340.6     539.8     497.5     1.51x    ok  3.75e-03 2.2e-07 rel (236844/278528 differ)
+                    phases: launch 37.5  h2d 44.8  d2h 109.7  merge 26.8  (us; bytes h2d 320K d2h 2176K)
+  0,2          32    414.7    469.1    458.7     792.5     793.4     1.38x    ok  3.75e-03 2.2e-07 rel (473740/557056 differ)
+                    phases: launch 35.1  h2d 54.4  d2h 185.8  merge 61.4  (us; bytes h2d 640K d2h 4352K)
+  0,2          64    759.7    807.3    796.5    1394.8    1377.1     1.45x    ok  3.76e-03 2.2e-07 rel (947413/1114112 differ)
+                    phases: launch 36.3  h2d 79.8  d2h 343.9  merge 125.0  (us; bytes h2d 1280K d2h 8704K)
+  0,2         128   1254.7   1374.5   1372.6    2486.8    2480.6     1.40x    ok  3.76e-03 2.2e-07 rel (1894214/2228224 differ)
+                    phases: launch 33.7  h2d 126.5  d2h 655.2  merge 232.9  (us; bytes h2d 2560K d2h 17408K)
+  0,2         256   2259.4   2377.6   2374.0    4653.3    4642.4     1.38x    ok  3.76e-03 2.2e-07 rel (3788193/4456448 differ)
+                    phases: launch 33.7  h2d 221.3  d2h 1300.6  merge 698.1  (us; bytes h2d 5120K d2h 34816K)
+  0,2         512   4264.4   4381.9   4382.9    8975.7    8938.2     1.42x    ok  3.76e-03 2.2e-07 rel (7575666/8912896 differ)
+                    phases: launch 34.8  h2d 411.6  d2h 2545.4  merge 1514.1  (us; bytes h2d 10240K d2h 69632K)
+  0,1,2,3       1     70.3    149.3    113.7     269.6     153.4     1.16x    ok  3.77e-03 1.1e-07 rel (12558/17408 differ)
+                    phases: launch 67.4  h2d 63.0  d2h 67.6  merge 4.4  (us; bytes h2d 20K d2h 272K)
+  0,1,2,3       2     91.9    168.5    135.1     300.9     187.8     1.15x    ok  3.76e-03 1.1e-07 rel (25209/34816 differ)
+                    phases: launch 68.2  h2d 62.9  d2h 75.9  merge 7.6  (us; bytes h2d 40K d2h 544K)
+  0,1,2,3       3    110.1    186.7    157.5     332.3     225.7     1.37x    ok  3.77e-03 1.1e-07 rel (37763/52224 differ)
+                    phases: launch 67.6  h2d 63.8  d2h 84.6  merge 10.7  (us; bytes h2d 60K d2h 816K)
+  0,1,2,3       4    136.0    210.1    181.1     360.7     264.8     1.23x    ok  3.76e-03 1.1e-07 rel (50389/69632 differ)
+                    phases: launch 68.7  h2d 65.4  d2h 94.2  merge 13.9  (us; bytes h2d 80K d2h 1088K)
+  0,1,2,3       8    142.5    222.4    201.8     413.6     353.7     1.28x    ok  3.76e-03 1.1e-07 rel (101066/139264 differ)
+                    phases: launch 68.1  h2d 67.7  d2h 130.5  merge 26.6  (us; bytes h2d 160K d2h 2176K)
+  0,1,2,3      16    161.2    240.6    208.7     541.5     520.4     1.44x    ok  3.75e-03 2.4e-07 rel (244038/278528 differ)
+                    phases: launch 69.1  h2d 73.2  d2h 211.1  merge 52.0  (us; bytes h2d 320K d2h 4352K)
+  0,1,2,3      32    220.1    301.4    269.1     836.9     845.5     1.31x    ok  3.75e-03 2.4e-07 rel (488001/557056 differ)
+                    phases: launch 71.3  h2d 81.5  d2h 367.7  merge 140.0  (us; bytes h2d 640K d2h 8704K)
+  0,1,2,3      64    390.2    470.6    446.0    1470.0    1468.0     1.36x    ok  3.76e-03 2.4e-07 rel (976144/1114112 differ)
+                    phases: launch 69.6  h2d 103.0  d2h 679.2  merge 229.6  (us; bytes h2d 1280K d2h 17408K)
+  0,1,2,3     128    643.4    723.2    691.9    2750.1    2732.6     1.27x    ok  3.76e-03 2.4e-07 rel (1951658/2228224 differ)
+                    phases: launch 69.2  h2d 152.1  d2h 1370.5  merge 560.9  (us; bytes h2d 2560K d2h 34816K)
+  0,1,2,3     256   1150.9   1235.0   1200.4    5411.3    5314.1     1.21x    ok  3.76e-03 2.4e-07 rel (3902070/4456448 differ)
+                    phases: launch 69.1  h2d 246.8  d2h 2619.5  merge 1229.8  (us; bytes h2d 5120K d2h 69632K)
+  0,1,2,3     512   2181.1   2333.0   2306.3   10439.5   10376.6     1.22x    ok  3.76e-03 2.4e-07 rel (7804714/8912896 differ)
+                    phases: launch 68.5  h2d 435.9  d2h 5114.2  merge 2552.3  (us; bytes h2d 10240K d2h 139264K)
+
+== blk.19.ffn_down.weight  iq4_xs  K=17408 -> M=5120  45.16 MiB
+  reference ... 1.5s
+
+  -- mode row   (merge: concatenate rows)
+  dies          N    slice comp_ser comp_thr   e2e_ser   e2e_thr   speedup          relerr vs 1-die
+  0             1    115.6    149.1    149.9     181.9     181.5     1.00x    ok  3.67e-03 baseline
+                    phases: launch 18.6  h2d 22.1  d2h 18.2  merge 1.3  (us; bytes h2d 68K d2h 20K)
+  0             2    137.3    166.6    169.3     207.8     208.9     1.00x    ok  3.69e-03 baseline
+                    phases: launch 18.1  h2d 26.9  d2h 19.6  merge 1.4  (us; bytes h2d 136K d2h 40K)
+  0             3    276.6    306.3    311.4     354.2     353.2     1.00x    ok  3.73e-03 baseline
+                    phases: launch 19.5  h2d 31.7  d2h 21.4  merge 1.6  (us; bytes h2d 204K d2h 60K)
+  0             4    235.4    264.0    267.2     316.4     322.1     1.00x    ok  3.73e-03 baseline
+                    phases: launch 19.5  h2d 38.0  d2h 23.3  merge 1.5  (us; bytes h2d 272K d2h 80K)
+  0             8    337.7    368.0    368.8     447.8     448.1     1.00x    ok  3.74e-03 baseline
+                    phases: launch 18.1  h2d 57.6  d2h 27.0  merge 2.2  (us; bytes h2d 544K d2h 160K)
+  0            16    661.5    692.0    692.8     826.2     827.4     1.00x    ok  3.75e-03 baseline
+                    phases: launch 18.5  h2d 97.5  d2h 38.5  merge 2.4  (us; bytes h2d 1088K d2h 320K)
+  0            32    923.4    954.6    955.0    1195.1    1196.0     1.00x    ok  3.75e-03 baseline
+                    phases: launch 19.0  h2d 178.4  d2h 61.4  merge 3.5  (us; bytes h2d 2176K d2h 640K)
+  0            64   1660.7   1804.7   1805.1    2257.8    2258.5     1.00x    ok  3.76e-03 baseline
+                    phases: launch 16.4  h2d 339.9  d2h 107.2  merge 5.5  (us; bytes h2d 4352K d2h 1280K)
+  0           128   3319.5   3473.6   3475.0    4350.6    4350.2     1.00x    ok  3.76e-03 baseline
+                    phases: launch 17.2  h2d 662.8  d2h 199.2  merge 10.6  (us; bytes h2d 8704K d2h 2560K)
+  0           256   5002.0   5147.1   5145.1    6878.7    6879.9     1.00x    ok  3.75e-03 baseline
+                    phases: launch 16.9  h2d 1308.1  d2h 383.3  merge 29.7  (us; bytes h2d 17408K d2h 5120K)
+  0           512   8384.4   8525.4   8527.0   12006.8   12006.6     1.00x    ok  3.76e-03 baseline
+                    phases: launch 17.3  h2d 2615.6  d2h 750.7  merge 94.9  (us; bytes h2d 34816K d2h 10240K)
+  0,1           1     61.3    109.2     99.7     167.3     136.5     1.33x    ok  3.67e-03 bit-identical
+                    phases: launch 34.3  h2d 41.7  d2h 35.5  merge 1.3  (us; bytes h2d 136K d2h 20K)
+  0,1           2     83.6    120.3    113.5     179.6     159.8     1.30x    ok  3.69e-03 bit-identical
+                    phases: launch 34.1  h2d 51.2  d2h 36.1  merge 1.3  (us; bytes h2d 272K d2h 40K)
+  0,1           3    135.8    180.2    171.1     251.3     236.1     1.50x    ok  3.73e-03 bit-identical
+                    phases: launch 35.6  h2d 60.8  d2h 37.0  merge 1.5  (us; bytes h2d 408K d2h 60K)
+  0,1           4    122.5    165.8    158.4     245.8     229.9     1.38x    ok  3.73e-03 bit-identical
+                    phases: launch 35.5  h2d 71.0  d2h 38.9  merge 1.6  (us; bytes h2d 544K d2h 80K)
+  0,1           8    186.6    232.0    221.8     337.9     339.6     1.33x    ok  3.74e-03 bit-identical
+                    phases: launch 35.2  h2d 112.5  d2h 42.8  merge 1.9  (us; bytes h2d 1088K d2h 160K)
+  0,1          16    647.8    695.4    686.1     887.1     897.7     0.93x    ok  3.75e-03 bit-identical
+                    phases: launch 35.8  h2d 190.3  d2h 51.7  merge 2.3  (us; bytes h2d 2176K d2h 320K)
+  0,1          32    915.8    960.7    950.9    1326.4    1424.3     0.90x    ok  3.75e-03 bit-identical
+                    phases: launch 35.2  h2d 354.2  d2h 73.6  merge 4.0  (us; bytes h2d 4352K d2h 640K)
+  0,1          64   1652.4   1789.2   1782.3    2521.1    2542.3     0.90x    ok  3.76e-03 bit-identical
+                    phases: launch 34.2  h2d 675.3  d2h 118.3  merge 5.7  (us; bytes h2d 8704K d2h 1280K)
+  0,1         128   1663.1   1774.7   1774.1    3249.8    3297.9     1.34x    ok  3.76e-03 bit-identical
+                    phases: launch 32.9  h2d 1338.0  d2h 210.8  merge 10.2  (us; bytes h2d 17408K d2h 2560K)
+  0,1         256   3332.4   3463.7   3461.7    6482.2    6494.1     1.06x    ok  3.75e-03 bit-identical
+                    phases: launch 35.7  h2d 2642.5  d2h 394.3  merge 32.7  (us; bytes h2d 34816K d2h 5120K)
+  0,1         512   5033.3   5186.5   5153.0   11213.5   11234.8     1.07x    ok  3.76e-03 bit-identical
+                    phases: launch 35.7  h2d 5230.3  d2h 761.4  merge 96.7  (us; bytes h2d 69632K d2h 10240K)
+  0,2           1     62.0    110.5    102.6     166.7     133.8     1.36x    ok  3.67e-03 bit-identical
+                    phases: launch 34.0  h2d 41.2  d2h 35.5  merge 1.3  (us; bytes h2d 136K d2h 20K)
+  0,2           2     73.6    121.6    115.2     181.2     151.7     1.37x    ok  3.69e-03 bit-identical
+                    phases: launch 35.7  h2d 42.0  d2h 36.2  merge 1.4  (us; bytes h2d 272K d2h 40K)
+  0,2           3    136.3    180.1    172.6     258.9     218.4     1.62x    ok  3.73e-03 bit-identical
+                    phases: launch 35.1  h2d 45.7  d2h 37.1  merge 1.4  (us; bytes h2d 408K d2h 60K)
+  0,2           4    122.3    167.1    159.3     250.4     212.1     1.49x    ok  3.73e-03 bit-identical
+                    phases: launch 35.7  h2d 51.6  d2h 37.7  merge 1.6  (us; bytes h2d 544K d2h 80K)
+  0,2           8    186.7    231.0    223.6     339.2     298.3     1.50x    ok  3.74e-03 bit-identical
+                    phases: launch 35.3  h2d 71.3  d2h 41.2  merge 1.8  (us; bytes h2d 1088K d2h 160K)
+  0,2          16    648.2    701.2    685.8     857.0     811.4     1.02x    ok  3.75e-03 bit-identical
+                    phases: launch 39.2  h2d 113.2  d2h 43.3  merge 2.6  (us; bytes h2d 2176K d2h 320K)
+  0,2          32    909.4    965.6    951.7    1212.3    1170.8     1.02x    ok  3.75e-03 bit-identical
+                    phases: launch 39.6  h2d 194.0  d2h 53.3  merge 3.6  (us; bytes h2d 4352K d2h 640K)
+  0,2          64   1649.1   1823.4   1777.0    2216.1    2227.6     1.02x    ok  3.76e-03 bit-identical
+                    phases: launch 34.3  h2d 355.6  d2h 76.7  merge 6.7  (us; bytes h2d 8704K d2h 1280K)
+  0,2         128   1661.8   1787.7   1788.3    2583.1    2576.5     1.69x    ok  3.76e-03 bit-identical
+                    phases: launch 33.7  h2d 677.2  d2h 121.6  merge 13.4  (us; bytes h2d 17408K d2h 2560K)
+  0,2         256   3333.2   3497.3   3507.3    5091.6    5073.0     1.36x    ok  3.75e-03 bit-identical
+                    phases: launch 34.5  h2d 1355.3  d2h 213.9  merge 32.2  (us; bytes h2d 34816K d2h 5120K)
+  0,2         512   5032.2   5192.3   5132.2    8326.3    8265.0     1.45x    ok  3.76e-03 bit-identical
+                    phases: launch 35.6  h2d 2649.8  d2h 398.0  merge 93.5  (us; bytes h2d 69632K d2h 10240K)
+  0,1,2,3       1     36.5    119.6     74.8     231.6     108.4     1.67x    ok  3.67e-03 bit-identical
+                    phases: launch 69.0  h2d 72.9  d2h 62.6  merge 1.2  (us; bytes h2d 272K d2h 20K)
+  0,1,2,3       2     42.8    122.8     79.5     248.3     130.1     1.60x    ok  3.69e-03 bit-identical
+                    phases: launch 67.4  h2d 76.9  d2h 62.8  merge 1.4  (us; bytes h2d 544K d2h 40K)
+  0,1,2,3       3     65.9    146.1    105.8     271.5     166.1     2.13x    ok  3.73e-03 bit-identical
+                    phases: launch 67.1  h2d 87.3  d2h 62.5  merge 1.5  (us; bytes h2d 816K d2h 60K)
+  0,1,2,3       4     68.8    150.0    111.4     280.8     181.8     1.74x    ok  3.73e-03 bit-identical
+                    phases: launch 68.2  h2d 97.7  d2h 63.6  merge 1.5  (us; bytes h2d 1088K d2h 80K)
+  0,1,2,3       8     97.6    175.6    144.6     336.5     261.3     1.71x    ok  3.74e-03 bit-identical
+                    phases: launch 67.9  h2d 139.3  d2h 65.0  merge 1.8  (us; bytes h2d 2176K d2h 160K)
+  0,1,2,3      16    642.7    730.7    698.4     995.0     901.3     0.92x    ok  3.75e-03 bit-identical
+                    phases: launch 70.2  h2d 216.6  d2h 69.7  merge 2.5  (us; bytes h2d 4352K d2h 320K)
+  0,1,2,3      32    898.7    994.1    960.7    1418.3    1335.3     0.89x    ok  3.75e-03 bit-identical
+                    phases: launch 69.0  h2d 380.1  d2h 79.7  merge 4.2  (us; bytes h2d 8704K d2h 640K)
+  0,1,2,3      64   1645.2   1790.8   1764.3    2502.0    2426.1     0.93x    ok  3.76e-03 bit-identical
+                    phases: launch 68.3  h2d 702.4  d2h 98.7  merge 6.0  (us; bytes h2d 17408K d2h 1280K)
+  0,1,2,3     128   1653.6   1799.6   1777.9    3206.2    3206.9     1.36x    ok  3.76e-03 bit-identical
+                    phases: launch 66.3  h2d 1413.1  d2h 144.3  merge 12.8  (us; bytes h2d 34816K d2h 2560K)
+  0,1,2,3     256   1682.0   1796.6   1803.3    4639.6    4650.5     1.48x    ok  3.75e-03 bit-identical
+                    phases: launch 67.6  h2d 2700.7  d2h 236.4  merge 48.7  (us; bytes h2d 69632K d2h 5120K)
+  0,1,2,3     512   3375.4   3519.9   3499.2    9198.4    9203.8     1.31x    ok  3.76e-03 bit-identical
+                    phases: launch 65.8  h2d 5279.5  d2h 420.2  merge 111.6  (us; bytes h2d 139264K d2h 10240K)
+
+  -- mode k   (merge: sum of partials)
+  dies          N    slice comp_ser comp_thr   e2e_ser   e2e_thr   speedup          relerr vs 1-die
+  0,1           1     57.8    106.2     95.1     162.4     129.3     1.40x    ok  3.67e-03 1.1e-07 rel (3755/5120 differ)
+                    phases: launch 34.6  h2d 41.1  d2h 36.1  merge 1.8  (us; bytes h2d 68K d2h 40K)
+  0,1           2     73.0    119.9    113.2     180.0     153.1     1.36x    ok  3.69e-03 1.1e-07 rel (7527/10240 differ)
+                    phases: launch 35.7  h2d 42.3  d2h 38.8  merge 2.3  (us; bytes h2d 136K d2h 80K)
+  0,1           3    135.2    178.7    171.1     251.8     220.8     1.60x    ok  3.73e-03 1.1e-07 rel (11328/15360 differ)
+                    phases: launch 35.5  h2d 45.5  d2h 40.7  merge 2.8  (us; bytes h2d 204K d2h 120K)
+  0,1           4    131.0    175.4    167.7     251.6     227.0     1.39x    ok  3.73e-03 1.1e-07 rel (15071/20480 differ)
+                    phases: launch 35.3  h2d 49.5  d2h 41.5  merge 3.1  (us; bytes h2d 272K d2h 160K)
+  0,1           8    178.8    224.3    214.4     317.9     307.0     1.46x    ok  3.74e-03 1.1e-07 rel (30174/40960 differ)
+                    phases: launch 35.6  h2d 69.6  d2h 51.5  merge 4.9  (us; bytes h2d 544K d2h 320K)
+  0,1          16    340.1    381.9    380.5     522.6     538.2     1.58x    ok  3.75e-03 4.0e-07 rel (74881/81920 differ)
+                    phases: launch 35.6  h2d 112.3  d2h 72.9  merge 8.7  (us; bytes h2d 1088K d2h 640K)
+  0,1          32    467.7    512.7    507.1     789.2     820.5     1.51x    ok  3.75e-03 4.0e-07 rel (149742/163840 differ)
+                    phases: launch 35.5  h2d 191.3  d2h 117.3  merge 16.3  (us; bytes h2d 2176K d2h 1280K)
+  0,1          64    841.1    883.8    876.7    1435.9    1463.1     1.57x    ok  3.76e-03 4.0e-07 rel (299526/327680 differ)
+                    phases: launch 36.9  h2d 353.5  d2h 211.0  merge 32.9  (us; bytes h2d 4352K d2h 2560K)
+  0,1         128   1670.3   1781.1   1777.8    2887.5    2919.6     1.51x    ok  3.76e-03 4.0e-07 rel (599025/655360 differ)
+                    phases: launch 33.2  h2d 674.4  d2h 394.2  merge 72.7  (us; bytes h2d 8704K d2h 5120K)
+  0,1         256   2513.5   2591.4   2567.4    4832.1    4832.5     1.42x    ok  3.75e-03 4.0e-07 rel (1198305/1310720 differ)
+                    phases: launch 34.0  h2d 1336.8  d2h 761.8  merge 121.9  (us; bytes h2d 17408K d2h 10240K)
+  0,1         512   4211.8   4330.7   4325.7    8814.1    8833.1     1.36x    ok  3.76e-03 4.0e-07 rel (2396986/2621440 differ)
+                    phases: launch 34.8  h2d 2640.7  d2h 1515.6  merge 320.4  (us; bytes h2d 34816K d2h 20480K)
+  0,2           1     57.8    106.2     95.4     162.5     127.0     1.43x    ok  3.67e-03 1.1e-07 rel (3755/5120 differ)
+                    phases: launch 36.4  h2d 38.9  d2h 36.3  merge 1.8  (us; bytes h2d 68K d2h 40K)
+  0,2           2     73.4    120.9    112.6     179.5     150.0     1.38x    ok  3.69e-03 1.1e-07 rel (7527/10240 differ)
+                    phases: launch 34.1  h2d 43.0  d2h 39.0  merge 2.4  (us; bytes h2d 136K d2h 80K)
+  0,2           3    135.7    180.0    171.2     252.2     214.3     1.65x    ok  3.73e-03 1.1e-07 rel (11328/15360 differ)
+                    phases: launch 35.3  h2d 43.8  d2h 41.1  merge 2.8  (us; bytes h2d 204K d2h 120K)
+  0,2           4    131.6    174.9    169.0     253.5     216.7     1.46x    ok  3.73e-03 1.1e-07 rel (15071/20480 differ)
+                    phases: launch 35.0  h2d 42.0  d2h 41.7  merge 3.1  (us; bytes h2d 272K d2h 160K)
+  0,2           8    174.3    225.3    215.2     319.6     285.1     1.57x    ok  3.74e-03 1.1e-07 rel (30174/40960 differ)
+                    phases: launch 35.5  h2d 51.3  d2h 41.7  merge 4.9  (us; bytes h2d 544K d2h 320K)
+  0,2          16    337.6    385.0    379.2     507.1     484.3     1.71x    ok  3.75e-03 4.0e-07 rel (74881/81920 differ)
+                    phases: launch 35.2  h2d 72.8  d2h 53.4  merge 8.6  (us; bytes h2d 1088K d2h 640K)
+  0,2          32    470.7    519.9    512.5     744.6     710.0     1.68x    ok  3.75e-03 4.0e-07 rel (149742/163840 differ)
+                    phases: launch 35.3  h2d 112.5  d2h 76.0  merge 16.3  (us; bytes h2d 2176K d2h 1280K)
+  0,2          64    836.0    891.1    878.1    1265.5    1225.1     1.84x    ok  3.76e-03 4.0e-07 rel (299526/327680 differ)
+                    phases: launch 35.3  h2d 193.2  d2h 121.9  merge 31.5  (us; bytes h2d 4352K d2h 2560K)
+  0,2         128   1667.9   1821.8   1803.6    2490.7    2454.8     1.77x    ok  3.76e-03 4.0e-07 rel (599025/655360 differ)
+                    phases: launch 32.8  h2d 354.1  d2h 213.5  merge 72.7  (us; bytes h2d 8704K d2h 5120K)
+  0,2         256   2514.5   2614.5   2611.0    3875.1    3865.6     1.78x    ok  3.75e-03 4.0e-07 rel (1198305/1310720 differ)
+                    phases: launch 34.9  h2d 680.0  d2h 401.5  merge 126.0  (us; bytes h2d 17408K d2h 10240K)
+  0,2         512   4208.5   4330.0   4272.8    6910.4    6808.8     1.76x    ok  3.76e-03 4.0e-07 rel (2396986/2621440 differ)
+                    phases: launch 34.1  h2d 1352.0  d2h 765.1  merge 321.7  (us; bytes h2d 34816K d2h 20480K)
+  0,1,2,3       1     42.6    122.9     79.8     234.6     112.9     1.61x    ok  3.67e-03 1.2e-07 rel (3847/5120 differ)
+                    phases: launch 67.8  h2d 64.2  d2h 62.5  merge 2.2  (us; bytes h2d 68K d2h 80K)
+  0,1,2,3       2     51.4    131.2     90.9     247.7     133.9     1.55x    ok  3.69e-03 1.2e-07 rel (7729/10240 differ)
+                    phases: launch 70.0  h2d 68.2  d2h 65.9  merge 3.1  (us; bytes h2d 136K d2h 160K)
+  0,1,2,3       3     68.3    148.4    108.5     270.7     155.8     2.27x    ok  3.73e-03 1.2e-07 rel (11603/15360 differ)
+                    phases: launch 68.0  h2d 69.1  d2h 67.1  merge 3.9  (us; bytes h2d 204K d2h 240K)
+  0,1,2,3       4     82.6    158.1    122.2     285.3     173.8     1.82x    ok  3.73e-03 1.2e-07 rel (15484/20480 differ)
+                    phases: launch 67.4  h2d 72.3  d2h 70.4  merge 5.0  (us; bytes h2d 272K d2h 320K)
+  0,1,2,3       8    112.0    190.4    159.2     334.8     233.9     1.91x    ok  3.74e-03 1.2e-07 rel (30755/40960 differ)
+                    phases: launch 68.0  h2d 76.8  d2h 79.4  merge 8.7  (us; bytes h2d 544K d2h 640K)
+  0,1,2,3      16    175.6    254.1    225.2     434.2     359.3     2.30x    ok  3.75e-03 4.4e-07 rel (76196/81920 differ)
+                    phases: launch 69.0  h2d 98.2  d2h 99.2  merge 16.1  (us; bytes h2d 1088K d2h 1280K)
+  0,1,2,3      32    241.1    324.4    291.0     574.6     526.3     2.27x    ok  3.75e-03 4.4e-07 rel (152466/163840 differ)
+                    phases: launch 70.2  h2d 139.4  d2h 145.8  merge 31.0  (us; bytes h2d 2176K d2h 2560K)
+  0,1,2,3      64    421.4    507.4    481.9     994.2    1006.6     2.27x    ok  3.76e-03 4.4e-07 rel (304919/327680 differ)
+                    phases: launch 69.4  h2d 217.2  d2h 235.8  merge 63.8  (us; bytes h2d 4352K d2h 5120K)
+  0,1,2,3     128    837.8    927.4    892.5    1825.9    1804.6     2.41x    ok  3.76e-03 4.4e-07 rel (610239/655360 differ)
+                    phases: launch 69.2  h2d 380.6  d2h 422.3  merge 154.0  (us; bytes h2d 8704K d2h 10240K)
+  0,1,2,3     256   1264.4   1360.3   1394.6    3123.8    3163.3     2.20x    ok  3.75e-03 4.4e-07 rel (1220613/1310720 differ)
+                    phases: launch 67.2  h2d 705.7  d2h 793.8  merge 271.2  (us; bytes h2d 17408K d2h 20480K)
+  0,1,2,3     512   2122.5   2278.8   2177.3    5824.2    5777.6     2.08x    ok  3.76e-03 4.4e-07 rel (2441292/2621440 differ)
+                    phases: launch 66.5  h2d 1412.1  d2h 1589.9  merge 678.1  (us; bytes h2d 34816K d2h 40960K)

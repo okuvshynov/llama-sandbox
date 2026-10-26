@@ -5,7 +5,7 @@ BUILD ?= $(LLAMA)/build-hip
 CXXFLAGS = -O2 -std=c++17 -Wall -I$(LLAMA)/ggml/include
 LDFLAGS  = -L$(BUILD)/bin -lggml -lggml-base -lggml-cpu -Wl,-rpath,$(BUILD)/bin
 
-BINS = bin/mlp-extract bin/mm-bench bin/ceiling
+BINS = bin/mlp-extract bin/mm-bench bin/mm-split bin/ceiling
 
 all: $(BINS)
 
@@ -14,7 +14,11 @@ bin/mlp-extract: src/mlp_extract.cpp
 	g++ $(CXXFLAGS) -o $@ $< $(LDFLAGS)
 
 # -O3 -march=native -fopenmp-simd: the host reference matmul (double accumulation)
-bin/mm-bench: src/mm_bench.cpp
+bin/mm-bench: src/mm_bench.cpp src/common.h
+	@mkdir -p bin
+	g++ $(CXXFLAGS) -O3 -march=native -fopenmp-simd -o $@ $< $(LDFLAGS) -lpthread
+
+bin/mm-split: src/mm_split.cpp src/common.h
 	@mkdir -p bin
 	g++ $(CXXFLAGS) -O3 -march=native -fopenmp-simd -o $@ $< $(LDFLAGS) -lpthread
 
