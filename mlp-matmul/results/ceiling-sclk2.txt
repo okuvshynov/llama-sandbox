@@ -1,0 +1,44 @@
+# device 0  gfx906:sramecc-:xnack-  CUs=64  clock(max)=1730 MHz
+read      32.0 MiB  single     45.4 us   738.4 GB/s   x10     38.7 us   866.9 GB/s
+read      58.0 MiB  single     74.4 us   817.4 GB/s   x10     67.7 us   898.8 GB/s
+read     256.0 MiB  single    342.4 us   784.0 GB/s   x10    339.3 us   791.2 GB/s
+read    1024.0 MiB  single   1388.5 us   773.3 GB/s   x10   1376.9 us   779.8 GB/s
+read      58.0 MiB  x10 grid=  8 blocks/CU    123.6 us   491.9 GB/s
+read      58.0 MiB  x10 grid= 16 blocks/CU    100.6 us   604.6 GB/s
+read      58.0 MiB  x10 grid= 64 blocks/CU     72.3 us   840.8 GB/s
+read      58.0 MiB  x10 grid=128 blocks/CU     69.5 us   875.2 GB/s
+copy    1024.0 MiB    2811.4 us    763.9 GB/s (read+write)
+fp32 FMA peak          4460.5 us     9.63 TFLOPS  (=> effective 1175 MHz at 128 FLOP/CU/clk)
+# device 1  gfx906:sramecc-:xnack-  CUs=64  clock(max)=1730 MHz
+read      32.0 MiB  single     45.4 us   738.4 GB/s   x10     38.7 us   867.3 GB/s
+read      58.0 MiB  single     74.4 us   817.4 GB/s   x10     69.0 us   881.7 GB/s
+read     256.0 MiB  single    342.4 us   784.0 GB/s   x10    339.6 us   790.5 GB/s
+read    1024.0 MiB  single   1378.2 us   779.1 GB/s   x10   1377.8 us   779.3 GB/s
+read      58.0 MiB  x10 grid=  8 blocks/CU    123.6 us   492.1 GB/s
+read      58.0 MiB  x10 grid= 16 blocks/CU    100.6 us   604.5 GB/s
+read      58.0 MiB  x10 grid= 64 blocks/CU     72.3 us   840.8 GB/s
+read      58.0 MiB  x10 grid=128 blocks/CU     69.5 us   875.4 GB/s
+copy    1024.0 MiB    2809.1 us    764.5 GB/s (read+write)
+fp32 FMA peak          4460.6 us     9.63 TFLOPS  (=> effective 1175 MHz at 128 FLOP/CU/clk)
+# device 2  gfx906:sramecc-:xnack-  CUs=64  clock(max)=1730 MHz
+read      32.0 MiB  single     47.7 us   703.7 GB/s   x10     40.9 us   820.8 GB/s
+read      58.0 MiB  single     77.3 us   787.0 GB/s   x10     70.4 us   863.3 GB/s
+read     256.0 MiB  single    335.5 us   800.1 GB/s   x10    333.0 us   806.0 GB/s
+read    1024.0 MiB  single   1346.2 us   797.6 GB/s   x10   1346.6 us   797.4 GB/s
+read      58.0 MiB  x10 grid=  8 blocks/CU    123.6 us   492.1 GB/s
+read      58.0 MiB  x10 grid= 16 blocks/CU    101.3 us   600.4 GB/s
+read      58.0 MiB  x10 grid= 64 blocks/CU     72.4 us   840.4 GB/s
+read      58.0 MiB  x10 grid=128 blocks/CU     70.4 us   864.3 GB/s
+copy    1024.0 MiB    2723.7 us    788.5 GB/s (read+write)
+fp32 FMA peak          4466.7 us     9.62 TFLOPS  (=> effective 1174 MHz at 128 FLOP/CU/clk)
+# device 3  gfx906:sramecc-:xnack-  CUs=64  clock(max)=1730 MHz
+read      32.0 MiB  single     47.7 us   703.8 GB/s   x10     40.8 us   821.5 GB/s
+read      58.0 MiB  single     77.1 us   788.6 GB/s   x10     70.4 us   863.7 GB/s
+read     256.0 MiB  single    335.5 us   800.1 GB/s   x10    332.7 us   806.9 GB/s
+read    1024.0 MiB  single   1355.7 us   792.0 GB/s   x10   1344.8 us   798.4 GB/s
+read      58.0 MiB  x10 grid=  8 blocks/CU    123.5 us   492.6 GB/s
+read      58.0 MiB  x10 grid= 16 blocks/CU    101.0 us   602.3 GB/s
+read      58.0 MiB  x10 grid= 64 blocks/CU     72.3 us   841.0 GB/s
+read      58.0 MiB  x10 grid=128 blocks/CU     70.4 us   863.7 GB/s
+copy    1024.0 MiB    2724.5 us    788.2 GB/s (read+write)
+fp32 FMA peak          4460.5 us     9.63 TFLOPS  (=> effective 1175 MHz at 128 FLOP/CU/clk)
