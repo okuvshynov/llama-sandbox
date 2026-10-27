@@ -30,7 +30,7 @@ Speed
 | 13 | Routing statistics (A0) | done | 30 prompts: fixed hot sets transfer poorly (71% at 128 GB), an adaptive LRU cache reaches 95% with ~11 loads per token (README step 13) |
 | 14 | HIP graphs + kernel fusion (D) | started | engram per step + experts mapped at load done (~1%); graphs save little on this ROCm, fusion ~37 -> ~22 launches per layer for ~2-3 ms (README step 12) |
 | 15 | Per-layer expert split, CPU and all dies concurrently (A1/EP) | done (steps 1-5) | `--placement`: fixed set from the study, 81% on GPUs, 15.5 t/s on a held-out prompt (README step 14) |
-| 16 | Adaptive expert cache (A1 + A2) | next | start from a prior hot set, load missed experts into HBM in the background (LRU): ~95% hits at 128 GB, est. ~25 t/s |
+| 16 | Adaptive expert cache (A1 + A2) | next (fixes 1-3 of the expert path done: oracle bound ~25 t/s, study30 17.7-21.7) | start from a prior hot set, load missed experts into HBM in the background (LRU): ~95% hits at 128 GB, est. ~25 t/s |
 | 17 | Tensor parallelism, 2-way then 4-way (C1/C2) | planned | split the dense GEMVs over dies: ~-6..10 ms per step, matters once experts are mostly on GPUs |
 | 18 | Shared expert by TP, routed by EP (C4) | planned | the dense shared expert splits like any other GEMV under TP |
 | 19 | DSpark speculative decoding (E1) | planned | several tokens per weight read; needs the full 1017 checkpoint's MTP weights |

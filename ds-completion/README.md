@@ -954,3 +954,28 @@ End to end (256 tokens, sclk 2): concurrency study30 16.3 t/s, oracle 18.6; code
 13.4, oracle 17.9. Little change: since fix 1 most GPU expert work overlaps other work (its
 groups shrank ~2.6 ms per step), and the oracle runs are now limited by rare CPU misses
 (~1.4 ms each, thread wake-up: 9.4 ms per step in the oracle profile). Next: fix 3.
+
+## Step 18: 16 CPU threads, not 32 (fix 3)
+
+Every runtime measurement so far used `-t 32` (from the CPU-only tests of step 3). With the
+GPU runtime that is wrong: 32 threads take all 32 logical CPUs, leaving none for the host
+thread and the HIP runtime's threads, and OpenMP, seeing a full machine, puts its threads to
+sleep between calls (each rare CPU miss then paid ~1 ms of wake-ups). Thread-count sweep
+(128 tokens, sclk 2, `results/threads-sweep.txt`):
+
+| prompt | placement | -t 32 | -t 12 | **-t 16** | -t 20 | -t 24 | -t 28 |
+|---|---|---|---|---|---|---|---|
+| concurrency | none | 9.7 | 11.6 | **12.1** | 10.4 | 11.2 | 11.8 |
+| concurrency | study30 | 16.3 | 20.5 | **21.7** | 20.3 | 20.6 | 20.9 |
+| concurrency | oracle | 16.3-17.5 | 25.8 | **25.3** | 25.1 | 24.7 | 24.7 |
+| code-rust | none | 9.6 | 11.9 | **12.5** | 10.7 | 11.4 | 11.9 |
+| code-rust | study30 | 13.6 | 16.6 | **17.7** | 16.0 | 16.2 | 16.5 |
+| code-rust | oracle | 14.1 | 24.9 | **24.9** | 24.2 | 23.8 | 23.8 |
+
+16 (one per physical core, the CLI default) is best or within 2% everywhere, even with no
+placement where the CPU does all routed experts. A thread pool whose workers spin between calls
+was tried and dropped: at 16 threads it matched OpenMP (within 1%), so OpenMP stays. Scripts now
+use `-t 16`.
+
+Where this leaves the placement work (16 threads): no GPU experts 12.0-12.5 t/s; the study30
+placement 17.7-21.7; perfect knowledge (oracle) ~25 t/s.

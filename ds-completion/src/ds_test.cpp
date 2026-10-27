@@ -115,10 +115,11 @@ static std::vector<int> parse_list(const char* s) {
 int main(int argc, char** argv) {
   setvbuf(stdout, nullptr, _IOLBF, 0);
   std::string model_path, gdir, e2e, rt_path;
-  bool determinism = false, per_token = false;
+  bool determinism = false;
+  [[maybe_unused]] bool per_token = false;
   std::vector<int> layers;
   Options opt;
-  int gpu = 0;
+  [[maybe_unused]] int gpu = 0;
   std::string placement;
   std::vector<int> moe_dies = {0, 1, 2, 3};
   for (int i = 1; i < argc; i++) {

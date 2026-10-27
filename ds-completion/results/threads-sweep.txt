@@ -1,0 +1,13 @@
+concurrency  none                  t12 11.62  t16 12.12  t20 10.44  t24 11.22  t28 11.79
+concurrency  study30               t12 20.51  t16 21.67  t20 20.33  t24 20.56  t28 20.88
+concurrency  oracle-concurrency    t12 25.76  t16 25.34  t20 25.08  t24 24.66  t28 24.69
+code-rust    none                  t12 11.86  t16 12.47  t20 10.67  t24 11.42  t28 11.89
+code-rust    study30               t12 16.64  t16 17.67  t20 15.97  t24 16.17  t28 16.53
+code-rust    oracle-code-rust      t12 24.87  t16 24.88  t20 24.23  t24 23.78  t28 23.81
+# OpenMP (commit d58e6c1) vs spinning pool, both -t 16, 128 tokens:
+concurrency  none                  omp 12.00  pool 11.96
+concurrency  study30               omp 21.55  pool 21.53
+concurrency  oracle-concurrency    omp 25.63  pool 25.52
+code-rust    none                  omp 12.04  pool 12.10
+code-rust    study30               omp 17.29  pool 17.31
+code-rust    oracle-code-rust      omp 25.36  pool 24.96

@@ -22,7 +22,7 @@ grep -v '^#' prompts/routing-study.tsv | while IFS=$'\t' read -r name category m
     prompt="$(printf '%b' "${prompt#* }")$(if [ -n "$bytes" ]; then head -c "$bytes" "$file"; else cat "$file"; fi)"
   fi
   echo "== $name ($category, $mode) $(date +%T)"
-  ./bin-hip/ds-completion -m "$M" -p "$prompt" --"$mode" -n "$N" -t 32 --rt "$F8" \
+  ./bin-hip/ds-completion -m "$M" -p "$prompt" --"$mode" -n "$N" -t 16 --rt "$F8" \
     --log-routing "$OUT/$name.bin.tmp" > "$OUT/$name.txt" 2> "$OUT/$name.err" < /dev/null \
     && mv "$OUT/$name.bin.tmp" "$OUT/$name.bin"
   grep -h "generation" "$OUT/$name.err" | sed 's/.*# prompt/   prompt/'

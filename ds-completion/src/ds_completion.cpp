@@ -53,8 +53,8 @@ int main(int argc, char** argv) {
   std::string model_path, prompt, mode = "raw", rt_path;
   int n_predict = 128;
   Options opt;
-  int gpu = 0;
-  bool profile = false;
+  [[maybe_unused]] int gpu = 0;
+  [[maybe_unused]] bool profile = false;
   std::string route_log;
   std::string placement;
   std::vector<int> moe_dies = {0, 1, 2, 3};

@@ -37,7 +37,8 @@ Options:
 - `--think`: with thinking.
 - neither: the prompt is raw text after BOS.
 - `-n`: max new tokens.
-- `-t`: CPU threads; 32 is best here.
+- `-t`: CPU threads; the default 16 (one per physical core) is best with `--rt`. 32 leaves no
+  CPU for the host thread and the HIP runtime and is much slower (README step 18).
 - `--profile`: a per-step time breakdown.
 
 - `--gpu D`: the die for the runtime (default 0).
@@ -45,14 +46,14 @@ Options:
 Without `--rt` (or with `bin/ds-completion`) everything runs on the CPU.
 
 Faster: `--placement placements/study30.txt` also fills the four GPUs' free memory with the
-most-used routed experts (43% of them, ~27 s upload); the rest run on the CPU. 15.5 t/s.
+most-used routed experts (43% of them, ~27 s upload); the rest run on the CPU. ~17-22 t/s.
 
 ## Current results (2026-10-27)
 
 | mode | command | decode | KL vs reference*: median / mean without the near-tie step |
 |---|---|---|---|
-| **own runtime + experts placed on GPUs** | `bin-hip/ds-completion --rt ... --placement placements/study30.txt` | **15.5 t/s** (128 tokens) | same numerics: per-layer gate identical to below |
-| own runtime, dense on GPU 0 | `bin-hip/ds-completion --rt ...` | 9.7-10.0 t/s | 5.9e-6 / 4.8e-3 (earlier run 1.7e-5 / 6.3e-4) |
+| **own runtime + experts placed on GPUs** | `bin-hip/ds-completion --rt ... --placement placements/study30.txt` | **17.7-21.7 t/s** (128 tokens) | same numerics: per-layer gate identical to below |
+| own runtime, dense on GPU 0 | `bin-hip/ds-completion --rt ...` | 12.0-12.5 t/s | 5.9e-6 / 4.8e-3 (earlier run 1.7e-5 / 6.3e-4) |
 | CPU only | `bin/ds-completion` | 3.5 t/s | 1.3e-5 / 3.9e-3 |
 | llama.cpp fork (llama-cli, CPU) | - | 3.5 t/s | 2.1e-5 / 1.3e-3 |
 
