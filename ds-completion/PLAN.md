@@ -255,7 +255,7 @@ implementation that every new kernel is gated against. It also stays the prefill
 That matches "correctness, clarity, performance" and the non-goals: no other models or
 hardware to stay general for.
 
-## 4. Proposed order
+## 4. Proposed order (first version, superseded by section 6)
 
 Each item has a gate (correctness) and a number (speed). Rough per-token targets are cumulative.
 
@@ -299,3 +299,61 @@ Open:
   - non-English chat: e.g. Ukrainian, Chinese.
 - **Is the overlap in A-overlap worth doing before A1?** Proposal: no. It comes with the own
   runtime anyway.
+
+## 6. Re-prioritized after steps 5-8 (2026-10-27)
+
+What steps 5-8 measured, per decode token, sclk level 2:
+
+| piece | cost |
+|---|---|
+| dense part on die 0 (runtime) | ~35 ms: ~13 fp8 GEMV, the rest small kernels, launches and copies |
+| one routed expert on the CPU | ~0.28 ms (memory-bound: 4.5 GB per token at ~68 GB/s) |
+| one routed expert on a GPU (resident) | ~0.065 ms (fp4 kernel at 287 GB/s, untuned) |
+| moving one expert to a GPU over PCIe | ~1.4 ms (18.8 MB at ~13 GB/s) |
+| HBM for experts | ~118 GB after the dense part = ~17.5 layers' worth = ~44% of all experts |
+
+Conclusions:
+
+- **The GPUs can only help with experts already resident.** Copying a cold expert costs 5x
+  more than the CPU computing it.
+- **The dense part cannot overlap the experts** (each layer needs the previous one's output),
+  except for the shared expert.
+- **CPU and GPUs should work on the same layer at once.** Whole layers on GPUs (step 8) still
+  run one after the other; splitting every layer's experts between the CPU and the dies, and
+  running both at once, makes a layer cost the slower part.
+- **Tensor parallelism saves ~8-10 ms of the dense 35.** That is <10% of today's step, but
+  20-40% once most experts are resident, so it comes after the expert work.
+
+Projected step times (from the unit costs above):
+
+| placement (same HBM) | CPU experts per layer | step | decode |
+|---|---|---|---|
+| 13 whole layers (measured, step 8) | 1.7 ms on 27 layers | 85 ms | 11.4 t/s |
+| per-layer split, 44% resident, uniform routing | ~0.94 ms | ~73 ms | ~13.7 t/s |
+| per-layer split, hot set catching 70% of routing | ~0.5 ms | ~55 ms | ~18 t/s |
+| per-layer split, hot set catching 90% | ~0.17 ms | ~42 ms | ~24 t/s |
+| ... + single-die overhead 35 -> 25 ms, TP 4-way | | ~25 ms | ~40 t/s (optimistic) |
+
+New order:
+
+1. **Free die 0's HBM.** With `--rt`, stop keeping ggml's bf16 copies of the fp8-packed
+   weights on the GPU (14 GB, used only for prefill). Prefill instead through the runtime one
+   token at a time, or through ggml on the CPU. That is +2 layers' worth of experts.
+2. **Per-layer expert split (EP over 4 dies + the CPU, concurrently).**
+   - A static placement, uniform to start, so no routing statistics are needed.
+   - The router's ids are dispatched to the owners (die or CPU) and the partials summed.
+   - Per layer: one fan-out and one gather (host-staged to the other card).
+   - Expected ~13-14 t/s.
+3. **Routing statistics -> hot-set placement.** The biggest lever (~18-24 t/s). It also
+   measures how well a hot set built from one prompt category serves another, which is the
+   "prompt-specific" question answered with numbers.
+4. **Single-die GPU overhead:** HIP graphs for the runtime's fixed launch sequence (positions
+   moved into device memory), and fusing the small kernels. 35 -> ~25 ms.
+5. **Tensor parallelism:** 2-way over the XGMI pair, then 4-way.
+6. **Separately:**
+   - DSpark speculative decoding, which amortizes every weight read over several tokens (needs
+     the 1017 MTP weights);
+   - prefill;
+   - a faster GPU fp4 kernel (it matters less once its work runs alongside the CPU);
+   - GPU clock levels: measured in README step 9. The dense GPU part gains ~2 ms from level 4
+     to 8; the GPU expert kernel gains ~10%. Revisit once more experts live on the GPUs.

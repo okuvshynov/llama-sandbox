@@ -699,3 +699,36 @@ What it says:
   - the fp4 kernel at 287 GB/s (a 2x kernel would take the 40 x 0.4 to ~8 ms, so ~43 ms per
     step, ~23 t/s);
   - the remote layers wait serially; EP could run several dies' experts at once.
+
+## Step 9 (experiment): GPU core clock (sclk) levels
+
+All earlier numbers were taken at sclk level 2 (1204 MHz); mclk is fixed at 1000 MHz. The level
+is set by hand with sudo (`power_dpm_force_performance_level=manual`, `pp_dpm_sclk=<level>` on
+every card). `scripts/sclk-sweep.sh` runs the GPU-side benchmarks and both decode
+configurations at the current level, sampling hwmon power, into `results/sclk/sclk<level>.txt`;
+`python3 scripts/sclk-summary.py` makes the table.
+
+| | L0 999 | L2 1204 | L4 1445 | L6 1608 | L8 1730 MHz |
+|---|---|---|---|---|---|
+| fp8 GEMV per layer, 1 token | 355 us | 311 | 286 | 281 | 276 |
+| fp8 GEMV per layer, 4 tokens | 673 us | 584 | 514 | 484 | 466 |
+| attention, 640 keys | 147 us | 121 | 103 | 93 | 88 |
+| top-k 512 of 1100 | 65 us | 54 | 45 | 41 | 38 |
+| GPU experts, one layer | 469 us | 393 | 334 | 305 | 299 |
+| GPU + copies per step, experts on CPU | 37.8 ms | 33.6 | 31.2 | 29.2 | 28.9 |
+| GPU + copies per step, + 13 expert layers on GPUs | 43.5 ms | 38.2 | 34.7 | 35.9 | 31.4 |
+| peak W, die 0, fp8 benchmark | 149 | 181 | 198 | 243 | 273 |
+| peak W per die, decode + 13 layers | ~85 | ~100 | ~120 | ~150 | ~140-180 |
+
+- **The memory-bound fp8 GEMV barely depends on clock above level 2** (311 -> 276 us). Its
+  4-token version and every small, latency-bound kernel scale closer to the clock (~1.4x from
+  level 0 to 8, against 1.73x of clock).
+- **Decode with the experts on the CPU hardly moves.** The CPU's ~67 ms dominates; the GPU part
+  goes 38 -> 29 ms from level 0 to 8.
+- **Gains flatten above level 4-6, while peak power keeps rising** (+40% from level 4 to 8 for
+  ~2 ms per step). Level 4 is a good default today.
+- **Clocks matter more as experts move to the GPUs:** the GPU expert kernel speeds up 1.57x
+  from level 0 to 8, so the per-layer split (PLAN section 6) wants level 6-8.
+- **Noise:** the step times are medians of 2-3 profiled steps and the CPU part varies by
+  several ms. Trust the kernel rows and the "GPU + copies" rows over the totals. Power is
+  1-sample-per-100 ms hwmon peaks, not energy.

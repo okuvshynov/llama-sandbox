@@ -1,0 +1,63 @@
+# sclk level 2 (1204Mhz), mclk 1000Mhz, 2026-10-27T00:11:24-04:00
+== fp8 GEMV (die 0, layer 2 shapes)
+attn_q_a             5120   1280   1      exact   4.72e-08     14.4    455.5       0.52
+attn_q_a             5120   1280   4      exact   5.16e-08     32.3    202.8       0.23
+attn_q_b             1280  32768   1      exact   2.93e-08     62.7    669.5       0.76
+attn_q_b             1280  32768   4      exact   3.50e-08     86.7    484.0       0.55
+attn_kv              5120    512   1      exact   4.75e-08      8.8    299.1       0.34
+attn_kv              5120    512   4      exact   5.14e-08     16.8    156.1       0.18
+attn_output_a        4096   8192   1      exact   4.91e-08     65.7    511.5       0.58
+attn_output_a        4096   8192   4      exact   4.94e-08    121.2    277.2       0.32
+attn_output_b        8192   5120   1      exact   5.72e-08     91.1    460.9       0.52
+attn_output_b        8192   5120   4      exact   5.72e-08    193.3    217.2       0.25
+indexer.attn_q_b     1280   4096   1      exact   3.34e-08     12.4    422.0       0.48
+indexer.attn_q_b     1280   4096   4      exact   3.36e-08     24.7    212.4       0.24
+ffn_gate_shexp       5120   2304   1      exact   5.11e-08     23.5    501.9       0.57
+ffn_gate_shexp       5120   2304   4      exact   5.27e-08     43.2    273.1       0.31
+ffn_down_shexp       2304   5120   1      exact   4.35e-08     21.7    545.0       0.62
+ffn_down_shexp       2304   5120   4      exact   4.34e-08     47.0    251.1       0.29
+engram_kv            6144  25600   1      exact   5.36e-08    227.0    693.6       0.79
+engram_kv            6144  25600   4      exact   5.37e-08    336.5    467.8       0.53
+  power W (mean/peak) by HIP device: dev0 35/181  dev1 33/33  dev2 31/32  dev3 32/32  (242 samples)
+== runtime kernels alone (die 0)
+empty kernel                                      2.7 us
+D2H 20 KB to pinned                              10.1 us
+H2D 20 KB from pinned                            16.8 us
+D2D 2 KB                                          3.1 us
+fp8_quant_act 5120                                3.5 us
+fp8_quant_act 32768                               4.9 us
+rms_norm 1280                                     7.4 us
+rope 64 heads                                     3.8 us
+kv_finish 512                                     6.0 us
+gemv_f32 hc_fn 24 x 20480                        15.7 us
+hc_split                                         19.6 us
+hc_pre_norm 5120                                  9.0 us
+hc_post 5120                                      4.3 us
+gemv_f32 router 384 x 5120                       23.0 us
+router top-6 of 384                              29.3 us
+swiglu 2304                                       3.0 us
+attn_decode 64 heads, 128 + 0 keys               51.3 us
+attn_decode 64 heads, 128 + 512 keys            121.3 us
+index_scores 32 x 128, 1100 keys                 37.3 us
+topk 512 of 1100                                 53.8 us
+  power W (mean/peak) by HIP device: dev0 44/85  dev1 32/33  dev2 32/32  dev3 32/32  (5 samples)
+== GPU experts, one layer (die 0)
+case 0: GPU vs CPU kernel relerr 3.63e-08
+case 1: GPU vs CPU kernel relerr 3.65e-08
+case 2: GPU vs CPU kernel relerr 2.75e-08
+GPU 0: 392.8 us per layer (6 experts, 112.8 MB) = 287 GB/s
+for scale: the CPU kernel takes ~1650 us per layer (66 ms / 40)
+  power W (mean/peak) by HIP device: dev0 56/127  dev1 33/33  dev2 31/32  dev3 32/32  (19 samples)
+== decode, runtime, dense on die 0, experts on the CPU
+# step 13: 123.4 ms (cpu experts 89.7, waiting for the GPU 17.7); GPU timeline: attn.compressor 1.0 attn.core 2.8 attn.indexer 0.9 attn.kv 1.0 attn.out 6.8 attn.q 4.3 engram 1.4 ffn.add 0.4 ffn.router 4.0 ffn.shared 3.6 ffn.wait_for_cpu_experts 88.7 hc 5.2 head 2.5 current
+# step 14: 104.4 ms (cpu experts 71.0, waiting for the GPU 17.4); GPU timeline: attn.compressor 0.8 attn.core 2.8 attn.indexer 0.9 attn.kv 1.0 attn.out 6.7 attn.q 4.3 engram 1.3 ffn.add 0.4 ffn.router 4.0 ffn.shared 3.5 ffn.wait_for_cpu_experts 70.1 hc 5.2 head 2.4.
+# step 15: 108.8 ms (cpu experts 75.2, waiting for the GPU 17.4); GPU timeline: attn.compressor 1.0 attn.core 2.8 attn.indexer 0.9 attn.kv 1.0 attn.out 6.8 attn.q 4.3 engram 1.5 ffn.add 0.4 ffn.router 3.9 ffn.shared 3.6 ffn.wait_for_cpu_experts 74.2 hc 5.2 head 2.5
+# prompt: 12 tokens in 2.13 s = 5.63 t/s; generation: 16 tokens in 1.93 s = 8.29 t/s
+  power W (mean/peak) by HIP device: dev0 38/102  dev1 33/33  dev2 31/32  dev3 32/32  (121 samples)
+== decode, runtime + 13 expert layers on dies 0-3
+# runtime: 13 expert layers uploaded in 19.1 s
+# step 13: 86.2 ms (cpu experts 48.0, waiting for the GPU 12.7); GPU timeline: attn.compressor 1.0 attn.core 2.8 attn.indexer 0.9 attn.kv 1.0 attn.out 6.8 attn.q 4.3 engram 1.4 ffn.add 0.4 ffn.routed_here 0.4 ffn.router 3.8 ffn.shared 3.6 ffn.wait_for_cpu_experts 47.2 ffn.wait_for_other_die 4.3 hc 5.1 head 2.4.
+# step 14: 102.1 ms (cpu experts 63.9, waiting for the GPU 12.7); GPU timeline: attn.compressor 0.8 attn.core 2.8 attn.indexer 0.9 attn.kv 1.0 attn.out 6.8 attn.q 4.3 engram 1.4 ffn.add 0.5 ffn.routed_here 0.4 ffn.router 4.0 ffn.shared 3.5 ffn.wait_for_cpu_experts 63.1 ffn.wait_for_other_die 4.3 hc 5.1 head 2.4
+# prompt: 12 tokens in 1.98 s = 6.07 t/s; generation: 15 tokens in 1.46 s = 10.29 t/s
+  power W (mean/peak) by HIP device: dev0 35/102  dev1 36/97  dev2 34/98  dev3 34/96  (301 samples)
+# done 2026-10-27T00:12:40-04:00
