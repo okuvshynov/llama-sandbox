@@ -26,10 +26,17 @@ bin/fp8pack -m $M -o ~/llms/ds-1017-fp8/dense-fp8.gguf   # lossless fp8 repack, 
 
 ## Run
 
+Fastest (dense part on GPU 0, the most-used routed experts on all four GPUs, the rest on the
+CPU; run from this directory, since the placement path is relative):
+
 ```bash
+cd ~/projects/llama-sandbox/ds-completion
 bin-hip/ds-completion -m $M --rt ~/llms/ds-1017-fp8/dense-fp8.gguf \
+    --placement placements/study30.txt \
     -p "Write a haiku about memory bandwidth." --chat -n 64
 ```
+
+Without `--placement` every routed expert runs on the CPU (faster start, ~12 t/s).
 
 Options:
 
@@ -40,13 +47,14 @@ Options:
 - `-t`: CPU threads; the default 16 (one per physical core) is best with `--rt`. 32 leaves no
   CPU for the host thread and the HIP runtime and is much slower (README step 18).
 - `--profile`: a per-step time breakdown.
-
 - `--gpu D`: the die for the runtime (default 0).
+- `--placement FILE`: routed experts on GPUs, the file's top-ranked ones that fit (10-30 s upload).
+- `--moe-dies 0,1,2,3`: the dies that hold experts (default all four).
 
 Without `--rt` (or with `bin/ds-completion`) everything runs on the CPU.
 
-Faster: `--placement placements/study30.txt` also fills the four GPUs' free memory with the
-most-used routed experts (43% of them, ~27 s upload); the rest run on the CPU. ~17-22 t/s.
+With `--placement placements/study30.txt` the four GPUs hold the routed experts used most in
+the 30-prompt routing study (43% of all, 10-30 s upload); 17.7-21.7 t/s on the test prompts (README step 18).
 
 ## Current results (2026-10-27)
 
