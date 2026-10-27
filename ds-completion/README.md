@@ -931,3 +931,26 @@ Oracle step (concurrency, ~47 ms profiled, was ~54): the expert-related groups (
 dispatch, shared expert with the home die's list next to it, waits for GPU and CPU experts,
 add) take ~20 ms, down from ~25. Next: the GPU expert kernel for 1-3 experts (~75 us fixed per
 call) and the CPU threads' wake-up for rare misses.
+
+## Step 17: faster GPU expert kernel for few experts (fix 2)
+
+`fp4_moe` is now 4 launches instead of 7: input quantization; gate and up of every expert in
+one grid; swiglu x routing weight + act_quant in one pass; down of every expert summed in the
+kernel in a fixed order (no separate sum). The e2m1 weights are decoded 4 bytes at a time with
+masks and byte permutes (~36 instructions per 16 bytes instead of ~128); activations stay fp8
+codes converted per row (storing them as fp16 doubled the cache traffic and was slower). Lanes
+per row from a sweep: 32 for gate/up, 16 for down.
+
+| experts per call (sclk 2, `bench-expert-pool`) | 1 | 2 | 3 | 6 |
+|---|---|---|---|---|
+| before | 129 us | 173 | 228 | 397 |
+| now | **72** | **110** | **151** | **281** |
+
+Still exact against the CPU kernel (<= 4e-8). A whole layer (6 experts, `bench-fp4-moe`):
+278 us = 406 GB/s (was 393 us). Gate: no placement unchanged; with placements a few rows move
+in the last printed digit (largest change 3e-10).
+
+End to end (256 tokens, sclk 2): concurrency study30 16.3 t/s, oracle 18.6; code-rust study30
+13.4, oracle 17.9. Little change: since fix 1 most GPU expert work overlaps other work (its
+groups shrank ~2.6 ms per step), and the oracle runs are now limited by rare CPU misses
+(~1.4 ms each, thread wake-up: 9.4 ms per step in the oracle profile). Next: fix 3.

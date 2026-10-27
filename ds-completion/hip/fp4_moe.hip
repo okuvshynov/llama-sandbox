@@ -83,7 +83,9 @@ __device__ inline uint8_t e4m3_code(float v) {
 }
 
 // act_quant(x, 32, ue8m0) into paired order: element j of a block goes to 2j (j < 16) or
-// 2(j - 16) + 1, so that byte j of a weight block meets (x_j, x_{j+16}) as one fp16 pair
+// 2(j - 16) + 1, so that byte j of a weight block meets (x_j, x_{j+16}) as one fp16 pair.
+// Kept as fp8 codes (half the bytes of fp16: the GEMVs read activations from cache once per
+// row) and converted to fp16 in the GEMV.
 __global__ void quant_paired_kernel(const float* x, uint8_t* q, float* s, int n) {
   const int i = blockIdx.x * blockDim.x + threadIdx.x;
   const float v = i < n ? x[i] : 0.0f;
@@ -106,9 +108,18 @@ __device__ inline void e4m3x4_to_half2x2(uint32_t v, uint32_t& h01, uint32_t& h2
   h23 = ((t23 >> 1) & 0x3F803F80u) | (t23 & 0x80008000u);
 }
 
-// one byte of e2m1 codes (low nibble = element j, high = element j + 16) -> half2, each x 2^-14
-__device__ inline uint32_t e2m1x2_to_half2(uint32_t b) {
-  return ((b & 7u) << 9) | ((b & 8u) << 12) | ((b & 0x70u) << 21) | ((b & 0x80u) << 24);
+// 4 bytes of e2m1 codes (byte t: low nibble = element j, high = element j + 16) -> 4 half2,
+// each value x 2^-14: fp16 bits ((c & 7) << 9) | ((c & 8) << 12). Only the high byte of each
+// half is non-zero: (c & 7) << 1 | (c & 8) << 4. Built for all 4 bytes at once, then placed by
+// byte permutes.
+__device__ inline void e2m1x8_to_half2x4(uint32_t v, uint32_t h[4]) {
+  const uint32_t lo = ((v & 0x07070707u) << 1) | ((v & 0x08080808u) << 4);  // low nibbles' high bytes
+  const uint32_t hi = ((v >> 3) & 0x0E0E0E0Eu) | (v & 0x80808080u);         // high nibbles' high bytes
+  // result bytes [0, lo.t, 0, hi.t]: perm(a = hi, b = lo): selectors 0-3 pick b, 4-7 pick a, 0x0c = 0
+  h[0] = __builtin_amdgcn_perm(hi, lo, 0x040c000cu);
+  h[1] = __builtin_amdgcn_perm(hi, lo, 0x050c010cu);
+  h[2] = __builtin_amdgcn_perm(hi, lo, 0x060c020cu);
+  h[3] = __builtin_amdgcn_perm(hi, lo, 0x070c030cu);
 }
 
 typedef _Float16 half2_t __attribute__((ext_vector_type(2)));
@@ -116,113 +127,134 @@ __device__ inline float dot2(uint32_t a, uint32_t b, float c) {
   return __builtin_amdgcn_fdot2(__builtin_bit_cast(half2_t, a), __builtin_bit_cast(half2_t, b), c, false);
 }
 
-// ------------------------------------------------------------------ the expert GEMV
+// ------------------------------------------------------------------ the expert GEMVs
+//
+// Three launches after the input quantization (fp4_moe below):
+//   gate_up   gate and up rows of every expert in one grid (blockIdx.y = 2 j + matrix)
+//   act_quant swiglu x routing weight, then act_quant into paired order (one pass)
+//   down_sum  down rows of every expert, summed over the experts in a fixed order (j = 0..)
+// Weights are decoded 4 bytes at a time (e2m1x8_to_half2x4); activations stay fp8 codes and
+// are converted per row (fp16 activations doubled the cache traffic and were slower).
 
-// grid (row blocks, k): expert ids[blockIdx.y]'s matrix times activation set blockIdx.y (or the
-// shared one when x_stride == 0). LPR lanes per row, each lane one 32-block per step.
+// one 32-block: 16 code bytes (32 e2m1) against 32 paired fp8 activations (byte 4q + t meets
+// activation pair 4q + t)
+__device__ inline float block_dot(uint4 w, uint4 x0, uint4 x1) {
+  uint32_t hx[16];
+  e4m3x4_to_half2x2(x0.x, hx[0], hx[1]);
+  e4m3x4_to_half2x2(x0.y, hx[2], hx[3]);
+  e4m3x4_to_half2x2(x0.z, hx[4], hx[5]);
+  e4m3x4_to_half2x2(x0.w, hx[6], hx[7]);
+  e4m3x4_to_half2x2(x1.x, hx[8], hx[9]);
+  e4m3x4_to_half2x2(x1.y, hx[10], hx[11]);
+  e4m3x4_to_half2x2(x1.z, hx[12], hx[13]);
+  e4m3x4_to_half2x2(x1.w, hx[14], hx[15]);
+  const uint32_t wv[4] = {w.x, w.y, w.z, w.w};
+  float p = 0.0f;
+#pragma unroll
+  for (int q = 0; q < 4; q++) {
+    uint32_t hw[4];
+    e2m1x8_to_half2x4(wv[q], hw);
+#pragma unroll
+    for (int t = 0; t < 4; t++) p = dot2(hw[t], hx[4 * q + t], p);
+  }
+  return p;
+}
+
+// a row's dot product over its K / 32 blocks, lanes l, l + LPR, ... of LPR, reduced over them
 template <int LPR>
-__global__ void __launch_bounds__(256) fp4_gemv_kernel(const uint8_t* __restrict__ codes, const uint8_t* __restrict__ scales,
-                                                       int N, int K, size_t codes_stride, size_t scales_stride,
-                                                       const int* __restrict__ ids, const int* __restrict__ count,
-                                                       const uint8_t* __restrict__ xq, const float* __restrict__ xs,
-                                                       int x_stride, float* __restrict__ y) {
-  const int j = blockIdx.y;
-  if (count && j >= *count) return;  // the whole block: no barriers below
-  const int e = ids[j];
-  const int lane = threadIdx.x & 63;
-  const int row = (blockIdx.x * (blockDim.x >> 6) + (threadIdx.x >> 6)) * (64 / LPR) + lane / LPR;
-  const int l = lane % LPR, nb = K / 32;
-  const bool live = row < N;
-  const int r = live ? row : N - 1;
-  const uint8_t* wc = codes + (size_t)e * codes_stride + (size_t)r * (K / 2);
-  const uint8_t* ws = scales + (size_t)e * scales_stride + (size_t)r * nb;
-  const uint8_t* xr = xq + (size_t)j * x_stride;
-  const float* xsr = xs + (size_t)j * (x_stride / 32);
+__device__ inline float row_dot(const uint8_t* __restrict__ wc, const uint8_t* __restrict__ ws, int nb,
+                                const uint8_t* __restrict__ xr, const float* __restrict__ xsr, int l) {
   float acc = 0.0f;
   for (int b = l; b < nb; b += LPR) {
     const uint4 w = *(const uint4*)(wc + (size_t)b * 16);
     const uint4 x0 = *(const uint4*)(xr + (size_t)b * 32), x1 = *(const uint4*)(xr + (size_t)b * 32 + 16);
-    uint32_t hx[16];
-    e4m3x4_to_half2x2(x0.x, hx[0], hx[1]);
-    e4m3x4_to_half2x2(x0.y, hx[2], hx[3]);
-    e4m3x4_to_half2x2(x0.z, hx[4], hx[5]);
-    e4m3x4_to_half2x2(x0.w, hx[6], hx[7]);
-    e4m3x4_to_half2x2(x1.x, hx[8], hx[9]);
-    e4m3x4_to_half2x2(x1.y, hx[10], hx[11]);
-    e4m3x4_to_half2x2(x1.z, hx[12], hx[13]);
-    e4m3x4_to_half2x2(x1.w, hx[14], hx[15]);
-    const uint32_t wv[4] = {w.x, w.y, w.z, w.w};
-    float p = 0.0f;
-#pragma unroll
-    for (int q = 0; q < 4; q++)
-#pragma unroll
-      for (int t = 0; t < 4; t++) p = dot2(e2m1x2_to_half2((wv[q] >> (8 * t)) & 0xFF), hx[4 * q + t], p);
     // 2^(e - 127) x 2^22 (undoing 2^-14 x 2^-8) x the activation scale
     const float wscale = __uint_as_float((uint32_t)ws[b] << 23) * 4194304.0f;
-    acc += p * (wscale * xsr[b]);
+    acc += block_dot(w, x0, x1) * (wscale * xsr[b]);
   }
 #pragma unroll
   for (int o = LPR / 2; o > 0; o >>= 1) acc += __shfl_xor(acc, o, 64);
-  if (live && l == 0) y[(size_t)j * N + row] = acc;
+  return acc;
 }
 
-static void fp4_gemv(const GpuMatrix& m, const int* ids, const int* count, int k, const uint8_t* xq, const float* xs,
-                     int x_stride, float* y, hipStream_t s) {
-  const int nb = m.K / 32;
-  if (nb >= 128) {
-    constexpr int LPR = 16;
-    fp4_gemv_kernel<LPR><<<dim3(cdiv(m.N, 4 * 64 / LPR), k), 256, 0, s>>>(m.codes, m.scales, m.N, m.K, m.codes_stride,
-                                                                          m.scales_stride, ids, count, xq, xs, x_stride, y);
-  } else {
-    constexpr int LPR = 8;
-    fp4_gemv_kernel<LPR><<<dim3(cdiv(m.N, 4 * 64 / LPR), k), 256, 0, s>>>(m.codes, m.scales, m.N, m.K, m.codes_stride,
-                                                                          m.scales_stride, ids, count, xq, xs, x_stride, y);
+template <int LPR>
+__global__ void __launch_bounds__(256) gate_up_kernel(GpuMatrix gate, GpuMatrix up, const int* __restrict__ ids,
+                                                      const int* __restrict__ count, const uint8_t* __restrict__ xq,
+                                                      const float* __restrict__ xs, float* __restrict__ gu) {
+  const int j = blockIdx.y >> 1;
+  if (count && j >= *count) return;  // the whole block: no barriers below
+  const GpuMatrix& m = (blockIdx.y & 1) ? up : gate;
+  const int N = m.N, nb = m.K / 32, lane = threadIdx.x & 63, l = lane % LPR;
+  const int row = (blockIdx.x * (blockDim.x >> 6) + (threadIdx.x >> 6)) * (64 / LPR) + lane / LPR;
+  const int r = row < N ? row : N - 1;
+  const int e = ids[j];
+  const float v = row_dot<LPR>(m.codes + (size_t)e * m.codes_stride + (size_t)r * (m.K / 2),
+                               m.scales + (size_t)e * m.scales_stride + (size_t)r * nb, nb, xq, xs, l);
+  if (row < N && l == 0) gu[(size_t)blockIdx.y * N + row] = v;
+}
+
+// act = w_j * silu(min(gate, lim)) * clamp(up, +-lim), then act_quant(32, ue8m0) into paired
+// order (as quant_paired_kernel); experts past the count write zeros (never read)
+__global__ void act_quant_kernel(const float* __restrict__ gu, const float* __restrict__ w, float lim, int F, int n,
+                                 const int* __restrict__ count, uint8_t* __restrict__ q, float* __restrict__ sc) {
+  const int i = blockIdx.x * blockDim.x + threadIdx.x;
+  const int j = i / F, f = i - j * F;
+  float v = 0.0f;
+  if (i < n && (!count || j < *count)) {
+    const float g = fminf(gu[(size_t)(2 * j) * F + f], lim), u = fminf(fmaxf(gu[(size_t)(2 * j + 1) * F + f], -lim), lim);
+    v = w[j] * (g / (1.0f + expf(-g)) * u);  // the routing weight before w2, as the reference
+  }
+  float amax = fabsf(v);
+#pragma unroll
+  for (int o = 16; o > 0; o >>= 1) amax = fmaxf(amax, __shfl_xor(amax, o, 32));
+  const float s = pow2_ceil(fmaxf(amax, 1e-4f) * (1.0f / 448.0f));
+  if (i < n) {
+    const int b = i & 31;
+    q[(i & ~31) + (b < 16 ? 2 * b : 2 * (b - 16) + 1)] = e4m3_code(e4m3_round(fminf(fmaxf(v / s, -448.0f), 448.0f)));
+    if (b == 0) sc[i / 32] = s;
   }
 }
 
-// ------------------------------------------------------------------ the block
-
-__global__ void moe_act_kernel(const float* gate, const float* up, const float* w, float lim, int F, int n,
-                               const int* count, float* act) {
-  const int i = blockIdx.x * blockDim.x + threadIdx.x;
-  if (i >= n) return;
-  if (count && i / F >= *count) { act[i] = 0.0f; return; }  // unused expert: finite, never read
-  const float g = fminf(gate[i], lim), u = fminf(fmaxf(up[i], -lim), lim);
-  act[i] = w[i / F] * (g / (1.0f + expf(-g)) * u);  // the routing weight before w2, as the reference
-}
-
-__global__ void expert_sum_kernel(const float* d, int k, const int* count, int E, float* y) {
-  const int i = blockIdx.x * blockDim.x + threadIdx.x;
-  if (i >= E) return;
-  if (count) k = *count;
+template <int LPR>
+__global__ void __launch_bounds__(256) down_sum_kernel(GpuMatrix down, const int* __restrict__ ids, int k,
+                                                       const int* __restrict__ count, const uint8_t* __restrict__ aq,
+                                                       const float* __restrict__ as, float* __restrict__ y) {
+  const int N = down.N, F = down.K, nb = F / 32, lane = threadIdx.x & 63, l = lane % LPR;
+  const int row = (blockIdx.x * (blockDim.x >> 6) + (threadIdx.x >> 6)) * (64 / LPR) + lane / LPR;
+  const int r = row < N ? row : N - 1;
+  const int n = count ? *count : k;
   float v = 0.0f;
-  for (int j = 0; j < k; j++) v += d[(size_t)j * E + i];  // expert order, as the CPU kernel
-  y[i] = v;
+  for (int j = 0; j < n; j++) {  // expert order, as the CPU kernel
+    const int e = ids[j];
+    v += row_dot<LPR>(down.codes + (size_t)e * down.codes_stride + (size_t)r * (F / 2),
+                      down.scales + (size_t)e * down.scales_stride + (size_t)r * nb, nb, aq + (size_t)j * F,
+                      as + (size_t)j * nb, l);
+  }
+  if (row < N && l == 0) y[row] = v;
 }
+
+// lanes per row, from a sweep of 8/16/32/64 x 8/16/32/64 (bench-expert-pool, sclk 2): gate/up
+// 32, down 16 are best for 1-3 experts (72/109/150 us) and within 3% of the best for 6
+constexpr int kLprGateUp = 32, kLprDown = 16;
 
 size_t fp4_moe_scratch_bytes(int E, int F, int k) {
-  return (size_t)E + (size_t)E / 32 * 4 + (size_t)k * F * 4 * 3 + (size_t)k * F + (size_t)k * F / 32 * 4 +
-         (size_t)k * E * 4 + 256;
+  return (size_t)E + (size_t)E / 32 * 4 + (size_t)k * F * 4 * 2 + (size_t)k * F + (size_t)k * F / 32 * 4 + 256 * 5;
 }
 
 void fp4_moe(const GpuExperts& ex, const float* x, const int* ids, const float* w, int k, float limit, float* y,
              void* scratch, hipStream_t s, const int* count) {
   const int E = ex.gate.K, F = ex.gate.N;
   char* p = (char*)scratch;
-  auto take = [&](size_t bytes) { char* r = p; p += (bytes + 63) / 64 * 64; return r; };
+  auto take = [&](size_t bytes) { char* r = p; p += (bytes + 255) / 256 * 256; return r; };
   uint8_t* xq = (uint8_t*)take(E);
   float* xs = (float*)take(E / 32 * 4);
-  float* g = (float*)take((size_t)k * F * 4);
-  float* u = (float*)take((size_t)k * F * 4);
-  float* a = (float*)take((size_t)k * F * 4);
+  float* gu = (float*)take((size_t)k * F * 4 * 2);
   uint8_t* aq = (uint8_t*)take((size_t)k * F);
   float* asc = (float*)take((size_t)k * F / 32 * 4);
-  float* d = (float*)take((size_t)k * E * 4);
   quant_paired_kernel<<<cdiv(E, 256), 256, 0, s>>>(x, xq, xs, E);
-  fp4_gemv(ex.gate, ids, count, k, xq, xs, 0, g, s);
-  fp4_gemv(ex.up, ids, count, k, xq, xs, 0, u, s);
-  moe_act_kernel<<<cdiv(k * F, 256), 256, 0, s>>>(g, u, w, limit, F, k * F, count, a);
-  quant_paired_kernel<<<cdiv(k * F, 256), 256, 0, s>>>(a, aq, asc, k * F);  // per expert's 32-blocks: unused ones harmless
-  fp4_gemv(ex.down, ids, count, k, aq, asc, F, d, s);
-  expert_sum_kernel<<<cdiv(E, 256), 256, 0, s>>>(d, k, count, E, y);
+  // grids sized for k (the count, if any, is only known on the device)
+  constexpr int GU = kLprGateUp, DN = kLprDown;
+  gate_up_kernel<GU><<<dim3(cdiv(F, 4 * 64 / GU), 2 * k), 256, 0, s>>>(ex.gate, ex.up, ids, count, xq, xs, gu);
+  act_quant_kernel<<<cdiv(k * F, 256), 256, 0, s>>>(gu, w, limit, F, k * F, count, aq, asc);
+  down_sum_kernel<DN><<<cdiv(E, 4 * 64 / DN), 256, 0, s>>>(ex.down, ids, k, count, aq, asc, y);
 }

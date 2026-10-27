@@ -34,3 +34,11 @@ code-rust    oracle-code-rust     97.2% on GPUs (66052 of 67920) gen 256 tokens 
 # oracle-concurrency profile (median step, ms):
 steps 253  step 46.9  cpu 4.1  host-wait 18.9
   attn.out 6.80  ffn.shared 6.60  hc 5.20  attn.q 4.60  ffn.wait_for_gpu_experts 4.60  ffn.wait_for_cpu_experts 3.50  ffn.router 3.20  attn.core 3.10  head 2.40  ffn.dispatch 1.60  attn.indexer 1.00  attn.kv 1.00  attn.compressor 0.80  engram 0.80  ffn.add 0.60  engram.fetch 0.40
+# after fix 2 (faster GPU expert kernel), 256 tokens, sclk 2
+concurrency  study30              80.6% on GPUs (51639 of 64080) gen 256 tokens in 15.69 s = 16.32 t/s 
+concurrency  oracle-concurrency   96.9% on GPUs (62111 of 64080) gen 256 tokens in 13.76 s = 18.61 t/s 
+code-rust    study30              61.3% on GPUs (41650 of 67920) gen 256 tokens in 19.06 s = 13.43 t/s 
+code-rust    oracle-code-rust     95.8% on GPUs (65051 of 67920) gen 256 tokens in 14.34 s = 17.85 t/s 
+# oracle-concurrency profile (median step, ms):
+steps 253  step 50.3  cpu 9.9  host-wait 16.9
+  ffn.wait_for_cpu_experts 9.40  attn.out 6.80  ffn.shared 5.30  hc 5.20  attn.q 4.60  ffn.wait_for_gpu_experts 3.30  attn.core 3.10  ffn.router 3.10  head 2.40  ffn.dispatch 1.60  attn.kv 1.00  attn.indexer 1.00  engram 0.80  attn.compressor 0.80  ffn.add 0.60  engram.fetch 0.40
