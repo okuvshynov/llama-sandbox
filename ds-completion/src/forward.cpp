@@ -221,6 +221,9 @@ void Engine::compute(Graph& g) {
       ggml_backend_t b = ggml_backend_sched_get_tensor_backend(sched, t);
       ggml_backend_t nb = i + 1 < n ? ggml_backend_sched_get_tensor_backend(sched, ggml_graph_node(g.gf, i + 1)) : nullptr;
       if (b != nb) { pr.ends.insert(t); pr.is_gpu[t] = b == gpu; }
+      const bool is_view = t->op == GGML_OP_VIEW || t->op == GGML_OP_RESHAPE || t->op == GGML_OP_PERMUTE ||
+                           t->op == GGML_OP_TRANSPOSE || t->op == GGML_OP_NONE;
+      if (!is_view) (b == gpu ? pr.p.gpu_nodes : pr.p.cpu_nodes)++;
     }
     ggml_backend_sched_set_eval_callback(sched, [](ggml_tensor* t, bool ask, void* ud) {
       Prof& pr = *(Prof*)ud;

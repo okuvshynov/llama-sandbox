@@ -33,6 +33,7 @@ struct Options {
 struct Profile {
   double gpu_ms = 0, cpu_ms = 0, total_ms = 0;
   int gpu_runs = 0, cpu_runs = 0;
+  int gpu_nodes = 0, cpu_nodes = 0;  // ops per backend (views/reshapes included)
 };
 
 // Everything a later step needs from earlier tokens.

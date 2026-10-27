@@ -4,7 +4,12 @@ Goal: `./ds-completion -m <model> -p "prompt"`. One model, one machine, one
 sequence. Priorities: correctness, clarity, then performance. Non-goals: other
 models, other quants, other hardware, serving features.
 
-Status: steps 1-4 done. Step 4: dense part on one GPU, routed experts on the CPU, 6.0 t/s decode (CPU only: 3.5).
+Status: steps 1-4 done, 2026-10-26.
+
+- CPU only: 3.5 t/s decode, matching the reference (fork: 3.5 t/s).
+- Dense part on one GPU, routed experts on the CPU: **6.0 t/s**.
+
+Performance work from here on is planned in [PLAN.md](PLAN.md).
 
 ## Tools
 
@@ -98,15 +103,16 @@ Prior work worth re-reading, with caution (it covers the previous V4-Flash,
 
 1. **Reference, `ref/`:** the official `inference/model.py` math, fed with weights decoded from
    the GGUF by `ref/weights.py` (see "Which checkpoint" below). tilelang does not
-   run on gfx906, so a pure-torch CPU `kernel_ref.py` replaces `kernel.py`
+   run on gfx906, so a pure-torch CPU `ref/kernel_cpu.py` replaces `kernel.py`
    (act_quant, fp4/fp8 gemm, sparse_attn, sinkhorn).
    - It runs **one layer at a time**: it decodes the layer's dense weights and
      the 6 routed experts actually used, runs, then frees them.
    - That makes the whole model feasible on CPU, slowly. It produces golden
      per-layer activations and final logits for fixed prompts.
-2. **Second opinion:** the fork, through libllama: logits, plus per-tensor
-   dumps via the eval callback. This tells "my bug" apart from "the fork's
-   bug".
+2. **Second opinion:** the fork, through libllama: per-step logits on the reference's
+   own token sequence (`bin/llama-logits`). This tells "my bug" apart from "the fork's
+   bug". (Per-tensor dumps from the fork were planned but not needed: the per-layer
+   gates against the reference were tight enough.)
 3. **Gates:**
    - Each layer is checked against the reference, given the same input
      (relative error, per sublayer).
@@ -119,22 +125,26 @@ Prior work worth re-reading, with caution (it covers the previous V4-Flash,
    indexer top-512 and the candidate blocks. A tiny numerical change can flip
    them, so we log the mismatch rate rather than only the output error.
 
-Precision choice to make once the gates exist:
+Precision (decided in step 3):
 
-- The reference fake-quantizes activations to fp8 before every GEMM, stores
-  KV as fp8/fp4, and indexer q/k as fp4.
-- Plan: emulate the KV, indexer and compressor quantization exactly, since it
-  changes which positions get selected, and let GEMMs use ggml's native
-  q8_1/f32 path. Then measure what that costs in KL.
+- The reference fake-quantizes activations to fp8 before every GEMM, stores KV
+  as fp8/fp4, and indexer q/k as fp4.
+- **CPU mode emulates all of it exactly** (`--no-quant` turns it off). Mean KL
+  vs the reference: 1.8e-2 with it, 3.0e-2 without.
+- **GPU mode runs without it** for now (CPU-only custom ops): mean KL 2.0e-2.
+- The remaining inexact op is ggml's mxfp4 expert kernel, which re-quantizes
+  activations to int8.
 
 ## Steps
 
-0. **Setup.**
+The original plan, with status. Steps 5-8 are superseded by [PLAN.md](PLAN.md).
+
+0. **Setup.** Done.
    - Python venv for the reference (needs the user: torch CPU, numpy,
      safetensors, sympy, tokenizers).
    - Link the fork's ggml + libllama. The CPU build exists; a `build-hip` of
      the fork for gfx906 comes at step 4.
-1. **Loader + layer selection.** mmap the 9 GGUF shards (already in the page
+1. **Loader + layer selection.** Done. mmap the 9 GGUF shards (already in the page
    cache) and load only `--layers`. That's the "one layer" instrument without
    copying files. Extraction to a separate file is used only for layout
    experiments (step 5).
@@ -146,36 +156,39 @@ Precision choice to make once the gates exist:
      - 20: ratio-1 source + candidates
      - 21: plain consumer
      - 24: second-level indexer
-2. **Reference dumps** (`ref/`): golden activations for those layers and
+2. **Reference dumps** (`ref/`). Done: golden activations for those layers and
    prompts, then full-model logits for 3-4 short prompts.
-3. **CPU v0** (`ds-completion`, ggml CPU kernels, one graph per layer, own
-   KV/state code, greedy):
+3. **CPU v0** (`ds-completion`, ggml CPU kernels, own KV/state code, greedy). Done. The
+   forward is one graph over all layers; tests build one graph per layer.
    - Build order: tokenizer (llama_vocab), embed, HC, attention window path,
      MoE, engram hash + lookup, compressor + compressed KV, indexer,
      candidates, head.
    - Each piece is gated at layer level before moving on.
-   - Expected speed: about the fork's 3.5 t/s.
-4. **One GPU, no parallelism.**
+   - Expected speed: about the fork's 3.5 t/s. Measured: 3.47 t/s.
+4. **One GPU, no parallelism.** Done, at 6.0 t/s. The overlap and the 10 t/s target below
+   were not reached; see Step 4 and PLAN.md.
    - All dense weights on die 0: ~15 GiB bf16, so they fit. Routed experts
      and the engram table stay on the CPU.
    - The shared expert (GPU) overlaps the routed experts (CPU).
    - Per layer and token, the host link carries only ~20 KB in and ~20 KB
      out, so the cost is latency, not bandwidth.
    - Target: >10 t/s.
-5. **Layout.**
+   - Measured instead: GPU and CPU take turns (no overlap). The GPU dense part runs at
+     ~260 GB/s and the CPU experts at ~50 GB/s.
+5. **Layout.** (Now PLAN.md B and A0.)
    - Pack the fp8-derived bf16 weights back to fp8. ggml's MXFP8 is
      gather-only, so this needs our own fp8 GEMV, HIP first. Verify it's
      lossless byte-wise against the safetensors.
    - Record expert-routing histograms on real prompts.
-6. **Experts on the dies.**
+6. **Experts on the dies.** (Now PLAN.md A.)
    - Hot experts resident across the 4 dies (EP), the cold remainder on the
      CPU as a fifth worker.
    - Hit rate from the step-5 histograms.
-7. **Parallelism for the dense part.**
+7. **Parallelism for the dense part.** (Now PLAN.md C.)
    - TP of attention and shared experts within an XGMI pair, then across all
      4 dies.
    - Prefill path: stream expert weights to the dies for large batches.
-8. **Maybe:** a DSpark drafter (needs converting the MTP weights from the
+8. **Maybe:** (now PLAN.md E) a DSpark drafter (needs converting the MTP weights from the
    safetensors).
 
 ## Which checkpoint (found in step 1)
@@ -336,6 +349,7 @@ End to end (`--e2e`, hello, 17 steps, vs the real reference):
 - **The one miss is a near tie:** the reference picks 😊 at step 12, while we and the fork pick
   " I". Our completion: "Hello! I'm doing well, thank you for asking. I'm ready to help you with
   whatever you need. How".
+
 Long context (teacher forced):
 
 - **readme200 vs the fp32/no-quant reference.** This prompt is past the 128-token window, so the

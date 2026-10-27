@@ -111,8 +111,8 @@ int main(int argc, char** argv) {
     logits = eng.forward({next});
     if (opt.profile) {
       const Profile& p = eng.last_profile;
-      fprintf(stderr, "\n# step %d: %.1f ms = gpu %.1f (%d runs) + cpu %.1f (%d runs) + other %.1f", n_gen, p.total_ms,
-              p.gpu_ms, p.gpu_runs, p.cpu_ms, p.cpu_runs, p.total_ms - p.gpu_ms - p.cpu_ms);
+      fprintf(stderr, "\n# step %d: %.1f ms = gpu %.1f (%d runs, %d ops) + cpu %.1f (%d runs, %d ops)", n_gen,
+              p.total_ms, p.gpu_ms, p.gpu_runs, p.gpu_nodes, p.cpu_ms, p.cpu_runs, p.cpu_nodes);
     }
   }
   const double t_tg = std::chrono::duration<double>(Clock::now() - t2).count();
