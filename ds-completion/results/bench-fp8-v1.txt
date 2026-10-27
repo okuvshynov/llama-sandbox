@@ -1,0 +1,29 @@
+# /home/oleksandr/llms/ds-1017-fp8/dense-fp8.gguf, device 0, layer 2 (engram_kv from layer 1)
+tensor                  K      N   M      quant     relerr       us     GB/s   x of 880
+attn_q_a             5120   1280   1      exact   4.72e-08     17.0    385.1       0.44
+attn_q_a             5120   1280   4      exact   5.16e-08     36.0    182.3       0.21
+attn_q_a             5120   1280   8      exact   5.14e-08     87.9     74.6       0.08
+attn_q_b             1280  32768   1      exact   3.95e-08    114.7    366.0       0.42
+attn_q_b             1280  32768   4      exact   3.52e-08    186.2    225.5       0.26
+attn_q_b             1280  32768   8      exact   3.50e-08    362.7    115.8       0.13
+attn_kv              5120    512   1      exact   5.17e-08     10.5    250.9       0.29
+attn_kv              5120    512   4      exact   5.04e-08     20.2    130.2       0.15
+attn_kv              5120    512   8      exact   5.10e-08     37.4     70.2       0.08
+attn_output_a        4096   8192   1      exact   4.87e-08    123.7    271.5       0.31
+attn_output_a        4096   8192   4      exact   5.05e-08    198.2    169.5       0.19
+attn_output_a        4096   8192   8      exact   4.93e-08    336.3     99.9       0.11
+attn_output_b        8192   5120   1      exact   5.67e-08    176.0    238.5       0.27
+attn_output_b        8192   5120   4      exact   5.52e-08    254.7    164.8       0.19
+attn_output_b        8192   5120   8      exact   5.63e-08    409.0    102.7       0.12
+indexer.attn_q_b     1280   4096   1      exact   3.41e-08     15.2    346.1       0.39
+indexer.attn_q_b     1280   4096   4      exact   3.48e-08     30.7    170.7       0.19
+indexer.attn_q_b     1280   4096   8      exact   3.57e-08     52.9     99.3       0.11
+ffn_gate_shexp       5120   2304   1      exact   5.26e-08     26.6    444.1       0.50
+ffn_gate_shexp       5120   2304   4      exact   5.16e-08     64.9    182.0       0.21
+ffn_gate_shexp       5120   2304   8      exact   5.17e-08    133.2     88.6       0.10
+ffn_down_shexp       2304   5120   1      exact   4.40e-08     28.9    409.3       0.47
+ffn_down_shexp       2304   5120   4      exact   4.40e-08     65.8    179.4       0.20
+ffn_down_shexp       2304   5120   8      exact   4.17e-08    133.5     88.4       0.10
+engram_kv            6144  25600   1      exact   5.41e-08    263.6    597.3       0.68
+engram_kv            6144  25600   4      exact   5.30e-08    734.5    214.4       0.24
+engram_kv            6144  25600   8      exact   5.46e-08   1372.2    114.7       0.13

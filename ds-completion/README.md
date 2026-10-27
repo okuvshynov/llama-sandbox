@@ -19,6 +19,8 @@ M=~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf
 bin/ds-completion -m $M -p "Hello, how are you?" --chat -n 64    # or --think, or raw text
 make HIP=1   # -> bin-hip/, needs the fork's build-hip (see Step 4)
 bin-hip/ds-completion -m $M -p "..." --chat --gpu 0 [--profile]   # dense part on GPU 0
+bin/fp8pack -m $M -o ~/llms/ds-1017-fp8/dense-fp8.gguf            # fp8 repack (PLAN.md B0), 20 s
+bin-hip/bench-fp8 ~/llms/ds-1017-fp8/dense-fp8.gguf [--ms 1,4] [--sweep]  # fp8 GEMV (B1)
 bin/ds-inspect -m $M [--layers 0,1,2-5] [--touch]
 bin/ds-test -m $M -g data/golden/hello [--layers 0-39] [--no-quant]  # teacher-forced, per layer
 bin/ds-test -m $M -g data/golden/hello --e2e data/ds/hello.f32       # end-to-end logits
@@ -434,3 +436,64 @@ Where the time goes, and what would buy it back:
    - Fusing and HIP graphs would cut the launches.
 3. **No overlap:** every layer is GPU then CPU then GPU, so two of the three parts idle at any
    time.
+
+## Step 5 (PLAN.md B0 + B1): fp8 dense weights and an exact fp8 GEMV
+
+**B0, `bin/fp8pack`.** It writes the 330 dense linears that were fp8 in the checkpoint back as
+fp8:
+
+- tensors: q_a, q_b, kv, wo_a, wo_b, indexer q_b, the shared experts and the engram projection;
+- format: e4m3 codes plus one e8m0 exponent per 32x32 block, in a plain GGUF (codes and scales
+  as I8 tensors).
+- **Lossless:** every value round-trips exactly, checked for every weight, and the e4m3 codec is
+  checked against the fake-quant rounding on all 256 codes.
+- **Size:** 12.73 GiB bf16 -> **6.37 GiB** fp8, in 20 s. Output in `~/llms/ds-1017-fp8/dense-fp8.gguf`.
+- A decode token's GPU reads drop from 14.45 to ~8.1 GiB, with the head (bf16) and the small f32
+  tensors unchanged.
+
+**B1, `hip/fp8_gemv.{h,hip}`.** y = W x for M <= 8 columns, exactly the reference's fp8 x fp8
+GEMM:
+
+- **Decode is exact.** gfx906 has no fp8, but an e4m3 code shifted left by 7 bits is an fp16
+  bit pattern equal to the value x 2^-8 (subnormals too). `v_perm` plus two masks does 4 codes.
+- **Products are exact.** `v_dot2_f32_f16` multiplies the fp16 pairs exactly into fp32. Each
+  32-block partial is scaled by weight scale x activation scale x 2^16.
+- **Activations** are fake-quantized to fp8 on the device (`fp8_quant_act`, bit-identical to the
+  host rule) and stored as codes plus one scale per 32.
+- **Work split:** one row per wave, with enough lanes per row for <= 10 16-byte steps per lane
+  (64 lanes once K >= 4096). Lanes double while fewer than 1024 waves are in flight. The rule
+  comes from a sweep over every lanes-per-row x rows-per-wave split (`--sweep`,
+  `results/bench-fp8-sweep.txt`) and is within 1% of the best at M=1.
+
+Results (`results/bench-fp8.txt`, die 0, layer 2):
+
+- **Every tensor and batch size:** the device quantizer is bit-exact, and y matches a
+  double-precision host computation of the same fp8 math to 3e-8..6e-8.
+
+| tensor (K -> N) | ggml bf16, M=1 (us) | fp8, M=1 (us) | fp8 GB/s (of ~880) | fp8, M=4 (us) |
+|---|---|---|---|---|
+| q_a 5120 -> 1280 | 51.5 | 14.4 | 456 | 32.3 |
+| q_b 1280 -> 32768 | 171.8 | 62.7 | 670 | 86.8 |
+| kv 5120 -> 512 | 21.4 | 8.7 | 300 | 17.1 |
+| wo_a 8 x (4096 -> 1024) | 153.2 | 65.7 | 511 | 121.4 |
+| wo_b 8192 -> 5120 | 224.3 | 90.7 | 463 | 193.1 |
+| shared gate/up 5120 -> 2304 | 54.3 | 23.5 | 502 | 43.3 |
+| shared down 2304 -> 5120 | 101.8 | 21.7 | 545 | 47.0 |
+| engram kv 6144 -> 25600 (layers 1, 14) | 565.1 | 227.1 | 693 | 336.6 |
+| **per layer** (q_a..down) | **~832** | **~311** | | |
+
+(ggml bf16: `bin-hip/bench-ggml-bf16`, 16 matmuls per graph to amortize the launch as a forward
+does.)
+
+What this says:
+
+- **The matmuls of a decode token drop from ~33 ms to ~12.4 ms** (40 layers), and become exact to
+  the reference again.
+- **Step 4's GPU time (~53 ms) splits into** ~33 ms of these matmuls and ~20 ms of everything
+  else: ~2000 small ops (norms, rope, hc, attention core, softmax, copies).
+- **Small tensors are latency-bound.** kv is 2.6 MB in 8.7 us, of which ~3 us is the transfer
+  itself. Fusing them with their neighbours is part of the own-runtime step.
+- **M = 2-8 costs 1.4-4x M = 1, not ~1x.** The kernel is ALU-heavy once several columns share a
+  weight load (decode + 8 dot2 per 16 codes per column). This matters for speculative verify
+  batches (PLAN.md E1) and will need a different inner loop (LDS-staged activations, or int8
+  sdot4 on scaled codes).

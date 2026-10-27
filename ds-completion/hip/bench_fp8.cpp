@@ -1,0 +1,178 @@
+// bench-fp8: the fp8 GEMV (fp8_gemv.hip) on real weights from dense-fp8.gguf (fp8pack output).
+//
+//   bench-fp8 <dense-fp8.gguf> [--dev D] [--layer L] [--ms 1,2,4,8] [--reps 200]
+//
+// Per tensor and batch size M:
+//   - the device activation quantizer must equal the host one (src/fakequant.cpp rules) bit for bit;
+//   - y must match a double-precision host result of the same fp8 x fp8 math (expect ~1e-7: only
+//     the order of fp32 additions differs);
+//   - time per call (events, back to back) and weight GB/s against the ~880 GB/s HBM ceiling.
+
+#include "fp8_gemv.h"
+#include "fakequant.h"
+#include "gguf.h"
+#include "ggml.h"
+
+#include <cmath>
+#include <cstdio>
+#include <cstring>
+#include <random>
+#include <string>
+#include <vector>
+
+#define CHECK(x) do { hipError_t e_ = (x); if (e_ != hipSuccess) { fprintf(stderr, "%s: %s\n", #x, hipGetErrorString(e_)); exit(1); } } while (0)
+
+static float pow2_ceil(float v) {
+  int e;
+  const float m = frexpf(v, &e);
+  return ldexpf(1.0f, m == 0.5f ? e - 1 : e);
+}
+
+static float e4m3_decode(uint8_t c) {
+  const float sign = (c & 0x80) ? -1.0f : 1.0f;
+  const int E = (c >> 3) & 0xF, M = c & 7;
+  return E == 0 ? sign * ldexpf((float)M, -9) : sign * ldexpf(1.0f + M / 8.0f, E - 7);
+}
+
+struct Shape { const char* name; int rpg_div; };  // rpg = N / rpg_div (groups)
+
+int main(int argc, char** argv) {
+  setvbuf(stdout, nullptr, _IOLBF, 0);
+  if (argc < 2) { fprintf(stderr, "usage: bench-fp8 <dense-fp8.gguf> [--dev D] [--layer L] [--ms 1,2,4,8] [--reps N]\n"); return 2; }
+  int dev = 0, layer = 2, reps = 200;
+  bool sweep = false;
+  std::vector<int> ms = {1, 2, 4, 8};
+  for (int i = 2; i < argc; i++) {
+    std::string a = argv[i];
+    if (a == "--dev") dev = atoi(argv[++i]);
+    else if (a == "--layer") layer = atoi(argv[++i]);
+    else if (a == "--reps") reps = atoi(argv[++i]);
+    else if (a == "--sweep") sweep = true;
+    else if (a == "--ms") { ms.clear(); for (char* p = argv[++i]; *p;) { ms.push_back((int)strtol(p, &p, 10)); if (*p == ',') p++; } }
+  }
+  CHECK(hipSetDevice(dev));
+  gguf_init_params gp = {true, nullptr};
+  gguf_context* g = gguf_init_from_file(argv[1], gp);
+  if (!g) { fprintf(stderr, "cannot read %s\n", argv[1]); return 1; }
+  FILE* f = fopen(argv[1], "rb");
+  auto read = [&](const std::string& name, std::vector<uint8_t>& out, int64_t* ne) {
+    int64_t id = gguf_find_tensor(g, name.c_str());
+    if (id < 0) return false;
+    const size_t n = gguf_get_tensor_size(g, id);
+    out.resize(n);
+    fseeko(f, (off_t)(gguf_get_data_offset(g) + gguf_get_tensor_offset(g, id)), SEEK_SET);
+    if (fread(out.data(), 1, n, f) != n) return false;
+    if (ne) { ne[0] = gguf_get_tensor_ne(g, id)[0]; ne[1] = gguf_get_tensor_ne(g, id)[1]; }
+    return true;
+  };
+
+  const std::vector<Shape> shapes = {
+      {"attn_q_a", 1}, {"attn_q_b", 1}, {"attn_kv", 1}, {"attn_output_a", 8}, {"attn_output_b", 1},
+      {"indexer.attn_q_b", 1}, {"ffn_gate_shexp", 1}, {"ffn_down_shexp", 1}, {"engram_kv", 1}};
+  hipStream_t st;
+  CHECK(hipStreamCreate(&st));
+  hipEvent_t e0, e1;
+  CHECK(hipEventCreate(&e0));
+  CHECK(hipEventCreate(&e1));
+  std::mt19937 rng(7);
+  std::normal_distribution<float> nd;
+
+  printf("# %s, device %d, layer %d (engram_kv from layer 1)\n", argv[1], dev, layer);
+  printf("%-18s %6s %6s %3s %10s %10s %8s %8s %10s\n", "tensor", "K", "N", "M", "quant", "relerr", "us", "GB/s", "x of 880");
+  for (const Shape& sh : shapes) {
+    const int L = !strcmp(sh.name, "engram_kv") ? 1 : layer;
+    const std::string name = "blk." + std::to_string(L) + "." + sh.name + ".weight";
+    std::vector<uint8_t> wq, wsc;
+    int64_t ne[2];
+    if (!read(name, wq, ne) || !read(name + ".scale", wsc, nullptr)) { printf("%-18s missing\n", sh.name); continue; }
+    const int K = (int)ne[0], N = (int)ne[1], groups = sh.rpg_div, rpg = N / groups, Kt = K * groups;
+    uint8_t *dw, *ds;
+    CHECK(hipMalloc(&dw, wq.size()));
+    CHECK(hipMalloc(&ds, wsc.size()));
+    CHECK(hipMemcpy(dw, wq.data(), wq.size(), hipMemcpyHostToDevice));
+    CHECK(hipMemcpy(ds, wsc.data(), wsc.size(), hipMemcpyHostToDevice));
+    for (int M : ms) {
+      std::vector<float> x((size_t)M * Kt);
+      for (auto& v : x) v = nd(rng) * 0.5f;
+      // host quantization (the reference rule) and device quantization must agree exactly
+      std::vector<float> hq(x.size()), hs(x.size() / 32);
+      for (size_t b = 0; b < hs.size(); b++) {
+        float amax = 0;
+        for (int j = 0; j < 32; j++) amax = fmaxf(amax, fabsf(x[b * 32 + j]));
+        const float s = pow2_ceil(fmaxf(amax, 1e-4f) * (1.0f / 448.0f));
+        hs[b] = s;
+        for (int j = 0; j < 32; j++) hq[b * 32 + j] = fq_e4m3_round(x[b * 32 + j] / s);
+      }
+      float *dx, *dxs, *dy;
+      uint8_t* dxq;
+      CHECK(hipMalloc(&dx, x.size() * 4));
+      CHECK(hipMalloc(&dxq, x.size()));
+      CHECK(hipMalloc(&dxs, hs.size() * 4));
+      CHECK(hipMalloc(&dy, (size_t)M * N * 4));
+      CHECK(hipMemcpy(dx, x.data(), x.size() * 4, hipMemcpyHostToDevice));
+      fp8_quant_act(dx, dxq, dxs, M, Kt, st);
+      std::vector<uint8_t> gq(x.size());
+      std::vector<float> gs(hs.size());
+      CHECK(hipMemcpyAsync(gq.data(), dxq, gq.size(), hipMemcpyDeviceToHost, st));
+      CHECK(hipMemcpyAsync(gs.data(), dxs, gs.size() * 4, hipMemcpyDeviceToHost, st));
+      CHECK(hipStreamSynchronize(st));
+      long qbad = 0;
+      for (size_t i = 0; i < x.size(); i++) qbad += e4m3_decode(gq[i]) != hq[i];
+      for (size_t i = 0; i < hs.size(); i++) qbad += gs[i] != hs[i];
+
+      Fp8Act act = {dxq, dxs};
+      fp8_gemv(dw, ds, N, K, rpg, act, M, dy, st);
+      std::vector<float> y((size_t)M * N);
+      CHECK(hipMemcpyAsync(y.data(), dy, y.size() * 4, hipMemcpyDeviceToHost, st));
+      CHECK(hipStreamSynchronize(st));
+      double num = 0, den = 0;
+      for (int m = 0; m < M; m++)
+        for (int n = 0; n < N; n++) {
+          const int gi = n / rpg;
+          double r = 0;
+          for (int k = 0; k < K; k++) {
+            const size_t xi = (size_t)m * Kt + (size_t)gi * K + k;
+            const double wv = e4m3_decode(wq[(size_t)n * K + k]) * ldexp(1.0, (int)wsc[(n / 32) * (K / 32) + k / 32] - 127);
+            r += wv * (double)hq[xi] * hs[xi / 32];
+          }
+          const double d = y[(size_t)m * N + n] - r;
+          num += d * d;
+          den += r * r;
+        }
+      // timing: the built-in choice, or (--sweep) every lanes-per-row x rows-per-wave split
+      auto time_cfg = [&](int lpr, int r) {
+        for (int i = 0; i < 10; i++) fp8_gemv_cfg(dw, ds, N, K, rpg, act, M, dy, st, lpr, r);
+        CHECK(hipEventRecord(e0, st));
+        for (int i = 0; i < reps; i++) fp8_gemv_cfg(dw, ds, N, K, rpg, act, M, dy, st, lpr, r);
+        CHECK(hipEventRecord(e1, st));
+        CHECK(hipEventSynchronize(e1));
+        float ms_total;
+        CHECK(hipEventElapsedTime(&ms_total, e0, e1));
+        return ms_total * 1000.0 / reps;
+      };
+      const double bytes = wq.size() + wsc.size();
+      if (!sweep) {
+        const double us = time_cfg(0, 0), gbs = bytes / (us * 1e-6) / 1e9;
+        printf("%-18s %6d %6d %3d %10s %10.2e %8.1f %8.1f %10.2f\n", sh.name, K, N, M, qbad ? "MISMATCH" : "exact",
+               sqrt(num / den), us, gbs, gbs / 880.0);
+      } else {
+        printf("%-18s %6d %6d %3d %10s %10.2e  ", sh.name, K, N, M, qbad ? "MISMATCH" : "exact", sqrt(num / den));
+        double best = 1e30;
+        int bl = 0, br = 0;
+        for (int lpr : {8, 16, 32, 64}) {
+          if (K % (lpr * 16)) continue;
+          for (int r : {1, 2, 4, 8}) {
+            const double us = time_cfg(lpr, r);
+            printf(" %d/%d:%.0f", lpr, r, bytes / (us * 1e-6) / 1e9);
+            if (us < best) { best = us; bl = lpr; br = r; }
+          }
+        }
+        printf("   best %d/%d %.1f us %.0f GB/s\n", bl, br, best, bytes / (best * 1e-6) / 1e9);
+      }
+      CHECK(hipFree(dx)); CHECK(hipFree(dxq)); CHECK(hipFree(dxs)); CHECK(hipFree(dy));
+    }
+    CHECK(hipFree(dw));
+    CHECK(hipFree(ds));
+  }
+  return 0;
+}

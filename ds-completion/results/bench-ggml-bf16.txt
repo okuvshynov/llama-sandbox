@@ -1,0 +1,9 @@
+shape                           K      N     us/mm     GB/s
+attn_q_a                     5120   1280      51.5    254.3
+attn_q_b                     1280  32768     171.8    488.3
+attn_kv                      5120    512      21.4    244.9
+attn_output_a(x8 groups)     4096   8192     153.2    438.0
+attn_output_b                8192   5120     224.3    374.1
+ffn_gate_shexp               5120   2304      54.3    434.2
+ffn_down_shexp               2304   5120     101.8    231.8
+engram_kv                    6144  25600     565.1    556.7

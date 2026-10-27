@@ -26,10 +26,24 @@ LDLIBS   = $(GGML_LIBS) -fopenmp -lpthread -ldl
 CORE   = src/model.cpp src/forward.cpp src/fakequant.cpp
 CORE_H = src/model.h src/forward.h src/fakequant.h
 
-all: $(BIN)/ds-completion $(BIN)/ds-inspect $(BIN)/ds-test $(BIN)/test-fakequant $(BIN)/llama-logits
+all: $(BIN)/ds-completion $(BIN)/ds-inspect $(BIN)/ds-test $(BIN)/test-fakequant $(BIN)/llama-logits $(BIN)/fp8pack
 ifeq ($(HIP),1)
-all: $(BIN)/test-matmul-prec
+all: $(BIN)/test-matmul-prec $(BIN)/bench-fp8 $(BIN)/bench-ggml-bf16
 endif
+
+# GPU only: ggml's bf16 matmul on the dense shapes (the step-4 baseline for bench-fp8)
+$(BIN)/bench-ggml-bf16: src/bench_ggml_bf16.cpp
+	@mkdir -p $(BIN)
+	$(CXX) $(CXXFLAGS) -o $@ $< $(LDLIBS)
+
+# our own HIP kernels (PLAN.md B1 onwards), compiled with the ROCm the fork was built against
+HIPCC    = /opt/rocm-6.3.4/bin/hipcc
+HIPFLAGS = -std=c++17 -O3 --offload-arch=gfx906 -Ihip -Isrc -I$(FORK)/ggml/include
+
+$(BIN)/bench-fp8: hip/bench_fp8.cpp hip/fp8_gemv.hip hip/fp8_gemv.h src/fakequant.cpp
+	@mkdir -p $(BIN)
+	$(HIPCC) $(HIPFLAGS) -o $@ hip/bench_fp8.cpp hip/fp8_gemv.hip src/fakequant.cpp \
+	    -L$(FORK)/$(BUILD)/bin -Wl,-rpath,$(FORK)/$(BUILD)/bin -lggml -lggml-base
 
 # GPU only: precision of ggml's bf16 matmul by batch size
 $(BIN)/test-matmul-prec: src/test_matmul_prec.cpp
@@ -48,6 +62,10 @@ $(BIN)/ds-test: src/ds_test.cpp $(CORE) $(CORE_H)
 $(BIN)/ds-inspect: src/ds_inspect.cpp src/model.cpp src/model.h
 	@mkdir -p $(BIN)
 	$(CXX) $(CXXFLAGS) -o $@ src/ds_inspect.cpp src/model.cpp $(LDLIBS)
+
+$(BIN)/fp8pack: src/fp8pack.cpp src/model.cpp src/model.h src/fakequant.cpp src/fakequant.h
+	@mkdir -p $(BIN)
+	$(CXX) $(CXXFLAGS) -o $@ src/fp8pack.cpp src/model.cpp src/fakequant.cpp $(LDLIBS)
 
 $(BIN)/test-fakequant: src/test_fakequant.cpp src/fakequant.cpp src/fakequant.h
 	@mkdir -p $(BIN)
