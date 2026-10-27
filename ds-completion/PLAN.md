@@ -1,7 +1,56 @@
-# ds-completion performance plan (brainstorm, 2026-10-26)
+# ds-completion plan
 
-Where step 4 left us, and every idea for going faster, with rough sizes, dependencies and
-risks. Decisions taken so far are in section 5; the order in section 4 is still a proposal.
+Status: **done**, **next** (agreed, in order), **planned** (agreed, later), **idea** (not
+decided). Today, 15 expert layers on GPUs, sclk 2: decode ~12.5 t/s, a step ~80 ms = CPU
+experts 40 + die-0 GPU ~35 (of which ~7 overhead) + other dies' experts 4.3.
+
+## Overview
+
+Correctness and the base path
+
+| | item | status | one line |
+|---|---|---|---|
+| 1 | CPU reference forward (ggml Engine) | done | every module of the reference, gated per layer against the official implementation (steps 1-3) |
+| 2 | Exact fake quantization | done | fp8/fp4 rounding at the reference's points, so outputs match to ~1e-7 per layer |
+| 3 | ggml GPU path | done, removed | dense part on one die through ggml (6 t/s); superseded by the own runtime (steps 4, 11) |
+| 4 | fp8 repack of dense weights (B0) | done | lossless 6.4 GB fp8 file instead of 14 GB bf16 |
+| 5 | Exact fp8 GEMV (B1) | done | 311 us per layer vs ggml's 832, bit-exact products |
+| 6 | Own HIP decode runtime (D3) | done | every op of a token in our kernels on one die: 9.4 -> ~10 t/s |
+| 7 | Exact CPU expert kernel (A3) | done | AVX-512 fp4 x fp8, ~68 GB/s, faster than ggml and exact |
+| 8 | Exact GPU expert kernel | done | one layer's 6 experts in 0.39 ms on a die (287 GB/s) |
+| 9 | Whole expert layers on GPUs | done | `--gpu-moe`: 15 layers resident on 4 dies -> 12.2 t/s |
+| 10 | Prompt through the runtime | done | frees 14 GB on die 0; prompt 6 -> 10 t/s |
+| 11 | Remove ggml's GPU path | done | the runtime is self-contained; no fork HIP build needed |
+| 12 | GPU clock sweep | done | dense GPU part 38 -> 29 ms from sclk 0 to 8; level 4-6 is the sweet spot |
+
+Speed
+
+| | item | status | one line |
+|---|---|---|---|
+| 13 | Routing statistics (A0) | next | log the chosen experts over varied prompts: how much do the hottest experts per layer catch, and does it transfer between prompts |
+| 14 | HIP graphs + kernel fusion (D) | next | replay the fixed launch sequence, fuse the small kernels: ~-5..7 ms per step, independent of routing |
+| 15 | Per-layer expert split, CPU and all dies concurrently (A1/EP) | planned | each layer's experts split between dies and CPU, both running at once; placement from item 13 |
+| 16 | Hot-set placement (A1) | planned | the most-used experts in HBM: ~18 t/s at a 70% hit rate, ~24 at 90% (if item 13 shows skew) |
+| 17 | Tensor parallelism, 2-way then 4-way (C1/C2) | planned | split the dense GEMVs over dies: ~-6..10 ms per step, matters once experts are mostly on GPUs |
+| 18 | Shared expert by TP, routed by EP (C4) | planned | the dense shared expert splits like any other GEMV under TP |
+| 19 | DSpark speculative decoding (E1) | planned | several tokens per weight read; needs the full 1017 checkpoint's MTP weights |
+| 20 | Batched prompt processing (F) | planned | read each weight once for many prompt tokens; matters for long prompts |
+| 21 | Dynamic expert cache (A2) | idea | refresh the hot set over PCIe in the background, only if item 13 shows drift within a generation |
+| 22 | Faster GPU fp4 expert kernel | idea | 287 -> ~600 GB/s; matters once many experts run on GPUs |
+| 23 | Weight interleaving for TP (C3) | idea | lay out weights so each die's slice is contiguous |
+| 24 | fp8 output head | idea | halves the 2.3 ms head, but is no longer exact vs the reference |
+| 25 | Clock level by phase | idea | sclk 4-6 for decode with CPU experts, 8 once GPU experts dominate |
+
+Features and limits
+
+| | item | status | one line |
+|---|---|---|---|
+| 26 | Context above 4096 with the runtime | idea | a top-k kernel for larger candidate sets |
+| 27 | Candidate-block selection (>16k tokens) | idea | the reference's layer-20 path, not implemented anywhere yet |
+| 28 | Full 1017 checkpoint | waiting | download pending (user); needed for item 19 and exact safetensors refs |
+| 29 | Sampling beyond greedy | idea | temperature/top-p; a non-goal so far |
+
+Details below: the original brainstorm (sections 1-5) and the re-prioritization (section 6).
 
 ## 1. Where a decode token goes today (step 4, `--gpu 0`, 32 threads)
 
