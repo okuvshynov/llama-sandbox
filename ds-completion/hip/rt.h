@@ -56,6 +56,10 @@ class Runtime {
   // profile = true: GPU events between groups of launches; per group, the GPU time of the
   // last step (gaps included: a group charged with idle time was waiting on the host)
   bool profile = false;
+  // routing log (scripts/route_stats.py reads it): opens `path` and appends one record per token
+  // (prompt tokens included): its position, id, whether it is a prompt token, and per layer the
+  // router's expert ids and weights. Format in rt.cpp (Runtime::log_routing).
+  void log_routing(const std::string& path);
   std::map<std::string, double> last_groups;
 
  private:
@@ -121,6 +125,11 @@ class Runtime {
   struct MoeIn { float* x; int* ids; float* w; } d_moe, h_moe;
   float *h_yr, *h_erows, *att_scratch;
   hipEvent_t ev;
+
+  FILE* route_log = nullptr;
+  int* d_route = nullptr;     // [n_layer][8] this step's expert ids (device), then the weights
+  bool in_prefill = false;
+  void write_route_record();
 
   int pos = 0;  // position of the current step
   int32_t token = 0;

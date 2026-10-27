@@ -54,6 +54,7 @@ int main(int argc, char** argv) {
   Options opt;
   int gpu = 0;
   bool profile = false;
+  std::string route_log;
   std::map<int, int> gpu_moe;  // layer -> device holding all its experts (runtime only)
   for (int i = 1; i < argc; i++) {
     std::string a = argv[i];
@@ -77,6 +78,7 @@ int main(int argc, char** argv) {
     }
     else if (a == "--profile") profile = true;
     else if (a == "--rt") rt_path = next();
+    else if (a == "--log-routing") route_log = next();  // runtime: every token's experts per layer
     else if (a == "--no-quant") opt.exact_quant = false;
     else if (a == "--max-ctx") opt.max_ctx = atoi(next());
     else { fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
@@ -127,6 +129,7 @@ int main(int argc, char** argv) {
     if (!opt.exact_quant) { fprintf(stderr, "--no-quant is CPU only\n"); return 2; }
     rt.reset(new Runtime(m, RtOptions{gpu, opt.n_threads, opt.max_ctx}, rt_path, gpu_moe));
     rt->profile = profile;
+    if (!route_log.empty()) rt->log_routing(route_log);
   }
 #else
   if (!rt_path.empty()) { fprintf(stderr, "--rt needs the bin-hip build\n"); return 2; }

@@ -296,6 +296,8 @@ Runtime::~Runtime() {
   }
   (void)hipSetDevice(opt.gpu);
   (void)hipEventDestroy(ev_staged);
+  if (route_log) fclose(route_log);
+  if (d_route) (void)hipFree(d_route);
   for (void* p : owned) (void)hipFree(p);
   for (const LayerState& st : S)
     for (float* p : {st.win, st.cmp_kv, st.cmp_score, st.comp, st.idx_k}) if (p) (void)hipFree(p);
@@ -463,6 +465,10 @@ void Runtime::moe(int L, const float* xin, float* out, Taps* taps) {
   mark("ffn.router");
   k_gemv_f32(w.gate_inp, hp.n_expert, E, xin, router_logits, partial, s);
   k_router(router_logits, w.gate_bias, hp.n_expert, KE, hp.expert_weights_norm, hp.expert_weights_scale, rids, rw, s);
+  if (route_log) {  // ids and weights next to each other per layer: [ids 8 | weights 8]
+    CHECK(hipMemcpyAsync(d_route + L * 16, rids, KE * 4, hipMemcpyDeviceToDevice, s));
+    CHECK(hipMemcpyAsync(d_route + L * 16 + 8, rw, KE * 4, hipMemcpyDeviceToDevice, s));
+  }
   if (xin != d_moe.x) throw std::runtime_error("moe input must be staged in d_moe.x");
   auto gm = gpu_moe.find(L);
   GpuMoeLayer* g = gm == gpu_moe.end() ? nullptr : &gm->second;
@@ -577,8 +583,41 @@ void Runtime::begin_step(int32_t tok) {
   fetch_engram_rows();
 }
 
+// Routing log format (little endian):
+//   header: "DSRT" magic, int32 version = 1, int32 n_layer, int32 k
+//   per token: int32 pos, int32 token, int32 is_prompt, int16 ids[n_layer][k], float w[n_layer][k]
+// Layers that are not loaded log ids -1.
+void Runtime::log_routing(const std::string& path) {
+  route_log = fopen(path.c_str(), "wb");
+  if (!route_log) throw std::runtime_error("cannot write " + path);
+  const int32_t hdr[3] = {1, hp.n_layer, hp.n_expert_used};
+  fwrite("DSRT", 1, 4, route_log);
+  fwrite(hdr, 4, 3, route_log);
+  d_route = dalloc<int>((size_t)hp.n_layer * 16);
+}
+
+void Runtime::write_route_record() {
+  const int nl = hp.n_layer, k = hp.n_expert_used;
+  std::vector<int32_t> buf((size_t)nl * 16);
+  CHECK(hipMemcpy(buf.data(), d_route, buf.size() * 4, hipMemcpyDeviceToHost));
+  const int32_t head[3] = {pos, token, in_prefill ? 1 : 0};
+  std::vector<int16_t> ids((size_t)nl * k, -1);
+  std::vector<float> w((size_t)nl * k, 0.0f);
+  for (int L = 0; L < nl; L++) {
+    if (!m.layers[L].loaded) continue;
+    for (int j = 0; j < k; j++) {
+      ids[L * k + j] = (int16_t)buf[L * 16 + j];
+      memcpy(&w[L * k + j], &buf[L * 16 + 8 + j], 4);
+    }
+  }
+  fwrite(head, 4, 3, route_log);
+  fwrite(ids.data(), 2, ids.size(), route_log);
+  fwrite(w.data(), 4, w.size(), route_log);
+}
+
 void Runtime::end_step() {
   CHECK(hipStreamSynchronize(s));
+  if (route_log) write_route_record();
   n_past_++;
   tokens_.push_back(token);
 }
@@ -594,7 +633,9 @@ Taps Runtime::run_layer(int L, const std::vector<float>& h_in, const std::vector
 
 std::vector<float> Runtime::prefill(const std::vector<int32_t>& tokens) {
   std::vector<float> logits;
+  in_prefill = true;
   for (size_t i = 0; i < tokens.size(); i++) logits = decode(tokens[i], i + 1 == tokens.size());
+  in_prefill = false;
   return logits;
 }
 
