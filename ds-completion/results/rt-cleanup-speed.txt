@@ -1,0 +1,7 @@
+== gpu-moe: none
+# runtime: 1.75 GiB of small weights on GPU 0
+# prompt: 12 tokens in 1.23 s = 9.76 t/s; generation: 15 tokens in 1.58 s = 9.52 t/s
+== gpu-moe: 0:25-27,1:36-39,2:32-35,3:28-31
+# runtime: 1.75 GiB of small weights on GPU 0
+# runtime: 15 expert layers uploaded in 21.8 s
+# prompt: 12 tokens in 1.07 s = 11.25 t/s; generation: 15 tokens in 1.23 s = 12.19 t/s

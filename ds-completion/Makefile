@@ -1,21 +1,18 @@
 # ds-completion: links ggml (and, for the tokenizer only, libllama) from the llama.cpp fork that
 # carries DeepSeek-V4.1 support (~/forks/llama.cpp).
 #
-#   make          CPU build: the fork's build/ (static libraries) -> bin/
-#   make HIP=1    GPU build: the fork's build-hip/ (ROCm 6.3.4, gfx906, shared libraries) -> bin-hip/
-#                 (build-hip needs patches/fork-hip-ballot-sync.patch applied to the fork)
+#   make          CPU build -> bin/
+#   make HIP=1    also the own GPU runtime (hip/, ROCm 6.3.4, gfx906) -> bin-hip/
+# Both link the fork's CPU build (build/, static libraries); ggml's own GPU backend is not used.
 FORK ?= $(HOME)/forks/llama.cpp
-ifeq ($(HIP),1)
-BUILD = build-hip
-BIN   = bin-hip
-GGML_LIBS = -L$(FORK)/$(BUILD)/bin -Wl,-rpath,$(FORK)/$(BUILD)/bin -lggml -lggml-base -lggml-cpu -lggml-hip
-LLAMA_LIB = -lllama
-else
 BUILD = build
-BIN   = bin
 GGML_LIBS = $(FORK)/$(BUILD)/ggml/src/libggml.a $(FORK)/$(BUILD)/ggml/src/libggml-cpu.a \
             $(FORK)/$(BUILD)/ggml/src/libggml-base.a
 LLAMA_LIB = $(FORK)/$(BUILD)/src/libllama.a
+ifeq ($(HIP),1)
+BIN = bin-hip
+else
+BIN = bin
 endif
 
 CXX      = g++
@@ -37,27 +34,17 @@ endif
 
 all: $(BIN)/ds-completion $(BIN)/ds-inspect $(BIN)/ds-test $(BIN)/test-fakequant $(BIN)/llama-logits $(BIN)/fp8pack $(BIN)/bench-cpu-moe
 ifeq ($(HIP),1)
-all: $(BIN)/test-matmul-prec $(BIN)/bench-fp8 $(BIN)/bench-ggml-bf16 $(BIN)/bench-kernels $(BIN)/bench-fp4-moe
+all: $(BIN)/bench-fp8 $(BIN)/bench-kernels $(BIN)/bench-fp4-moe
 endif
 
-# GPU only: ggml's bf16 matmul on the dense shapes (the step-4 baseline for bench-fp8)
-$(BIN)/bench-ggml-bf16: src/bench_ggml_bf16.cpp
-	@mkdir -p $(BIN)
-	$(CXX) $(CXXFLAGS) -o $@ $< $(LDLIBS)
-
-# our own HIP kernels (PLAN.md B1 onwards), compiled with the ROCm the fork was built against
+# our own HIP kernels (PLAN.md B1 onwards)
 HIPCC    = $(ROCM)/bin/hipcc
 HIPFLAGS = -std=c++17 -O3 -fPIC --offload-arch=gfx906 -Ihip -Isrc -I$(FORK)/ggml/include
 
 $(BIN)/bench-fp8: hip/bench_fp8.cpp hip/fp8_gemv.hip hip/fp8_gemv.h src/fakequant.cpp
 	@mkdir -p $(BIN)
-	$(HIPCC) $(HIPFLAGS) -o $@ hip/bench_fp8.cpp hip/fp8_gemv.hip src/fakequant.cpp \
-	    -L$(FORK)/$(BUILD)/bin -Wl,-rpath,$(FORK)/$(BUILD)/bin -lggml -lggml-base
-
-# GPU only: precision of ggml's bf16 matmul by batch size
-$(BIN)/test-matmul-prec: src/test_matmul_prec.cpp
-	@mkdir -p $(BIN)
-	$(CXX) $(CXXFLAGS) -o $@ $< $(LDLIBS)
+	$(HIPCC) $(HIPFLAGS) -fopenmp -o $@ hip/bench_fp8.cpp hip/fp8_gemv.hip src/fakequant.cpp \
+	    -L$(FORK)/$(BUILD)/ggml/src -lggml -lggml-cpu -lggml-base -lpthread -ldl
 
 # the CLI: libllama only for the tokenizer (vocab-only load)
 $(BIN)/ds-completion: src/ds_completion.cpp $(CORE) $(CORE_H) $(RT_OBJ)

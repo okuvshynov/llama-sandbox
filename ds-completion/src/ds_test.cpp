@@ -8,7 +8,7 @@
 //       arithmetic in isolation, plus the state it builds (KV caches, compressor groups) from
 //       reference inputs. Layers run in order up to the highest one asked for, because consumer
 //       layers read the caches their source layer wrote.
-//   ds-test -m <model> -g data/golden/hello-fp32 --gpu 0 --runtime <dense-fp8.gguf> (bin-hip)
+//   ds-test -m <model> -g data/golden/hello-fp32 --runtime <dense-fp8.gguf> [--gpu 0] (bin-hip)
 //       As above, through the own runtime (hip/rt.h), which takes one token at a time: the
 //       prompt step is teacher-forced token by token and each row pools that layer's errors
 //       over the prompt's tokens (tokens the golden did not keep run free, untested).
@@ -36,6 +36,7 @@
 #include <cstdio>
 #include <cstring>
 #include <map>
+#include <memory>
 #include <fstream>
 #include <set>
 #include <sstream>
@@ -117,6 +118,7 @@ int main(int argc, char** argv) {
   bool determinism = false, per_token = false;
   std::vector<int> layers;
   Options opt;
+  int gpu = 0;
   std::map<int, int> gpu_moe;  // layer -> device holding all its experts (runtime only)
   for (int i = 1; i < argc; i++) {
     std::string a = argv[i];
@@ -126,8 +128,7 @@ int main(int argc, char** argv) {
     else if (a == "--layers") layers = parse_list(next());
     else if (a == "--no-quant") opt.exact_quant = false;
     else if (a == "-t") opt.n_threads = atoi(next());
-    else if (a == "--gpu") opt.gpu = atoi(next());
-    else if (a == "--gpu-exact") opt.gpu_exact_quant = true;
+    else if (a == "--gpu") gpu = atoi(next());
     else if (a == "--gpu-moe") {  // dev:layers[,dev:layers...], layers like 21-24
       for (char* q = (char*)next(); *q;) {
         const int dev = (int)strtol(q, &q, 10);
@@ -142,11 +143,10 @@ int main(int argc, char** argv) {
     else if (a == "--runtime") rt_path = next();
     else if (a == "--determinism") determinism = true;
     else if (a == "--per-token") per_token = true;  // runtime: also a row per prompt token and layer
-    else if (a == "--profile") opt.profile = true;  // GPU mode: also syncs at every backend switch
     else { fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
   }
   if (model_path.empty() || gdir.empty()) {
-    fprintf(stderr, "usage: ds-test -m <model> -g <golden dir> [--layers 0-39] [--no-quant] [-t N] [--gpu D] [--e2e out.f32]\n");
+    fprintf(stderr, "usage: ds-test -m <model> -g <golden dir> [--layers 0-39] [--no-quant] [-t N] [--e2e out.f32] [--runtime dense-fp8.gguf [--gpu D] [--gpu-moe dev:layers,...] [--per-token]]\n");
     return 2;
   }
   Golden G;
@@ -158,14 +158,17 @@ int main(int argc, char** argv) {
   m.load(model_path, load);
   if (layers.empty()) for (int L = 0; L <= L_max; L++) layers.push_back(L);
   std::set<int> report(layers.begin(), layers.end());
-  if (!rt_path.empty()) opt.runtime = true;
-  Engine eng(m, opt);
+  std::unique_ptr<Engine> engp;  // the CPU path, unless --runtime
 #ifdef DS_RUNTIME
   std::unique_ptr<Runtime> rt;
-  if (!rt_path.empty()) rt.reset(new Runtime(eng, rt_path, gpu_moe));
+  if (!rt_path.empty()) {
+    if (!opt.exact_quant) { fprintf(stderr, "--no-quant is CPU only\n"); return 2; }
+    rt.reset(new Runtime(m, RtOptions{gpu, opt.n_threads, opt.max_ctx}, rt_path, gpu_moe));
+  }
 #else
   if (!rt_path.empty()) { fprintf(stderr, "--runtime needs the bin-hip build\n"); return 2; }
 #endif
+  if (rt_path.empty()) engp.reset(new Engine(m, opt));
   printf("# golden %s: %d steps; exact fake-quant %s\n", gdir.c_str(), G.n_steps, opt.exact_quant ? "on" : "off");
 
   if (!e2e.empty()) {
@@ -175,9 +178,9 @@ int main(int argc, char** argv) {
       std::vector<int32_t> toks(tk->i(), tk->i() + tk->numel());
       auto t0 = std::chrono::steady_clock::now();
 #ifdef DS_RUNTIME
-      std::vector<float> logits = rt ? rt->prefill(toks) : eng.forward(toks);
+      std::vector<float> logits = rt ? rt->prefill(toks) : engp->forward(toks);
 #else
-      std::vector<float> logits = eng.forward(toks);
+      std::vector<float> logits = engp->forward(toks);
 #endif
       const double dt = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
       fwrite(logits.data(), sizeof(float), logits.size(), f);
@@ -194,6 +197,7 @@ int main(int argc, char** argv) {
   if (determinism && !rt_path.empty()) { fprintf(stderr, "--determinism tests the Engine\n"); return 2; }
   if (determinism) {
     // two engines, the same golden inputs, every tap compared bit for bit (prefill step only)
+    Engine& eng = *engp;
     Engine eng2(m, opt);
     const GTensor* tk = G.get(0, -1, "tokens");
     std::vector<int32_t> toks(tk->i(), tk->i() + tk->numel());
@@ -232,7 +236,7 @@ int main(int argc, char** argv) {
     for (int s = 0; s < G.n_steps; s++) {
       const GTensor* tk = G.get(s, -1, "tokens");
       std::vector<int32_t> toks(tk->i(), tk->i() + tk->numel());
-      const int T = (int)toks.size(), p0_step = eng.st.n_past;
+      const int T = (int)toks.size(), p0_step = rt->n_past();
       struct Acc { double num[8] = {}, den[8] = {}; int same = 0, n = 0, tk_eq = 0, tk_n = 0; double jac = 0, ms = 0; bool full_topk = false; };
       std::vector<Acc> acc(L_max + 1);
       for (int t = 0; t < T; t++) {
@@ -327,23 +331,13 @@ int main(int argc, char** argv) {
     return 0;
   }
 #endif
+  Engine& eng = *engp;
   for (int s = 0; s < G.n_steps; s++) {
     const GTensor* tk = G.get(s, -1, "tokens");
     std::vector<int32_t> toks(tk->i(), tk->i() + tk->numel());
     const int T = (int)toks.size();
-#ifdef DS_RUNTIME
-    const bool use_rt = rt && T == 1;  // decode steps through the runtime
-#else
-    const bool use_rt = false;
-#endif
     const int p0_step = eng.st.n_past;
-    if (use_rt) {
-#ifdef DS_RUNTIME
-      rt->begin_step(toks[0]);
-#endif
-    } else {
-      eng.begin_chunk(toks);
-    }
+    eng.begin_chunk(toks);
     for (int L = 0; L <= L_max; L++) {
       const bool is_engram = m.layers[L].kind.engram >= 0;
       const GTensor* hin = G.get(s, L, is_engram ? "engram_in" : "h_in");
@@ -351,11 +345,7 @@ int main(int argc, char** argv) {
       if (!hin || !pin) { fprintf(stderr, "golden lacks step %d layer %d\n", s, L); return 1; }
       std::vector<float> h(hin->f(), hin->f() + hin->numel()), p(pin->f(), pin->f() + pin->numel());
       auto t0 = std::chrono::steady_clock::now();
-#ifdef DS_RUNTIME
-      Taps tp = use_rt ? rt->run_layer(L, h, p) : eng.run_layer(L, h, p);
-#else
       Taps tp = eng.run_layer(L, h, p);
-#endif
       const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
       if (!report.count(L)) continue;
       printf("%4d %3d", s, L);
@@ -407,13 +397,7 @@ int main(int argc, char** argv) {
       }
       printf(" %7.0f\n", ms);
     }
-    if (use_rt) {
-#ifdef DS_RUNTIME
-      rt->end_step();
-#endif
-    } else {
-      eng.end_chunk();
-    }
+    eng.end_chunk();
   }
   return 0;
 }

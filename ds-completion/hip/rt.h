@@ -1,18 +1,19 @@
 // The own decode runtime on one die (PLAN.md section 3, option 2): one token per step through
 // our HIP kernels (kernels.h, fp8_gemv.h), with the routed experts on the CPU.
 //
-// It uses the Engine (Options::runtime) as the holder of the sequence state (window rings,
-// compressor groups, compressed KV, index keys: GPU tensors) and of the small weights' GPU
-// copies; every token, prompt included, runs here. Every layer can be checked teacher-forced
-// against the reference like the Engine is.
+// Self-contained: it reads the model's host tensors (model.h), uploads the small weights itself,
+// and keeps the sequence state (window rings, compressor groups, compressed KV, index keys) in
+// its own device buffers; every token, prompt included, runs here. Every layer can be checked
+// teacher-forced against the reference (ds-test --runtime).
 // Routed experts: src/cpu_moe.h (AVX-512, exact fp4 x fp8, weights read in place from the mmap).
 // Weights: the fp8 linears from fp8pack's file (exact fp8 x fp8 GEMV); the small f32/bf16
 // tensors (norms, hc, router, compressor, indexer projections, head) are the Engine's own GPU
-// copies. Numerics are the reference's: fp32 everywhere, fake quantization where it has it.
+// copies uploaded from the model. Numerics are the reference's: fp32 everywhere, fake quantization where it has it.
 #pragma once
 
-#include "forward.h"
+#include "forward.h"  // Taps, engram_rows
 #include "fp4_moe.h"
+#include "model.h"
 
 #include <hip/hip_runtime.h>
 
@@ -23,14 +24,20 @@
 
 class CpuMoeKernel;  // src/cpu_moe.h: the routed experts on the CPU, exact fp4 x fp8
 
+struct RtOptions {
+  int gpu = 0;         // the die for the dense part and the state (ROCm device index)
+  int n_threads = 16;  // CPU expert kernel
+  int max_ctx = 4096;  // capacity of the compressed caches
+};
+
 class Runtime {
  public:
-  // eng must be in GPU mode; fp8_path is fp8pack's output for the same model. gpu_moe: layers
-  // whose routed experts are all resident on a GPU (layer -> device); the rest run on the CPU.
-  Runtime(Engine& eng, const std::string& fp8_path, const std::map<int, int>& gpu_moe = {});
+  // fp8_path is fp8pack's output for the same model. gpu_moe: layers whose routed experts are
+  // all resident on a GPU (layer -> device); the rest run on the CPU.
+  Runtime(const Model& m, RtOptions opt, const std::string& fp8_path, const std::map<int, int>& gpu_moe = {});
   ~Runtime();
 
-  // one step for `token` at position eng.st.n_past: returns the logits (empty when
+  // one step for `token` at position n_past(): returns the logits (empty when
   // want_logits is false: prompt tokens before the last skip the 1.3 GB head)
   std::vector<float> decode(int32_t token, bool want_logits = true);
   // the prompt, one token at a time (decode() for each); the last token's logits
@@ -42,6 +49,7 @@ class Runtime {
   void begin_step(int32_t token);
   Taps run_layer(int L, const std::vector<float>& h_in, const std::vector<float>& pre_in);
   void end_step();
+  int n_past() const { return n_past_; }
 
   // time spent per decode step (host wall clock), split at the CPU-expert waits
   struct Times { double total_ms = 0, cpu_moe_ms = 0, wait_ms = 0; } last;
@@ -62,8 +70,21 @@ class Runtime {
     const float* freqs;  // [rope_dim / 2] this layer's rotary frequencies
   };
 
-  Engine& eng;
+  const Model& m;
   const Hparams& hp;
+  RtOptions opt;
+  std::vector<void*> owned;  // device copies of the small weights
+  const uint16_t* out_w = nullptr;  // head, bf16
+  const float* out_norm = nullptr;
+  // the sequence state, per loaded layer (device)
+  struct LayerState {
+    float* win = nullptr;                          // window KV ring [window][head_dim]
+    float *cmp_kv = nullptr, *cmp_score = nullptr; // compressor partial group [ratio][head_dim] (ratio > 1)
+    float *comp = nullptr, *idx_k = nullptr;       // compressed KV, index keys [max_ctx / ratio][...] (KV sources)
+  };
+  std::vector<LayerState> S;
+  int n_past_ = 0;
+  std::vector<int32_t> tokens_;  // all tokens so far
   hipStream_t s;
   std::vector<LayerW> W;
   void* fp8_buf = nullptr;  // all fp8 weights + scales

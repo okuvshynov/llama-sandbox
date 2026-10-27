@@ -5,9 +5,6 @@
 #include "fp8_gemv.h"
 #include "kernels.h"
 
-#include "ggml-alloc.h"
-#include "ggml-backend.h"
-#include "ggml-cpu.h"
 #include "gguf.h"
 
 #include <fcntl.h>
@@ -59,9 +56,9 @@ static std::vector<float> rope_freqs(int dim, int original_seq_len, float base, 
 
 // ------------------------------------------------------------------ construction
 
-Runtime::Runtime(Engine& e, const std::string& fp8_path, const std::map<int, int>& moe_map) : eng(e), hp(e.hp) {
-  if (!eng.gpu || !eng.opt.runtime) throw std::runtime_error("Runtime needs the Engine in GPU + runtime mode");
-  CHECK(hipSetDevice(eng.opt.gpu));
+Runtime::Runtime(const Model& model, RtOptions options, const std::string& fp8_path, const std::map<int, int>& moe_map)
+    : m(model), hp(model.hp), opt(options) {
+  CHECK(hipSetDevice(opt.gpu));
   CHECK(hipStreamCreateWithFlags(&s, hipStreamNonBlocking));
   CHECK(hipEventCreateWithFlags(&ev, hipEventDisableTiming));
 
@@ -89,7 +86,7 @@ Runtime::Runtime(Engine& e, const std::string& fp8_path, const std::map<int, int
     CHECK(hipMemcpy(fp8_buf, (char*)map + off, n, hipMemcpyHostToDevice));
     munmap(map, st.st_size);
     close(fd);
-    fprintf(stderr, "# runtime: %s of fp8 weights on GPU %d\n", fmt_bytes((double)n).c_str(), eng.opt.gpu);
+    fprintf(stderr, "# runtime: %s of fp8 weights on GPU %d\n", fmt_bytes((double)n).c_str(), opt.gpu);
   }
   auto fp8w = [&](int L, const char* name) {
     Fp8W w;
@@ -103,11 +100,32 @@ Runtime::Runtime(Engine& e, const std::string& fp8_path, const std::map<int, int
     w.N = (int)gguf_get_tensor_ne(g, id)[1];
     return w;
   };
-  auto f32 = [](const ggml_tensor* t) { return t ? (const float*)t->data : nullptr; };
+  // the small weights: device copies of the host tensors (as stored, or converted to f32)
+  size_t small_bytes = 0;
+  auto upload = [&](const void* src, size_t n) {
+    void* p;
+    CHECK(hipMalloc(&p, n));
+    CHECK(hipMemcpy(p, src, n, hipMemcpyHostToDevice));
+    owned.push_back(p);
+    small_bytes += n;
+    return p;
+  };
+  auto f32 = [&](const ggml_tensor* t) -> const float* {
+    if (!t) return nullptr;
+    if (t->type == GGML_TYPE_F32) return (const float*)upload(t->data, ggml_nbytes(t));
+    std::vector<float> v(ggml_nelements(t));  // the reference applies these in fp32
+    ggml_get_type_traits(t->type)->to_float(t->data, v.data(), v.size());
+    return (const float*)upload(v.data(), v.size() * 4);
+  };
+  auto bf16 = [&](const ggml_tensor* t) -> const uint16_t* {
+    if (!t) return nullptr;
+    if (t->type != GGML_TYPE_BF16) throw std::runtime_error(std::string("expected bf16: ") + t->name);
+    return (const uint16_t*)upload(t->data, ggml_nbytes(t));
+  };
 
   W.resize(hp.n_layer);
   for (int L = 0; L < hp.n_layer; L++) {
-    const Layer& l = eng.lay[L];
+    const Layer& l = m.layers[L];
     if (!l.loaded) continue;
     LayerW& w = W[L];
     w.q_a = fp8w(L, "attn_q_a");
@@ -134,17 +152,20 @@ Runtime::Runtime(Engine& e, const std::string& fp8_path, const std::map<int, int
     w.hc_ffn_fn = f32(l.hc_ffn_fn);
     w.hc_ffn_base = f32(l.hc_ffn_base);
     w.hc_ffn_scale = f32(l.hc_ffn_scale);
-    if (l.cmp_kv) w.cmp_kv = f32(eng.w32(l.cmp_kv));  // the f32 copies (see Engine::f32w)
-    if (l.cmp_gate) w.cmp_gate = f32(eng.w32(l.cmp_gate));
+    w.cmp_kv = f32(l.cmp_kv);  // bf16 in the file; the compressor pools in fp32
+    w.cmp_gate = f32(l.cmp_gate);
     w.cmp_norm = f32(l.cmp_norm);
-    if (l.idx_k) w.idx_k = f32(eng.w32(l.idx_k));
+    w.idx_k = f32(l.idx_k);
     w.idx_k_norm = f32(l.idx_k_norm);
-    w.idx_proj = l.idx_proj ? (const uint16_t*)l.idx_proj->data : nullptr;
+    w.idx_proj = bf16(l.idx_proj);
     w.engram_gate = f32(l.engram_gate);
     w.freqs = freqs_buf + (l.kind.ratio ? RD2 : 0);
   }
   gguf_free(g);
-  cpu_moe.reset(new CpuMoeKernel(hp.n_embd, hp.n_ff_exp, hp.n_expert_used, eng.opt.n_threads));
+  out_w = bf16(m.output);
+  out_norm = f32(m.output_norm);
+  fprintf(stderr, "# runtime: %s of small weights on GPU %d\n", fmt_bytes((double)small_bytes).c_str(), opt.gpu);
+  cpu_moe.reset(new CpuMoeKernel(hp.n_embd, hp.n_ff_exp, hp.n_expert_used, opt.n_threads));
 
   const int E = hp.n_embd, HC = hp.hc_mult, HD = hp.head_dim, NH = hp.n_head;
   h = dalloc<float>(E * HC);
@@ -196,24 +217,40 @@ Runtime::Runtime(Engine& e, const std::string& fp8_path, const std::map<int, int
   erows = dalloc<float>(hp.engram_cols() * hp.engram_dim);
   ekv = dalloc<float>((size_t)E * (HC + 1));
   {
-    std::vector<int> v(eng.opt.max_ctx);
+    std::vector<int> v(opt.max_ctx);
     for (int i = 0; i < (int)v.size(); i++) v[i] = i;
     iota = dalloc<int>(v.size());
     CHECK(hipMemcpy(iota, v.data(), v.size() * 4, hipMemcpyHostToDevice));
   }
   for (int L : hp.index_source_layers)
-    if (L < hp.n_layer && eng.lay[L].loaded) topk_buf[L] = dalloc<int>(hp.idx_topk);
+    if (L < hp.n_layer && m.layers[L].loaded) topk_buf[L] = dalloc<int>(hp.idx_topk);
+  // the sequence state, zeroed (masked-out slots must hold finite values: 0 x NaN would leak)
+  S.resize(hp.n_layer);
+  for (int L = 0; L < hp.n_layer; L++) {
+    const LayerKind& k = m.layers[L].kind;
+    if (!m.layers[L].loaded) continue;
+    S[L].win = dalloc<float>((size_t)hp.window * HD);
+    if (k.kv_source) {
+      const int r = k.ratio;
+      if (r > 1) {
+        S[L].cmp_kv = dalloc<float>((size_t)r * HD);
+        S[L].cmp_score = dalloc<float>((size_t)r * HD);
+      }
+      S[L].comp = dalloc<float>((size_t)opt.max_ctx / r * HD);
+      S[L].idx_k = dalloc<float>((size_t)opt.max_ctx / r * hp.idx_dim);
+    }
+  }
   CHECK(hipHostMalloc(&h_yr, E * 4, 0));
   CHECK(hipHostMalloc(&h_erows, hp.engram_cols() * hp.engram_dim * 4, 0));
-  if (eng.opt.max_ctx > kTopkMaxN) throw std::runtime_error("runtime: --max-ctx above the top-k kernel's limit");
+  if (opt.max_ctx > kTopkMaxN) throw std::runtime_error("runtime: --max-ctx above the top-k kernel's limit");
   CHECK(hipEventCreateWithFlags(&ev_staged, hipEventDisableTiming));
 
   // routed experts resident in HBM, for the requested layers
-  const int home = eng.opt.gpu;
+  const int home = opt.gpu;
   auto t_up = Clock::now();
   for (auto [L, dev] : moe_map) {
-    if (L < 0 || L >= hp.n_layer || !eng.lay[L].loaded) throw std::runtime_error("--gpu-moe: no layer " + std::to_string(L));
-    const Layer& hl = eng.m.layers[L];
+    if (L < 0 || L >= hp.n_layer || !m.layers[L].loaded) throw std::runtime_error("--gpu-moe: no layer " + std::to_string(L));
+    const Layer& hl = m.layers[L];
     GpuMoeLayer g;
     g.dev = dev;
     CHECK(hipSetDevice(dev));
@@ -257,8 +294,11 @@ Runtime::~Runtime() {
       (void)hipStreamDestroy(g.st);
     }
   }
-  (void)hipSetDevice(eng.opt.gpu);
+  (void)hipSetDevice(opt.gpu);
   (void)hipEventDestroy(ev_staged);
+  for (void* p : owned) (void)hipFree(p);
+  for (const LayerState& st : S)
+    for (float* p : {st.win, st.cmp_kv, st.cmp_score, st.comp, st.idx_k}) if (p) (void)hipFree(p);
   for (void* p : {(void*)h, (void*)h2, (void*)pre, (void*)a_pre, (void*)a_post, (void*)a_comb, (void*)f_pre, (void*)f_post,
                   (void*)f_comb, (void*)mixes, (void*)x, (void*)t1, (void*)qr, (void*)q, (void*)kvv, (void*)o, (void*)oa,
                   (void*)y, (void*)ysh, (void*)yr, (void*)logits_d, (void*)partial, (void*)A.q, (void*)A.s, (void*)B.q, (void*)B.s, (void*)cmp_kvn,
@@ -308,10 +348,10 @@ void Runtime::tap(Taps* taps, const char* name, const float* d, std::vector<int6
 }
 
 void Runtime::engram(int L) {
-  const Layer& l = eng.lay[L];
+  const Layer& l = m.layers[L];
   const int n_cols = hp.engram_cols(), D = hp.engram_dim;
   const std::vector<int32_t> rows = engram_rows(hp, hist, l.kind.engram, pos);
-  const ggml_tensor* tab = eng.m.engram_table;  // host mmap, mxfp8
+  const ggml_tensor* tab = m.engram_table;  // host mmap, mxfp8
   const auto to_float = ggml_get_type_traits(tab->type)->to_float;
   for (int c = 0; c < n_cols; c++) to_float((const char*)tab->data + (size_t)rows[c] * tab->nb[1], h_erows + c * D, D);
   CHECK(hipMemcpyAsync(erows, h_erows, n_cols * D * 4, hipMemcpyHostToDevice, s));
@@ -323,7 +363,7 @@ void Runtime::engram(int L) {
 
 void Runtime::attention(int L, const float* xin, float* out) {
   const LayerW& w = W[L];
-  const LayerKind& k = eng.lay[L].kind;
+  const LayerKind& k = m.layers[L].kind;
   const int HD = hp.head_dim, NH = hp.n_head, RD = hp.rope_dim, WIN = hp.window, E = hp.n_embd;
   const float eps = hp.rms_eps;
 
@@ -336,7 +376,7 @@ void Runtime::attention(int L, const float* xin, float* out) {
   k_rope(q, NH, HD, RD, w.freqs, pos, false, s);
   mark("attn.kv");
   gemv8(w.kv, A, kvv);
-  float* ring = (float*)eng.st.win[L]->data;
+  float* ring = S[L].win;
   k_kv_finish(kvv, w.kv_norm, HD, RD, w.freqs, pos, eps, ring + (size_t)(pos % WIN) * HD, s);
 
   const int* topk = nullptr;
@@ -350,8 +390,8 @@ void Runtime::attention(int L, const float* xin, float* out) {
       const float* latent = nullptr;
       if (r > 1) {
         k_gemv_f32(w.cmp_gate, HD, E, xin, cmp_sc, partial, s);
-        float* kv_state = (float*)eng.st.cmp_kv.at(L)->data;
-        float* sc_state = (float*)eng.st.cmp_score.at(L)->data;
+        float* kv_state = S[L].cmp_kv;
+        float* sc_state = S[L].cmp_score;
         CHECK(hipMemcpyAsync(kv_state + (size_t)(pos % r) * HD, cmp_kvn, HD * 4, hipMemcpyDeviceToDevice, s));
         CHECK(hipMemcpyAsync(sc_state + (size_t)(pos % r) * HD, cmp_sc, HD * 4, hipMemcpyDeviceToDevice, s));
         if ((pos + 1) % r == 0) {
@@ -370,24 +410,24 @@ void Runtime::attention(int L, const float* xin, float* out) {
         k_rms_norm(ik, w.idx_k_norm, ik, hp.idx_dim, 1, eps, s);
         k_rope(ik, 1, hp.idx_dim, RD, w.freqs, lpos, false, s);
         k_fq4(ik, hp.idx_dim, false, s);
-        float* idx_cache = (float*)eng.st.idx_k.at(L)->data;
+        float* idx_cache = S[L].idx_k;
         CHECK(hipMemcpyAsync(idx_cache + (size_t)gi * hp.idx_dim, ik, hp.idx_dim * 4, hipMemcpyDeviceToDevice, s));
         k_rope(lat, 1, HD, RD, w.freqs, lpos, false, s);
         k_fq4(lat, HD, true, s);
-        float* comp_cache = (float*)eng.st.comp.at(L)->data;
+        float* comp_cache = S[L].comp;
         CHECK(hipMemcpyAsync(comp_cache + (size_t)gi * HD, lat, HD * 4, hipMemcpyDeviceToDevice, s));
       }
     }
     const int n_comp = (pos + 1) / r;
     K = std::min(hp.idx_topk, n_comp);
-    comp = (const float*)eng.st.comp.at(k.kv_from)->data;
+    comp = S[k.kv_from].comp;
     mark("attn.indexer");
     if (k.index_source && K > 0) {  // Indexer.forward, one query
       gemv8(w.idx_q_b, B, iq);
       k_rope(iq, hp.idx_heads, hp.idx_dim, RD, w.freqs, pos, false, s);
       k_fq4(iq, hp.idx_heads * hp.idx_dim, false, s);
       k_gemv_bf16(w.idx_proj, hp.idx_heads, E, xin, iw, partial, s);
-      const float* keys = (const float*)eng.st.idx_k.at(k.kv_from)->data;
+      const float* keys = S[k.kv_from].idx_k;
       k_index_scores(iq, hp.idx_heads, hp.idx_dim, keys, n_comp, iw, 1.0f / sqrtf((float)hp.idx_dim) / sqrtf((float)hp.idx_heads),
                      iscore, s);
       if (K == n_comp) {
@@ -436,7 +476,7 @@ void Runtime::moe(int L, const float* xin, float* out, Taps* taps) {
               hp.swiglu_clamp[L], g->d_y, g->scratch, g->st);
       CHECK(hipMemcpyAsync(g->h_y, g->d_y, E * 4, hipMemcpyDeviceToHost, g->st));
       CHECK(hipEventRecord(g->done, g->st));
-      CHECK(hipSetDevice(eng.opt.gpu));
+      CHECK(hipSetDevice(opt.gpu));
     }
   }
   mark("ffn.shared");
@@ -456,7 +496,7 @@ void Runtime::moe(int L, const float* xin, float* out, Taps* taps) {
     CHECK(hipEventSynchronize(ev));
     last.wait_ms += ms_since(t0);
     auto t1c = Clock::now();
-    const Layer& hl = eng.m.layers[L];  // host tensors: the experts live in the mmap
+    const Layer& hl = m.layers[L];  // host tensors: the experts live in the mmap
     cpu_moe->forward(CpuExperts{hl.gate_exps, hl.up_exps, hl.down_exps, hp.swiglu_clamp[L]}, h_moe.x, h_moe.ids, h_moe.w,
                      hp.n_expert_used, h_yr);
     last.cpu_moe_ms += ms_since(t1c);
@@ -479,7 +519,7 @@ void Runtime::block(int L, Taps* taps) {
   const int E = hp.n_embd, HC = hp.hc_mult;
   const float eps = hp.rms_eps;
   mark("engram");
-  if (eng.lay[L].kind.engram >= 0) engram(L);
+  if (m.layers[L].kind.engram >= 0) engram(L);
   tap(taps, "h_in", h, {E, HC, 1});
   mark("hc");
   // each sublayer's mixes give the next sublayer's input mix (see Engine::block)
@@ -504,8 +544,8 @@ void Runtime::block(int L, Taps* taps) {
   CHECK(hipMemcpyAsync(pre, f_pre, HC * 4, hipMemcpyDeviceToDevice, s));
   tap(taps, "h_out", h, {E, HC, 1});
   tap(taps, "pre_out", pre, {HC, 1});
-  if (taps && eng.lay[L].kind.index_source && topk_cur.count(L)) {
-    const int n_comp = (pos + 1) / eng.lay[L].kind.ratio, K = std::min(hp.idx_topk, n_comp);
+  if (taps && m.layers[L].kind.index_source && topk_cur.count(L)) {
+    const int n_comp = (pos + 1) / m.layers[L].kind.ratio, K = std::min(hp.idx_topk, n_comp);
     Tap t;
     t.ne = {K, 1};
     t.i.resize(K);
@@ -518,9 +558,9 @@ void Runtime::block(int L, Taps* taps) {
 // ------------------------------------------------------------------ entry points
 
 void Runtime::begin_step(int32_t tok) {
-  pos = eng.st.n_past;
+  pos = n_past_;
   token = tok;
-  hist = eng.st.tokens;
+  hist = tokens_;
   hist.push_back(tok);
   topk_cur.clear();
   last = Times{};
@@ -529,8 +569,8 @@ void Runtime::begin_step(int32_t tok) {
 
 void Runtime::end_step() {
   CHECK(hipStreamSynchronize(s));
-  eng.st.n_past++;
-  eng.st.tokens.push_back(token);
+  n_past_++;
+  tokens_.push_back(token);
 }
 
 Taps Runtime::run_layer(int L, const std::vector<float>& h_in, const std::vector<float>& pre_in) {
@@ -554,7 +594,7 @@ std::vector<float> Runtime::decode(int32_t tok, bool want_logits) {
   const int E = hp.n_embd, HC = hp.hc_mult;
   // embedding (bf16 row of the host table) into hc copies; the first block's pre-mix is copy 0
   std::vector<float> emb(E), one_hot(HC, 0.0f);
-  const ggml_bf16_t* row = (const ggml_bf16_t*)((const char*)eng.m.tok_embd->data + (size_t)tok * eng.m.tok_embd->nb[1]);
+  const ggml_bf16_t* row = (const ggml_bf16_t*)((const char*)m.tok_embd->data + (size_t)tok * m.tok_embd->nb[1]);
   for (int i = 0; i < E; i++) emb[i] = ggml_bf16_to_fp32(row[i]);
   one_hot[0] = 1.0f;
   CHECK(hipMemcpyAsync(x, emb.data(), E * 4, hipMemcpyHostToDevice, s));
@@ -569,8 +609,8 @@ std::vector<float> Runtime::decode(int32_t tok, bool want_logits) {
   // head: collapse with the last pre-mix, norm, logits
   mark("head");
   k_hc_pre(h, pre, E, x, s);
-  k_rms_norm(x, (const float*)eng.out_norm_w->data, x, E, 1, hp.rms_eps, s);
-  k_gemv_bf16((const uint16_t*)eng.out_w->data, hp.n_vocab, E, x, logits_d, partial, s);
+  k_rms_norm(x, out_norm, x, E, 1, hp.rms_eps, s);
+  k_gemv_bf16(out_w, hp.n_vocab, E, x, logits_d, partial, s);
   std::vector<float> logits(hp.n_vocab);
   mark("end");
   CHECK(hipMemcpyAsync(logits.data(), logits_d, logits.size() * 4, hipMemcpyDeviceToHost, s));

@@ -1,15 +1,17 @@
 // ds-completion: DeepSeek-V4.1-Flash text completion.
 //
 //   ds-completion -m <model-00001-of-000NN.gguf> -p "prompt" [--chat | --think] [-n 128]
-//                 [-t 16] [--no-quant] [--max-ctx 4096] [--gpu D]
+//                 [-t 16] [--no-quant] [--max-ctx 4096]
+//                 [--rt <dense-fp8.gguf> [--gpu D] [--gpu-moe dev:layers,...] [--profile]]
 //
 // The prompt is fed as one chunk (prefill), then one token per step, greedy. --chat wraps the
 // prompt as one user turn in the model's chat format without thinking, --think with it (the
 // strings encoding/encoding.py produces); otherwise the prompt is raw text after BOS.
-// Only the tokenizer comes from libllama (vocab-only load); the forward pass is forward.cpp.
-// --gpu D (bin-hip build): the dense weights and the state on GPU D, routed experts on the CPU.
-// --rt <dense-fp8.gguf> (with --gpu): every token through the own runtime (hip/rt.h, exact
-// fp8), the prompt one token at a time; the Engine only holds the state and small weights.
+// Only the tokenizer comes from libllama (vocab-only load).
+// Without --rt: everything on the CPU through the ggml Engine (forward.cpp), the prompt as one
+// chunk. --rt <dense-fp8.gguf> (bin-hip build): every token through the own runtime (hip/rt.h:
+// dense part on GPU D in exact fp8, routed experts on the CPU or, with --gpu-moe, on GPUs), the
+// prompt one token at a time.
 
 #include "forward.h"
 #include "llama.h"
@@ -22,6 +24,7 @@
 #include <cstdio>
 #include <cstring>
 #include <map>
+#include <memory>
 #include <string>
 
 using Clock = std::chrono::steady_clock;
@@ -48,6 +51,8 @@ int main(int argc, char** argv) {
   std::string model_path, prompt, mode = "raw", rt_path;
   int n_predict = 128;
   Options opt;
+  int gpu = 0;
+  bool profile = false;
   std::map<int, int> gpu_moe;  // layer -> device holding all its experts (runtime only)
   for (int i = 1; i < argc; i++) {
     std::string a = argv[i];
@@ -58,8 +63,7 @@ int main(int argc, char** argv) {
     else if (a == "--think") mode = "think";
     else if (a == "-n") n_predict = atoi(next());
     else if (a == "-t") opt.n_threads = atoi(next());
-    else if (a == "--gpu") opt.gpu = atoi(next());
-    else if (a == "--gpu-exact") opt.gpu_exact_quant = true;
+    else if (a == "--gpu") gpu = atoi(next());
     else if (a == "--gpu-moe") {  // dev:layers[,dev:layers...], layers like 21-24
       for (char* q = (char*)next(); *q;) {
         const int dev = (int)strtol(q, &q, 10);
@@ -70,15 +74,14 @@ int main(int argc, char** argv) {
         if (*q == ',') q++;
       }
     }
-    else if (a == "--profile") opt.profile = true;
+    else if (a == "--profile") profile = true;
     else if (a == "--rt") rt_path = next();
-    else if (a == "--debug-skip-routed") opt.debug_skip_routed = true;
     else if (a == "--no-quant") opt.exact_quant = false;
     else if (a == "--max-ctx") opt.max_ctx = atoi(next());
     else { fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
   }
   if (model_path.empty() || prompt.empty()) {
-    fprintf(stderr, "usage: ds-completion -m <model.gguf> -p \"prompt\" [--chat|--think] [-n N] [-t N] [--no-quant] [--max-ctx N] [--gpu D]\n");
+    fprintf(stderr, "usage: ds-completion -m <model.gguf> -p \"prompt\" [--chat|--think] [-n N] [-t N] [--no-quant] [--max-ctx N] [--rt dense-fp8.gguf [--gpu D] [--gpu-moe dev:layers,...] [--profile]]\n");
     return 2;
   }
 
@@ -108,26 +111,27 @@ int main(int argc, char** argv) {
     fprintf(stderr, "load failed: %s\n", e.what());
     return 1;
   }
-  if (!rt_path.empty()) opt.runtime = true;
-  Engine eng(m, opt);
+  std::unique_ptr<Engine> eng;
 #ifdef DS_RUNTIME
   std::unique_ptr<Runtime> rt;
   if (!rt_path.empty()) {
-    rt.reset(new Runtime(eng, rt_path, gpu_moe));
-    rt->profile = opt.profile;
+    if (!opt.exact_quant) { fprintf(stderr, "--no-quant is CPU only\n"); return 2; }
+    rt.reset(new Runtime(m, RtOptions{gpu, opt.n_threads, opt.max_ctx}, rt_path, gpu_moe));
+    rt->profile = profile;
   }
 #else
   if (!rt_path.empty()) { fprintf(stderr, "--rt needs the bin-hip build\n"); return 2; }
 #endif
+  if (rt_path.empty()) eng.reset(new Engine(m, opt));
   const double t_load = std::chrono::duration<double>(Clock::now() - t0).count();
   fprintf(stderr, "# loaded in %.1f s; prompt %zu tokens; fake-quant %s; %d threads\n", t_load, toks.size(),
-          (opt.exact_quant && opt.gpu < 0) ? "on" : "off", opt.n_threads);
+          opt.exact_quant ? "on" : "off", opt.n_threads);
 
   auto t1 = Clock::now();
 #ifdef DS_RUNTIME
-  std::vector<float> logits = rt ? rt->prefill(toks) : eng.forward(toks);
+  std::vector<float> logits = rt ? rt->prefill(toks) : eng->forward(toks);
 #else
-  std::vector<float> logits = eng.forward(toks);
+  std::vector<float> logits = eng->forward(toks);
 #endif
   const double t_pp = std::chrono::duration<double>(Clock::now() - t1).count();
   const int eos = llama_vocab_eos(vocab);
@@ -144,7 +148,7 @@ int main(int argc, char** argv) {
 #ifdef DS_RUNTIME
     if (rt) {
       logits = rt->decode(next);
-      if (opt.profile) {
+      if (profile) {
         fprintf(stderr, "\n# step %d: %.1f ms (cpu experts %.1f, waiting for the GPU %.1f); GPU timeline:", n_gen,
                 rt->last.total_ms, rt->last.cpu_moe_ms, rt->last.wait_ms);
         for (auto& [g, ms] : rt->last_groups) fprintf(stderr, " %s %.1f", g.c_str(), ms);
@@ -152,17 +156,11 @@ int main(int argc, char** argv) {
       continue;
     }
 #endif
-    logits = eng.forward({next});
-    if (opt.profile) {
-      const Profile& p = eng.last_profile;
-      fprintf(stderr, "\n# step %d: %.1f ms = gpu %.1f (%d runs, %d ops) + cpu %.1f (%d runs, %d ops)", n_gen,
-              p.total_ms, p.gpu_ms, p.gpu_runs, p.gpu_nodes, p.cpu_ms, p.cpu_runs, p.cpu_nodes);
-    }
+    logits = eng->forward({next});
   }
   const double t_tg = std::chrono::duration<double>(Clock::now() - t2).count();
   printf("\n");
   fflush(stdout);
-  if (opt.gpu >= 0) fprintf(stderr, "# graph splits per step: %d\n", eng.last_splits);
   fprintf(stderr, "# prompt: %zu tokens in %.2f s = %.2f t/s; generation: %d tokens in %.2f s = %.2f t/s\n",
           toks.size(), t_pp, toks.size() / t_pp, n_gen, t_tg, n_gen > 0 ? n_gen / t_tg : 0.0);
   llama_model_free(tok_model);

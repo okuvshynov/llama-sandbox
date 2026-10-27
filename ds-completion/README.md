@@ -20,14 +20,14 @@ it and what it does now: [QUICKSTART.md](QUICKSTART.md).
 make                                      # links the fork's CPU ggml (static)
 M=~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf
 bin/ds-completion -m $M -p "Hello, how are you?" --chat -n 64    # or --think, or raw text
-make HIP=1   # -> bin-hip/, needs the fork's build-hip (see Step 4)
-bin-hip/ds-completion -m $M -p "..." --chat --gpu 0 [--profile]   # dense part on GPU 0
+make HIP=1   # -> bin-hip/: also the own GPU runtime (ROCm 6.3.4; same CPU fork libraries)
 bin/fp8pack -m $M -o ~/llms/ds-1017-fp8/dense-fp8.gguf            # fp8 repack (PLAN.md B0), 20 s
 bin-hip/bench-fp8 ~/llms/ds-1017-fp8/dense-fp8.gguf [--ms 1,4] [--sweep]  # fp8 GEMV (B1)
 F8=~/llms/ds-1017-fp8/dense-fp8.gguf
-bin-hip/ds-completion -m $M -p "..." --chat --gpu 0 --rt $F8 [--profile]   # own decode runtime
-bin-hip/ds-test -m $M -g data/golden/hello-fp32 --gpu 0 --runtime $F8      # its per-layer gate
-bin-hip/ds-test -m $M -g data/golden/hello-fp32-nq --gpu 0 --no-quant --determinism  # bitwise repeatability
+bin-hip/ds-completion -m $M -p "..." --chat --rt $F8 [--gpu 0] [--profile]   # own GPU runtime
+bin-hip/ds-test -m $M -g data/golden/hello-fp32 --runtime $F8 [--per-token]  # its per-layer gate
+bin-hip/ds-test -m $M -g data/golden/hello --runtime $F8 --e2e data/ds/x.f32  # its end-to-end logits
+bin/ds-test -m $M -g data/golden/hello-fp32-nq --no-quant --determinism  # bitwise repeatability (CPU)
 bin-hip/bench-kernels                                                    # each runtime kernel alone
 bin/bench-cpu-moe -m $M [-t 32] [--tokens 5]                             # the CPU expert kernel vs ggml
 bin-hip/bench-fp4-moe -m $M [--layer 20] [--dev 0]                       # one layer's experts in HBM
@@ -778,3 +778,28 @@ Speed (haiku prompt, 12 tokens, sclk level 2, 32 threads; `results/rt-prefill-sp
   it is decoded. Batching prompt tokens (each weight read once for several tokens) is PLAN F.
 - **The ggml GPU path** (`--gpu` without `--rt`) still exists, but nothing in the runtime
   depends on it any more.
+
+## Step 11: cleanup - ggml's GPU path removed
+
+Since step 10 nothing used ggml's GPU backend, so it is gone:
+
+- **Engine (`forward.cpp`) is the CPU path only:** no `--gpu` mode, scheduler, GPU weight
+  copies, `--gpu-exact`, `--profile` or `--debug-skip-routed`.
+- **Runtime (`hip/rt.cpp`) is self-contained:** it takes the Model (`RtOptions{gpu, n_threads,
+  max_ctx}`), uploads the small weights itself (1.75 GiB; bf16 compressor and indexer-key
+  weights converted to f32), and keeps the sequence state in its own device buffers.
+- **Build:** `make HIP=1` links the fork's static CPU libraries like `make`; the fork's
+  `build-hip` and `patches/fork-hip-ballot-sync.patch` are no longer needed.
+  `bench-ggml-bf16` and `test-matmul-prec` (measurements of ggml's GPU matmul, results in steps
+  4 and 6) are removed.
+- **CLI:** `--rt <dense-fp8.gguf>` selects the GPU runtime, `--gpu D` its die (default 0);
+  without `--rt` everything runs on the CPU.
+
+Re-run at sclk level 2:
+
+- **Gate:** every per-layer error identical to step 10.
+- **End-to-end logits:** bit-identical to step 10.
+- **Speed** (`results/rt-cleanup-speed.txt`): decode 9.5 t/s, 12.2 t/s with 15 expert layers on
+  GPUs (step 10: 10.0 / 12.0, run-to-run noise). CPU-only path 3.55 t/s, as before.
+
+Steps 4-6 above describe the removed ggml GPU path as it was; their numbers stay as history.
