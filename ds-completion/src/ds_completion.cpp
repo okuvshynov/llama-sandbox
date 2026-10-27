@@ -106,6 +106,14 @@ int main(int argc, char** argv) {
   else text = bos + prompt;
   std::vector<int32_t> toks = tokenize(vocab, text);
 
+  if ((int)toks.size() >= opt.max_ctx) {
+    fprintf(stderr, "prompt is %zu tokens; --max-ctx is %d\n", toks.size(), opt.max_ctx);
+    return 1;
+  }
+  if ((int)toks.size() + n_predict > opt.max_ctx) {
+    n_predict = opt.max_ctx - (int)toks.size();
+    fprintf(stderr, "# generation capped at %d tokens by --max-ctx %d\n", n_predict, opt.max_ctx);
+  }
   Model m;
   auto t0 = Clock::now();
   try {

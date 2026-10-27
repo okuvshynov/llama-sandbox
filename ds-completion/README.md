@@ -824,3 +824,44 @@ Steps 4-6 above describe the removed ggml GPU path as it was; their numbers stay
   counter): a decode step issues ~1,500 kernel launches (~37 per layer) and ~136 small copies.
   The dispatch floor is ~2 us per launch. HIP graph replay saves only 0.1-2 us per launch on
   this ROCm, so only fusion (fewer launches) helps: an estimated ~2-3 ms per step (3-4%).
+
+## Step 13: routing statistics (30 prompts) - an adaptive expert cache is the way
+
+`--log-routing` records every token's 6 experts per layer; `scripts/routing-study.sh` ran the
+30 prompts of `prompts/routing-study.tsv` (8 categories: code, math with thinking, story, fact,
+chat, Chinese, Ukrainian, translation, plus 2 long-document prompts), up to 1,024 generated
+tokens each: 20,919 generated tokens (`data/routing/study/`, not in git).
+`scripts/route_stats.py` analyzes them (`results/routing-study.txt`; with prompt tokens:
+`results/routing-study-with-prompts.txt`).
+
+Capacity for experts after the dense part (~9 GB) on die 0, at 18.8 MB per expert:
+64 GB -> 2,925 (19%), 128 GB (this machine) -> 6,329 (41%), 256 GB (two machines) -> 13,137 (86%).
+
+Hit rate (share of chosen experts served from HBM) on a held-out prompt; estimated t/s in brackets
+(35 ms GPU + per layer max(CPU misses x 0.27 ms, GPU hits x 0.065 ms / 4 dies)):
+
+| how the GPU set is chosen | 64 GB | 128 GB | 256 GB |
+|---|---|---|---|
+| uniform, no statistics | 19% (11.4) | 41% (13.7) | 86% (22.5) |
+| fixed: top experts of the other prompts | 44% (14.0) | 71% (18.7) | 96% (25.8) |
+| fixed: top experts of the other categories | 33% (12.7) | 59% (16.2) | 89% (23.9) |
+| **adaptive: LRU warm-started with the other prompts' set** | **85% (22.2)** | **95% (25.8)** | 99.6% (25.7) |
+| experts loaded per token (adaptive) | 37 | 11 | 1 |
+| bound: the prompt's own top experts | 87% | 98% | 100% |
+
+- **Within a prompt routing is concentrated** (~86 of 384 experts per layer cover 90%), **across
+  prompts it is broad** (212 for 90%). Categories have their own experts: code, math and Chinese
+  transfer worst from other prompts (31-62% at 128 GB), stories and chat best (77-86%).
+- **Temporal:** recent usage beats any fixed set from other prompts. A cold LRU reaches 94% at
+  128 GB (15 loads per token); the top of the last 256-1,024 tokens 94% (12-15 loads); a
+  64-token window is too short (88%, 30 loads). Drift within a prompt is small: the first
+  quarter's set catches 74-95% of the last quarter (code drifts most).
+- **Loads are affordable at 128 GB:** 11 per token = ~210 MB, ~4 GB/s at 50 ms per step, spread
+  over 4 GPU links. At 64 GB, 37 per token (~13 GB/s) is borderline.
+- **At 256 GB a fixed set is enough** (96%): the two-machine pipeline split would not need
+  adaptation.
+- Prompt tokens included (long documents weigh in): the same picture, a few points lower
+  (adaptive 94.8% at 128 GB).
+
+Also fixed: prompts longer than `--max-ctx` ran past the runtime's caches and crashed. The
+runtime now refuses positions past `--max-ctx`, and the CLI caps generation to fit.

@@ -1,0 +1,94 @@
+# expert 18.80 MB; capacity after 9 GB dense: 64 GB -> 2925 experts (19%), 128 GB -> 6329 experts (41%), 256 GB -> 13137 experts (86%)
+# hits/misses count chosen experts (240 per token); est t/s: 35 ms GPU + per layer max(CPU misses x 0.27 ms, GPU hits x 0.065 ms / 4 dies)
+# 30 log(s), 20919 tokens (generated)
+
+## concentration (all tokens pooled)
+experts per layer covering 50%, 80%, 90%, 99%, used at all: median [61, 154, 212, 327, 383], min [52, 139, 194, 302, 377], max [91, 200, 259, 351, 384]
+(uniform routing would need 192, 307, 345, 380 of 384)
+
+## static resident set: hit rate (est t/s)
+policy                               64 GB            128 GB            256 GB
+static-oracle                54.9% (15.6)     80.5% (21.0)     99.0% (25.7)
+static 1st half -> 2nd       79.9% (20.8)     92.8% (25.2)     98.7% (25.7)
+uniform (no stats)           19.0% (11.4)     41.2% (13.7)     85.5% (22.5)
+
+## held-out prompts: hit rate per prompt (128 GB), and pooled at each budget
+prompt            category    tokens  own (bound)  other prompts  other categories
+chat-advice       chat           826        98.5%          81.8%             76.3%
+chat-compare      chat           841        98.2%          81.0%             78.5%
+chat-recipe       chat           663        97.7%          70.8%             63.4%
+chat-travel       chat           937        98.1%          68.9%             60.4%
+code-lru          code          1023        95.7%          61.9%             51.1%
+code-parser       code          1023        97.2%          48.9%             31.4%
+code-review       code           751        96.3%          68.5%             55.4%
+code-rust         code          1023        94.6%          51.0%             35.7%
+doc-qa            doc            755        97.2%          78.8%             67.2%
+doc-summary       doc           1023        95.8%          69.6%             59.8%
+fact-econ         fact           784        98.0%          76.7%             66.2%
+fact-geo          fact           502        99.0%          73.5%             65.7%
+fact-history      fact          1023        98.1%          74.2%             67.4%
+fact-science      fact           619        98.5%          64.6%             61.1%
+math-calc         math           682        98.9%          64.7%             34.3%
+math-prob         math           316        99.6%          71.2%             40.8%
+math-proof        math           582        98.9%          70.4%             44.1%
+math-word         math           236       100.0%          71.7%             54.8%
+reason-logic      math           553        99.0%          71.3%             55.9%
+reason-plan       chat          1023        98.4%          76.3%             70.2%
+story-fable       story          314       100.0%          85.5%             68.0%
+story-noir        story         1023        98.0%          80.6%             69.7%
+story-poem        story          677        99.5%          81.2%             67.0%
+story-sf          story          943        98.8%          84.8%             70.8%
+translate-de-en   translate      183       100.0%          66.5%             65.8%
+translate-en-fr   translate       42       100.0%          50.7%             48.5%
+uk-explain        uk             885        98.5%          77.8%             52.2%
+uk-story          uk            1023        98.9%          79.7%             54.1%
+zh-essay          zh             434        99.6%          49.8%             49.4%
+zh-explain        zh             210       100.0%          54.6%             51.0%
+pooled                                       64 GB                    128 GB                    256 GB
+own prompt (bound)                 86.7% (22.9 t/s)           98.0% (25.8 t/s)          100.0% (25.7 t/s)
+other prompts                      44.0% (14.0 t/s)           71.3% (18.7 t/s)           96.0% (25.8 t/s)
+other categories                   32.8% (12.7 t/s)           58.5% (16.2 t/s)           89.4% (23.9 t/s)
+
+## adaptive: LRU warm-started with the other prompts' hot set; hit rate / experts loaded per token
+start set from                               64 GB                    128 GB                    256 GB
+other prompts                  84.6% (22.2) / 37.0       95.3% (25.8) / 11.2       99.6% (25.7) /  1.0
+other categories               84.6% (22.2) / 37.1       95.2% (25.8) / 11.5       99.5% (25.7) /  1.3
+
+## temporal: hit rate / experts loaded per token (PCIe at ~1 GB per step is ~50 experts)
+policy                               64 GB            128 GB            256 GB
+window-64                     84.0% / 32.3      87.6% / 29.7      87.6% / 29.7
+window-256                    84.2% / 14.3      93.6% / 15.5      94.0% / 14.5
+window-1024                   83.6% / 10.9      93.7% / 11.9      95.1% / 11.7
+lru                           84.3% / 37.8      93.9% / 14.7      95.1% / 11.7
+
+## drift: per file, hit rate of the first quarter's top-C on the last quarter (128 GB)
+data/routing/study/chat-advice.bin: 826 tokens; first->last 95.2%, last->last (oracle) 100.0%
+data/routing/study/chat-compare.bin: 841 tokens; first->last 94.0%, last->last (oracle) 100.0%
+data/routing/study/chat-recipe.bin: 663 tokens; first->last 89.9%, last->last (oracle) 100.0%
+data/routing/study/chat-travel.bin: 937 tokens; first->last 92.4%, last->last (oracle) 99.8%
+data/routing/study/code-lru.bin: 1023 tokens; first->last 77.1%, last->last (oracle) 98.9%
+data/routing/study/code-parser.bin: 1023 tokens; first->last 89.7%, last->last (oracle) 99.6%
+data/routing/study/code-review.bin: 751 tokens; first->last 86.3%, last->last (oracle) 98.2%
+data/routing/study/code-rust.bin: 1023 tokens; first->last 78.2%, last->last (oracle) 98.1%
+data/routing/study/doc-qa.bin: 755 tokens; first->last 92.3%, last->last (oracle) 99.7%
+data/routing/study/doc-summary.bin: 1023 tokens; first->last 87.4%, last->last (oracle) 98.5%
+data/routing/study/fact-econ.bin: 784 tokens; first->last 92.5%, last->last (oracle) 100.0%
+data/routing/study/fact-geo.bin: 502 tokens; first->last 84.5%, last->last (oracle) 100.0%
+data/routing/study/fact-history.bin: 1023 tokens; first->last 93.9%, last->last (oracle) 100.0%
+data/routing/study/fact-science.bin: 619 tokens; first->last 88.5%, last->last (oracle) 100.0%
+data/routing/study/math-calc.bin: 682 tokens; first->last 92.3%, last->last (oracle) 100.0%
+data/routing/study/math-prob.bin: 316 tokens; first->last 79.5%, last->last (oracle) 100.0%
+data/routing/study/math-proof.bin: 582 tokens; first->last 86.5%, last->last (oracle) 100.0%
+data/routing/study/math-word.bin: 236 tokens; first->last 81.6%, last->last (oracle) 100.0%
+data/routing/study/reason-logic.bin: 553 tokens; first->last 89.9%, last->last (oracle) 100.0%
+data/routing/study/reason-plan.bin: 1023 tokens; first->last 93.3%, last->last (oracle) 99.4%
+data/routing/study/story-fable.bin: 314 tokens; first->last 87.2%, last->last (oracle) 100.0%
+data/routing/study/story-noir.bin: 1023 tokens; first->last 90.6%, last->last (oracle) 99.6%
+data/routing/study/story-poem.bin: 677 tokens; first->last 94.8%, last->last (oracle) 100.0%
+data/routing/study/story-sf.bin: 943 tokens; first->last 93.3%, last->last (oracle) 100.0%
+data/routing/study/translate-de-en.bin: 183 tokens; first->last 84.0%, last->last (oracle) 100.0%
+data/routing/study/translate-en-fr.bin: 42 tokens; first->last 74.0%, last->last (oracle) 100.0%
+data/routing/study/uk-explain.bin: 885 tokens; first->last 89.3%, last->last (oracle) 100.0%
+data/routing/study/uk-story.bin: 1023 tokens; first->last 92.8%, last->last (oracle) 100.0%
+data/routing/study/zh-essay.bin: 434 tokens; first->last 91.2%, last->last (oracle) 100.0%
+data/routing/study/zh-explain.bin: 210 tokens; first->last 88.5%, last->last (oracle) 100.0%

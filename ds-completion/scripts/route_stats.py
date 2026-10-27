@@ -3,6 +3,7 @@
 a GPU-resident set of experts could serve, for a given amount of HBM.
 
     ~/venvs/ds-ref/bin/python scripts/route_stats.py data/routing/*.bin [--prompt] [--train a.bin,b.bin]
+        [--cross prompts/routing-study.tsv]
 
 Units: a "slot" is one (token, layer, chosen expert); a token has 40 x 6 = 240. A policy keeps a
 set of (layer, expert) pairs resident; its hit rate is the fraction of slots it serves.
@@ -16,6 +17,9 @@ Policies:
   window-K       at token t, the top-C pairs counted over tokens t-K..t-1 (recent usage);
                  reports the experts that enter the set per token (PCIe loads)
   lru            a least-recently-used cache of C pairs; misses are loads
+  --cross        held-out prompts: for each log, the top-C pairs counted on all *other* logs
+                 (leave-one-prompt-out) and on all logs of *other categories* (leave-one-
+                 category-out; categories from the study's prompt table, by file name)
 """
 import argparse
 import sys
@@ -100,6 +104,25 @@ def lru_policy(keys, C):
     return hits / keys.size, misses / len(keys)
 
 
+def lru_warm(keys, C, prior_counts):
+    """LRU of C pairs, starting full with the top-C pairs of prior_counts (most used = most
+    recent); every miss loads the pair and evicts the least recently used one"""
+    order = np.argsort(prior_counts, kind="stable")[-C:]  # ascending: least used first = LRU end
+    cache = OrderedDict((int(x), True) for x in order)
+    hits = misses = 0
+    for row in keys:
+        for key in row:
+            key = int(key)
+            if key in cache:
+                hits += 1
+                cache.move_to_end(key)
+            else:
+                misses += 1
+                cache[key] = True
+                cache.popitem(last=False)
+    return hits / keys.size, misses / len(keys)
+
+
 def est_tps(hit, L=40, k=6):
     """decode t/s if hits run on GPUs (spread over 4 dies) concurrently with misses on the CPU"""
     per_layer = max((1 - hit) * k * CPU_EXPERT_MS, hit * k * GPU_EXPERT_MS / 4)
@@ -112,6 +135,8 @@ def main():
     ap.add_argument("--prompt", action="store_true", help="include prompt tokens (default: generated only)")
     ap.add_argument("--train", default="", help="comma-separated logs to pick static-train sets from")
     ap.add_argument("--windows", default="16,64,256,1024")
+    ap.add_argument("--cross", default="", help="prompt table (name, category, ...): held-out tests")
+    ap.add_argument("--no-temporal", action="store_true", help="skip the (slow) window / LRU policies")
     a = ap.parse_args()
 
     def load(paths):
@@ -177,7 +202,66 @@ def main():
     uni = [min(1.0, caps[b] / n_pairs) for b in BUDGETS_GB]
     print(f"{'uniform (no stats)':24s}" + "".join(f"{h:>10.1%} ({est_tps(h):4.1f})" for h in uni))
 
+    # 2b. held-out prompts: is a hot set learned on other prompts / categories good for a new one?
+    if a.cross:
+        import os
+        cat = {}
+        for line in open(a.cross, encoding="utf-8"):
+            if line.startswith("#") or not line.strip():
+                continue
+            f = line.rstrip("\n").split("\t")
+            cat[f[0]] = f[1]
+        names = [os.path.basename(p).rsplit(".", 1)[0] for p, _, _, _ in logs]
+        kks = [pairs(d["ids"]) for _, d, _, _ in logs]
+        counts = [np.bincount(kk.ravel(), minlength=n_pairs) for kk in kks]
+        total = np.sum(counts, axis=0)
+        def top_from(cnt, C):
+            res = np.zeros(n_pairs, bool)
+            res[np.argsort(-cnt, kind="stable")[:C]] = True
+            return res
+        print("\n## held-out prompts: hit rate per prompt (128 GB), and pooled at each budget")
+        print(f"{'prompt':18s}{'category':11s}{'tokens':>7s}{'own (bound)':>13s}{'other prompts':>15s}{'other categories':>18s}")
+        pooled = {b: [0.0, 0.0, 0.0] for b in BUDGETS_GB}
+        n_all = 0
+        for i, (nm, kk) in enumerate(zip(names, kks)):
+            c = cat.get(nm, "?")
+            others = total - counts[i]
+            other_cat = np.sum([counts[j] for j in range(len(kks)) if cat.get(names[j], "?") != c], axis=0)
+            row = {}
+            for b in BUDGETS_GB:
+                C = caps[b]
+                hs = (hit_rate(kk, top_from(counts[i], C)), hit_rate(kk, top_from(others, C)),
+                      hit_rate(kk, top_from(other_cat, C)) if np.any(other_cat) else float("nan"))
+                for j in range(3):
+                    pooled[b][j] += hs[j] * len(kk)
+                row[b] = hs
+            n_all += len(kk)
+            h = row[128]
+            print(f"{nm:18s}{c:11s}{len(kk):7d}{h[0]:>13.1%}{h[1]:>15.1%}{h[2]:>18.1%}")
+        print(f"{'pooled':24s}" + "".join(f"{f'{b} GB':>26s}" for b in BUDGETS_GB))
+        for j, lab in enumerate(["own prompt (bound)", "other prompts", "other categories"]):
+            print(f"{lab:24s}" + "".join(f"{pooled[b][j] / n_all:>16.1%} ({est_tps(pooled[b][j] / n_all):4.1f} t/s)"
+                                         for b in BUDGETS_GB))
+        # adapting during the prompt: start from the other prompts' hot set, then LRU
+        print("\n## adaptive: LRU warm-started with the other prompts' hot set; hit rate / experts loaded per token")
+        print(f"{'start set from':24s}" + "".join(f"{f'{b} GB':>26s}" for b in BUDGETS_GB))
+        for lab, which in [("other prompts", "p"), ("other categories", "c")]:
+            cells = []
+            for b in BUDGETS_GB:
+                hit = load = 0.0
+                for i, (nm, kk) in enumerate(zip(names, kks)):
+                    c = cat.get(nm, "?")
+                    prior = (total - counts[i]) if which == "p" else np.sum(
+                        [counts[j] for j in range(len(kks)) if cat.get(names[j], "?") != c], axis=0)
+                    h, l = lru_warm(kk, caps[b], prior)
+                    hit += h * len(kk)
+                    load += l * len(kk)
+                cells.append(f"{hit / n_all:>10.1%} ({est_tps(hit / n_all):4.1f}) /{load / n_all:5.1f}")
+            print(f"{lab:24s}" + "".join(f"{x:>26s}" for x in cells))
+
     # 3. temporal: recent-usage sets and LRU, per file (time order matters), pooled
+    if a.no_temporal:
+        return
     print("\n## temporal: hit rate / experts loaded per token (PCIe at ~1 GB per step is ~50 experts)")
     print(f"{'policy':24s}" + "".join(f"{f'{b} GB':>18s}" for b in BUDGETS_GB))
     for K in [int(x) for x in a.windows.split(",")]:

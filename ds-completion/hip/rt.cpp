@@ -572,6 +572,8 @@ void Runtime::block(int L, Taps* taps) {
 // ------------------------------------------------------------------ entry points
 
 void Runtime::begin_step(int32_t tok) {
+  // the compressed caches and the top-k hold max_ctx positions
+  if (n_past_ >= opt.max_ctx) throw std::runtime_error("runtime: position " + std::to_string(n_past_) + " is past --max-ctx " + std::to_string(opt.max_ctx));
   pos = n_past_;
   token = tok;
   hist = tokens_;

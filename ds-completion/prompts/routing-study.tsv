@@ -1,0 +1,31 @@
+# name	category	mode	prompt (mode: chat | think; "@file[:bytes]" = the file's contents (or first bytes), prefixed by the text after it)
+code-lru	code	chat	Write a thread-safe LRU cache in C++17 with get/put, explain the locking strategy, and include a small test.
+code-parser	code	chat	Implement a recursive-descent parser in Python for arithmetic expressions with + - * / parentheses and unary minus. Include tests.
+code-rust	code	chat	Write a Rust command-line tool that counts word frequencies in a file and prints the top 20, handling Unicode properly.
+code-review	code	chat	Review this JavaScript and point out bugs and improvements: function avg(a){let s=0;for(i=0;i<=a.length;i++)s+=a[i];return s/a.length}
+math-prob	math	think	A bag has 5 red and 7 blue balls. Three are drawn without replacement. What is the probability that at least two are red? Show your reasoning.
+math-proof	math	think	Prove that there are infinitely many primes of the form 4k+3.
+math-word	math	think	A train leaves at 9:00 at 80 km/h; another leaves the same station at 10:30 at 120 km/h on the same track. When and where does the second catch the first?
+math-calc	math	think	Compute the integral of x^2 * e^(-x) from 0 to infinity and explain each step.
+story-sf	story	chat	Write a short science-fiction story about a lighthouse keeper on a planet with two suns.
+story-fable	story	chat	Write a fable in the style of Aesop about a fox, a crow and a lesson about patience.
+story-noir	story	chat	Write the opening chapter of a noir detective novel set in 1940s Lisbon.
+story-poem	story	chat	Write a long poem about the ocean at night, with vivid imagery and a changing rhythm.
+fact-history	fact	chat	Explain the causes and consequences of the fall of the Western Roman Empire.
+fact-science	fact	chat	How do mRNA vaccines work? Explain for an educated non-specialist.
+fact-econ	fact	chat	What is inflation, what causes it, and how do central banks try to control it?
+fact-geo	fact	chat	Describe the geography, climate and economy of Chile.
+chat-advice	chat	chat	I just started a new job and feel overwhelmed. Any practical advice for the first month?
+chat-travel	chat	chat	Plan a 5-day trip to Japan for someone who loves food and hiking, with a day-by-day itinerary.
+chat-recipe	chat	chat	I have chickpeas, spinach, garlic, lemons and rice. What can I cook tonight? Give me a full recipe.
+chat-compare	chat	chat	Should I learn Go or Rust as my next programming language? Compare them honestly.
+zh-essay	zh	chat	请写一篇关于人工智能对教育影响的短文，包括优点和潜在风险。
+zh-explain	zh	chat	用简单的语言解释量子纠缠是什么，并举一个日常生活中的比喻。
+uk-story	uk	chat	Напиши коротке оповідання про старого годинникаря, який живе у Львові.
+uk-explain	uk	chat	Поясни простими словами, як працює блокчейн і де його використовують.
+translate-en-fr	translate	chat	Translate into French, keeping the tone: "The committee met on Tuesday to discuss the budget. After a long debate, they agreed to postpone the decision until more data is available."
+translate-de-en	translate	chat	Translate into English and explain any idioms: "Da haben wir den Salat. Er hat mal wieder um den heißen Brei herumgeredet, und jetzt müssen wir in den sauren Apfel beißen."
+reason-logic	math	think	Five people sit in a row. Alice is not at either end. Bob sits immediately to the right of Carol. Dan is not next to Alice. Eve is at the left end. List all valid arrangements.
+reason-plan	chat	think	I need to move a piano, a sofa and 30 boxes to a third-floor apartment with no elevator by Saturday, with two friends and one van. Make a plan.
+doc-summary	doc	chat	@prompts/ds-v41-readme.md:8000 Summarize the following document in detail, section by section:\n\n
+doc-qa	doc	chat	@prompts/ds-v41-readme.md:8000 Read the following document, then list the five most important technical ideas in it and explain each:\n\n

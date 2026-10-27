@@ -1,0 +1,55 @@
+# expert 18.80 MB; capacity after 9 GB dense: 64 GB -> 2925 experts (19%), 128 GB -> 6329 experts (41%), 256 GB -> 13137 experts (86%)
+# hits/misses count chosen experts (240 per token); est t/s: 35 ms GPU + per layer max(CPU misses x 0.27 ms, GPU hits x 0.065 ms / 4 dies)
+# 30 log(s), 26805 tokens (prompt + generated)
+
+## concentration (all tokens pooled)
+experts per layer covering 50%, 80%, 90%, 99%, used at all: median [69, 172, 231, 338, 384], min [57, 151, 210, 322, 381], max [98, 208, 266, 355, 384]
+(uniform routing would need 192, 307, 345, 380 of 384)
+
+## static resident set: hit rate (est t/s)
+policy                               64 GB            128 GB            256 GB
+static-oracle                51.4% (15.0)     77.0% (20.1)     98.6% (25.7)
+static 1st half -> 2nd       74.7% (19.5)     90.2% (24.2)     98.7% (25.7)
+uniform (no stats)           19.0% (11.4)     41.2% (13.7)     85.5% (22.5)
+
+## held-out prompts: hit rate per prompt (128 GB), and pooled at each budget
+prompt            category    tokens  own (bound)  other prompts  other categories
+chat-advice       chat           848        98.2%          78.3%             68.9%
+chat-compare      chat           861        97.8%          80.2%             76.1%
+chat-recipe       chat           694        97.0%          69.0%             59.7%
+chat-travel       chat           964        97.7%          67.9%             58.2%
+code-lru          code          1054        95.2%          59.2%             49.7%
+code-parser       code          1052        96.8%          44.9%             31.5%
+code-review       code           794        95.8%          63.7%             52.7%
+code-rust         code          1051        94.2%          50.1%             37.7%
+doc-qa            doc           3221        91.0%          69.3%             50.2%
+doc-summary       doc           3482        91.4%          67.1%             48.8%
+fact-econ         fact           806        97.6%          73.5%             64.4%
+fact-geo          fact           516        98.6%          72.2%             62.5%
+fact-history      fact          1041        97.8%          69.3%             61.3%
+fact-science      fact           638        98.0%          63.3%             60.0%
+math-calc         math           734        97.9%          57.6%             35.5%
+math-prob         math           379        98.0%          72.3%             46.8%
+math-proof        math           629        97.7%          65.9%             44.2%
+math-word         math           310        98.2%          71.0%             57.8%
+reason-logic      math           625        97.7%          70.0%             56.8%
+reason-plan       chat          1088        97.4%          73.1%             65.4%
+story-fable       story          341        99.2%          80.4%             61.1%
+story-noir        story         1044        97.5%          76.0%             63.9%
+story-poem        story          699        99.1%          78.9%             62.2%
+story-sf          story          965        98.4%          80.9%             65.2%
+translate-de-en   translate      233        99.8%          62.9%             61.9%
+translate-en-fr   translate       82       100.0%          57.6%             55.4%
+uk-explain        uk             917        98.3%          75.3%             50.5%
+uk-story          uk            1055        98.6%          75.6%             50.9%
+zh-essay          zh             454        99.2%          49.3%             48.8%
+zh-explain        zh             228       100.0%          51.5%             49.7%
+pooled                                       64 GB                    128 GB                    256 GB
+own prompt (bound)                 82.4% (21.5 t/s)           96.0% (25.8 t/s)          100.0% (25.7 t/s)
+other prompts                      41.3% (13.7 t/s)           68.1% (18.0 t/s)           95.7% (25.8 t/s)
+other categories                   29.3% (12.4 t/s)           54.0% (15.4 t/s)           88.4% (23.5 t/s)
+
+## adaptive: LRU warm-started with the other prompts' hot set; hit rate / experts loaded per token
+start set from                               64 GB                    128 GB                    256 GB
+other prompts                  83.4% (21.8) / 39.9       94.8% (25.8) / 12.6       99.5% (25.7) /  1.2
+other categories               83.3% (21.8) / 40.0       94.7% (25.8) / 12.7       99.4% (25.7) /  1.4
