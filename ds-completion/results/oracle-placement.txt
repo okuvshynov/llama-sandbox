@@ -1,0 +1,28 @@
+== concurrency: no placement (log the run)
+# routed experts: 0.0% on GPUs (0 of 64080)
+# prompt: 12 tokens in 1.25 s = 9.61 t/s; generation: 256 tokens in 27.17 s = 9.42 t/s
+wrote placements/oracle-concurrency.txt: 15360 pairs, 7116 used
+# top 2925 (~64 GB of HBM) serve 86.3% of these tokens (in-sample; held-out is lower, README step 13)
+# top 6329 (~128 GB of HBM) serve 98.8% of these tokens (in-sample; held-out is lower, README step 13)
+# top 13137 (~256 GB of HBM) serve 100.0% of these tokens (in-sample; held-out is lower, README step 13)
+== concurrency: study30 placement
+# routed experts: 81.0% on GPUs (51929 of 64080)
+# prompt: 12 tokens in 0.98 s = 12.29 t/s; generation: 256 tokens in 16.88 s = 15.16 t/s
+== concurrency: oracle placement (its own routing)
+# routed experts: 97.3% on GPUs (62352 of 64080)
+# prompt: 12 tokens in 0.79 s = 15.21 t/s; generation: 256 tokens in 16.14 s = 15.86 t/s
+   completion differs from the logged run
+== code-rust: no placement (log the run)
+# routed experts: 0.0% on GPUs (0 of 67920)
+# prompt: 28 tokens in 2.80 s = 9.98 t/s; generation: 256 tokens in 26.64 s = 9.61 t/s
+wrote placements/oracle-code-rust.txt: 15360 pairs, 8224 used
+# top 2925 (~64 GB of HBM) serve 82.2% of these tokens (in-sample; held-out is lower, README step 13)
+# top 6329 (~128 GB of HBM) serve 97.2% of these tokens (in-sample; held-out is lower, README step 13)
+# top 13137 (~256 GB of HBM) serve 100.0% of these tokens (in-sample; held-out is lower, README step 13)
+== code-rust: study30 placement
+# routed experts: 65.9% on GPUs (44756 of 67920)
+# prompt: 28 tokens in 2.09 s = 13.37 t/s; generation: 256 tokens in 20.39 s = 12.56 t/s
+== code-rust: oracle placement (its own routing)
+# routed experts: 97.3% on GPUs (66077 of 67920)
+# prompt: 28 tokens in 1.80 s = 15.60 t/s; generation: 256 tokens in 16.02 s = 15.98 t/s
+   same completion as the logged run

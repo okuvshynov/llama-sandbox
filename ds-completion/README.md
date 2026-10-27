@@ -894,3 +894,20 @@ a time, and each layer's 6 experts run where they live, at the same time.
   per-layer overhead, slower than the 0.27 ms of a 6-expert call: the CPU kernel on 1-2 experts
   is the next thing to measure), die 0's own expert lists 5.5 (mostly overlapped), waiting for
   the other dies 2.4, dispatch + copy 1.6.
+
+## Step 15: upper bound with perfect knowledge of the prompt (oracle placement)
+
+Each prompt's own routing (logged on the same run) as its placement: 97.3% of routed experts
+on GPUs (`placements/oracle-*.txt`, `results/oracle-placement.txt`; 256 tokens, sclk 2):
+
+| prompt | no placement | study30 placement | oracle placement |
+|---|---|---|---|
+| concurrency (held out) | 9.4 t/s | 15.2 t/s (81%) | 15.9 t/s (97.3%) |
+| code-rust | 9.6 t/s | 12.6 t/s (66%) | 16.0 t/s (97.3%) |
+
+With today's expert path, perfect caching gives ~16 t/s: above ~80% hits the GPU expert path's
+serialization is the limit, not the CPU. Oracle step (~54 ms profiled): dense ~26 ms; routed
+experts on GPUs ~20 ms where the kernels need ~6-10 (die 0's lists run after the shared expert;
+the other dies start only after the host reads the lists; router + dispatch + sum ~5 ms). Rare
+CPU misses cost ~0.9 ms each (thread wake-up; `OMP_WAIT_POLICY=active`: CPU 7.8 -> 2.7 ms per
+step); frequent ones ~0.5 ms each either way (the CPU kernel on 1-2 experts).
