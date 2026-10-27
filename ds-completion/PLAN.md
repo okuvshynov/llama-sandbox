@@ -50,6 +50,49 @@ Features and limits
 | 28 | Full 1017 checkpoint | waiting | download pending (user); needed for item 19 and exact safetensors refs |
 | 29 | Sampling beyond greedy | idea | temperature/top-p; a non-goal so far |
 
+## Expert placement and cache: implementation plan (2026-10-27)
+
+Goal: each layer's chosen experts split into GPU hits (on whichever die holds them) and CPU
+misses, run concurrently. Estimates (README step 13 + unit costs): fixed set ~18 t/s, adaptive
+~22 t/s on one machine.
+
+Phase 1: fixed set, no swapping
+
+1. **Placement file** (`route_stats.py --emit-placement`): top (layer, expert) pairs from the
+   routing logs, sized to each die's free HBM; each layer's hot experts round-robin across dies;
+   die 0 gets fewer. Check: simulated hit rate of that exact placement.
+2. **Expert slots per die:** a pool of expert-sized slots (gate + up + down, 18.8 MB) per die,
+   filled at startup from the mmap; a device table [layer][384] -> (die, slot) or CPU.
+   Check: upload time and memory per die.
+3. **Slot-addressed fp4 kernel:** `fp4_moe` takes (slot, weight) lists whose count (0-6) lives
+   in device memory. Check: exact against the CPU kernel for 0-6 experts.
+4. **Dispatch kernel after the router (die 0):** splits the 6 experts into per-die lists and a
+   CPU list, written into the staging block that already goes to the host in one copy.
+5. **Concurrent execution + fixed-order sum:** die 0 runs its list; dies 1-3 take the block
+   host-staged, run theirs, send results back; the CPU runs only the misses (skipped when 0);
+   die 0 sums die 0 + dies 1-3 + CPU in a fixed order (deterministic).
+6. **Gate:** `ds-test --runtime --placement ...` on all-CPU (must equal today), all-GPU,
+   random, and the real placement.
+7. **Measure:** held-out prompts, live hit rate vs simulated, t/s vs ~18, per-layer CPU vs GPU.
+
+Phase 2: adaptive swapping
+
+8. **Cache manager on the host:** the host already knows each layer's misses; LRU per die
+   picks victim slots.
+9. **Background loads:** a low-priority copy stream per die (mmap -> pinned -> GPU -> repack),
+   with a per-step load budget (e.g. <= 16 experts).
+10. **Safe table updates:** only at step boundaries, stream-ordered; a victim leaves the table
+    before its slot is overwritten, a loaded expert joins only after its copy completes.
+11. **Measure:** live hit rate vs 95%, loads per token vs ~11, the loads' effect on the CPU
+    miss kernel, t/s vs ~22.
+
+Later refinements (each measured): peer copies for die 1 (XGMI pair) instead of host staging;
+a host flag the CPU spins on instead of an event wait (cuts the ~0.07 ms fixed miss cost);
+fewer dies per layer to cut staging; warm start from all 30 prompts.
+
+Risks: the host still syncs once per layer to learn the misses (~40 waits per step); the CPU
+miss kernel on 1-2 experts and the background loads both change the CPU's effective speed.
+
 Details below: the original brainstorm (sections 1-5) and the re-prioritization (section 6).
 
 ## 1. Where a decode token goes today (step 4, `--gpu 0`, 32 threads)
