@@ -23,8 +23,8 @@ CXXFLAGS = -std=c++17 -O2 -g -march=native -fopenmp -Wall -Wextra -Wno-unused-pa
            -I$(FORK)/ggml/include -I$(FORK)/include -Isrc
 LDLIBS   = $(GGML_LIBS) -fopenmp -lpthread -ldl
 
-CORE   = src/model.cpp src/forward.cpp src/fakequant.cpp
-CORE_H = src/model.h src/forward.h src/fakequant.h
+CORE   = src/model.cpp src/forward.cpp src/fakequant.cpp src/cpu_moe.cpp
+CORE_H = src/model.h src/forward.h src/fakequant.h src/cpu_moe.h
 
 # HIP builds: ds-completion and ds-test also carry the own decode runtime (hip/), compiled by
 # hipcc into objects that the g++ link picks up
@@ -35,7 +35,7 @@ RT_FLAGS = -DDS_RUNTIME -D__HIP_PLATFORM_AMD__ -Ihip -I$(ROCM)/include
 RT_LIBS  = $(RT_OBJ) -L$(ROCM)/lib -Wl,-rpath,$(ROCM)/lib -lamdhip64
 endif
 
-all: $(BIN)/ds-completion $(BIN)/ds-inspect $(BIN)/ds-test $(BIN)/test-fakequant $(BIN)/llama-logits $(BIN)/fp8pack
+all: $(BIN)/ds-completion $(BIN)/ds-inspect $(BIN)/ds-test $(BIN)/test-fakequant $(BIN)/llama-logits $(BIN)/fp8pack $(BIN)/bench-cpu-moe
 ifeq ($(HIP),1)
 all: $(BIN)/test-matmul-prec $(BIN)/bench-fp8 $(BIN)/bench-ggml-bf16 $(BIN)/bench-kernels
 endif
@@ -87,6 +87,10 @@ $(BIN)/ds-inspect: src/ds_inspect.cpp src/model.cpp src/model.h
 $(BIN)/fp8pack: src/fp8pack.cpp src/model.cpp src/model.h src/fakequant.cpp src/fakequant.h
 	@mkdir -p $(BIN)
 	$(CXX) $(CXXFLAGS) -o $@ src/fp8pack.cpp src/model.cpp src/fakequant.cpp $(LDLIBS)
+
+$(BIN)/bench-cpu-moe: src/bench_cpu_moe.cpp $(CORE) $(CORE_H)
+	@mkdir -p $(BIN)
+	$(CXX) $(CXXFLAGS) -O3 -o $@ src/bench_cpu_moe.cpp $(CORE) $(LDLIBS)
 
 $(BIN)/test-fakequant: src/test_fakequant.cpp src/fakequant.cpp src/fakequant.h
 	@mkdir -p $(BIN)

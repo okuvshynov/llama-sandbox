@@ -1,5 +1,6 @@
 #include "rt.h"
 
+#include "cpu_moe.h"
 #include "fakequant.h"
 #include "fp8_gemv.h"
 #include "kernels.h"
@@ -55,59 +56,6 @@ static std::vector<float> rope_freqs(int dim, int original_seq_len, float base, 
   }
   return f;
 }
-
-// ------------------------------------------------------------------ routed experts on the CPU
-
-// One layer's routed experts as a ggml CPU graph, built once and reused every step:
-// y = sum_j down_j(fq8(w_j * swiglu_clamp(gate_j(fq8 x), up_j(fq8 x)))) over the 6 routed experts.
-struct CpuMoe {
-  ggml_context* ctx_in = nullptr;
-  ggml_context* ctx = nullptr;
-  ggml_backend_buffer_t in_buf = nullptr;
-  ggml_gallocr_t alloc = nullptr;
-  ggml_cgraph* gf = nullptr;
-  ggml_tensor *x, *ids, *w, *y;
-
-  CpuMoe(ggml_backend_t cpu, const Layer& l, const Hparams& hp, int L) {
-    const int E = hp.n_embd, K = hp.n_expert_used;
-    ggml_init_params pi = {ggml_tensor_overhead() * 4, nullptr, true};
-    ctx_in = ggml_init(pi);
-    x = ggml_new_tensor_2d(ctx_in, GGML_TYPE_F32, E, 1);
-    ids = ggml_new_tensor_2d(ctx_in, GGML_TYPE_I32, K, 1);
-    w = ggml_new_tensor_3d(ctx_in, GGML_TYPE_F32, 1, K, 1);
-    in_buf = ggml_backend_alloc_ctx_tensors(ctx_in, cpu);
-    ggml_init_params p = {ggml_tensor_overhead() * 64 + ggml_graph_overhead(), nullptr, true};
-    ctx = ggml_init(p);
-    ggml_tensor* xq = ggml_reshape_3d(ctx, fq_fp8(ctx, x), E, 1, 1);
-    ggml_tensor* g = ggml_mul_mat_id(ctx, l.gate_exps, xq, ids);
-    ggml_tensor* u = ggml_mul_mat_id(ctx, l.up_exps, xq, ids);
-    ggml_tensor* a = ggml_mul(ctx, ggml_swiglu_clamp(ctx, g, u, hp.swiglu_clamp[L]), w);  // weights before w2
-    ggml_tensor* d = ggml_mul_mat_id(ctx, l.down_exps, fq_fp8(ctx, a), ids);              // [E, K, 1]
-    y = nullptr;
-    for (int j = 0; j < K; j++) {
-      ggml_tensor* dj = ggml_view_2d(ctx, d, E, 1, d->nb[2], (size_t)j * d->nb[1]);
-      y = y ? ggml_add(ctx, y, dj) : dj;
-    }
-    ggml_set_output(y);
-    gf = ggml_new_graph(ctx);
-    ggml_build_forward_expand(gf, y);
-    alloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(cpu));
-    if (!ggml_gallocr_alloc_graph(alloc, gf)) throw std::runtime_error("cpu moe: graph allocation failed");
-  }
-  ~CpuMoe() {
-    ggml_gallocr_free(alloc);
-    ggml_backend_buffer_free(in_buf);
-    ggml_free(ctx);
-    ggml_free(ctx_in);
-  }
-  void run(ggml_backend_t cpu, const float* xh, const int* idh, const float* wh, float* yh) {
-    memcpy(x->data, xh, ggml_nbytes(x));
-    memcpy(ids->data, idh, ggml_nbytes(ids));
-    memcpy(w->data, wh, ggml_nbytes(w));
-    if (ggml_backend_graph_compute(cpu, gf) != GGML_STATUS_SUCCESS) throw std::runtime_error("cpu moe failed");
-    memcpy(yh, y->data, ggml_nbytes(y));
-  }
-};
 
 // ------------------------------------------------------------------ construction
 
@@ -194,9 +142,9 @@ Runtime::Runtime(Engine& e, const std::string& fp8_path) : eng(e), hp(e.hp) {
     w.idx_proj = l.idx_proj ? (const uint16_t*)l.idx_proj->data : nullptr;
     w.engram_gate = f32(l.engram_gate);
     w.freqs = freqs_buf + (l.kind.ratio ? RD2 : 0);
-    cpu_moe.emplace_back(new CpuMoe(eng.cpu, eng.m.layers[L], hp, L));
   }
   gguf_free(g);
+  cpu_moe.reset(new CpuMoeKernel(hp.n_embd, hp.n_ff_exp, hp.n_expert_used, eng.opt.n_threads));
 
   const int E = hp.n_embd, HC = hp.hc_mult, HD = hp.head_dim, NH = hp.n_head;
   h = dalloc<float>(E * HC);
@@ -262,7 +210,7 @@ Runtime::Runtime(Engine& e, const std::string& fp8_path) : eng(e), hp(e.hp) {
 
 Runtime::~Runtime() {
   (void)hipStreamSynchronize(s);
-  cpu_moe.clear();
+  cpu_moe.reset();
   for (void* p : {(void*)h, (void*)h2, (void*)pre, (void*)a_pre, (void*)a_post, (void*)a_comb, (void*)f_pre, (void*)f_post,
                   (void*)f_comb, (void*)mixes, (void*)x, (void*)t1, (void*)qr, (void*)q, (void*)kvv, (void*)o, (void*)oa,
                   (void*)y, (void*)ysh, (void*)yr, (void*)logits_d, (void*)partial, (void*)A.q, (void*)A.s, (void*)B.q, (void*)B.s, (void*)cmp_kvn,
@@ -436,10 +384,9 @@ void Runtime::moe(int L, const float* xin, float* out, Taps* taps) {
   CHECK(hipEventSynchronize(ev));
   last.wait_ms += ms_since(t0);
   auto t1c = Clock::now();
-  size_t li = 0;  // cpu_moe holds the loaded layers in order
-  for (int i = 0; i < L; i++) li += eng.lay[i].loaded;
-  ggml_backend_cpu_set_n_threads(eng.cpu, eng.opt.n_threads);
-  cpu_moe[li]->run(eng.cpu, h_moe.x, h_moe.ids, h_moe.w, h_yr);
+  const Layer& hl = eng.m.layers[L];  // host tensors: the experts live in the mmap
+  cpu_moe->forward(CpuExperts{hl.gate_exps, hl.up_exps, hl.down_exps, hp.swiglu_clamp[L]}, h_moe.x, h_moe.ids, h_moe.w,
+                   hp.n_expert_used, h_yr);
   last.cpu_moe_ms += ms_since(t1c);
   CHECK(hipMemcpyAsync(yr, h_yr, E * 4, hipMemcpyHostToDevice, s));
   mark("ffn.add");

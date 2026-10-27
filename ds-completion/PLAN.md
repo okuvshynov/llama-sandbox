@@ -266,7 +266,7 @@ Each item has a gate (correctness) and a number (speed). Rough per-token targets
 | 2 | **D2 / own decode runtime on one die** (fused attention + hc, few launches) (done: README "Step 6", 9.4 t/s, exact and deterministic; CPU experts now 72 of 109 ms) | removes the launch half of the GPU time | ~8-9 t/s (still CPU-bound) |
 | 3 | **C2 -> C1: TP 2-way (XGMI pair), then 4-way** | 4x dense bandwidth, frees HBM for experts | ~10-12 t/s (CPU experts now ~75% of the step) |
 | 4 | **A1: static hot experts on the dies (EP), CPU for misses, overlapped** | the biggest lever | ~20-30 t/s, depending on A0's hit rate |
-| 5 | **A3: CPU expert kernel** | the misses get cheaper | +10-30% on top of 4 |
+| 5 | **A3: CPU expert kernel** (done early: README "Step 7"; exact, ~68 GB/s vs ggml ~60; 9.4 -> 9.8 t/s. It is compute + memory serialized: in cache 168 GB/s, streaming 95) | the misses get cheaper | +10-30% on top of 4 |
 | 6 | E1 DSpark, F prefill, A2 dynamic cache | each a separate project | E1 ~1.3-1.5x on top |
 
 Why not experts first? A1 is the largest single win, but:

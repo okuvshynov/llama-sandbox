@@ -1,0 +1,9 @@
+# accuracy vs the double-precision reference math
+layer  0: ours relerr 6.28e-08   ggml (q8_0 activations) relerr 2.31e-02
+layer 20: ours relerr 5.84e-08   ggml (q8_0 activations) relerr 2.18e-02
+layer 39: ours relerr 5.95e-08   ggml (q8_0 activations) relerr 2.39e-02
+# speed: one token = 40 layers x 6 experts (4512.2 MB of weights)
+token 0: ours 77.6 ms (58 GB/s)   ggml 82.5 ms (55 GB/s)
+token 1: ours 63.4 ms (71 GB/s)   ggml 73.7 ms (61 GB/s)
+token 2: ours 83.1 ms (54 GB/s)   ggml 73.9 ms (61 GB/s)
+token 3: ours 65.2 ms (69 GB/s)   ggml 74.3 ms (61 GB/s)

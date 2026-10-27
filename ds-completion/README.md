@@ -8,8 +8,8 @@ Status, 2026-10-27:
 
 - CPU only: 3.5 t/s decode, matching the reference (fork: 3.5 t/s).
 - Dense part on one GPU through ggml, routed experts on the CPU: 6.0 t/s.
-- Own decode runtime on one GPU (exact fp8, deterministic), routed experts on the CPU:
-  **9.4 t/s**. The CPU experts are now 2/3 of every step.
+- Own decode runtime on one GPU (exact fp8, deterministic), routed experts on the CPU with
+  our own exact kernel: **9.7-9.9 t/s**. The CPU experts are 2/3 of every step.
 
 Performance work from here on is planned in [PLAN.md](PLAN.md). The short version of how to run
 it and what it does now: [QUICKSTART.md](QUICKSTART.md).
@@ -29,6 +29,7 @@ bin-hip/ds-completion -m $M -p "..." --chat --gpu 0 --rt $F8 [--profile]   # own
 bin-hip/ds-test -m $M -g data/golden/hello-fp32 --gpu 0 --runtime $F8      # its per-layer gate
 bin-hip/ds-test -m $M -g data/golden/hello-fp32-nq --gpu 0 --no-quant --determinism  # bitwise repeatability
 bin-hip/bench-kernels                                                    # each runtime kernel alone
+bin/bench-cpu-moe -m $M [-t 32] [--tokens 5]                             # the CPU expert kernel vs ggml
 bin/ds-inspect -m $M [--layers 0,1,2-5] [--touch]
 bin/ds-test -m $M -g data/golden/hello [--layers 0-39] [--no-quant]  # teacher-forced, per layer
 bin/ds-test -m $M -g data/golden/hello --e2e data/ds/hello.f32       # end-to-end logits
@@ -589,3 +590,54 @@ Per decode token now (`--profile`, GPU events between groups of launches):
 
 The GPU part is ~37 ms; the CPU experts (4.2 GB at ~58 GB/s) are 2/3 of the step. Next by
 size: the CPU expert kernel (PLAN A3), then TP (C), then experts on the dies (A1).
+
+## Step 7 (PLAN.md A3): an exact CPU kernel for the routed experts
+
+`src/cpu_moe.{h,cpp}`: one layer's 6 routed experts for one token, AVX-512 + OpenMP, with the
+weights read in place from the GGUF mmap. It replaces the runtime's ggml graph.
+
+- **Exact.** Every fp4 x fp8 product is exact in fp32, so the 16 fp4 codes are decoded with a
+  16-entry float table (`vpermps`) and multiplied in fp32 against the fp8-rounded activations:
+  the reference's math up to the order of the fp32 additions. ggml's kernel instead
+  re-quantizes the activations to int8.
+- **Decode without a shuffle per lane.** The 16 code bytes of a block are broadcast to the four
+  128-bit lanes (a load), shifted per lane, and vpermps reads only the low 4 bits of each index.
+  The lanes end up holding codes in a fixed permuted order, and the activations are stored in
+  the same order once per layer.
+- **Work split:** gate+up rows of all 6 experts (32-row tasks, static schedule), then swiglu +
+  routing weight + fq8, then the down rows, then the sum in expert order.
+
+`bin/bench-cpu-moe` (accuracy for 3 layers vs a double-precision host computation of the same
+math; speed for a "token" of 40 layers x 6 fresh random experts, 4.5 GB):
+
+| | relerr vs exact | ms per token (10 tokens) | GB/s |
+|---|---|---|---|
+| ggml mul_mat_id (step 6) | 2.2e-2..2.4e-2 | ~72-78 | ~60 |
+| ours | **5.8e-8..6.3e-8** | **~66** (32 threads) | ~68 |
+| read-only control (same tasks, only loads) | - | ~47 | ~95 |
+
+Why not faster: the inner loop alone, in cache, runs at 168 GB/s on 16 cores, and the weights
+stream at ~95 GB/s. The kernel gets ~68, close to compute + memory taken one after the other
+(1 / (1/168 + 1/95) = 61) rather than the larger of the two. L2 software prefetch 16 KB ahead
+(the thread's next task) recovered part of it (79 -> 67 ms at 16 threads).
+
+Tried and measured no better (`results/bench-cpu-moe-*.txt`): 1, 2 or 8 rows at a time; L1
+prefetch; other distances; and SMT helper threads (the core's sibling reading the next rows
+into the shared L2), which was slower (~98 ms) because its loads compete for the same ports.
+
+In the runtime (all 40 layers, teacher forced, vs the fp32 + fake-quant reference):
+
+- **ffn_out decode median 8.0e-8** (was ~1e-2): the runtime has no inexact op left. The p90
+  (1.9e-2) is fp8 rounding flips.
+- **End to end vs the real reference (hello, 17 steps):** argmax 16/17. The mean KL over 17
+  steps is dominated by the one near tie at step 12, so it is shown both ways:
+
+| | median KL | mean KL | mean KL without step 12 |
+|---|---|---|---|
+| runtime, exact CPU experts | 1.7e-5 | 2.5e-2 | **6.3e-4** |
+| runtime, ggml CPU experts (step 6) | 1.7e-5 | 1.4e-2 | 5.7e-3 |
+| CPU exact (step 3) | 1.3e-5 | 1.8e-2 | 3.9e-3 |
+| the fork | 2.1e-5 | 2.5e-2 | 1.3e-3 |
+
+- **Speed:** 9.4 -> **9.7-9.9 t/s**. A step is ~101 ms: CPU experts 67 ms, waiting for the GPU
+  18 ms, the rest GPU work and copies.

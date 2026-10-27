@@ -4,6 +4,7 @@
 // It shares the ggml Engine's state (window rings, compressor groups, compressed KV, index
 // keys: the same GPU tensors), so prefill can run through Engine::forward and decode here,
 // and every layer can be checked teacher-forced against the reference like the Engine is.
+// Routed experts: src/cpu_moe.h (AVX-512, exact fp4 x fp8, weights read in place from the mmap).
 // Weights: the fp8 linears from fp8pack's file (exact fp8 x fp8 GEMV); the small f32/bf16
 // tensors (norms, hc, router, compressor, indexer projections, head) are the Engine's own GPU
 // copies. Numerics are the reference's: fp32 everywhere, fake quantization where it has it.
@@ -18,7 +19,7 @@
 #include <string>
 #include <vector>
 
-struct CpuMoe;  // rt.cpp: one layer's routed experts as a cached ggml CPU graph
+class CpuMoeKernel;  // src/cpu_moe.h: the routed experts on the CPU, exact fp4 x fp8
 
 class Runtime {
  public:
@@ -61,7 +62,7 @@ class Runtime {
   std::vector<LayerW> W;
   void* fp8_buf = nullptr;  // all fp8 weights + scales
   float* freqs_buf = nullptr;
-  std::vector<std::unique_ptr<CpuMoe>> cpu_moe;
+  std::unique_ptr<CpuMoeKernel> cpu_moe;
 
   // device scratch (one token)
   float *h, *h2, *pre, *a_pre, *a_post, *a_comb, *f_pre, *f_post, *f_comb, *mixes;

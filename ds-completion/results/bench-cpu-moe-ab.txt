@@ -1,0 +1,4 @@
+PF=0 T=16: ours 79.3 ms   ggml 0.0 ms   read-only 0.0 ms (mean of 10 tokens)
+PF=16384 T=16: ours 66.7 ms   ggml 0.0 ms   read-only 0.0 ms (mean of 10 tokens)
+PF=0 T=32: ours 69.1 ms   ggml 0.0 ms   read-only 0.0 ms (mean of 10 tokens)
+PF=16384 T=32: ours 65.8 ms   ggml 0.0 ms   read-only 0.0 ms (mean of 10 tokens)

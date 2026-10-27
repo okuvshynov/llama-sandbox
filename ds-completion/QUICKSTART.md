@@ -4,7 +4,7 @@ DeepSeek-V4.1-Flash-1017 text completion on the Mac Pro (4x Vega II, 755 GB RAM)
 
 - Dense weights (attention, shared experts, head) run on one GPU through our own HIP kernels,
   in exact fp8.
-- Routed experts run on the CPU.
+- Routed experts run on the CPU, through our own exact AVX-512 kernel.
 - Greedy decoding, one sequence, text only.
 
 ## What it needs
@@ -45,21 +45,23 @@ Without `--rt` the GPU path is ggml's (slower); without `--gpu`, `bin/ds-complet
 
 ## Current results (2026-10-27)
 
-| mode | command | decode | mean KL vs reference* |
+| mode | command | decode | KL vs reference*: median / mean without the near-tie step |
 |---|---|---|---|
-| **own runtime, dense on GPU 0** | `bin-hip/ds-completion --gpu 0 --rt ...` | **9.4 t/s** | **1.4e-2** |
-| ggml, dense on GPU 0 | `bin-hip/ds-completion --gpu 0` | 6.0 t/s | 2.0e-2 |
-| CPU only | `bin/ds-completion` | 3.5 t/s | 1.8e-2 |
-| llama.cpp fork (llama-cli, CPU) | - | 3.5 t/s | 2.5e-2 |
+| **own runtime, dense on GPU 0** | `bin-hip/ds-completion --gpu 0 --rt ...` | **9.7-9.9 t/s** | 1.7e-5 / **6.3e-4** |
+| ggml, dense on GPU 0 | `bin-hip/ds-completion --gpu 0` | 6.0 t/s | 1.2e-5 / 6.0e-3 |
+| CPU only | `bin/ds-completion` | 3.5 t/s | 1.3e-5 / 3.9e-3 |
+| llama.cpp fork (llama-cli, CPU) | - | 3.5 t/s | 2.1e-5 / 1.3e-3 |
 
 \* vs the official reference implementation run on the CPU (README "Step 2"): chat prompt
 "Hello, how are you?", 17 steps. Every mode agrees with the reference on the top token at 16
-of 17 steps; the miss is the same near-tie for all of them.
+of 17 steps. The miss is one near-tie (step 12), which dominates any plain mean, so the table
+leaves it out.
+Means over all 17 steps: 1.8e-2 to 2.5e-2 for every mode.
 
-- **The runtime is also gated per layer:** attention output within ~1e-7 of the fp32 +
-  fake-quant reference, the same as the CPU exact path. Repeated runs are bit-identical.
+- **The runtime is also gated per layer:** attention and FFN output within ~1e-7 of the fp32 +
+  fake-quant reference. It has no inexact op left, and repeated runs are bit-identical.
 - **Prompt processing** is ~6-8 t/s in every mode (ggml).
-- **Where a runtime step (~109 ms) goes:** ~72 ms CPU routed experts, ~37 ms GPU.
+- **Where a runtime step (~101 ms) goes:** ~67 ms CPU routed experts, ~34 ms GPU and copies.
 
 ## Limits
 
