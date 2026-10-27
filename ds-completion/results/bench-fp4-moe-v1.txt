@@ -1,0 +1,6 @@
+# uploading layer 20's 384 experts (6.72 GiB) to GPU 0
+case 0: GPU vs CPU kernel relerr 3.63e-08
+case 1: GPU vs CPU kernel relerr 3.65e-08
+case 2: GPU vs CPU kernel relerr 2.75e-08
+GPU 0: 393.3 us per layer (6 experts, 112.8 MB) = 287 GB/s
+for scale: the CPU kernel takes ~1650 us per layer (66 ms / 40)

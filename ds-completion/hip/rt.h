@@ -11,6 +11,7 @@
 #pragma once
 
 #include "forward.h"
+#include "fp4_moe.h"
 
 #include <hip/hip_runtime.h>
 
@@ -23,8 +24,9 @@ class CpuMoeKernel;  // src/cpu_moe.h: the routed experts on the CPU, exact fp4 
 
 class Runtime {
  public:
-  // eng must be in GPU mode; fp8_path is fp8pack's output for the same model
-  Runtime(Engine& eng, const std::string& fp8_path);
+  // eng must be in GPU mode; fp8_path is fp8pack's output for the same model. gpu_moe: layers
+  // whose routed experts are all resident on a GPU (layer -> device); the rest run on the CPU.
+  Runtime(Engine& eng, const std::string& fp8_path, const std::map<int, int>& gpu_moe = {});
   ~Runtime();
 
   // one decode step for `token` at position eng.st.n_past: returns the logits
@@ -63,6 +65,20 @@ class Runtime {
   void* fp8_buf = nullptr;  // all fp8 weights + scales
   float* freqs_buf = nullptr;
   std::unique_ptr<CpuMoeKernel> cpu_moe;
+  // layers with all experts in HBM: on the runtime's GPU they run on its stream; on another die
+  // the inputs go there through pinned host memory and the result comes back the same way,
+  // ordered by events (no host waits), while this GPU does the shared expert
+  struct GpuMoeLayer {
+    int dev;
+    GpuExperts ex;
+    hipStream_t st = nullptr;  // on dev (another die only)
+    hipEvent_t done = nullptr;
+    void* scratch;
+    char* d_in = nullptr;      // x, ids, w on dev (same layout as MoeIn)
+    float *d_y = nullptr, *h_y = nullptr;
+  };
+  std::map<int, GpuMoeLayer> gpu_moe;
+  hipEvent_t ev_staged;  // the router's outputs are in h_moe
 
   // device scratch (one token)
   float *h, *h2, *pre, *a_pre, *a_post, *a_comb, *f_pre, *f_post, *f_comb, *mixes;

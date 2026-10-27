@@ -30,6 +30,8 @@ bin-hip/ds-test -m $M -g data/golden/hello-fp32 --gpu 0 --runtime $F8      # its
 bin-hip/ds-test -m $M -g data/golden/hello-fp32-nq --gpu 0 --no-quant --determinism  # bitwise repeatability
 bin-hip/bench-kernels                                                    # each runtime kernel alone
 bin/bench-cpu-moe -m $M [-t 32] [--tokens 5]                             # the CPU expert kernel vs ggml
+bin-hip/bench-fp4-moe -m $M [--layer 20] [--dev 0]                       # one layer's experts in HBM
+bin-hip/ds-completion ... --rt $F8 --gpu-moe 0:27,1:36-39,2:32-35,3:28-31  # those layers' experts on GPUs
 bin/ds-inspect -m $M [--layers 0,1,2-5] [--touch]
 bin/ds-test -m $M -g data/golden/hello [--layers 0-39] [--no-quant]  # teacher-forced, per layer
 bin/ds-test -m $M -g data/golden/hello --e2e data/ds/hello.f32       # end-to-end logits
@@ -641,3 +643,59 @@ In the runtime (all 40 layers, teacher forced, vs the fp32 + fake-quant referenc
 
 - **Speed:** 9.4 -> **9.7-9.9 t/s**. A step is ~101 ms: CPU experts 67 ms, waiting for the GPU
   18 ms, the rest GPU work and copies.
+
+## Step 8 (experiment): whole layers of experts in HBM - the ceiling without routing statistics
+
+The question: how fast would decode be if the experts were on the GPUs, without depending on
+which experts are hot? The test puts *all 384 experts* of chosen layers into HBM (6.72 GiB per
+layer) and measures.
+
+`hip/fp4_moe.{h,hip}`: the routed experts of one layer for one token on a GPU, exact like the
+CPU kernel.
+
+- **Exact decode:** an e2m1 code shifted into fp16 bits is the value x 2^-14, subnormal 0.5
+  included, and `v_dot2_f32_f16` multiplies exactly.
+- **Upload layout:** the weights are split into aligned code bytes plus separate scale bytes,
+  repacked on the GPU.
+- **Pairing:** activations are fake-quantized in "paired" order (x_j, x_{j+16}), which meets
+  ggml's nibble order.
+- **No host round trip:** expert ids come straight from the GPU router.
+
+`bin-hip/bench-fp4-moe` (layer 20, fresh random experts per repetition):
+
+- matches the exact CPU kernel to **2.8e-8..3.7e-8**;
+- **393 us per layer** (6 experts, 113 MB, 287 GB/s; not tuned yet), against ~1650 us for the
+  CPU kernel.
+
+`--gpu-moe dev:layers,...` places layers' experts on dies:
+
+- **On the runtime's own die**, the experts run right after the router.
+- **On another die**, the router's outputs go through pinned host memory (avoiding the ROCm
+  6.3.4 cross-card copy crash), with stream/event ordering and no host waits. That die computes
+  while die 0 does the shared expert, and the result comes back the same way.
+- **Capacity:** dies 1-3 hold 4 layers each and die 0 one more (next to the 14.45 GiB of ggml
+  dense copies and 6.37 GiB of fp8): **13 layers, a third of the model**.
+- **Gate:** every placement (local die, the same card, the other card) is exact at the layer
+  level (ffn_out ~1e-7, `ds-test --runtime --gpu-moe ...`).
+
+End to end (`results/gpu-moe-e2e.txt`, haiku prompt, 32 threads):
+
+| experts fully on GPUs | decode | step | CPU experts | rest (GPU + copies) |
+|---|---|---|---|---|
+| none | 9.5 t/s | ~103 ms | ~68 ms (40 layers) | ~35 ms |
+| 4 layers (die 1) | 10.3 t/s | ~95 ms | ~58 ms (36) | ~37 ms |
+| 12 layers (dies 1-3) | 11.2 t/s | 88 ms | 50 ms (28) | 38 ms |
+| 13 layers (dies 0-3) | 11.4 t/s | 85 ms | 47 ms (27) | 38 ms |
+
+What it says:
+
+- **Each layer moved to a GPU** saves its ~1.78 ms of CPU and costs ~0.4 ms of GPU (the fp4
+  kernel). The copies to the other card hide almost entirely.
+- **Ceiling with every layer's experts on a GPU:** ~35 + 40 x 0.4 = **~50 ms per step,
+  ~20 t/s**, with today's kernels. That needs 269 GB of experts, so in practice it means hot
+  experts (A1) with a high enough hit rate. The table is the cost of each miss and each hit.
+- **What remains then:**
+  - the ~35 ms of dense GPU work and copies on one die (the TP target, PLAN C);
+  - the fp4 kernel at 287 GB/s (a 2x kernel would take the 40 x 0.4 to ~8 ms, so ~43 ms per
+    step, ~23 t/s);
+  - the remote layers wait serially; EP could run several dies' experts at once.

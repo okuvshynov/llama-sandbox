@@ -59,7 +59,7 @@ static std::vector<float> rope_freqs(int dim, int original_seq_len, float base, 
 
 // ------------------------------------------------------------------ construction
 
-Runtime::Runtime(Engine& e, const std::string& fp8_path) : eng(e), hp(e.hp) {
+Runtime::Runtime(Engine& e, const std::string& fp8_path, const std::map<int, int>& moe_map) : eng(e), hp(e.hp) {
   if (!eng.gpu) throw std::runtime_error("Runtime needs the Engine in GPU mode");
   CHECK(hipSetDevice(eng.opt.gpu));
   CHECK(hipStreamCreateWithFlags(&s, hipStreamNonBlocking));
@@ -206,11 +206,59 @@ Runtime::Runtime(Engine& e, const std::string& fp8_path) : eng(e), hp(e.hp) {
   CHECK(hipHostMalloc(&h_yr, E * 4, 0));
   CHECK(hipHostMalloc(&h_erows, hp.engram_cols() * hp.engram_dim * 4, 0));
   if (eng.opt.max_ctx > kTopkMaxN) throw std::runtime_error("runtime: --max-ctx above the top-k kernel's limit");
+  CHECK(hipEventCreateWithFlags(&ev_staged, hipEventDisableTiming));
+
+  // routed experts resident in HBM, for the requested layers
+  const int home = eng.opt.gpu;
+  auto t_up = Clock::now();
+  for (auto [L, dev] : moe_map) {
+    if (L < 0 || L >= hp.n_layer || !eng.lay[L].loaded) throw std::runtime_error("--gpu-moe: no layer " + std::to_string(L));
+    const Layer& hl = eng.m.layers[L];
+    GpuMoeLayer g;
+    g.dev = dev;
+    CHECK(hipSetDevice(dev));
+    hipStream_t up_s;
+    CHECK(hipStreamCreate(&up_s));
+    g.ex = {fp4_upload(hl.gate_exps->data, E, hp.n_ff_exp, hp.n_expert, up_s),
+            fp4_upload(hl.up_exps->data, E, hp.n_ff_exp, hp.n_expert, up_s),
+            fp4_upload(hl.down_exps->data, hp.n_ff_exp, E, hp.n_expert, up_s)};
+    CHECK(hipStreamDestroy(up_s));
+    CHECK(hipMalloc(&g.scratch, fp4_moe_scratch_bytes(E, hp.n_ff_exp, hp.n_expert_used)));
+    if (dev != home) {
+      CHECK(hipStreamCreateWithFlags(&g.st, hipStreamNonBlocking));
+      CHECK(hipEventCreateWithFlags(&g.done, hipEventDisableTiming));
+      CHECK(hipMalloc(&g.d_in, (size_t)E * 4 + 64));
+      CHECK(hipMalloc(&g.d_y, E * 4));
+      CHECK(hipHostMalloc(&g.h_y, E * 4, 0));
+    }
+    gpu_moe[L] = g;
+    fprintf(stderr, "# runtime: layer %d's experts on GPU %d\n", L, dev);
+  }
+  CHECK(hipSetDevice(home));
+  if (!moe_map.empty())
+    fprintf(stderr, "# runtime: %zu expert layers uploaded in %.1f s\n", moe_map.size(), ms_since(t_up) / 1000);
 }
 
 Runtime::~Runtime() {
   (void)hipStreamSynchronize(s);
   cpu_moe.reset();
+  for (auto& [L, g] : gpu_moe) {
+    (void)hipSetDevice(g.dev);
+    if (g.st) (void)hipStreamSynchronize(g.st);
+    fp4_free(g.ex.gate);
+    fp4_free(g.ex.up);
+    fp4_free(g.ex.down);
+    (void)hipFree(g.scratch);
+    if (g.st) {
+      (void)hipFree(g.d_in);
+      (void)hipFree(g.d_y);
+      (void)hipHostFree(g.h_y);
+      (void)hipEventDestroy(g.done);
+      (void)hipStreamDestroy(g.st);
+    }
+  }
+  (void)hipSetDevice(eng.opt.gpu);
+  (void)hipEventDestroy(ev_staged);
   for (void* p : {(void*)h, (void*)h2, (void*)pre, (void*)a_pre, (void*)a_post, (void*)a_comb, (void*)f_pre, (void*)f_post,
                   (void*)f_comb, (void*)mixes, (void*)x, (void*)t1, (void*)qr, (void*)q, (void*)kvv, (void*)o, (void*)oa,
                   (void*)y, (void*)ysh, (void*)yr, (void*)logits_d, (void*)partial, (void*)A.q, (void*)A.s, (void*)B.q, (void*)B.s, (void*)cmp_kvn,
@@ -367,11 +415,30 @@ void Runtime::moe(int L, const float* xin, float* out, Taps* taps) {
   mark("ffn.router");
   k_gemv_f32(w.gate_inp, hp.n_expert, E, xin, router_logits, partial, s);
   k_router(router_logits, w.gate_bias, hp.n_expert, KE, hp.expert_weights_norm, hp.expert_weights_scale, rids, rw, s);
-  // the routed experts' input goes to the CPU (one copy: xin is d_moe.x) while the GPU does
-  // the shared expert
   if (xin != d_moe.x) throw std::runtime_error("moe input must be staged in d_moe.x");
-  CHECK(hipMemcpyAsync(h_moe.x, d_moe.x, (size_t)E * 4 + 64, hipMemcpyDeviceToHost, s));
-  CHECK(hipEventRecord(ev, s));
+  auto gm = gpu_moe.find(L);
+  GpuMoeLayer* g = gm == gpu_moe.end() ? nullptr : &gm->second;
+  const size_t in_bytes = (size_t)E * 4 + 64;  // x, ids, w
+  if (g && !g->st) {
+    // experts in this GPU's HBM: straight from the router's outputs
+    mark("ffn.routed_here");
+    fp4_moe(g->ex, d_moe.x, rids, rw, KE, hp.swiglu_clamp[L], yr, g->scratch, s);
+  } else {
+    // the routed experts' input leaves this GPU (one copy: xin is d_moe.x) while it does the
+    // shared expert: to the CPU, or through pinned host memory to another die
+    CHECK(hipMemcpyAsync(h_moe.x, d_moe.x, in_bytes, hipMemcpyDeviceToHost, s));
+    CHECK(hipEventRecord(g ? ev_staged : ev, s));
+    if (g) {
+      CHECK(hipSetDevice(g->dev));
+      CHECK(hipStreamWaitEvent(g->st, ev_staged, 0));
+      CHECK(hipMemcpyAsync(g->d_in, h_moe.x, in_bytes, hipMemcpyHostToDevice, g->st));
+      fp4_moe(g->ex, (const float*)g->d_in, (const int*)(g->d_in + E * 4), (const float*)(g->d_in + E * 4 + 32), KE,
+              hp.swiglu_clamp[L], g->d_y, g->scratch, g->st);
+      CHECK(hipMemcpyAsync(g->h_y, g->d_y, E * 4, hipMemcpyDeviceToHost, g->st));
+      CHECK(hipEventRecord(g->done, g->st));
+      CHECK(hipSetDevice(eng.opt.gpu));
+    }
+  }
   mark("ffn.shared");
   quant(xin, E, A);
   gemv8(w.gate_sh, A, gate);
@@ -379,23 +446,30 @@ void Runtime::moe(int L, const float* xin, float* out, Taps* taps) {
   k_swiglu(gate, up, hp.swiglu_clamp_sh[L], F, act, s);
   quant(act, F, B);
   gemv8(w.down_sh, B, ysh);
-  mark("ffn.wait_for_cpu_experts");
-  auto t0 = Clock::now();
-  CHECK(hipEventSynchronize(ev));
-  last.wait_ms += ms_since(t0);
-  auto t1c = Clock::now();
-  const Layer& hl = eng.m.layers[L];  // host tensors: the experts live in the mmap
-  cpu_moe->forward(CpuExperts{hl.gate_exps, hl.up_exps, hl.down_exps, hp.swiglu_clamp[L]}, h_moe.x, h_moe.ids, h_moe.w,
-                   hp.n_expert_used, h_yr);
-  last.cpu_moe_ms += ms_since(t1c);
-  CHECK(hipMemcpyAsync(yr, h_yr, E * 4, hipMemcpyHostToDevice, s));
+  if (g && g->st) {  // another die: wait for its result in the stream, not on the host
+    mark("ffn.wait_for_other_die");
+    CHECK(hipStreamWaitEvent(s, g->done, 0));
+    CHECK(hipMemcpyAsync(yr, g->h_y, E * 4, hipMemcpyHostToDevice, s));
+  } else if (!g) {
+    mark("ffn.wait_for_cpu_experts");
+    auto t0 = Clock::now();
+    CHECK(hipEventSynchronize(ev));
+    last.wait_ms += ms_since(t0);
+    auto t1c = Clock::now();
+    const Layer& hl = eng.m.layers[L];  // host tensors: the experts live in the mmap
+    cpu_moe->forward(CpuExperts{hl.gate_exps, hl.up_exps, hl.down_exps, hp.swiglu_clamp[L]}, h_moe.x, h_moe.ids, h_moe.w,
+                     hp.n_expert_used, h_yr);
+    last.cpu_moe_ms += ms_since(t1c);
+    CHECK(hipMemcpyAsync(yr, h_yr, E * 4, hipMemcpyHostToDevice, s));
+  }
   mark("ffn.add");
   k_add(ysh, yr, out, E, s);
   if (taps) {
-    tap(taps, "router_w", rw, {KE, 1});
+    tap(taps, "router_w", rw, {KE, 1});  // (synchronizes the stream)
     Tap ti;
     ti.ne = {KE, 1};
-    ti.i.assign(h_moe.ids, h_moe.ids + KE);
+    ti.i.resize(KE);
+    CHECK(hipMemcpy(ti.i.data(), rids, KE * 4, hipMemcpyDeviceToHost));
     (*taps)["router_i"] = ti;
   }
 }

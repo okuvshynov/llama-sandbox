@@ -30,14 +30,14 @@ CORE_H = src/model.h src/forward.h src/fakequant.h src/cpu_moe.h
 # hipcc into objects that the g++ link picks up
 ROCM = /opt/rocm-6.3.4
 ifeq ($(HIP),1)
-RT_OBJ   = $(BIN)/obj/rt.o $(BIN)/obj/kernels.o $(BIN)/obj/fp8_gemv.o
+RT_OBJ   = $(BIN)/obj/rt.o $(BIN)/obj/kernels.o $(BIN)/obj/fp8_gemv.o $(BIN)/obj/fp4_moe.o
 RT_FLAGS = -DDS_RUNTIME -D__HIP_PLATFORM_AMD__ -Ihip -I$(ROCM)/include
 RT_LIBS  = $(RT_OBJ) -L$(ROCM)/lib -Wl,-rpath,$(ROCM)/lib -lamdhip64
 endif
 
 all: $(BIN)/ds-completion $(BIN)/ds-inspect $(BIN)/ds-test $(BIN)/test-fakequant $(BIN)/llama-logits $(BIN)/fp8pack $(BIN)/bench-cpu-moe
 ifeq ($(HIP),1)
-all: $(BIN)/test-matmul-prec $(BIN)/bench-fp8 $(BIN)/bench-ggml-bf16 $(BIN)/bench-kernels
+all: $(BIN)/test-matmul-prec $(BIN)/bench-fp8 $(BIN)/bench-ggml-bf16 $(BIN)/bench-kernels $(BIN)/bench-fp4-moe
 endif
 
 # GPU only: ggml's bf16 matmul on the dense shapes (the step-4 baseline for bench-fp8)
@@ -72,7 +72,12 @@ $(BIN)/bench-kernels: hip/bench_kernels.cpp hip/kernels.hip hip/fp8_gemv.hip hip
 	@mkdir -p $(BIN)
 	$(HIPCC) $(HIPFLAGS) -o $@ hip/bench_kernels.cpp hip/kernels.hip hip/fp8_gemv.hip
 
-$(BIN)/obj/%.o: hip/%.hip hip/kernels.h hip/fp8_gemv.h
+$(BIN)/bench-fp4-moe: hip/bench_fp4_moe.cpp $(BIN)/obj/fp4_moe.o src/model.cpp src/cpu_moe.cpp src/fakequant.cpp $(CORE_H)
+	@mkdir -p $(BIN)
+	$(CXX) $(CXXFLAGS) $(RT_FLAGS) -O3 -o $@ hip/bench_fp4_moe.cpp src/model.cpp src/cpu_moe.cpp src/fakequant.cpp \
+	    $(BIN)/obj/fp4_moe.o -L$(ROCM)/lib -Wl,-rpath,$(ROCM)/lib -lamdhip64 $(LDLIBS)
+
+$(BIN)/obj/%.o: hip/%.hip hip/kernels.h hip/fp8_gemv.h hip/fp4_moe.h
 	@mkdir -p $(BIN)/obj
 	$(HIPCC) $(HIPFLAGS) -c -o $@ $<
 

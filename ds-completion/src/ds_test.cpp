@@ -34,6 +34,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <map>
 #include <fstream>
 #include <set>
 #include <sstream>
@@ -115,6 +116,7 @@ int main(int argc, char** argv) {
   bool determinism = false;
   std::vector<int> layers;
   Options opt;
+  std::map<int, int> gpu_moe;  // layer -> device holding all its experts (runtime only)
   for (int i = 1; i < argc; i++) {
     std::string a = argv[i];
     auto next = [&] { if (i + 1 >= argc) { fprintf(stderr, "missing value for %s\n", a.c_str()); exit(2); } return argv[++i]; };
@@ -125,6 +127,16 @@ int main(int argc, char** argv) {
     else if (a == "-t") opt.n_threads = atoi(next());
     else if (a == "--gpu") opt.gpu = atoi(next());
     else if (a == "--gpu-exact") opt.gpu_exact_quant = true;
+    else if (a == "--gpu-moe") {  // dev:layers[,dev:layers...], layers like 21-24
+      for (char* q = (char*)next(); *q;) {
+        const int dev = (int)strtol(q, &q, 10);
+        if (*q++ != ':') { fprintf(stderr, "--gpu-moe: expected dev:layers\n"); return 2; }
+        int a0 = (int)strtol(q, &q, 10), a1 = a0;
+        if (*q == '-') a1 = (int)strtol(q + 1, &q, 10);
+        for (int L = a0; L <= a1; L++) gpu_moe[L] = dev;
+        if (*q == ',') q++;
+      }
+    }
     else if (a == "--e2e") e2e = next();
     else if (a == "--runtime") rt_path = next();
     else if (a == "--determinism") determinism = true;
@@ -148,7 +160,7 @@ int main(int argc, char** argv) {
   Engine eng(m, opt);
 #ifdef DS_RUNTIME
   std::unique_ptr<Runtime> rt;
-  if (!rt_path.empty()) rt.reset(new Runtime(eng, rt_path));
+  if (!rt_path.empty()) rt.reset(new Runtime(eng, rt_path, gpu_moe));
 #else
   if (!rt_path.empty()) { fprintf(stderr, "--runtime needs the bin-hip build\n"); return 2; }
 #endif

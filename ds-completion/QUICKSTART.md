@@ -43,6 +43,9 @@ Options:
 
 Without `--rt` the GPU path is ggml's (slower); without `--gpu`, `bin/ds-completion` is CPU only.
 
+Experiment: `--gpu-moe 0:27,1:36-39,2:32-35,3:28-31` also puts all experts of 13 layers on the
+four GPUs (~20 s upload), for 11.4 t/s.
+
 ## Current results (2026-10-27)
 
 | mode | command | decode | KL vs reference*: median / mean without the near-tie step |
