@@ -1,14 +1,16 @@
-// The own decode runtime on one die (PLAN.md section 3, option 2): one token per step through
-// our HIP kernels (kernels.h, fp8_gemv.h), with the routed experts on the CPU.
+// The own decode runtime (PLAN.md section 3, option 2): one token per step through our HIP
+// kernels (kernels.h, fp8_gemv.h, fp4_moe.h). The dense part runs on one die (opt.gpu); the
+// routed experts run where they live: on any die that holds them in an expert pool
+// (expert_pool.h, --placement) or on the CPU (cpu_moe.h, AVX-512, weights read in place from
+// the mmap), each layer's GPU and CPU parts at the same time.
 //
 // Self-contained: it reads the model's host tensors (model.h), uploads the small weights itself,
 // and keeps the sequence state (window rings, compressor groups, compressed KV, index keys) in
 // its own device buffers; every token, prompt included, runs here. Every layer can be checked
 // teacher-forced against the reference (ds-test --runtime).
-// Routed experts: src/cpu_moe.h (AVX-512, exact fp4 x fp8, weights read in place from the mmap).
 // Weights: the fp8 linears from fp8pack's file (exact fp8 x fp8 GEMV); the small f32/bf16
-// tensors (norms, hc, router, compressor, indexer projections, head) are the Engine's own GPU
-// copies uploaded from the model. Numerics are the reference's: fp32 everywhere, fake quantization where it has it.
+// tensors (norms, hc, router, compressor, indexer projections, head) uploaded from the model.
+// Numerics are the reference's: fp32 everywhere, fake quantization where it has it.
 #pragma once
 
 #include "forward.h"  // Taps, engram_rows
@@ -143,7 +145,6 @@ class Runtime {
   struct MoeIn { float* x; int* ids; float* w; MoeList* lists; } d_moe, h_moe;
   size_t moe_block_bytes = 0;
   float *h_yr, *h_erows, *att_scratch;
-  hipEvent_t ev;
 
   FILE* route_log = nullptr;
   int* d_route = nullptr;     // [n_layer][8] this step's expert ids (device), then the weights

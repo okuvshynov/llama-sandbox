@@ -13,7 +13,6 @@
 // y[r] = x[r] * rsqrt(mean(x[r]^2) + eps) * w   (w may be null), `rows` rows of n
 void k_rms_norm(const float* x, const float* w, float* y, int n, int rows, float eps, hipStream_t s);
 // in place: act_quant(x, 32, ue8m0, inplace) - e4m3 values, power-of-two scale per 32
-void k_fq8(float* x, int n, hipStream_t s);
 // in place: fp4_act_quant(x, 32) (e8m0 scales) or (x, 16, e4m3 scales)
 void k_fq4(float* x, int n, bool e4m3_scale_16, hipStream_t s);
 
@@ -87,7 +86,6 @@ void k_engram(float* h, const float* kv, const float* gate_w, int hc, int n, flo
 
 // ---- misc ----
 
-void k_add(const float* a, const float* b, float* y, int n, hipStream_t s);
 
 // Routed experts split by where they live (expert_pool.h placement). One list per die, plus one
 // for the CPU; within a list the router's order is kept.

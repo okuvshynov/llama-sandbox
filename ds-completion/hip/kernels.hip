@@ -97,18 +97,6 @@ void k_rms_norm(const float* x, const float* w, float* y, int n, int rows, float
   rms_norm_kernel<<<rows, 256, 0, s>>>(x, w, y, n, eps);
 }
 
-__global__ void fq8_kernel(float* x, int n_blocks) {
-  const int b = blockIdx.x * blockDim.x + threadIdx.x;
-  if (b >= n_blocks) return;
-  float* xb = x + (size_t)b * 32;
-  float amax = 0;
-  for (int j = 0; j < 32; j++) amax = fmaxf(amax, fabsf(xb[j]));
-  const float sc = pow2_ceil(fmaxf(amax, 1e-4f) * (1.0f / 448.0f));
-  for (int j = 0; j < 32; j++) xb[j] = e4m3_round(fminf(fmaxf(xb[j] / sc, -448.0f), 448.0f)) * sc;
-}
-
-void k_fq8(float* x, int n, hipStream_t s) { fq8_kernel<<<cdiv(n / 32, 256), 256, 0, s>>>(x, n / 32); }
-
 template <int B, bool E4M3_SCALE>
 __global__ void fq4_kernel(float* x, int n_blocks) {
   const int b = blockIdx.x * blockDim.x + threadIdx.x;
@@ -620,11 +608,6 @@ void k_engram(float* h, const float* kv, const float* gate_w, int hc, int n, flo
 
 // ================================================================== misc
 
-__global__ void add_kernel(const float* a, const float* b, float* y, int n) {
-  const int i = blockIdx.x * blockDim.x + threadIdx.x;
-  if (i < n) y[i] = a[i] + b[i];
-}
-void k_add(const float* a, const float* b, float* y, int n, hipStream_t s) { add_kernel<<<cdiv(n, 256), 256, 0, s>>>(a, b, y, n); }
 
 // one thread: k is 6
 __global__ void moe_dispatch_kernel(const int* ids, const float* w, int k, const int* table, int n_dies, MoeList* lists) {

@@ -62,7 +62,6 @@ Runtime::Runtime(const Model& model, RtOptions options, const std::string& fp8_p
     : m(model), hp(model.hp), opt(options) {
   CHECK(hipSetDevice(opt.gpu));
   CHECK(hipStreamCreateWithFlags(&s, hipStreamNonBlocking));
-  CHECK(hipEventCreateWithFlags(&ev, hipEventDisableTiming));
 
   // rotary frequencies: window-only layers at rope_base, compressed layers at
   // compress_rope_base with YaRN (as Engine::rope)
@@ -363,7 +362,6 @@ Runtime::~Runtime() {
     (void)hipFree(p);
   for (auto& [L, p] : topk_buf) (void)hipFree(p);
   for (void* p : {(void*)h_moe.x, (void*)h_yr, (void*)h_erows}) (void)hipHostFree(p);
-  (void)hipEventDestroy(ev);
   for (hipEvent_t e : ev_pool) (void)hipEventDestroy(e);
   (void)hipStreamDestroy(s);
 }
