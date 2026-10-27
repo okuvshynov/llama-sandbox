@@ -132,6 +132,7 @@ class Runtime {
   void moe(int L, const float* xin, float* out, Taps* taps);
   void block(int L, Taps* taps);
   void engram(int L);
+  void fetch_engram_rows();
   void tap(Taps* taps, const char* name, const float* d, std::vector<int64_t> ne);
   void mark(const char* group);
   std::vector<std::pair<const char*, hipEvent_t>> marks;

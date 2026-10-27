@@ -28,7 +28,7 @@ Speed
 | | item | status | one line |
 |---|---|---|---|
 | 13 | Routing statistics (A0) | next | log the chosen experts over varied prompts: how much do the hottest experts per layer catch, and does it transfer between prompts |
-| 14 | HIP graphs + kernel fusion (D) | next | replay the fixed launch sequence, fuse the small kernels: ~-5..7 ms per step, independent of routing |
+| 14 | HIP graphs + kernel fusion (D) | started | engram per step + experts mapped at load done (~1%); graphs save little on this ROCm, fusion ~37 -> ~22 launches per layer for ~2-3 ms (README step 12) |
 | 15 | Per-layer expert split, CPU and all dies concurrently (A1/EP) | planned | each layer's experts split between dies and CPU, both running at once; placement from item 13 |
 | 16 | Hot-set placement (A1) | planned | the most-used experts in HBM: ~18 t/s at a 70% hit rate, ~24 at 90% (if item 13 shows skew) |
 | 17 | Tensor parallelism, 2-way then 4-way (C1/C2) | planned | split the dense GEMVs over dies: ~-6..10 ms per step, matters once experts are mostly on GPUs |

@@ -13,6 +13,7 @@
 #include "ggml-backend.h"
 
 #include <cstdint>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -82,6 +83,11 @@ struct Model {
   // Opens all shards next to `first_shard` (…-00001-of-000NN.gguf) and binds the tensors of the
   // layers in `layers` (empty = all). Global tensors are always bound. Throws on any mismatch.
   void load(const std::string& first_shard, const std::vector<int>& layers = {});
+  // Maps the routed experts of the loaded layers (except `skip`) into this process's page
+  // tables up front, with n_threads in parallel (MADV_POPULATE_READ: pages not yet in the page
+  // cache are read from disk). Without it, every expert's first use in a run pays ~4k minor
+  // page faults inside the decode step. Returns the bytes covered.
+  size_t map_experts(int n_threads, const std::set<int>& skip = {});
   ~Model();
 
   ggml_tensor* get(const std::string& name) const;  // any tensor in the file, nullptr if absent

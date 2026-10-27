@@ -24,6 +24,7 @@
 #include <cstdio>
 #include <cstring>
 #include <map>
+#include <set>
 #include <memory>
 #include <string>
 
@@ -110,6 +111,14 @@ int main(int argc, char** argv) {
   } catch (const std::exception& e) {
     fprintf(stderr, "load failed: %s\n", e.what());
     return 1;
+  }
+  {  // the experts that will run on the CPU: page tables now, not inside decode steps
+    std::set<int> on_gpu;
+    for (auto [L, d] : gpu_moe) on_gpu.insert(L);
+    auto tm = Clock::now();
+    const size_t n = m.map_experts(opt.n_threads, on_gpu);
+    fprintf(stderr, "# mapped %.0f GB of CPU experts in %.1f s\n", n / 1e9,
+            std::chrono::duration<double>(Clock::now() - tm).count());
   }
   std::unique_ptr<Engine> eng;
 #ifdef DS_RUNTIME

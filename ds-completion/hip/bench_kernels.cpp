@@ -81,5 +81,41 @@ int main() {
   time("attn_decode 64 heads, 128 + 512 keys", R, [&] { k_attn_decode(y, NH, HD, ring, W, 2000, comp, topk, K, sinks, 0.044f, h2, scratch, s); });
   time("index_scores 32 x 128, 1100 keys", R, [&] { k_index_scores(y, 32, 128, comp, 1100, small, 1.0f, part, s); });
   time("topk 512 of 1100", R, [&] { k_topk(part, 1100, 512, topk, s); });
+
+  // launch overhead: a chain of dependent launches on a stream vs the same chain captured once
+  // as a HIP graph and replayed. Per launch, after subtracting nothing: the gap is what matters.
+  auto chain_vs_graph = [&](const char* name, int n, const std::function<void()>& one) {
+    auto chain = [&] { for (int i = 0; i < n; i++) one(); };
+    hipGraph_t g;
+    hipGraphExec_t ge;
+    CHECK(hipStreamBeginCapture(s, hipStreamCaptureModeGlobal));
+    chain();
+    CHECK(hipStreamEndCapture(s, &g));
+    CHECK(hipGraphInstantiate(&ge, g, nullptr, nullptr, 0));
+    float ms_s, ms_g;
+    for (int pass = 0; pass < 2; pass++) {
+      for (int i = 0; i < 3; i++) pass ? (void)hipGraphLaunch(ge, s) : chain();
+      CHECK(hipEventRecord(e0, s));
+      for (int r = 0; r < 20; r++) { if (pass) CHECK(hipGraphLaunch(ge, s)); else chain(); }
+      CHECK(hipEventRecord(e1, s));
+      CHECK(hipEventSynchronize(e1));
+      CHECK(hipEventElapsedTime(pass ? &ms_g : &ms_s, e0, e1));
+    }
+    printf("%-44s stream %6.2f us/launch, graph %6.2f us/launch (%d launches)\n", name, ms_s * 1000 / 20 / n,
+           ms_g * 1000 / 20 / n, n);
+    CHECK(hipGraphExecDestroy(ge));
+    CHECK(hipGraphDestroy(g));
+  };
+  chain_vs_graph("chain: empty kernel", 2000, [&] { empty_kernel<<<1, 64, 0, s>>>(); });
+  chain_vs_graph("chain: hc_pre_norm 5120", 500, [&] { k_hc_pre_norm(h, small, small, E, 1e-20f, x, s); });
+  chain_vs_graph("chain: hc split+pre_norm+post (3 kernels)", 300, [&] {
+    k_hc_split(h, 4 * E, small, small, small, 1e-20f, 1e-6f, 20, small, small + 4, small + 8, s);
+    k_hc_pre_norm(h, small, small, E, 1e-20f, x, s);
+    k_hc_post(x, h, small, small, E, h2, s);
+  });
+  chain_vs_graph("chain: fp8_quant_act 5120 + rms_norm 1280", 500, [&] {
+    fp8_quant_act(x, q8, s8, 1, 5120, s);
+    k_rms_norm(x, small, y, 1280, 1, 1e-20f, s);
+  });
   return 0;
 }

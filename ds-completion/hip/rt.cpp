@@ -214,7 +214,7 @@ Runtime::Runtime(const Model& model, RtOptions options, const std::string& fp8_p
   rw = d_moe.w;
   rids = d_moe.ids;
   att_scratch = dalloc<float>((size_t)((hp.window + hp.idx_topk + 31) / 32) * NH * (HD + 2));
-  erows = dalloc<float>(hp.engram_cols() * hp.engram_dim);
+  erows = dalloc<float>(hp.engram_layers.size() * hp.engram_cols() * hp.engram_dim);  // [engram slot][rows]
   ekv = dalloc<float>((size_t)E * (HC + 1));
   {
     std::vector<int> v(opt.max_ctx);
@@ -241,7 +241,7 @@ Runtime::Runtime(const Model& model, RtOptions options, const std::string& fp8_p
     }
   }
   CHECK(hipHostMalloc(&h_yr, E * 4, 0));
-  CHECK(hipHostMalloc(&h_erows, hp.engram_cols() * hp.engram_dim * 4, 0));
+  CHECK(hipHostMalloc(&h_erows, hp.engram_layers.size() * hp.engram_cols() * hp.engram_dim * 4, 0));
   if (opt.max_ctx > kTopkMaxN) throw std::runtime_error("runtime: --max-ctx above the top-k kernel's limit");
   CHECK(hipEventCreateWithFlags(&ev_staged, hipEventDisableTiming));
 
@@ -347,16 +347,24 @@ void Runtime::tap(Taps* taps, const char* name, const float* d, std::vector<int6
   (*taps)[name] = std::move(t);
 }
 
-void Runtime::engram(int L) {
-  const Layer& l = m.layers[L];
-  const int n_cols = hp.engram_cols(), D = hp.engram_dim;
-  const std::vector<int32_t> rows = engram_rows(hp, hist, l.kind.engram, pos);
+// The engram rows depend only on the tokens, so every engram layer's rows are gathered at the
+// start of the step (host: hash, read the mmap'd mxfp8 rows, convert) and go to the GPU in one
+// copy; the layers then only compute. h_erows is rewritten next step, after end_step's sync.
+void Runtime::fetch_engram_rows() {
+  const int n_cols = hp.engram_cols(), D = hp.engram_dim, n_slots = (int)hp.engram_layers.size();
   const ggml_tensor* tab = m.engram_table;  // host mmap, mxfp8
   const auto to_float = ggml_get_type_traits(tab->type)->to_float;
-  for (int c = 0; c < n_cols; c++) to_float((const char*)tab->data + (size_t)rows[c] * tab->nb[1], h_erows + c * D, D);
-  CHECK(hipMemcpyAsync(erows, h_erows, n_cols * D * 4, hipMemcpyHostToDevice, s));
-  CHECK(hipStreamSynchronize(s));  // h_erows is reused by the next engram layer
-  quant(erows, n_cols * D, B);
+  for (int e = 0; e < n_slots; e++) {
+    const std::vector<int32_t> rows = engram_rows(hp, hist, e, pos);
+    for (int c = 0; c < n_cols; c++)
+      to_float((const char*)tab->data + (size_t)rows[c] * tab->nb[1], h_erows + ((size_t)e * n_cols + c) * D, D);
+  }
+  CHECK(hipMemcpyAsync(erows, h_erows, (size_t)n_slots * n_cols * D * 4, hipMemcpyHostToDevice, s));
+}
+
+void Runtime::engram(int L) {
+  const int n = hp.engram_cols() * hp.engram_dim;
+  quant(erows + (size_t)m.layers[L].kind.engram * n, n, B);
   gemv8(W[L].engram_kv, B, ekv);
   k_engram(h, ekv, W[L].engram_gate, hp.hc_mult, hp.n_embd, hp.rms_eps, s);
 }
@@ -565,6 +573,8 @@ void Runtime::begin_step(int32_t tok) {
   topk_cur.clear();
   last = Times{};
   marks.clear();
+  mark("engram.fetch");
+  fetch_engram_rows();
 }
 
 void Runtime::end_step() {

@@ -803,3 +803,23 @@ Re-run at sclk level 2:
   GPUs (step 10: 10.0 / 12.0, run-to-run noise). CPU-only path 3.55 t/s, as before.
 
 Steps 4-6 above describe the removed ggml GPU path as it was; their numbers stay as history.
+
+## Step 12: engram rows per step, experts mapped at load, launch overhead measured
+
+- **Engram:** both engram layers' rows are hashed, read and converted at the start of the step and
+  go to the GPU in one copy (`Runtime::fetch_engram_rows`); the layers no longer wait for the
+  host. Per-layer gate identical (layers 0-15). Engram time 1.4 -> 1.2 ms per step.
+- **Experts mapped at load:** the CPU experts are mapped into the process up front, in parallel
+  (`Model::map_experts`, `MADV_POPULATE_READ`, 180 GB in 1.2 s; it also reads anything not yet
+  cached). Before, every expert's first use in a run paid ~4k minor page faults inside the
+  decode step: a 40-token run took 29M minor faults.
+- **After a reboot:** the model is mmap'd, so the first run reads experts from NVMe. Warm the
+  cache with `cat` of shards 1-7 and 9 (47 s here); shard 8 (the engram table) needs only a
+  few rows per token.
+- **A/B** (128 generated tokens, 15 expert layers on GPUs, sclk 2, 5 interleaved runs each):
+  before 13.02 t/s median, + engram 12.97, + mapping 13.11. Both gains are within ~1% noise.
+  Runs of 128 tokens reach ~13 t/s against ~11-12 in 15-token runs: compare long runs.
+- **Launch overhead** (`bench-kernels`, chain section; launch counts from an LD_PRELOAD
+  counter): a decode step issues ~1,500 kernel launches (~37 per layer) and ~136 small copies.
+  The dispatch floor is ~2 us per launch. HIP graph replay saves only 0.1-2 us per launch on
+  this ROCm, so only fusion (fewer launches) helps: an estimated ~2-3 ms per step (3-4%).

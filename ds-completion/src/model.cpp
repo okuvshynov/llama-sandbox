@@ -12,6 +12,8 @@
 #include <cinttypes>
 #include <cstring>
 #include <set>
+#include <thread>
+#include <atomic>
 #include <stdexcept>
 
 static std::runtime_error err(const std::string& s) { return std::runtime_error(s); }
@@ -176,6 +178,35 @@ Model::~Model() {
     if (s.map) munmap(s.map, s.size);
     if (s.fd >= 0) close(s.fd);
   }
+}
+
+size_t Model::map_experts(int n_threads, const std::set<int>& skip) {
+#ifndef MADV_POPULATE_READ
+#define MADV_POPULATE_READ 22  // Linux 5.14
+#endif
+  const size_t page = (size_t)sysconf(_SC_PAGESIZE), chunk = (size_t)64 << 20;
+  std::vector<std::pair<char*, size_t>> parts;  // page-aligned pieces of at most `chunk`
+  size_t total = 0;
+  for (int L = 0; L < (int)layers.size(); L++) {
+    if (!layers[L].loaded || skip.count(L)) continue;
+    for (const ggml_tensor* t : {layers[L].gate_exps, layers[L].up_exps, layers[L].down_exps}) {
+      char* a = (char*)((uintptr_t)t->data & ~(page - 1));
+      char* b = (char*)t->data + ggml_nbytes(t);
+      total += ggml_nbytes(t);
+      for (; a < b; a += chunk) parts.emplace_back(a, std::min(chunk, (size_t)(b - a)));
+    }
+  }
+  std::atomic<size_t> next{0};
+  std::atomic<bool> failed{false};
+  std::vector<std::thread> pool;
+  for (int i = 0; i < std::max(1, n_threads); i++)
+    pool.emplace_back([&] {
+      for (size_t j; (j = next++) < parts.size();)
+        if (madvise(parts[j].first, parts[j].second, MADV_POPULATE_READ) != 0) failed = true;
+    });
+  for (auto& th : pool) th.join();
+  if (failed) throw err("madvise(MADV_POPULATE_READ) failed on the expert weights");
+  return total;
 }
 
 ggml_tensor* Model::get(const std::string& name) const {
