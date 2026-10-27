@@ -1,0 +1,22 @@
+# prompt: 10 tokens [0, 128803, 19923, 14, 1192, 477, 440, 33, 128804, 128822]
+# built the reference Transformer in 3s
+# loaded 882 dense tensors from the GGUF in 25s
+step 0: pos 0..9 (10 tok) -> 19923 'Hello'  top5 [19923, 30594, 43, 23166, 28826]  84s
+step 1: pos 10..10 (1 tok) -> 3 '!'  top5 [3, 1175, 1031, 14, 16]  9s
+step 2: pos 11..11 (1 tok) -> 342 ' I'  top5 [342, 16544, 17918, 1730, 1924]  9s
+step 3: pos 12..12 (1 tok) -> 4571 "'m"  top5 [4571, 442, 17308, 1030, 4750]  14s
+step 4: pos 13..13 (1 tok) -> 4843 ' doing'  top5 [4843, 1438, 22775, 1894, 18459]  16s
+step 5: pos 14..14 (1 tok) -> 1585 ' well'  top5 [1585, 2405, 1855, 5686, 3146]  16s
+step 6: pos 15..15 (1 tok) -> 14 ','  top5 [14, 305, 965, 2136, 4316]  18s
+step 7: pos 16..16 (1 tok) -> 11390 ' thank'  top5 [11390, 13482, 1099, 18579, 80619]  20s
+step 8: pos 17..17 (1 tok) -> 440 ' you'  top5 [440, 33185, 4482, 804, 47372]  17s
+step 9: pos 18..18 (1 tok) -> 362 ' for'  top5 [362, 16, 3, 832, 2136]  18s
+step 10: pos 19..19 (1 tok) -> 13070 ' asking'  top5 [13070, 81102, 123557, 2997, 20407]  18s
+step 11: pos 20..20 (1 tok) -> 16 '.'  top5 [16, 3, 2136, 965, 53769]  16s
+step 12: pos 21..21 (1 tok) -> 53769 ' �'  top5 [53769, 342, 1730, 1924, 1004]  17s
+step 13: pos 22..22 (1 tok) -> 235 '�'  top5 [235, 229, 225, 119, 228]  18s
+step 14: pos 23..23 (1 tok) -> 342 ' I'  top5 [342, 1730, 271, 1924, 1004]  14s
+step 15: pos 24..24 (1 tok) -> 4571 "'m"  top5 [4571, 442, 2090, 17308, 6345]  14s
+step 16: pos 25..25 (1 tok) -> 7692 ' ready'  top5 [7692, 2155, 3165, 54869, 710]  17s
+# completion: "Hello! I'm doing well, thank you for asking. 😊 I'm ready"
+# wrote data/ref/hello.pt

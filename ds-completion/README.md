@@ -4,15 +4,22 @@ Goal: `./ds-completion -m <model> -p "prompt"`. One model, one machine, one
 sequence. Priorities: correctness, clarity, then performance. Non-goals: other
 models, other quants, other hardware, serving features.
 
-Status: step 1 (loader + weight provenance) done; see "Step 1" below.
+Status: steps 1-3 done. CPU v0 runs end to end, matches the reference (incl. 1100-token context), and runs at the fork's speed.
 
 ## Tools
 
 ```bash
 make                                      # links the fork's CPU ggml (static)
 M=~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf
+bin/ds-completion -m $M -p "Hello, how are you?" --chat -n 64    # or --think, or raw text
 bin/ds-inspect -m $M [--layers 0,1,2-5] [--touch]
+bin/ds-test -m $M -g data/golden/hello [--layers 0-39] [--no-quant]  # teacher-forced, per layer
+bin/ds-test -m $M -g data/golden/hello --e2e data/ds/hello.f32       # end-to-end logits
+bin/test-fakequant                                                   # needs ref/make_fq_test.py first
 ~/venvs/ds-ref/bin/python ref/check_weights.py [--layers 0,1,2] [--experts 8|all] [--hf remote|local]
+~/venvs/ds-ref/bin/python ref/ds_ref.py --prompt "..." --chat --n-decode 16 [--fp32] [--no-quant] --out data/ref/x.pt
+~/venvs/ds-ref/bin/python ref/export_golden.py data/ref/x.pt data/golden/x
+~/venvs/ds-ref/bin/python ref/compare_logits.py data/ref/x.pt data/ds/x.f32
 ```
 
 ## What the model is (measured from the files, 2026-10-26)
@@ -227,3 +234,122 @@ plus 1.2 GiB of head. Routed experts add 4.2 GiB (6 of 384 per layer).
   table is checked on 3 runs of 1024 rows plus 512 random rows per layer.
 - **Nothing dropped:** every HF tensor of those layers is accounted for.
 - **Result: ALL OK.** 256 exact comparisons, 6.25 GB fetched, 522 s.
+
+## Step 2: the CPU reference and golden runs
+
+`ref/ds_ref.py` runs the official `inference/model.py` **unmodified** on the CPU:
+
+- **Kernels:** `ref/kernel_cpu.py` replaces the tilelang kernels with plain torch, keeping the
+  same semantics. That covers fp8/fp4 fake-quant (e8m0 and e4m3 scales, round-half-to-even fp4),
+  the fp8 x fp8 and fp8 x fp4 GEMMs, sparse attention with sinks, and the Sinkhorn split.
+- **Weights from the GGUF, all exact (asserted):**
+  - fp8 linears are re-blocked into the reference's own e4m3 + 32x32 e8m0 format.
+  - Experts are repacked from mxfp4 into its fp4 layout.
+  - Engram rows are read straight from the table.
+- **Memory:** routed experts are materialized only when routed to, then dropped again.
+- **What each golden file records, per step:**
+  - per layer: block input and output (hc stream and pre-mix), the attention and MoE inputs and
+    outputs, router weights and expert ids, the indexer's top-k, and the engram input;
+  - per step: the final logits.
+- **Speed:** a 10-token prefill takes 84 s and a decode step 10-18 s (16 threads).
+
+`ref/llama_logits.cpp` (`bin/llama-logits`) is the second opinion: the fork's libllama (CPU),
+fed the reference's exact token sequence, recording the logits per step.
+`ref/compare_logits.py` compares any two of these.
+
+Golden runs (`data/ref/`, git-ignored; logs in `results/ref-*.txt`):
+
+| file | prompt | decode | exercises |
+|---|---|---|---|
+| hello.pt | chat "Hello, how are you?" (10 tok) | 16 | short context, decode path |
+| readme200.pt | `prompts/ds-v41-readme.md`, 200 tok | 8 | past the 128-token window (ring buffer) |
+| readme1100.pt | same, 1100 tok, `--keep-last 32` | 4 | indexer top-512 actually selects (ratio-1: 1100, ratio-2: 550 positions) |
+
+**Reference vs fork, hello** (`results/compare-hello-ref-vs-fork.txt`):
+
+- Argmax agrees on 16 of 17 steps; KL is typically 1e-7 to 1e-3.
+- The miss (step 12) is a near tie: 😊 vs " I" are top-2 for both, in swapped order.
+- Max logit difference is 0.4-0.8 x the logit std.
+- Two independent implementations agreeing this closely rules out a structural bug in either.
+  The remaining gap fits the reference's fp8 activation quantization before every GEMM,
+  which llama.cpp does not do.
+
+Reference completion: "Hello! I'm doing well, thank you for asking. 😊 I'm ready". The fork
+in llama-cli: "Hello! I'm doing well, thanks for asking. How can I help you today?".
+
+## Step 3: CPU v0
+
+`src/forward.{h,cpp}` is the forward pass as ggml graphs on the CPU backend, written module by
+module after `model.py`. It uses the fork's ggml kernels:
+
+- matmuls and `mul_mat_id`;
+- the DeepSeek-specific ops `dsv4_hc_comb` / `hc_pre` / `hc_post` and `lightning_indexer`;
+- `swiglu_clamp`, `soft_max_ext` with sinks, and `top_k`.
+
+Design:
+
+- **Positions are handled on the host.** Ring slots, which compression groups complete in a chunk,
+  and what each query may see are all worked out in `make_plan`. The graph only does arithmetic,
+  gathers and `set_rows` into persistent state tensors.
+- **Any chunking works.** The reference only prefills at position 0; here tokens can be fed at any
+  position in chunks of any size.
+- **Reads before writes.** Every in-graph write to state takes its rows from the tensor that read
+  that state, so a write cannot run before the read.
+- **Fake quantization** (`src/fakequant.{h,cpp}`) copies the reference's fp8/fp4 rounding as ggml
+  custom ops. It is bit-exact against `ref/kernel_cpu.py` on 45k values, ties included
+  (`bin/test-fakequant`).
+- **Not implemented yet:** candidate-block selection, which only changes anything past 16k tokens.
+  `make_plan` refuses such contexts.
+
+Testing has to work around a property of fp8: one bf16-vs-f32 difference on the input of an fp8
+rounding can move a value by a whole fp8 step (~6%). That makes "ours vs the real reference"
+noisy at the 2-10% level per layer, which is too loose to catch a subtle bug. So the reference
+also runs in variants, and each of our modes is compared against the matching one (teacher
+forced, per layer, all 40 layers x all steps):
+
+| ours | vs reference variant | attn_in | attn_out | ffn_out | notes |
+|---|---|---|---|---|---|
+| exact quant | fp32 + fake quant | ~1e-7 | 6e-8 at decode; 1e-4..3e-2 where an fp8 rounding flips | 1e-3..1e-2 | the routed experts are the one inexact op |
+| no quant | fp32, no quant | ~1e-7 | 1.3e-3..5.5e-3 on all 200 rows, no outliers | 2e-3..1e-2 | noise from ggml rounding inputs to bf16 |
+| exact quant | the real reference (bf16 + quant) | ~2e-3 | 2-10% | 2-10% | rounding chaos, as expected |
+
+- **Exact in decode:** window attention, rope (with YaRN), sinks, the grouped output projection,
+  the compressor, the compressed KV, the engram and the hyper-connections all agree with the fp32
+  reference to 1e-7 at decode.
+- **The routed experts are the one inexact part.** ggml's mxfp4 kernels re-quantize activations to
+  int8 (q8_0), which the reference does not do. That puts ~1e-2 on ffn_out and occasionally flips
+  a near-tie expert.
+- **f32 compressor and index-key weights.** These small weights are kept in f32 (`Engine::f32w`).
+  ggml would otherwise round their input to bf16, and the compressed KV's fp4 rounding then
+  magnifies that to ~2e-2 in attention. The reference runs the compressor in fp32.
+
+End to end (`--e2e`, hello, 17 steps, vs the real reference):
+
+| implementation | argmax agrees | mean KL | median KL |
+|---|---|---|---|
+| ds-completion, exact quant (default) | 16/17 | 1.8e-2 | 1.3e-5 |
+| ds-completion, `--no-quant` | 16/17 | 3.0e-2 | 2.7e-5 |
+| the fork (llama.cpp CPU) | 16/17 | 2.5e-2 | 2.1e-5 |
+
+- **The one miss is a near tie:** the reference picks 😊 at step 12, while we and the fork pick
+  " I". Our completion: "Hello! I'm doing well, thank you for asking. I'm ready to help you with
+  whatever you need. How".
+Long context (teacher forced):
+
+- **readme200 vs the fp32/no-quant reference.** This prompt is past the 128-token window, so the
+  ring buffer wraps. attn_out stays at 1.3e-3..5e-3 on every layer, at prefill and at every
+  decode step: the same noise floor as at 10 tokens, with no outliers.
+- **readme1100 vs the real reference.** Here the indexer's top-512 really selects (1100 ratio-1
+  and 550 ratio-2 positions). Our selected sets overlap the reference's with Jaccard 0.95-0.996
+  per layer. The differences are near-ties at the cutoff; the reference ranks bf16 scores.
+  Random picks would give about 0.3.
+
+Speed (CPU only, nothing optimized yet; "Write a haiku about memory bandwidth.", --chat):
+
+| threads | prompt (12 tok) | decode |
+|---|---|---|
+| 16 | 7.1 t/s | 3.23 t/s |
+| 32 | 8.3 t/s | 3.47 t/s |
+
+That is the fork's speed (3.5 t/s decode in llama-cli). Prefill of 1100 tokens took ~4-6 s per
+layer through `ds-test`'s per-layer graphs.
