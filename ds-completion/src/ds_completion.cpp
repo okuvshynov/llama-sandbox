@@ -8,8 +8,8 @@
 // strings encoding/encoding.py produces); otherwise the prompt is raw text after BOS.
 // Only the tokenizer comes from libllama (vocab-only load); the forward pass is forward.cpp.
 // --gpu D (bin-hip build): the dense weights and the state on GPU D, routed experts on the CPU.
-// --rt <dense-fp8.gguf> (with --gpu): decode through the own runtime (hip/rt.h, exact fp8);
-// the prompt is still prefilled by the ggml Engine.
+// --rt <dense-fp8.gguf> (with --gpu): every token through the own runtime (hip/rt.h, exact
+// fp8), the prompt one token at a time; the Engine only holds the state and small weights.
 
 #include "forward.h"
 #include "llama.h"
@@ -108,7 +108,7 @@ int main(int argc, char** argv) {
     fprintf(stderr, "load failed: %s\n", e.what());
     return 1;
   }
-  if (!rt_path.empty()) opt.gpu_exact_quant = true;  // prefill with the reference's rounding, like the runtime
+  if (!rt_path.empty()) opt.runtime = true;
   Engine eng(m, opt);
 #ifdef DS_RUNTIME
   std::unique_ptr<Runtime> rt;
@@ -124,7 +124,11 @@ int main(int argc, char** argv) {
           (opt.exact_quant && opt.gpu < 0) ? "on" : "off", opt.n_threads);
 
   auto t1 = Clock::now();
+#ifdef DS_RUNTIME
+  std::vector<float> logits = rt ? rt->prefill(toks) : eng.forward(toks);
+#else
   std::vector<float> logits = eng.forward(toks);
+#endif
   const double t_pp = std::chrono::duration<double>(Clock::now() - t1).count();
   const int eos = llama_vocab_eos(vocab);
   int n_gen = 0;

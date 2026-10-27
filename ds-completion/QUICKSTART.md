@@ -43,14 +43,14 @@ Options:
 
 Without `--rt` the GPU path is ggml's (slower); without `--gpu`, `bin/ds-completion` is CPU only.
 
-Experiment: `--gpu-moe 0:27,1:36-39,2:32-35,3:28-31` also puts all experts of 13 layers on the
-four GPUs (~20 s upload), for 11.4 t/s.
+Experiment: `--gpu-moe 0:25-27,1:36-39,2:32-35,3:28-31` also puts all experts of 15 layers on
+the four GPUs (~22 s upload), for 12.0 t/s.
 
 ## Current results (2026-10-27)
 
 | mode | command | decode | KL vs reference*: median / mean without the near-tie step |
 |---|---|---|---|
-| **own runtime, dense on GPU 0** | `bin-hip/ds-completion --gpu 0 --rt ...` | **9.7-9.9 t/s** | 1.7e-5 / **6.3e-4** |
+| **own runtime, dense on GPU 0** | `bin-hip/ds-completion --gpu 0 --rt ...` | **9.7-10.0 t/s** | 5.9e-6 / 4.8e-3 (earlier run 1.7e-5 / 6.3e-4) |
 | ggml, dense on GPU 0 | `bin-hip/ds-completion --gpu 0` | 6.0 t/s | 1.2e-5 / 6.0e-3 |
 | CPU only | `bin/ds-completion` | 3.5 t/s | 1.3e-5 / 3.9e-3 |
 | llama.cpp fork (llama-cli, CPU) | - | 3.5 t/s | 2.1e-5 / 1.3e-3 |
@@ -63,8 +63,12 @@ Means over all 17 steps: 1.8e-2 to 2.5e-2 for every mode.
 
 - **The runtime is also gated per layer:** attention and FFN output within ~1e-7 of the fp32 +
   fake-quant reference. It has no inexact op left, and repeated runs are bit-identical.
-- **Prompt processing** is ~6-8 t/s in every mode (ggml).
-- **Where a runtime step (~101 ms) goes:** ~67 ms CPU routed experts, ~34 ms GPU and copies.
+- **Prompt processing:** with `--rt` the prompt is decoded token by token, ~10 t/s; ~6-8 t/s
+  in the ggml modes. The runtime's mean KL varies run to run with fp8 rounding flips (README
+  step 10); every exact mode scatters the same way.
+- **Where a runtime step (~100 ms) goes:** ~67 ms CPU routed experts, ~29-34 ms GPU and copies
+  (depends on the GPU clock level; README step 9).
+- **GPU memory with `--rt`:** 6.37 GiB fp8 + 1.68 GiB small weights on die 0.
 
 ## Limits
 

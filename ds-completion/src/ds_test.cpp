@@ -9,8 +9,9 @@
 //       reference inputs. Layers run in order up to the highest one asked for, because consumer
 //       layers read the caches their source layer wrote.
 //   ds-test -m <model> -g data/golden/hello-fp32 --gpu 0 --runtime <dense-fp8.gguf> (bin-hip)
-//       As above, but the decode steps run through the own runtime (hip/rt.h); the prefill
-//       step still runs through the Engine (GPU, fake quantization kept).
+//       As above, through the own runtime (hip/rt.h), which takes one token at a time: the
+//       prompt step is teacher-forced token by token and each row pools that layer's errors
+//       over the prompt's tokens (tokens the golden did not keep run free, untested).
 //   ds-test -m <model> -g data/golden/hello --e2e data/ds/hello.f32
 //       End to end: the full forward on the reference's token sequence, the logits of every
 //       step written as [steps][n_vocab] f32 (compare with ref/compare_logits.py).
@@ -113,7 +114,7 @@ static std::vector<int> parse_list(const char* s) {
 int main(int argc, char** argv) {
   setvbuf(stdout, nullptr, _IOLBF, 0);
   std::string model_path, gdir, e2e, rt_path;
-  bool determinism = false;
+  bool determinism = false, per_token = false;
   std::vector<int> layers;
   Options opt;
   std::map<int, int> gpu_moe;  // layer -> device holding all its experts (runtime only)
@@ -140,6 +141,7 @@ int main(int argc, char** argv) {
     else if (a == "--e2e") e2e = next();
     else if (a == "--runtime") rt_path = next();
     else if (a == "--determinism") determinism = true;
+    else if (a == "--per-token") per_token = true;  // runtime: also a row per prompt token and layer
     else if (a == "--profile") opt.profile = true;  // GPU mode: also syncs at every backend switch
     else { fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
   }
@@ -156,7 +158,7 @@ int main(int argc, char** argv) {
   m.load(model_path, load);
   if (layers.empty()) for (int L = 0; L <= L_max; L++) layers.push_back(L);
   std::set<int> report(layers.begin(), layers.end());
-  if (!rt_path.empty()) opt.gpu_exact_quant = true;  // prefill caches with the reference's rounding
+  if (!rt_path.empty()) opt.runtime = true;
   Engine eng(m, opt);
 #ifdef DS_RUNTIME
   std::unique_ptr<Runtime> rt;
@@ -173,7 +175,7 @@ int main(int argc, char** argv) {
       std::vector<int32_t> toks(tk->i(), tk->i() + tk->numel());
       auto t0 = std::chrono::steady_clock::now();
 #ifdef DS_RUNTIME
-      std::vector<float> logits = (rt && toks.size() == 1) ? rt->decode(toks[0]) : eng.forward(toks);
+      std::vector<float> logits = rt ? rt->prefill(toks) : eng.forward(toks);
 #else
       std::vector<float> logits = eng.forward(toks);
 #endif
@@ -189,6 +191,7 @@ int main(int argc, char** argv) {
     return 0;
   }
 
+  if (determinism && !rt_path.empty()) { fprintf(stderr, "--determinism tests the Engine\n"); return 2; }
   if (determinism) {
     // two engines, the same golden inputs, every tap compared bit for bit (prefill step only)
     Engine eng2(m, opt);
@@ -222,6 +225,108 @@ int main(int argc, char** argv) {
   for (const char* k : keys) printf(" %9s", k);
   printf(" %8s %8s %7s\n", "experts", "topk", "ms");
   const int hp_topk_limit = m.hp.idx_topk;  // when the reference picked a full top-k, also show the overlap
+#ifdef DS_RUNTIME
+  if (rt) {
+    // every step token by token; a step's row pools the layer's errors over its tested tokens
+    const int n_keys = sizeof keys / sizeof *keys;
+    for (int s = 0; s < G.n_steps; s++) {
+      const GTensor* tk = G.get(s, -1, "tokens");
+      std::vector<int32_t> toks(tk->i(), tk->i() + tk->numel());
+      const int T = (int)toks.size(), p0_step = eng.st.n_past;
+      struct Acc { double num[8] = {}, den[8] = {}; int same = 0, n = 0, tk_eq = 0, tk_n = 0; double jac = 0, ms = 0; bool full_topk = false; };
+      std::vector<Acc> acc(L_max + 1);
+      for (int t = 0; t < T; t++) {
+        // the golden's rows for this token (it may keep only the last rows of the prompt)
+        const GTensor* h0 = G.get(s, 0, m.layers[0].kind.engram >= 0 ? "engram_in" : "h_in");
+        const int kept = (int)h0->shape[0], r = t - (T - kept);
+        if (r < 0) { rt->decode(toks[t], false); continue; }
+        rt->begin_step(toks[t]);
+        for (int L = 0; L <= L_max; L++) {
+          const bool is_engram = m.layers[L].kind.engram >= 0;
+          const GTensor* hin = G.get(s, L, is_engram ? "engram_in" : "h_in");
+          const GTensor* pin = G.get(s, L, "pre_in");
+          if (!hin || !pin) { fprintf(stderr, "golden lacks step %d layer %d\n", s, L); return 1; }
+          const int64_t nh = hin->numel() / kept, np = pin->numel() / kept;
+          std::vector<float> h(hin->f() + r * nh, hin->f() + (r + 1) * nh), p(pin->f() + r * np, pin->f() + (r + 1) * np);
+          auto t0 = std::chrono::steady_clock::now();
+          Taps tp = rt->run_layer(L, h, p);
+          Acc& a = acc[L];
+          if (per_token && T > 1 && report.count(L)) {
+            printf("  t%-3d %3d", t, L);
+            for (int k = 0; k < n_keys; k++) {
+              const GTensor* ref = G.get(s, L, keys[k]);
+              if (!ref || !tp.count(keys[k]) || (int64_t)tp[keys[k]].f.size() != ref->numel() / kept) { printf(" %9s", "-"); continue; }
+              const int64_t n = ref->numel() / kept;
+              double nu = 0, de = 0;
+              for (int64_t i = 0; i < n; i++) { const double d = tp[keys[k]].f[i] - ref->f()[r * n + i]; nu += d * d; de += (double)ref->f()[r * n + i] * ref->f()[r * n + i]; }
+              printf(" %9.2e", sqrt(nu / std::max(de, 1e-300)));
+            }
+            printf("\n");
+          }
+          a.ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+          for (int k = 0; k < n_keys; k++) {
+            const GTensor* ref = G.get(s, L, keys[k]);
+            if (!ref || !tp.count(keys[k])) continue;
+            const int64_t n = ref->numel() / kept;
+            const std::vector<float>& v = tp[keys[k]].f;
+            if ((int64_t)v.size() != n) continue;
+            for (int64_t i = 0; i < n; i++) {
+              const double d = v[i] - ref->f()[r * n + i];
+              a.num[k] += d * d;
+              a.den[k] += (double)ref->f()[r * n + i] * ref->f()[r * n + i];
+            }
+          }
+          const GTensor* ri = G.get(s, L, "router_i");
+          const int rr = r - (kept - (int)ri->shape[0]);
+          if (rr >= 0) {
+            std::set<int> x(tp["router_i"].i.begin(), tp["router_i"].i.end()), y(ri->i() + rr * 6, ri->i() + rr * 6 + 6);
+            a.same += x == y;
+            a.n++;
+          }
+          const GTensor* rk = G.get(s, L, "topk");
+          const int rt_k = rk ? r - (kept - (int)rk->shape[0]) : -1;
+          if (rk && tp.count("topk") && rt_k >= 0) {
+            // the reference stores picks shifted by the window part's length: the prefill
+            // chunk's own keys (T) at start_pos 0, the full ring (W) when decoding
+            const int off = p0_step == 0 ? T : m.hp.window, ratio = m.layers[L].kind.ratio, Kr = (int)rk->shape.back();
+            const int n_vis = (p0_step + t + 1) / ratio;
+            std::set<int> x, y, u;
+            for (int v : tp["topk"].i) if (v < n_vis) x.insert(v);
+            for (int j = 0; j < Kr; j++) { const int v = rk->i()[rt_k * Kr + j]; if (v >= 0) y.insert(v - off); }
+            int inter = 0;
+            for (int v : x) inter += y.count(v);
+            u = x;
+            u.insert(y.begin(), y.end());
+            a.tk_eq += x == y;
+            a.jac += u.empty() ? 1.0 : (double)inter / u.size();
+            a.tk_n++;
+            a.full_topk = Kr >= hp_topk_limit;
+          }
+        }
+        rt->end_step();
+      }
+      for (int L = 0; L <= L_max; L++) {
+        if (!report.count(L)) continue;
+        const Acc& a = acc[L];
+        const bool is_engram = m.layers[L].kind.engram >= 0;
+        printf("%4d %3d", s, L);
+        for (int k = 0; k < n_keys; k++) {
+          if (a.den[k] == 0 || (!strcmp(keys[k], "h_in") && !is_engram)) { printf(" %9s", "-"); continue; }
+          printf(" %9.2e", sqrt(a.num[k] / a.den[k]));
+        }
+        printf(" %8.3f", a.n ? (double)a.same / a.n : NAN);
+        if (a.tk_n) {
+          printf(" %8.3f", (double)a.tk_eq / a.tk_n);
+          if (a.full_topk) printf("(J%.3f)", a.jac / a.tk_n);
+        } else {
+          printf(" %8s", "-");
+        }
+        printf(" %7.0f\n", a.ms);
+      }
+    }
+    return 0;
+  }
+#endif
   for (int s = 0; s < G.n_steps; s++) {
     const GTensor* tk = G.get(s, -1, "tokens");
     std::vector<int32_t> toks(tk->i(), tk->i() + tk->numel());

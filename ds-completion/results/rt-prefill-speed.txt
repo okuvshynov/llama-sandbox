@@ -1,0 +1,15 @@
+== gpu-moe: none
+# GPU 0 (AMD Radeon Graphics): 580 dense tensors, 1.68 GiB
+# prompt: 12 tokens in 1.21 s = 9.89 t/s; generation: 15 tokens in 1.50 s = 10.03 t/s
+== gpu-moe: 0:27,1:36-39,2:32-35,3:28-31
+# GPU 0 (AMD Radeon Graphics): 580 dense tensors, 1.68 GiB
+# runtime: 13 expert layers uploaded in 19.0 s
+# prompt: 12 tokens in 1.06 s = 11.36 t/s; generation: 15 tokens in 1.27 s = 11.84 t/s
+== gpu-moe: 0:25-27,1:36-39,2:32-35,3:28-31
+# GPU 0 (AMD Radeon Graphics): 580 dense tensors, 1.68 GiB
+# runtime: 15 expert layers uploaded in 21.9 s
+# prompt: 12 tokens in 0.92 s = 13.02 t/s; generation: 15 tokens in 1.25 s = 11.96 t/s
+== gpu-moe: 0:24-27,1:36-39,2:32-35,3:28-31
+# GPU 0 (AMD Radeon Graphics): 580 dense tensors, 1.68 GiB
+terminate called after throwing an instance of 'std::runtime_error'
+  what():  hipMalloc(&m.codes, blocks_per_expert * n_expert * 16): out of memory

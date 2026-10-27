@@ -5,6 +5,7 @@
 #include "ggml-cpu.h"
 #include "ggml-backend.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
@@ -287,7 +288,7 @@ Engine::Engine(const Model& m_, Options o) : m(m_), hp(m_.hp), opt(o) {
     if (!dev) throw err("no GPU device " + std::to_string(opt.gpu));
     gpu = dense = ggml_backend_dev_init(dev, nullptr);
     in_buft = ggml_backend_dev_host_buffer_type(dev);
-    if (opt.exact_quant && !opt.gpu_exact_quant) {
+    if (opt.exact_quant && !opt.gpu_exact_quant && !opt.runtime) {
       // the fake-quant ops are CPU custom ops: on the GPU each costs a round trip
       fprintf(stderr, "# GPU mode: fake quantization off (CPU-only ops; --gpu-exact keeps it, slowly)\n");
       opt.exact_quant = false;
@@ -303,9 +304,14 @@ Engine::Engine(const Model& m_, Options o) : m(m_), hp(m_.hp), opt(o) {
       copies.emplace_back(d, t);
       t = d;
     };
+    // the runtime's own copies: fp8 linears from fp8pack's file, f32 compressor/indexer keys
+    static ggml_tensor* Layer::*const RT_OWN[] = {
+        &Layer::q_a, &Layer::q_b, &Layer::kv, &Layer::out_a, &Layer::out_b, &Layer::idx_q_b, &Layer::gate_sh,
+        &Layer::up_sh, &Layer::down_sh, &Layer::engram_kv, &Layer::cmp_kv, &Layer::cmp_gate, &Layer::idx_k};
     for (Layer& l : lay)
       if (l.loaded)
-        for (auto f : DENSE) place(l.*f);
+        for (auto f : DENSE)
+          if (!opt.runtime || std::find(std::begin(RT_OWN), std::end(RT_OWN), f) == std::end(RT_OWN)) place(l.*f);
     place(out_w);
     place(out_norm_w);
     w_buf = ggml_backend_alloc_ctx_tensors(w_ctx, gpu);
@@ -378,6 +384,7 @@ Engine::~Engine() {
 }
 
 void Engine::begin_chunk(const std::vector<int32_t>& tokens) {
+  if (opt.runtime) throw err("Engine in runtime mode: tokens go through hip/rt.h");
   delete plan;
   topk_host.clear();
   plan = new Plan(make_plan(hp, st, tokens, opt.max_ctx));

@@ -517,7 +517,8 @@ own HIP kernels.
 - **Shared state with the ggml Engine.** The runtime uses the Engine's state (window rings,
   compressor groups, compressed KV, index keys: the same GPU tensors) and its GPU copies of the
   small f32/bf16 weights (norms, hc, router, compressor, indexer projections, head).
-- **Prefill** still runs through `Engine::forward`; decode runs here.
+- **Prefill** still runs through `Engine::forward`; decode runs here. (Step 10: the prompt
+  runs through the runtime too.)
 - **fp8 weights** come from `dense-fp8.gguf` (6.37 GiB on the die), through the exact fp8 GEMV.
 - **Routed experts on the CPU:** one cached ggml CPU graph per layer (fq8 -> mul_mat_id ->
   swiglu_clamp -> weights -> fq8 -> mul_mat_id -> sum), built once and reused every step. It
@@ -732,3 +733,48 @@ configurations at the current level, sampling hwmon power, into `results/sclk/sc
 - **Noise:** the step times are medians of 2-3 profiled steps and the CPU part varies by
   several ms. Trust the kernel rows and the "GPU + copies" rows over the totals. Power is
   1-sample-per-100 ms hwmon peaks, not energy.
+
+## Step 10: the prompt through the runtime; ggml's dense GPU copies dropped
+
+`--rt` used to keep two copies of the dense weights on die 0: ggml's bf16 copies (14.45 GiB,
+used only to prefill the prompt through `Engine::forward`) and the runtime's fp8 ones
+(6.37 GiB). Now every token, prompt included, runs through the runtime, one token at a time:
+
+- **`Options::runtime`:** the Engine copies only the small weights the runtime reads (norms, hc,
+  router, compressor norms, indexer projection, head) plus the f32 compressor/indexer-key
+  copies, and holds the sequence state. **1.68 GiB instead of 14.45 GiB** on die 0.
+  `Engine::forward` / `run_layer` throw in this mode.
+- **`Runtime::prefill(tokens)`:** decode() per token, skipping the 1.3 GB head GEMV for all
+  but the last.
+- **`ds-test --runtime`:** the prompt step is teacher-forced token by token, and each row
+  pools the layer's errors over the prompt's tokens (`--per-token` prints every token).
+  Tokens a `--keep-last` golden did not keep run free.
+
+Gate (hello-fp32, all 40 layers, `results/rt-prefill-hello-fp32.txt`):
+
+- **Decode steps:** unchanged, attn_out / ffn_out median 7.5e-8 / 8e-8.
+- **Prompt step:** per token, most layers are at ~1e-7. Some token-layers are at 1e-4..1e-3:
+  fp8 rounding flips, since the reference's batched fp32 matmuls sum in another order. Pooled
+  over 12 tokens: attn_out median 9e-4. The CPU Engine's chunked prefill shows the same on
+  layers 0-2 (6.6e-4 / 1.1e-4 / 3.6e-4 against the runtime's 6.1e-4 / 2.4e-4 / 3.8e-4), and
+  the old ggml GPU prefill had 3.5e-3. One token in one layer picked a different expert set
+  (a near tie after a flip).
+- **End to end vs the real reference (hello, 17 steps):** argmax 16/17 (the same near tie),
+  KL median 5.9e-6 (earlier runtime 1.7e-5). The mean without step 12 is 4.8e-3 against 6.3e-4.
+  It is driven by steps 7, 14 and 16; per-step KL scatters over orders of magnitude in every
+  exact mode (CPU exact: 1e-2..2e-2 at steps 7, 11, 14), so one 17-step prompt cannot rank
+  these.
+
+Speed (haiku prompt, 12 tokens, sclk level 2, 32 threads; `results/rt-prefill-speed.txt`):
+
+| expert layers on GPUs | prompt | decode |
+|---|---|---|
+| none | 9.9 t/s (was ~6) | 10.0 t/s |
+| 13 (0:27, 1:36-39, 2:32-35, 3:28-31) | 11.4 t/s | 11.8 t/s |
+| **15 (die 0 now holds 25-27)** | 13.0 t/s | 12.0 t/s |
+| 16 (die 0: 24-27) | out of memory | |
+
+- **Die 0 has room for 3 expert layers instead of 1.** The prompt goes at decode speed because
+  it is decoded. Batching prompt tokens (each weight read once for several tokens) is PLAN F.
+- **The ggml GPU path** (`--gpu` without `--rt`) still exists, but nothing in the runtime
+  depends on it any more.

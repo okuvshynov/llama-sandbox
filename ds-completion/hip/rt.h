@@ -1,9 +1,10 @@
 // The own decode runtime on one die (PLAN.md section 3, option 2): one token per step through
 // our HIP kernels (kernels.h, fp8_gemv.h), with the routed experts on the CPU.
 //
-// It shares the ggml Engine's state (window rings, compressor groups, compressed KV, index
-// keys: the same GPU tensors), so prefill can run through Engine::forward and decode here,
-// and every layer can be checked teacher-forced against the reference like the Engine is.
+// It uses the Engine (Options::runtime) as the holder of the sequence state (window rings,
+// compressor groups, compressed KV, index keys: GPU tensors) and of the small weights' GPU
+// copies; every token, prompt included, runs here. Every layer can be checked teacher-forced
+// against the reference like the Engine is.
 // Routed experts: src/cpu_moe.h (AVX-512, exact fp4 x fp8, weights read in place from the mmap).
 // Weights: the fp8 linears from fp8pack's file (exact fp8 x fp8 GEMV); the small f32/bf16
 // tensors (norms, hc, router, compressor, indexer projections, head) are the Engine's own GPU
@@ -29,8 +30,11 @@ class Runtime {
   Runtime(Engine& eng, const std::string& fp8_path, const std::map<int, int>& gpu_moe = {});
   ~Runtime();
 
-  // one decode step for `token` at position eng.st.n_past: returns the logits
-  std::vector<float> decode(int32_t token);
+  // one step for `token` at position eng.st.n_past: returns the logits (empty when
+  // want_logits is false: prompt tokens before the last skip the 1.3 GB head)
+  std::vector<float> decode(int32_t token, bool want_logits = true);
+  // the prompt, one token at a time (decode() for each); the last token's logits
+  std::vector<float> prefill(const std::vector<int32_t>& tokens);
 
   // teacher-forced single layer (tests): begin_step(token), then run_layer for L = 0.. in
   // order (consumers read what their source layer wrote), then end_step(). Inputs and taps as

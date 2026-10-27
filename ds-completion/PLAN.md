@@ -336,9 +336,8 @@ Projected step times (from the unit costs above):
 
 New order:
 
-1. **Free die 0's HBM.** With `--rt`, stop keeping ggml's bf16 copies of the fp8-packed
-   weights on the GPU (14 GB, used only for prefill). Prefill instead through the runtime one
-   token at a time, or through ggml on the CPU. That is +2 layers' worth of experts.
+1. **Free die 0's HBM.** Done (README step 10). The prompt runs through the runtime one
+   token at a time, and die 0 now has room for +2 expert layers (15 in all with dies 1-3).
 2. **Per-layer expert split (EP over 4 dies + the CPU, concurrently).**
    - A static placement, uniform to start, so no routing statistics are needed.
    - The router's ids are dispatched to the owners (die or CPU) and the partials summed.

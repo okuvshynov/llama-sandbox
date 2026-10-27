@@ -60,7 +60,7 @@ static std::vector<float> rope_freqs(int dim, int original_seq_len, float base, 
 // ------------------------------------------------------------------ construction
 
 Runtime::Runtime(Engine& e, const std::string& fp8_path, const std::map<int, int>& moe_map) : eng(e), hp(e.hp) {
-  if (!eng.gpu) throw std::runtime_error("Runtime needs the Engine in GPU mode");
+  if (!eng.gpu || !eng.opt.runtime) throw std::runtime_error("Runtime needs the Engine in GPU + runtime mode");
   CHECK(hipSetDevice(eng.opt.gpu));
   CHECK(hipStreamCreateWithFlags(&s, hipStreamNonBlocking));
   CHECK(hipEventCreateWithFlags(&ev, hipEventDisableTiming));
@@ -542,7 +542,13 @@ Taps Runtime::run_layer(int L, const std::vector<float>& h_in, const std::vector
   return taps;
 }
 
-std::vector<float> Runtime::decode(int32_t tok) {
+std::vector<float> Runtime::prefill(const std::vector<int32_t>& tokens) {
+  std::vector<float> logits;
+  for (size_t i = 0; i < tokens.size(); i++) logits = decode(tokens[i], i + 1 == tokens.size());
+  return logits;
+}
+
+std::vector<float> Runtime::decode(int32_t tok, bool want_logits) {
   auto t0 = Clock::now();
   begin_step(tok);
   const int E = hp.n_embd, HC = hp.hc_mult;
@@ -555,6 +561,11 @@ std::vector<float> Runtime::decode(int32_t tok) {
   CHECK(hipMemcpyAsync(pre, one_hot.data(), HC * 4, hipMemcpyHostToDevice, s));
   k_repeat(x, E, HC, h, s);
   for (int L = 0; L < hp.n_layer; L++) block(L, nullptr);
+  if (!want_logits) {
+    end_step();
+    last.total_ms = ms_since(t0);
+    return {};
+  }
   // head: collapse with the last pre-mix, norm, logits
   mark("head");
   k_hc_pre(h, pre, E, x, s);

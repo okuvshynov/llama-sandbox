@@ -27,7 +27,11 @@ struct Options {
   int gpu = -1;  // >= 0: dense weights + state on this GPU (ROCm device index); experts stay on the CPU
   bool profile = false;
   bool debug_skip_routed = false;
-  bool gpu_exact_quant = false;  // GPU mode: keep the fake quantization (its CPU ops cost round trips)  // debugging/timing only: routed experts contribute nothing  // GPU mode: time each run of same-backend nodes (adds a sync per run)
+  bool gpu_exact_quant = false;
+  // GPU mode for the own runtime (hip/rt.h), which runs every token: only the small weights it
+  // reads go to the GPU (its fp8 linears come from fp8pack's file), plus the sequence state.
+  // forward() / run_layer() are unavailable.
+  bool runtime = false;  // GPU mode: keep the fake quantization (its CPU ops cost round trips)  // debugging/timing only: routed experts contribute nothing  // GPU mode: time each run of same-backend nodes (adds a sync per run)
 };
 
 // Where a forward's wall time went (GPU mode with Options::profile).
