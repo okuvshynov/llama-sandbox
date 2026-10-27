@@ -207,6 +207,8 @@ void Model::load(const std::string& first, const std::vector<int>& want_layers) 
     if (s.map == MAP_FAILED) throw err("mmap failed: " + path);
     // ggml's CPU buffer wants a non-const pointer; the weights are only ever read
     s.buf = ggml_backend_cpu_buffer_from_ptr(s.map, s.size);
+    // "weights": the scheduler then runs ops on these where they live, instead of copying them
+    ggml_backend_buffer_set_usage(s.buf, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
     const size_t data0 = gguf_get_data_offset(s.g);
     for (int64_t i = 0; i < gguf_get_n_tensors(s.g); i++) {
       const char* name = gguf_get_tensor_name(s.g, i);

@@ -24,6 +24,15 @@ struct Options {
   bool exact_quant = true;  // apply the reference's fp8/fp4 fake quantization (fakequant.h)
   int max_ctx = 4096;       // capacity of the compressed caches
   int n_threads = 16;
+  int gpu = -1;  // >= 0: dense weights + state on this GPU (ROCm device index); experts stay on the CPU
+  bool profile = false;
+  bool debug_skip_routed = false;  // debugging/timing only: routed experts contribute nothing  // GPU mode: time each run of same-backend nodes (adds a sync per run)
+};
+
+// Where a forward's wall time went (GPU mode with Options::profile).
+struct Profile {
+  double gpu_ms = 0, cpu_ms = 0, total_ms = 0;
+  int gpu_runs = 0, cpu_runs = 0;
 };
 
 // Everything a later step needs from earlier tokens.
@@ -75,6 +84,20 @@ class Engine {
   const Hparams& hp;
   Options opt;
   ggml_backend_t cpu;
+  // GPU mode: the dense backend runs everything except the routed experts and the two huge
+  // gather tables (token embedding, engram table), which stay in host memory with the CPU
+  ggml_backend_t gpu = nullptr;
+  ggml_backend_t dense;             // gpu if enabled, else cpu
+  ggml_backend_sched_t sched = nullptr;
+  ggml_backend_buffer_type_t in_buft = nullptr;  // pinned host memory for graph inputs (GPU mode)
+  ggml_context* w_ctx = nullptr;    // the GPU copies of the dense weights
+  ggml_backend_buffer_t w_buf = nullptr;
+  std::vector<Layer> lay;           // m.layers, with dense tensors replaced by their GPU copies
+  ggml_tensor *out_w, *out_norm_w;
+ public:
+  int last_splits = 0;              // graph splits of the last compute (GPU mode)
+  Profile last_profile;
+ private:
   Plan* plan = nullptr;  // current chunk
   // f32 copies of the small bf16 weights the reference applies in fp32 (the compressor pools in
   // fp32; ggml would round its input to bf16 for a bf16 weight, which the fp4 rounding of the

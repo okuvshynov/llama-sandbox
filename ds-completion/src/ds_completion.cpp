@@ -1,12 +1,13 @@
 // ds-completion: DeepSeek-V4.1-Flash text completion.
 //
 //   ds-completion -m <model-00001-of-000NN.gguf> -p "prompt" [--chat | --think] [-n 128]
-//                 [-t 16] [--no-quant] [--max-ctx 4096]
+//                 [-t 16] [--no-quant] [--max-ctx 4096] [--gpu D]
 //
 // The prompt is fed as one chunk (prefill), then one token per step, greedy. --chat wraps the
 // prompt as one user turn in the model's chat format without thinking, --think with it (the
 // strings encoding/encoding.py produces); otherwise the prompt is raw text after BOS.
 // Only the tokenizer comes from libllama (vocab-only load); the forward pass is forward.cpp.
+// --gpu D (bin-hip build): the dense weights and the state on GPU D, routed experts on the CPU.
 
 #include "forward.h"
 #include "llama.h"
@@ -50,12 +51,15 @@ int main(int argc, char** argv) {
     else if (a == "--think") mode = "think";
     else if (a == "-n") n_predict = atoi(next());
     else if (a == "-t") opt.n_threads = atoi(next());
+    else if (a == "--gpu") opt.gpu = atoi(next());
+    else if (a == "--profile") opt.profile = true;
+    else if (a == "--debug-skip-routed") opt.debug_skip_routed = true;
     else if (a == "--no-quant") opt.exact_quant = false;
     else if (a == "--max-ctx") opt.max_ctx = atoi(next());
     else { fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
   }
   if (model_path.empty() || prompt.empty()) {
-    fprintf(stderr, "usage: ds-completion -m <model.gguf> -p \"prompt\" [--chat|--think] [-n N] [-t N] [--no-quant] [--max-ctx N]\n");
+    fprintf(stderr, "usage: ds-completion -m <model.gguf> -p \"prompt\" [--chat|--think] [-n N] [-t N] [--no-quant] [--max-ctx N] [--gpu D]\n");
     return 2;
   }
 
@@ -88,7 +92,7 @@ int main(int argc, char** argv) {
   Engine eng(m, opt);
   const double t_load = std::chrono::duration<double>(Clock::now() - t0).count();
   fprintf(stderr, "# loaded in %.1f s; prompt %zu tokens; fake-quant %s; %d threads\n", t_load, toks.size(),
-          opt.exact_quant ? "on" : "off", opt.n_threads);
+          (opt.exact_quant && opt.gpu < 0) ? "on" : "off", opt.n_threads);
 
   auto t1 = Clock::now();
   std::vector<float> logits = eng.forward(toks);
@@ -105,9 +109,16 @@ int main(int argc, char** argv) {
     fflush(stdout);
     if (n_gen + 1 == n_predict) { n_gen++; break; }
     logits = eng.forward({next});
+    if (opt.profile) {
+      const Profile& p = eng.last_profile;
+      fprintf(stderr, "\n# step %d: %.1f ms = gpu %.1f (%d runs) + cpu %.1f (%d runs) + other %.1f", n_gen, p.total_ms,
+              p.gpu_ms, p.gpu_runs, p.cpu_ms, p.cpu_runs, p.total_ms - p.gpu_ms - p.cpu_ms);
+    }
   }
   const double t_tg = std::chrono::duration<double>(Clock::now() - t2).count();
   printf("\n");
+  fflush(stdout);
+  if (opt.gpu >= 0) fprintf(stderr, "# graph splits per step: %d\n", eng.last_splits);
   fprintf(stderr, "# prompt: %zu tokens in %.2f s = %.2f t/s; generation: %d tokens in %.2f s = %.2f t/s\n",
           toks.size(), t_pp, toks.size() / t_pp, n_gen, t_tg, n_gen > 0 ? n_gen / t_tg : 0.0);
   llama_model_free(tok_model);

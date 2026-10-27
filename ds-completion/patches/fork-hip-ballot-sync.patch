@@ -1,0 +1,12 @@
+diff --git a/ggml/src/ggml-cuda/vendors/hip.h b/ggml/src/ggml-cuda/vendors/hip.h
+index da7e3da0b..ea534f41c 100644
+--- a/ggml/src/ggml-cuda/vendors/hip.h
++++ b/ggml/src/ggml-cuda/vendors/hip.h
+@@ -34,6 +34,7 @@
+ #define __shfl_xor_sync(mask, var, laneMask, width) __shfl_xor(var, laneMask, width)
+ #define __all_sync(mask, var) __all(var)
+ #define __any_sync(mask, var) __any(var)
++#define __ballot_sync(mask, var) __ballot(var)
+ #define cublasStrsmBatched hipblasStrsmBatched
+ #define cublasCreate hipblasCreate
+ #define cublasDestroy hipblasDestroy

@@ -4,7 +4,7 @@ Goal: `./ds-completion -m <model> -p "prompt"`. One model, one machine, one
 sequence. Priorities: correctness, clarity, then performance. Non-goals: other
 models, other quants, other hardware, serving features.
 
-Status: steps 1-3 done. CPU v0 runs end to end, matches the reference (incl. 1100-token context), and runs at the fork's speed.
+Status: steps 1-4 done. Step 4: dense part on one GPU, routed experts on the CPU, 6.0 t/s decode (CPU only: 3.5).
 
 ## Tools
 
@@ -12,6 +12,8 @@ Status: steps 1-3 done. CPU v0 runs end to end, matches the reference (incl. 110
 make                                      # links the fork's CPU ggml (static)
 M=~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf
 bin/ds-completion -m $M -p "Hello, how are you?" --chat -n 64    # or --think, or raw text
+make HIP=1   # -> bin-hip/, needs the fork's build-hip (see Step 4)
+bin-hip/ds-completion -m $M -p "..." --chat --gpu 0 [--profile]   # dense part on GPU 0
 bin/ds-inspect -m $M [--layers 0,1,2-5] [--touch]
 bin/ds-test -m $M -g data/golden/hello [--layers 0-39] [--no-quant]  # teacher-forced, per layer
 bin/ds-test -m $M -g data/golden/hello --e2e data/ds/hello.f32       # end-to-end logits
@@ -353,3 +355,68 @@ Speed (CPU only, nothing optimized yet; "Write a haiku about memory bandwidth.",
 
 That is the fork's speed (3.5 t/s decode in llama-cli). Prefill of 1100 tokens took ~4-6 s per
 layer through `ds-test`'s per-layer graphs.
+
+## Step 4: dense part on one GPU
+
+Building the fork for gfx906 (ROCm 6.3.4) needed a one-line fix:
+
+- `patches/fork-hip-ballot-sync.patch`, applied to `~/forks/llama.cpp`.
+- ggml's HIP shims define `__shfl*_sync`, `__all_sync` and `__any_sync`, but not `__ballot_sync`.
+  That breaks `topk-moe.cu` (grouped-expert top-k, which this model does not use).
+- Build: `cmake -S . -B build-hip -DGGML_HIP=ON -DAMDGPU_TARGETS=gfx906 -DBUILD_SHARED_LIBS=ON ...`
+  (the recipe in `hip-moe/README.md`).
+- `test-backend-ops` passes on ROCm0 for every op the forward pass uses.
+
+`--gpu D` (Options::gpu):
+
+- **On the GPU:** the dense weights (attention, indexer, compressor, shared experts, router,
+  hyper-connections, engram projection, head; 921 tensors, 14.45 GiB, uploaded in ~3.5 s) and
+  the sequence state.
+- **On the CPU:** routed experts (mxfp4), the token embedding and the engram table, all in the
+  page-cache mmap.
+- **Splitting the graph:** `ggml_backend_sched` splits it, with `op_offload` off: 86 splits per
+  step, i.e. GPU -> CPU (routed experts) -> GPU in every layer.
+- **Weights flag:** the mmap buffers must be flagged `GGML_BACKEND_BUFFER_USAGE_WEIGHTS`.
+  Otherwise the scheduler treats experts and tables as inputs and tries to copy 470 GB to the
+  GPU.
+- **No fake quantization on the GPU.** The fake-quant ops are CPU custom ops; on the GPU each
+  would be a round trip. A HIP version means adding a real ggml op, which is left for later.
+
+Correctness (teacher forced, all layers, vs the fp32/no-quant reference):
+
+- **readme200:** attn_out median 1.2e-6 (max 3e-6). The GPU's bf16 matmul keeps f32 activations,
+  so this is tighter than the CPU's 3e-3.
+- **hello:** 3.5e-3 at prefill. ggml picks hipBLAS for bf16 weights at batch 9-63, and hipBLAS
+  rounds activations to bf16 (`bin-hip/test-matmul-prec`: ~1e-7 at batch 1-8 and >= 64, 1.7e-3
+  in between). Decode inherits 5e-4 through the caches.
+- **End to end vs the real reference (hello):** argmax 16/17 (the same near tie), mean KL 2.0e-2
+  (CPU exact-quant 1.8e-2, fork 2.5e-2).
+
+Speed ("Write a haiku about memory bandwidth.", --chat, 32 threads):
+
+| | prompt (12 tok) | decode |
+|---|---|---|
+| CPU only (step 3) | 8.3 t/s | 3.47 t/s |
+| dense on GPU 0 | 7.0 t/s | **5.9-6.0 t/s** |
+| dense on GPU 0, routed experts skipped (timing only) | 17.3 t/s | 18 t/s |
+
+`--profile` breaks a decode step down by backend, with a sync after each run of same-backend
+nodes:
+
+| part | time per token | effective rate |
+|---|---|---|
+| GPU | ~53 ms with experts skipped (70-87 ms with them) | ~260 GB/s on ~14 GB of dense weights |
+| CPU routed experts, incl. the round trips | ~75-95 ms | ~50 GB/s on 4.2 GB |
+
+Occasional ~700 ms steps are first touches of expert pages in the mmap (minor faults).
+
+Where the time goes, and what would buy it back:
+
+1. **CPU experts** (~half of each step): 50 GB/s against a 112 GB/s ceiling. This could move to
+   ggml's CPU_REPACK layout or a custom kernel, but the bigger win is step 6 (hot experts in HBM).
+2. **GPU dense:** ~260 GB/s against ~880.
+   - bf16 MMVF efficiency, plus several thousand small kernel launches per token.
+   - Packing the fp8-derived bf16 weights back to fp8 (lossless, step 5) halves the bytes.
+   - Fusing and HIP graphs would cut the launches.
+3. **No overlap:** every layer is GPU then CPU then GPU, so two of the three parts idle at any
+   time.

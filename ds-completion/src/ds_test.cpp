@@ -116,11 +116,12 @@ int main(int argc, char** argv) {
     else if (a == "--layers") layers = parse_list(next());
     else if (a == "--no-quant") opt.exact_quant = false;
     else if (a == "-t") opt.n_threads = atoi(next());
+    else if (a == "--gpu") opt.gpu = atoi(next());
     else if (a == "--e2e") e2e = next();
     else { fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
   }
   if (model_path.empty() || gdir.empty()) {
-    fprintf(stderr, "usage: ds-test -m <model> -g <golden dir> [--layers 0-39] [--no-quant] [-t N] [--e2e out.f32]\n");
+    fprintf(stderr, "usage: ds-test -m <model> -g <golden dir> [--layers 0-39] [--no-quant] [-t N] [--gpu D] [--e2e out.f32]\n");
     return 2;
   }
   Golden G;

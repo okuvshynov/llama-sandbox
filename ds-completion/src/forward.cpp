@@ -3,8 +3,11 @@
 #include "fakequant.h"
 #include "ggml-alloc.h"
 #include "ggml-cpu.h"
+#include "ggml-backend.h"
 
+#include <chrono>
 #include <cmath>
+#include <set>
 #include <cstring>
 #include <functional>
 #include <stdexcept>
@@ -191,26 +194,124 @@ struct Engine::Graph {
 
 void Engine::compute(Graph& g) {
   if (!g.inputs.empty()) {
-    g.in_buf = ggml_backend_alloc_ctx_tensors(g.ctx_in, cpu);
+    g.in_buf = in_buft ? ggml_backend_alloc_ctx_tensors_from_buft(g.ctx_in, in_buft)
+                       : ggml_backend_alloc_ctx_tensors(g.ctx_in, cpu);
     for (auto& f : g.fill) f();
+  }
+  ggml_backend_cpu_set_n_threads(cpu, opt.n_threads);
+  if (sched) {  // the scheduler places each op by where its weights live and copies between
+    ggml_backend_sched_reset(sched);
+    if (!ggml_backend_sched_alloc_graph(sched, g.gf)) throw err("graph allocation failed");
+    last_splits = ggml_backend_sched_get_n_splits(sched);
+    if (!opt.profile) {
+      if (ggml_backend_sched_graph_compute(sched, g.gf) != GGML_STATUS_SUCCESS) throw err("graph compute failed");
+      return;
+    }
+    // profiling: stop (and sync) after the last node of every same-backend run and charge the
+    // elapsed time to that run's backend (copies into a run are charged to it)
+    struct Prof {
+      std::set<const ggml_tensor*> ends;
+      std::map<const ggml_tensor*, bool> is_gpu;
+      std::chrono::steady_clock::time_point t;
+      Profile p;
+    } pr;
+    const int n = ggml_graph_n_nodes(g.gf);
+    for (int i = 0; i < n; i++) {
+      ggml_tensor* t = ggml_graph_node(g.gf, i);
+      ggml_backend_t b = ggml_backend_sched_get_tensor_backend(sched, t);
+      ggml_backend_t nb = i + 1 < n ? ggml_backend_sched_get_tensor_backend(sched, ggml_graph_node(g.gf, i + 1)) : nullptr;
+      if (b != nb) { pr.ends.insert(t); pr.is_gpu[t] = b == gpu; }
+    }
+    ggml_backend_sched_set_eval_callback(sched, [](ggml_tensor* t, bool ask, void* ud) {
+      Prof& pr = *(Prof*)ud;
+      if (ask) return pr.ends.count(t) > 0;
+      auto now = std::chrono::steady_clock::now();
+      const double ms = std::chrono::duration<double, std::milli>(now - pr.t).count();
+      if (pr.is_gpu[t]) { pr.p.gpu_ms += ms; pr.p.gpu_runs++; } else { pr.p.cpu_ms += ms; pr.p.cpu_runs++; }
+      pr.t = now;
+      return true;
+    }, &pr);
+    const auto t0 = std::chrono::steady_clock::now();
+    pr.t = t0;
+    if (ggml_backend_sched_graph_compute(sched, g.gf) != GGML_STATUS_SUCCESS) throw err("graph compute failed");
+    ggml_backend_sched_synchronize(sched);
+    pr.p.total_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    ggml_backend_sched_set_eval_callback(sched, nullptr, nullptr);
+    last_profile = pr.p;
+    return;
   }
   g.alloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(cpu));
   if (!ggml_gallocr_alloc_graph(g.alloc, g.gf)) throw err("graph allocation failed");
-  ggml_backend_cpu_set_n_threads(cpu, opt.n_threads);
   if (ggml_backend_graph_compute(cpu, g.gf) != GGML_STATUS_SUCCESS) throw err("graph compute failed");
 }
 
 // ================================================================== engine
 
+// the Layer members that are dense weights (everything but the routed experts)
+static ggml_tensor* Layer::*const DENSE[] = {
+    &Layer::attn_norm, &Layer::q_a, &Layer::q_a_norm, &Layer::q_b, &Layer::kv, &Layer::kv_norm, &Layer::out_a,
+    &Layer::out_b, &Layer::sinks, &Layer::cmp_kv, &Layer::cmp_gate, &Layer::cmp_norm, &Layer::idx_k,
+    &Layer::idx_k_norm, &Layer::idx_q_b, &Layer::idx_proj, &Layer::ffn_norm, &Layer::gate_inp, &Layer::gate_bias,
+    &Layer::gate_bias_vl, &Layer::gate_sh, &Layer::up_sh, &Layer::down_sh, &Layer::hc_attn_fn, &Layer::hc_attn_base,
+    &Layer::hc_attn_scale, &Layer::hc_ffn_fn, &Layer::hc_ffn_base, &Layer::hc_ffn_scale, &Layer::engram_kv,
+    &Layer::engram_gate};
+
 Engine::Engine(const Model& m_, Options o) : m(m_), hp(m_.hp), opt(o) {
   cpu = ggml_backend_cpu_init();
   if (!cpu) throw err("cannot init the CPU backend");
+  dense = cpu;
+  lay = m.layers;
+  out_w = m.output;
+  out_norm_w = m.output_norm;
+  if (opt.gpu >= 0) {
+    ggml_backend_dev_t dev = nullptr;
+    for (size_t i = 0, k = 0; i < ggml_backend_dev_count(); i++) {
+      ggml_backend_dev_t d = ggml_backend_dev_get(i);
+      if (ggml_backend_dev_type(d) == GGML_BACKEND_DEVICE_TYPE_GPU && (int)k++ == opt.gpu) dev = d;
+    }
+    if (!dev) throw err("no GPU device " + std::to_string(opt.gpu));
+    gpu = dense = ggml_backend_dev_init(dev, nullptr);
+    in_buft = ggml_backend_dev_host_buffer_type(dev);
+    if (opt.exact_quant) {
+      // the fake-quant ops are CPU custom ops: on the GPU each would cost a round trip
+      fprintf(stderr, "# GPU mode: fake quantization off (CPU-only ops)\n");
+      opt.exact_quant = false;
+    }
+    // copy the dense weights to the device
+    ggml_init_params pw = {ggml_tensor_overhead() * 2048, nullptr, true};
+    w_ctx = ggml_init(pw);
+    std::vector<std::pair<ggml_tensor*, const ggml_tensor*>> copies;
+    auto place = [&](ggml_tensor*& t) {
+      if (!t) return;
+      ggml_tensor* d = ggml_dup_tensor(w_ctx, t);
+      ggml_set_name(d, t->name);
+      copies.emplace_back(d, t);
+      t = d;
+    };
+    for (Layer& l : lay)
+      if (l.loaded)
+        for (auto f : DENSE) place(l.*f);
+    place(out_w);
+    place(out_norm_w);
+    w_buf = ggml_backend_alloc_ctx_tensors(w_ctx, gpu);
+    if (!w_buf) throw err("cannot allocate the dense weights on the GPU");
+    ggml_backend_buffer_set_usage(w_buf, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+    size_t total = 0;
+    for (auto [d, s] : copies) {
+      ggml_backend_tensor_set(d, s->data, 0, ggml_nbytes(s));
+      total += ggml_nbytes(s);
+    }
+    fprintf(stderr, "# GPU %d (%s): %zu dense tensors, %s\n", opt.gpu, ggml_backend_dev_description(dev),
+            copies.size(), fmt_bytes(total).c_str());
+    ggml_backend_t bes[2] = {gpu, cpu};
+    sched = ggml_backend_sched_new(bes, nullptr, 2, 65536, false, /*op_offload*/ false);
+  }
   // the sequence state, for the layers that are loaded
   ggml_init_params p = {ggml_tensor_overhead() * 512, nullptr, true};
   st.ctx = ggml_init(p);
   st.win.assign(hp.n_layer, nullptr);
   for (int L = 0; L < hp.n_layer; L++) {
-    const Layer& l = m.layers[L];
+    const Layer& l = lay[L];
     if (!l.loaded) continue;
     st.win[L] = ggml_new_tensor_2d(st.ctx, GGML_TYPE_F32, hp.head_dim, hp.window);
     if (l.kind.kv_source) {
@@ -223,25 +324,27 @@ Engine::Engine(const Model& m_, Options o) : m(m_), hp(m_.hp), opt(o) {
       st.idx_k[L] = ggml_new_tensor_2d(st.ctx, GGML_TYPE_F32, hp.idx_dim, opt.max_ctx / r);
     }
   }
-  st.buf = ggml_backend_alloc_ctx_tensors(st.ctx, cpu);
+  st.buf = ggml_backend_alloc_ctx_tensors(st.ctx, dense);
   // zero: masked-out slots must hold finite values (0 * NaN would leak through P @ V)
   ggml_backend_buffer_clear(st.buf, 0);
 
   // compressor and indexer-key weights in f32 (a few MB per KV-source layer)
   ggml_init_params pf = {ggml_tensor_overhead() * 64, nullptr, true};
   f32_ctx = ggml_init(pf);
-  std::vector<ggml_tensor*> src;
-  for (const Layer& l : m.layers)
-    if (l.loaded)
-      for (ggml_tensor* t : {l.cmp_kv, l.cmp_gate, l.idx_k})
-        if (t) src.push_back(t);
-  for (ggml_tensor* t : src) f32w[t] = ggml_new_tensor_2d(f32_ctx, GGML_TYPE_F32, t->ne[0], t->ne[1]);
+  // keyed by the tensor the graph code sees (the GPU copy in GPU mode), converted from the host data
+  std::vector<std::pair<ggml_tensor*, const ggml_tensor*>> src;  // (key, host tensor)
+  for (int L = 0; L < hp.n_layer; L++)
+    if (lay[L].loaded)
+      for (auto f : {&Layer::cmp_kv, &Layer::cmp_gate, &Layer::idx_k})
+        if (lay[L].*f) src.emplace_back(lay[L].*f, m.layers[L].*f);
+  for (auto [key, host] : src) f32w[key] = ggml_new_tensor_2d(f32_ctx, GGML_TYPE_F32, host->ne[0], host->ne[1]);
   if (!src.empty()) {
-    f32_buf = ggml_backend_alloc_ctx_tensors(f32_ctx, cpu);
-    for (ggml_tensor* t : src) {
-      std::vector<float> v(ggml_nelements(t));
-      ggml_get_type_traits(t->type)->to_float(t->data, v.data(), ggml_nelements(t));
-      ggml_backend_tensor_set(f32w[t], v.data(), 0, v.size() * sizeof(float));
+    f32_buf = ggml_backend_alloc_ctx_tensors(f32_ctx, dense);
+    ggml_backend_buffer_set_usage(f32_buf, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+    for (auto [key, host] : src) {
+      std::vector<float> v(ggml_nelements(host));
+      ggml_get_type_traits(host->type)->to_float(host->data, v.data(), ggml_nelements(host));
+      ggml_backend_tensor_set(f32w[key], v.data(), 0, v.size() * sizeof(float));
     }
   }
 }
@@ -250,8 +353,12 @@ Engine::~Engine() {
   delete plan;
   if (f32_buf) ggml_backend_buffer_free(f32_buf);
   if (f32_ctx) ggml_free(f32_ctx);
+  if (sched) ggml_backend_sched_free(sched);
+  if (w_buf) ggml_backend_buffer_free(w_buf);
+  if (w_ctx) ggml_free(w_ctx);
   if (st.buf) ggml_backend_buffer_free(st.buf);
   if (st.ctx) ggml_free(st.ctx);
+  if (gpu) ggml_backend_free(gpu);
   ggml_backend_free(cpu);
 }
 
@@ -300,7 +407,7 @@ ggml_tensor* Engine::rope(Graph& g, ggml_tensor* x, ggml_tensor* pos, int L, int
 
 ggml_tensor* Engine::engram(Graph& g, int L, ggml_tensor* h) {
   ggml_context* c = g.ctx;
-  const Layer& l = m.layers[L];
+  const Layer& l = lay[L];
   const int e = l.kind.engram, T = plan->T, E = hp.n_embd, HC = hp.hc_mult;
   const int n_cols = hp.engram_cols(), D = hp.engram_dim;
   ggml_tensor* ids = g.input("engram_ids." + std::to_string(e), GGML_TYPE_I32, {(int64_t)n_cols * T},
@@ -342,7 +449,7 @@ void Engine::hc_mixes(Graph& g, ggml_tensor* h, ggml_tensor* fn, ggml_tensor* sc
 // Compressor + index keys for a KV-source layer; returns its compressed cache (after any writes).
 ggml_tensor* Engine::compressor(Graph& g, int L, ggml_tensor* x) {
   ggml_context* c = g.ctx;
-  const Layer& l = m.layers[L];
+  const Layer& l = lay[L];
   const int r = l.kind.ratio, HD = hp.head_dim, IDX = hp.idx_dim, RD = hp.rope_dim;
   const RatioPlan& rp = plan->ratio.at(r);
   const std::string sr = std::to_string(r);
@@ -393,7 +500,7 @@ ggml_tensor* Engine::compressor(Graph& g, int L, ggml_tensor* x) {
 // The indexer: which compressed positions each query attends to. [K, T] i32 (unordered).
 ggml_tensor* Engine::indexer(Graph& g, int L, ggml_tensor* x, ggml_tensor* qr) {
   ggml_context* c = g.ctx;
-  const Layer& l = m.layers[L];
+  const Layer& l = lay[L];
   const int r = l.kind.ratio, IDX = hp.idx_dim, IH = hp.idx_heads, RD = hp.rope_dim, T = plan->T;
   const RatioPlan& rp = plan->ratio.at(r);
   if (rp.K == 0) return nullptr;
@@ -415,7 +522,7 @@ ggml_tensor* Engine::indexer(Graph& g, int L, ggml_tensor* x, ggml_tensor* qr) {
 
 ggml_tensor* Engine::attention(Graph& g, int L, ggml_tensor* x) {
   ggml_context* c = g.ctx;
-  const Layer& l = m.layers[L];
+  const Layer& l = lay[L];
   const LayerKind& k = l.kind;
   const int T = plan->T, HD = hp.head_dim, NH = hp.n_head, W = hp.window, RD = hp.rope_dim;
   ggml_tensor* pos = g.input("pos", GGML_TYPE_I32, {T}, &plan->pos);
@@ -499,7 +606,7 @@ ggml_tensor* Engine::expert_ffn(Graph& g, ggml_tensor* gate, ggml_tensor* up, gg
 
 ggml_tensor* Engine::moe(Graph& g, int L, ggml_tensor* x) {
   ggml_context* c = g.ctx;
-  const Layer& l = m.layers[L];
+  const Layer& l = lay[L];
   const int T = plan->T, E = hp.n_embd, X = hp.n_expert, K = hp.n_expert_used;
   // routing: sqrt(softplus) scores; the bias picks the experts, the raw scores weight them
   ggml_tensor* scores = ggml_sqrt(c, ggml_softplus(c, ggml_mul_mat(c, l.gate_inp, x)));  // [X, T]
@@ -510,6 +617,7 @@ ggml_tensor* Engine::moe(Graph& g, int L, ggml_tensor* x) {
   g.tap("router_w", w);
   g.tap("router_i", ids);
 
+  if (opt.debug_skip_routed) return expert_ffn(g, l.gate_sh, l.up_sh, l.down_sh, x, hp.swiglu_clamp_sh[L]);
   ggml_tensor* xq = ggml_reshape_3d(c, fq8(g, x), E, 1, T);
   ggml_tensor* gate = ggml_mul_mat_id(c, l.gate_exps, xq, ids);  // [F, K, T]
   ggml_tensor* up = ggml_mul_mat_id(c, l.up_exps, xq, ids);
@@ -528,7 +636,7 @@ ggml_tensor* Engine::moe(Graph& g, int L, ggml_tensor* x) {
 
 void Engine::block(Graph& g, int L, ggml_tensor** hp_, ggml_tensor** pre_) {
   ggml_context* c = g.ctx;
-  const Layer& l = m.layers[L];
+  const Layer& l = lay[L];
   ggml_tensor* h = *hp_;
   ggml_tensor *a_pre, *a_post, *a_comb, *f_pre, *f_post, *f_comb;
   // each sublayer's mixes give the *next* sublayer's input mix: attention uses the pre-mix the
@@ -564,13 +672,13 @@ std::vector<float> Engine::forward(const std::vector<int32_t>& tokens) {
   h = ggml_repeat_4d(c, ggml_reshape_3d(c, h, E, 1, T), E, HC, T, 1);  // hc copies of the embedding
   ggml_tensor* pre = g.input("one_hot_pre", GGML_TYPE_F32, {HC, T}, &plan->one_hot_pre);
   for (int L = 0; L < hp.n_layer; L++) {
-    if (!m.layers[L].loaded) throw err("forward needs all layers loaded");
-    if (m.layers[L].kind.engram >= 0) h = engram(g, L, h);
+    if (!lay[L].loaded) throw err("forward needs all layers loaded");
+    if (lay[L].kind.engram >= 0) h = engram(g, L, h);
     block(g, L, &h, &pre);
   }
   ggml_tensor* x = ggml_dsv4_hc_pre(c, h, pre);  // collapse with the last block's FFN pre-mix
   x = ggml_view_2d(c, x, E, 1, x->nb[1], (size_t)(T - 1) * x->nb[1]);  // generation needs the last position
-  ggml_tensor* logits = ggml_mul_mat(c, m.output, rms(g, x, m.output_norm));
+  ggml_tensor* logits = ggml_mul_mat(c, out_w, rms(g, x, out_norm_w));
   ggml_set_output(logits);
   ggml_build_forward_expand(g.gf, logits);
   compute(g);
@@ -587,7 +695,7 @@ Taps Engine::run_layer(int L, const std::vector<float>& h_in, const std::vector<
   const int T = plan->T, E = hp.n_embd, HC = hp.hc_mult;
   ggml_tensor* h = g.input("h_in", GGML_TYPE_F32, {E, HC, T}, &h_in);
   ggml_tensor* pre = g.input("pre_in", GGML_TYPE_F32, {HC, T}, &pre_in);
-  if (m.layers[L].kind.engram >= 0) h = engram(g, L, h);
+  if (lay[L].kind.engram >= 0) h = engram(g, L, h);
   g.tap("h_in", h);
   block(g, L, &h, &pre);
   if (g.topk.count(L) && g.topk[L]) ggml_set_output(g.topk[L]);
