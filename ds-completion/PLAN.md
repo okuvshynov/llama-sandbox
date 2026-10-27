@@ -1,8 +1,9 @@
 # ds-completion plan
 
 Status: **done**, **next** (agreed, in order), **planned** (agreed, later), **idea** (not
-decided). Today, 15 expert layers on GPUs, sclk 2: decode ~12.5 t/s, a step ~80 ms = CPU
-experts 40 + die-0 GPU ~35 (of which ~7 overhead) + other dies' experts 4.3.
+decided). Today (sclk 2, 16 CPU threads, 128-token runs): no GPU experts ~12 t/s; the study30
+placement 17.7-21.7 t/s; perfect knowledge of the prompt (oracle placement) ~25 t/s. The cost
+model below says where a token's time goes.
 
 ## Overview
 
@@ -16,12 +17,13 @@ Correctness and the base path
 | 4 | fp8 repack of dense weights (B0) | done | lossless 6.4 GB fp8 file instead of 14 GB bf16 |
 | 5 | Exact fp8 GEMV (B1) | done | 311 us per layer vs ggml's 832, bit-exact products |
 | 6 | Own HIP decode runtime (D3) | done | every op of a token in our kernels on one die: 9.4 -> ~10 t/s |
-| 7 | Exact CPU expert kernel (A3) | done | AVX-512 fp4 x fp8, ~68 GB/s, faster than ggml and exact |
-| 8 | Exact GPU expert kernel | done | one layer's 6 experts in 0.39 ms on a die (287 GB/s) |
+| 7 | Exact CPU expert kernel (A3) | done | AVX-512 fp4 x fp8, exact; ~85 GB/s at 16 threads (0.22 ms per expert in a 6-expert call) |
+| 8 | Exact GPU expert kernel | done | 4 launches, 4-byte weight decode: 1/2/3/6 experts in 72/110/151/281 us (406 GB/s for 6) (README step 17) |
 | 9 | Whole expert layers on GPUs | done, replaced | `--gpu-moe`: 15 layers resident on 4 dies -> 12.2 t/s; superseded by item 15 |
 | 10 | Prompt through the runtime | done | frees 14 GB on die 0; prompt 6 -> 10 t/s |
 | 11 | Remove ggml's GPU path | done | the runtime is self-contained; no fork HIP build needed |
 | 12 | GPU clock sweep | done | dense GPU part 38 -> 29 ms from sclk 0 to 8; level 4-6 is the sweet spot |
+| 12a | 16 CPU threads, not 32 | done | 32 starved the host thread and the HIP runtime: every configuration +25-50% (README step 18) |
 
 Speed
 
@@ -29,14 +31,16 @@ Speed
 |---|---|---|---|
 | 13 | Routing statistics (A0) | done | 30 prompts: fixed hot sets transfer poorly (71% at 128 GB), an adaptive LRU cache reaches 95% with ~11 loads per token (README step 13) |
 | 14 | HIP graphs + kernel fusion (D) | started | engram per step + experts mapped at load done (~1%); graphs save little on this ROCm, fusion ~37 -> ~22 launches per layer for ~2-3 ms (README step 12) |
-| 15 | Per-layer expert split, CPU and all dies concurrently (A1/EP) | done (steps 1-5) | `--placement`: fixed set from the study, 81% on GPUs, 15.5 t/s on a held-out prompt (README step 14) |
-| 16 | Adaptive expert cache (A1 + A2) | next (fixes 1-3 of the expert path done: oracle bound ~25 t/s, study30 17.7-21.7) | start from a prior hot set, load missed experts into HBM in the background (LRU): ~95% hits at 128 GB, est. ~25 t/s |
+| 15 | Per-layer expert split, CPU and all dies concurrently (A1/EP) | done | `--placement`: fixed set from the study; 17.7-21.7 t/s (README steps 14-18) |
+| 15a | Expert path fixes: no die waits for the host; faster small-count kernel; 16 threads | done | oracle bound 16 -> ~25 t/s (README steps 15-18) |
+| 16 | Adaptive expert cache (A1 + A2) | next | start from the study30 set, load missed experts into HBM in the background (LRU): ~95% hits at 128 GB, est. ~23 t/s; needs pinned staging first (loads ~4.8 GB/s) |
 | 17 | Tensor parallelism, 2-way then 4-way (C1/C2) | planned | split the dense GEMVs over dies: ~-6..10 ms per step, matters once experts are mostly on GPUs |
 | 18 | Shared expert by TP, routed by EP (C4) | planned | the dense shared expert splits like any other GEMV under TP |
 | 19 | DSpark speculative decoding (E1) | planned | several tokens per weight read; needs the full 1017 checkpoint's MTP weights |
 | 20 | Batched prompt processing (F) | planned | read each weight once for many prompt tokens; matters for long prompts |
 | 21 | Dynamic expert cache (A2) | merged into 16 | item 13 showed recent usage beats fixed sets |
-| 22 | Faster GPU fp4 expert kernel | idea | 287 -> ~600 GB/s; matters once many experts run on GPUs |
+| 22 | Faster GPU fp4 expert kernel | partly done | 287 -> 406 GB/s (item 8); the per-row fp8 activation decode is the next cost; matters little while it overlaps |
+| 22a | Router + dispatch fusion, copy only what dies need | idea | the per-layer expert overhead (dispatch, copies, waits) is ~7 ms per token at high hit rates |
 | 23 | Weight interleaving for TP (C3) | idea | lay out weights so each die's slice is contiguous |
 | 24 | fp8 output head | idea | halves the 2.3 ms head, but is no longer exact vs the reference |
 | 25 | Clock level by phase | idea | sclk 4-6 for decode with CPU experts, 8 once GPU experts dominate |
@@ -50,13 +54,55 @@ Features and limits
 | 28 | Full 1017 checkpoint | waiting | download pending (user); needed for item 19 and exact safetensors refs |
 | 29 | Sampling beyond greedy | idea | temperature/top-p; a non-goal so far |
 
+## Current cost model (2026-10-27, sclk 2, 16 CPU threads)
+
+ms per token. Measured: profiled medians of 253 steps (256-token runs); estimated: from the
+measured unit costs below. Two machines = the layers split in half (pipeline), so each half's
+experts get twice the HBM; hit rates from the routing study (README step 13).
+
+| ms per token | 1 machine, no GPU experts | 1 machine, fixed (study30) | 1 machine, adaptive | 2 machines, fixed | 2 machines, adaptive |
+|---|---|---|---|---|---|
+| | *measured* | *measured* (concurrency / code-rust) | *estimated* | *estimated* | *estimated* |
+| experts on GPUs | 0% | 81% / 61% | ~95% | ~96% | ~99.6% |
+| dense: attention, hyper-connections, norms, engram, output head | 26.1 | 26.1 | 26.1 | 26.1 | 26.1 |
+| shared expert | 3.5 | 3.2 | 3.2 | 3.2 | 3.2 |
+| router (matrix-vector + top-6) | 3.1 | 3.3 | 3.3 | 3.3 | 3.3 |
+| dispatch + copy to host + final add | 1.9 | 2.2 | 2.2 | 2.2 | 2.2 |
+| routed experts on GPUs (critical-path part) | - | 4.2 / 3.0 | ~5.2 | ~5.2 | ~5.3 |
+| routed experts on CPU (critical-path part) | 51.6 | 11.0 / 23.7 | ~3.5 | ~3.0 | ~0.5 |
+| network between machines | - | - | - | 0.25 | 0.25 |
+| **step** | **86.6** | **50.6 / 62.2** | **~43.5** | **~43.3** | **~41** |
+| **t/s** | **11.5** | **19.8 / 16.1** | **~23** | **~23** | **~24** |
+| background expert loads (off the critical path) | - | - | ~210 MB/token (~4.8 GB/s) | - | ~20 MB/token |
+
+(Unprofiled 128-token runs of the measured columns: 12.1 / 21.7 / 17.7 t/s.)
+
+Unit costs: CPU 0.22 ms per expert in a 6-expert call, ~0.3 ms per miss when scattered (1-2 per
+layer); GPU 72/110/151 us for 1/2/3 experts on a die, mostly overlapped with the shared expert
+and the CPU; per layer a 20 KB copy to the host, the staging to the other dies and events.
+
+What follows:
+
+1. **A floor of ~35 ms (~28 t/s at sclk 2)** whatever the caching: dense + shared + router +
+   dispatch. Beyond it: clock (sclk 6-8: dense ~34 -> ~29 ms, GPU experts ~25% faster),
+   fusion (~3 ms), tensor parallelism on the ~13 ms of fp8 GEMVs.
+2. **A second machine adds ~1-2 ms once the cache adapts.** Without adaptation, two machines
+   with a fixed set get what one machine needs an adaptive cache for.
+3. **The adaptive cache is worth it** (~20 -> ~23 t/s on chat, ~16 -> ~23 on code), but its
+   background loads (~4.8 GB/s) equal today's whole pageable upload speed: pinned staging
+   comes first.
+4. **At high hit rates the remaining expert cost is fixed per-layer overhead** (dispatch, copies,
+   waits: ~7 ms per token), not expert math.
+
 ## Expert placement and cache: implementation plan (2026-10-27)
 
 Goal: each layer's chosen experts split into GPU hits (on whichever die holds them) and CPU
 misses, run concurrently. Estimates (README step 13 + unit costs): fixed set ~18 t/s, adaptive
 ~22 t/s on one machine.
 
-Phase 1: fixed set, no swapping
+Phase 1: fixed set, no swapping (**done**, README steps 14-18: steps 1-7 below, plus three fixes
+the oracle test found: no die waits for the host, a faster kernel for 1-3 experts, 16 CPU
+threads)
 
 1. **Placement file** (`route_stats.py --emit-placement`): top (layer, expert) pairs from the
    routing logs, sized to each die's free HBM; each layer's hot experts round-robin across dies;
@@ -75,8 +121,11 @@ Phase 1: fixed set, no swapping
    random, and the real placement.
 7. **Measure:** held-out prompts, live hit rate vs simulated, t/s vs ~18, per-layer CPU vs GPU.
 
-Phase 2: adaptive swapping
+Phase 2: adaptive swapping (**next**)
 
+7a. **Pinned staging for loads:** today's upload copies straight from the mmap (pageable,
+    4.6 GB/s for all dies); the cache needs ~4.8 GB/s in the background. Copy through pinned
+    buffers (host memcpy, then an async copy), and measure the effect on the CPU miss kernel.
 8. **Cache manager on the host:** the host already knows each layer's misses; LRU per die
    picks victim slots.
 9. **Background loads:** a low-priority copy stream per die (mmap -> pinned -> GPU -> repack),
@@ -87,15 +136,22 @@ Phase 2: adaptive swapping
     miss kernel, t/s vs ~22.
 
 Later refinements (each measured): peer copies for die 1 (XGMI pair) instead of host staging;
-a host flag the CPU spins on instead of an event wait (cuts the ~0.07 ms fixed miss cost);
-fewer dies per layer to cut staging; warm start from all 30 prompts.
+a host flag the CPU spins on instead of an event wait; fewer dies per layer to cut staging;
+router + dispatch fusion (item 22a).
 
-Risks: the host still syncs once per layer to learn the misses (~40 waits per step); the CPU
-miss kernel on 1-2 experts and the background loads both change the CPU's effective speed.
+Risks: the host still syncs once per layer to learn the misses (~40 waits per step); the
+background loads compete with the CPU miss kernel for memory bandwidth and with the staging
+copies for PCIe.
 
-Details below: the original brainstorm (sections 1-5) and the re-prioritization (section 6).
+## History
 
-## 1. Where a decode token goes today (step 4, `--gpu 0`, 32 threads)
+Sections 1-6 below are the original brainstorm (2026-10-26) and the first re-prioritization;
+their numbers are from their dates and describe paths that have since changed: the ggml GPU
+path they start from was removed (README step 11; the CPU Engine is now the gate), the 32-thread
+numbers were superseded by 16 threads (step 18), and the order in section 6 has been carried
+out up to the adaptive cache. The overview and cost model above are current.
+
+## 1. Where a decode token went at step 4 (ggml GPU path, 32 threads)
 
 | part | time | bytes | effective | ceiling | count |
 |---|---|---|---|---|---|
@@ -344,6 +400,8 @@ Three ways to get them:
 
 **Decided (2026-10-26): option 2 for decode.** Keep the current ggml path as the reference
 implementation that every new kernel is gated against. It also stays the prefill path until F.
+(Later: the prompt moved to the runtime and ggml's GPU path was removed, README steps 10-11;
+the CPU Engine remains the reference.)
 That matches "correctness, clarity, performance" and the non-goals: no other models or
 hardware to stay general for.
 
@@ -375,7 +433,7 @@ Why not experts first? A1 is the largest single win, but:
 Decided (2026-10-26):
 
 1. **Own the decode path in HIP** (section 3, option 2). The ggml path stays as the gate and
-   the prefill path.
+   the prefill path. (Done; the prefill moved too, README steps 6, 10, 11.)
 2. **Per-die fp8 weight files (~9-10 GB) on disk are fine.** Repacked expert copies (269 GB)
    are still not planned, because they would compete with the 1017 download.
 
@@ -430,16 +488,17 @@ New order:
 
 1. **Free die 0's HBM.** Done (README step 10). The prompt runs through the runtime one
    token at a time, and die 0 now has room for +2 expert layers (15 in all with dies 1-3).
-2. **Per-layer expert split (EP over 4 dies + the CPU, concurrently).**
+2. **Per-layer expert split (EP over 4 dies + the CPU, concurrently).** Done (README step 14).
    - A static placement, uniform to start, so no routing statistics are needed.
    - The router's ids are dispatched to the owners (die or CPU) and the partials summed.
    - Per layer: one fan-out and one gather (host-staged to the other card).
    - Expected ~13-14 t/s.
-3. **Routing statistics -> hot-set placement.** The biggest lever (~18-24 t/s). It also
+3. **Routing statistics -> hot-set placement.** Done (steps 13-18). The biggest lever (~18-24 t/s). It also
    measures how well a hot set built from one prompt category serves another, which is the
    "prompt-specific" question answered with numbers.
 4. **Single-die GPU overhead:** HIP graphs for the runtime's fixed launch sequence (positions
-   moved into device memory), and fusing the small kernels. 35 -> ~25 ms.
+   moved into device memory), and fusing the small kernels. 35 -> ~25 ms. (Started, step 12:
+   graphs save little on this ROCm; fusion estimated at ~2-3 ms.)
 5. **Tensor parallelism:** 2-way over the XGMI pair, then 4-way.
 6. **Separately:**
    - DSpark speculative decoding, which amortizes every weight read over several tokens (needs
