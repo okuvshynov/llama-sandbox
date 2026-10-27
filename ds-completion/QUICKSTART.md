@@ -44,14 +44,15 @@ Options:
 
 Without `--rt` (or with `bin/ds-completion`) everything runs on the CPU.
 
-Experiment: `--gpu-moe 0:25-27,1:36-39,2:32-35,3:28-31` also puts all experts of 15 layers on
-the four GPUs (~22 s upload), for 12.0 t/s.
+Faster: `--placement placements/study30.txt` also fills the four GPUs' free memory with the
+most-used routed experts (43% of them, ~27 s upload); the rest run on the CPU. 15.5 t/s.
 
 ## Current results (2026-10-27)
 
 | mode | command | decode | KL vs reference*: median / mean without the near-tie step |
 |---|---|---|---|
-| **own runtime, dense on GPU 0** | `bin-hip/ds-completion --rt ...` | **9.7-10.0 t/s** | 5.9e-6 / 4.8e-3 (earlier run 1.7e-5 / 6.3e-4) |
+| **own runtime + experts placed on GPUs** | `bin-hip/ds-completion --rt ... --placement placements/study30.txt` | **15.5 t/s** (128 tokens) | same numerics: per-layer gate identical to below |
+| own runtime, dense on GPU 0 | `bin-hip/ds-completion --rt ...` | 9.7-10.0 t/s | 5.9e-6 / 4.8e-3 (earlier run 1.7e-5 / 6.3e-4) |
 | CPU only | `bin/ds-completion` | 3.5 t/s | 1.3e-5 / 3.9e-3 |
 | llama.cpp fork (llama-cli, CPU) | - | 3.5 t/s | 2.1e-5 / 1.3e-3 |
 
@@ -74,7 +75,7 @@ Means over all 17 steps: 1.8e-2 to 2.5e-2 for every mode.
 
 - Context: at most 4096 tokens with `--rt` (the top-k kernel), 16k otherwise (candidate-block
   selection is not implemented).
-- The dense part uses one GPU; the others only hold experts with `--gpu-moe`.
+- The dense part uses one GPU; the others only hold experts with `--placement`.
 - Sampling is greedy only.
 
 Details: [README.md](README.md) (all measurements and checks), [PLAN.md](PLAN.md) (what's next).

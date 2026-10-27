@@ -626,6 +626,38 @@ __global__ void add_kernel(const float* a, const float* b, float* y, int n) {
 }
 void k_add(const float* a, const float* b, float* y, int n, hipStream_t s) { add_kernel<<<cdiv(n, 256), 256, 0, s>>>(a, b, y, n); }
 
+// one thread: k is 6
+__global__ void moe_dispatch_kernel(const int* ids, const float* w, int k, const int* table, int n_dies, MoeList* lists) {
+  for (int d = 0; d <= n_dies; d++) lists[d].count = 0;
+  for (int j = 0; j < k; j++) {
+    const int code = table ? table[ids[j]] : -1;
+    MoeList& l = lists[code < 0 ? n_dies : code >> 16];
+    l.ids[l.count] = code < 0 ? ids[j] : (code & 0xFFFF);
+    l.w[l.count] = w[j];
+    l.count++;
+  }
+}
+
+void k_moe_dispatch(const int* ids, const float* w, int k, const int* table, int n_dies, MoeList* lists, hipStream_t s) {
+  moe_dispatch_kernel<<<1, 1, 0, s>>>(ids, w, k, table, n_dies, lists);
+}
+
+struct Parts { const float* p[kMoeMaxDies + 1]; };
+
+__global__ void add_parts_kernel(const float* a, Parts parts, int n, float* y, int len) {
+  const int i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i >= len) return;
+  float v = a[i];
+  for (int j = 0; j < n; j++) if (parts.p[j]) v += parts.p[j][i];
+  y[i] = v;
+}
+
+void k_add_parts(const float* a, const float* const* parts, int n, float* y, int len, hipStream_t s) {
+  Parts p = {};
+  for (int j = 0; j < n; j++) p.p[j] = parts[j];
+  add_parts_kernel<<<cdiv(len, 256), 256, 0, s>>>(a, p, n, y, len);
+}
+
 __global__ void repeat_kernel(const float* x, int n, int copies, float* y) {
   const int i = blockIdx.x * blockDim.x + threadIdx.x;
   if (i >= n) return;

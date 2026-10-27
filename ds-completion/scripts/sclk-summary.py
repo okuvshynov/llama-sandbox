@@ -29,7 +29,7 @@ def parse(path):
         m = re.search(r"GPU \d: ([\d.]+) us per layer", line)
         if m:
             r["fp4"] = float(m.group(1))
-        m = re.match(r"# step (\d+): ([\d.]+) ms \(cpu experts ([\d.]+), waiting for the GPU ([\d.]+)\)", line)
+        m = re.match(r"# step (\d+): ([\d.]+) ms \(cpu experts ([\d.]+), waiting for the GPU ([\d.]+)[;)]", line)
         if m:
             r["steps"].setdefault(section, []).append(float(m.group(2)))
             # the GPU's part of the step (+ copies): the CPU-expert time is noisy step to step
@@ -57,7 +57,8 @@ for k in ["empty kernel", "hc_split", "router top-6 of 384", "attn_decode 64 hea
     row(k + " (us)", [r["kern"].get(k) for r in runs])
 row("GPU experts, one layer (us)", [r.get("fp4") for r in runs])
 for sec, label in [("decode, runtime, dense on die 0, experts on the CPU", "decode step, experts on CPU (ms)"),
-                   ("decode, runtime + 13 expert layers on dies 0-3", "decode step, + 13 layers on GPUs (ms)")]:
+                   ("decode, runtime + 13 expert layers on dies 0-3", "decode step, + 13 layers on GPUs (ms)"),
+                   ("decode, runtime + experts placed on dies 0-3 (study30)", "decode step, + study30 placement (ms)")]:
     row(label, [statistics.median(r["steps"][sec]) if r["steps"].get(sec) else None for r in runs])
     row("  of which GPU + copies (step - CPU experts)", [statistics.median(r["gpu"][sec]) if r.get("gpu", {}).get(sec) else None for r in runs])
 for sec, label in [("fp8 GEMV (die 0, layer 2 shapes)", "peak W dev0, fp8 GEMV bench"),

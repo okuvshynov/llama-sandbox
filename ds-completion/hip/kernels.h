@@ -88,5 +88,19 @@ void k_engram(float* h, const float* kv, const float* gate_w, int hc, int n, flo
 // ---- misc ----
 
 void k_add(const float* a, const float* b, float* y, int n, hipStream_t s);
+
+// Routed experts split by where they live (expert_pool.h placement). One list per die, plus one
+// for the CPU; within a list the router's order is kept.
+constexpr int kMoeMaxDies = 4, kMoeMaxK = 6;
+struct MoeList {
+  int count;
+  int ids[kMoeMaxK];    // slots on a die; expert ids for the CPU
+  float w[kMoeMaxK];    // routing weights
+};
+// table: [n_expert] of this layer, die << 16 | slot, or -1 (CPU). lists[0..n_dies) are the
+// dies, lists[n_dies] the CPU.
+void k_moe_dispatch(const int* ids, const float* w, int k, const int* table, int n_dies, MoeList* lists, hipStream_t s);
+// y = a + parts[0] + ... + parts[n - 1] in this order (null parts skipped)
+void k_add_parts(const float* a, const float* const* parts, int n, float* y, int len, hipStream_t s);
 // y[j][i] = x[i] for j < copies (the embedding into hc copies)
 void k_repeat(const float* x, int n, int copies, float* y, hipStream_t s);

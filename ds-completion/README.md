@@ -32,7 +32,8 @@ bin/ds-test -m $M -g data/golden/hello-fp32-nq --no-quant --determinism  # bitwi
 bin-hip/bench-kernels                                                    # each runtime kernel alone
 bin/bench-cpu-moe -m $M [-t 32] [--tokens 5]                             # the CPU expert kernel vs ggml
 bin-hip/bench-fp4-moe -m $M [--layer 20] [--dev 0]                       # one layer's experts in HBM
-bin-hip/ds-completion ... --rt $F8 --gpu-moe 0:27,1:36-39,2:32-35,3:28-31  # those layers' experts on GPUs
+bin-hip/ds-completion ... --rt $F8 --placement placements/study30.txt   # most-used experts on GPUs
+bin-hip/bench-expert-pool -m $M -p placements/study30.txt                # expert pools: load, exactness, time
 bin/ds-inspect -m $M [--layers 0,1,2-5] [--touch]
 bin/ds-test -m $M -g data/golden/hello [--layers 0-39] [--no-quant]  # teacher-forced, per layer
 bin/ds-test -m $M -g data/golden/hello --e2e data/ds/hello.f32       # end-to-end logits
@@ -865,3 +866,31 @@ Hit rate (share of chosen experts served from HBM) on a held-out prompt; estimat
 
 Also fixed: prompts longer than `--max-ctx` ran past the runtime's caches and crashed. The
 runtime now refuses positions past `--max-ctx`, and the CLI caps generation to fit.
+
+## Step 14: routed experts split per layer between GPUs and the CPU (placement steps 1-5)
+
+`--placement placements/study30.txt` replaces step 8's whole-layer `--gpu-moe` (removed): the
+most-used (layer, expert) pairs of the routing study fill the GPUs' free memory one expert at
+a time, and each layer's 6 experts run where they live, at the same time.
+
+- **Placement** (`route_stats.py --emit-placement`): all pairs ranked by use. The runtime keeps
+  the top ones that fit (6,627 = 43% here: die 0 1,305 after the dense part, dies 1-3 1,774
+  each), rotating each layer's experts over the dies. Loading takes ~27 s (4.6 GB/s, pageable).
+- **Pools** (`hip/expert_pool`): slots of one expert each; `fp4_moe` addresses experts by slot
+  and takes a device-side count (0-6). Exact against the CPU kernel (<= 4e-8); 1/2/3/6
+  experts take 130/176/231/401 us (`bench-expert-pool`): ~75 us fixed + ~55 us per expert.
+- **Per layer:** a dispatch kernel splits the router's experts into one list per die and one
+  for the CPU; x + lists go to the host in one copy; the shared expert runs; the host reads the
+  counts and starts only the dies with work (other dies host-staged, as before) and the CPU
+  misses; die 0 sums the parts in a fixed order (dies, then CPU).
+- **Gate** (hello-fp32, all 40 layers): no placement = bit-identical to step 13 (all 200 rows,
+  end-to-end logits); real and random placements: the same error levels (decode medians
+  ~8e-8); all experts on GPUs (layers 0-5): identical to all-CPU row by row except ~1e-8
+  (sum order).
+- **Speed** (held-out prompt "Explain the difference between concurrency and parallelism",
+  128 tokens, sclk 2): **15.5-15.7 t/s** (15 whole layers on GPUs: ~13.0; no GPU experts: ~10).
+  80.7% of routed experts ran on GPUs.
+- **Step (~65 ms):** dense on die 0 ~35, CPU misses ~20 (~46 per token: ~0.47 ms each with the
+  per-layer overhead, slower than the 0.27 ms of a 6-expert call: the CPU kernel on 1-2 experts
+  is the next thing to measure), die 0's own expert lists 5.5 (mostly overlapped), waiting for
+  the other dies 2.4, dispatch + copy 1.6.

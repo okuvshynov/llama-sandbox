@@ -119,7 +119,8 @@ int main(int argc, char** argv) {
   std::vector<int> layers;
   Options opt;
   int gpu = 0;
-  std::map<int, int> gpu_moe;  // layer -> device holding all its experts (runtime only)
+  std::string placement;
+  std::vector<int> moe_dies = {0, 1, 2, 3};
   for (int i = 1; i < argc; i++) {
     std::string a = argv[i];
     auto next = [&] { if (i + 1 >= argc) { fprintf(stderr, "missing value for %s\n", a.c_str()); exit(2); } return argv[++i]; };
@@ -129,15 +130,10 @@ int main(int argc, char** argv) {
     else if (a == "--no-quant") opt.exact_quant = false;
     else if (a == "-t") opt.n_threads = atoi(next());
     else if (a == "--gpu") gpu = atoi(next());
-    else if (a == "--gpu-moe") {  // dev:layers[,dev:layers...], layers like 21-24
-      for (char* q = (char*)next(); *q;) {
-        const int dev = (int)strtol(q, &q, 10);
-        if (*q++ != ':') { fprintf(stderr, "--gpu-moe: expected dev:layers\n"); return 2; }
-        int a0 = (int)strtol(q, &q, 10), a1 = a0;
-        if (*q == '-') a1 = (int)strtol(q + 1, &q, 10);
-        for (int L = a0; L <= a1; L++) gpu_moe[L] = dev;
-        if (*q == ',') q++;
-      }
+    else if (a == "--placement") placement = next();  // runtime: routed experts on GPUs (expert_pool.h)
+    else if (a == "--moe-dies") {
+      moe_dies.clear();
+      for (char* q = (char*)next(); *q;) { moe_dies.push_back((int)strtol(q, &q, 10)); if (*q == ',') q++; }
     }
     else if (a == "--e2e") e2e = next();
     else if (a == "--runtime") rt_path = next();
@@ -146,7 +142,7 @@ int main(int argc, char** argv) {
     else { fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
   }
   if (model_path.empty() || gdir.empty()) {
-    fprintf(stderr, "usage: ds-test -m <model> -g <golden dir> [--layers 0-39] [--no-quant] [-t N] [--e2e out.f32] [--runtime dense-fp8.gguf [--gpu D] [--gpu-moe dev:layers,...] [--per-token]]\n");
+    fprintf(stderr, "usage: ds-test -m <model> -g <golden dir> [--layers 0-39] [--no-quant] [-t N] [--e2e out.f32] [--runtime dense-fp8.gguf [--gpu D] [--placement file [--moe-dies 0,1,2,3]] [--per-token]]\n");
     return 2;
   }
   Golden G;
@@ -163,7 +159,7 @@ int main(int argc, char** argv) {
   std::unique_ptr<Runtime> rt;
   if (!rt_path.empty()) {
     if (!opt.exact_quant) { fprintf(stderr, "--no-quant is CPU only\n"); return 2; }
-    rt.reset(new Runtime(m, RtOptions{gpu, opt.n_threads, opt.max_ctx}, rt_path, gpu_moe));
+    rt.reset(new Runtime(m, RtOptions{gpu, opt.n_threads, opt.max_ctx, placement, moe_dies}, rt_path));
   }
 #else
   if (!rt_path.empty()) { fprintf(stderr, "--runtime needs the bin-hip build\n"); return 2; }

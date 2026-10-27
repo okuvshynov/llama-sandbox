@@ -2,7 +2,7 @@
 //
 //   ds-completion -m <model-00001-of-000NN.gguf> -p "prompt" [--chat | --think] [-n 128]
 //                 [-t 16] [--no-quant] [--max-ctx 4096]
-//                 [--rt <dense-fp8.gguf> [--gpu D] [--gpu-moe dev:layers,...] [--profile]]
+//                 [--rt <dense-fp8.gguf> [--gpu D] [--placement file [--moe-dies 0,1,2,3]] [--profile]]
 //
 // The prompt is fed as one chunk (prefill), then one token per step, greedy. --chat wraps the
 // prompt as one user turn in the model's chat format without thinking, --think with it (the
@@ -10,7 +10,8 @@
 // Only the tokenizer comes from libllama (vocab-only load).
 // Without --rt: everything on the CPU through the ggml Engine (forward.cpp), the prompt as one
 // chunk. --rt <dense-fp8.gguf> (bin-hip build): every token through the own runtime (hip/rt.h:
-// dense part on GPU D in exact fp8, routed experts on the CPU or, with --gpu-moe, on GPUs), the
+// dense part on GPU D in exact fp8, routed experts on the CPU or, with --placement, partly on
+// GPUs), the
 // prompt one token at a time.
 
 #include "forward.h"
@@ -55,7 +56,8 @@ int main(int argc, char** argv) {
   int gpu = 0;
   bool profile = false;
   std::string route_log;
-  std::map<int, int> gpu_moe;  // layer -> device holding all its experts (runtime only)
+  std::string placement;
+  std::vector<int> moe_dies = {0, 1, 2, 3};
   for (int i = 1; i < argc; i++) {
     std::string a = argv[i];
     auto next = [&] { if (i + 1 >= argc) { fprintf(stderr, "missing value for %s\n", a.c_str()); exit(2); } return argv[++i]; };
@@ -66,15 +68,10 @@ int main(int argc, char** argv) {
     else if (a == "-n") n_predict = atoi(next());
     else if (a == "-t") opt.n_threads = atoi(next());
     else if (a == "--gpu") gpu = atoi(next());
-    else if (a == "--gpu-moe") {  // dev:layers[,dev:layers...], layers like 21-24
-      for (char* q = (char*)next(); *q;) {
-        const int dev = (int)strtol(q, &q, 10);
-        if (*q++ != ':') { fprintf(stderr, "--gpu-moe: expected dev:layers\n"); return 2; }
-        int a0 = (int)strtol(q, &q, 10), a1 = a0;
-        if (*q == '-') a1 = (int)strtol(q + 1, &q, 10);
-        for (int L = a0; L <= a1; L++) gpu_moe[L] = dev;
-        if (*q == ',') q++;
-      }
+    else if (a == "--placement") placement = next();  // runtime: routed experts on GPUs (expert_pool.h)
+    else if (a == "--moe-dies") {
+      moe_dies.clear();
+      for (char* q = (char*)next(); *q;) { moe_dies.push_back((int)strtol(q, &q, 10)); if (*q == ',') q++; }
     }
     else if (a == "--profile") profile = true;
     else if (a == "--rt") rt_path = next();
@@ -84,7 +81,7 @@ int main(int argc, char** argv) {
     else { fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
   }
   if (model_path.empty() || prompt.empty()) {
-    fprintf(stderr, "usage: ds-completion -m <model.gguf> -p \"prompt\" [--chat|--think] [-n N] [-t N] [--no-quant] [--max-ctx N] [--rt dense-fp8.gguf [--gpu D] [--gpu-moe dev:layers,...] [--profile]]\n");
+    fprintf(stderr, "usage: ds-completion -m <model.gguf> -p \"prompt\" [--chat|--think] [-n N] [-t N] [--no-quant] [--max-ctx N] [--rt dense-fp8.gguf [--gpu D] [--placement file [--moe-dies 0,1,2,3]] [--profile]]\n");
     return 2;
   }
 
@@ -122,11 +119,9 @@ int main(int argc, char** argv) {
     fprintf(stderr, "load failed: %s\n", e.what());
     return 1;
   }
-  {  // the experts that will run on the CPU: page tables now, not inside decode steps
-    std::set<int> on_gpu;
-    for (auto [L, d] : gpu_moe) on_gpu.insert(L);
+  {  // the experts that may run on the CPU: page tables now, not inside decode steps
     auto tm = Clock::now();
-    const size_t n = m.map_experts(opt.n_threads, on_gpu);
+    const size_t n = m.map_experts(opt.n_threads);
     fprintf(stderr, "# mapped %.0f GB of CPU experts in %.1f s\n", n / 1e9,
             std::chrono::duration<double>(Clock::now() - tm).count());
   }
@@ -135,7 +130,7 @@ int main(int argc, char** argv) {
   std::unique_ptr<Runtime> rt;
   if (!rt_path.empty()) {
     if (!opt.exact_quant) { fprintf(stderr, "--no-quant is CPU only\n"); return 2; }
-    rt.reset(new Runtime(m, RtOptions{gpu, opt.n_threads, opt.max_ctx}, rt_path, gpu_moe));
+    rt.reset(new Runtime(m, RtOptions{gpu, opt.n_threads, opt.max_ctx, placement, moe_dies}, rt_path));
     rt->profile = profile;
     if (!route_log.empty()) rt->log_routing(route_log);
   }
@@ -169,8 +164,8 @@ int main(int argc, char** argv) {
     if (rt) {
       logits = rt->decode(next);
       if (profile) {
-        fprintf(stderr, "\n# step %d: %.1f ms (cpu experts %.1f, waiting for the GPU %.1f); GPU timeline:", n_gen,
-                rt->last.total_ms, rt->last.cpu_moe_ms, rt->last.wait_ms);
+        fprintf(stderr, "\n# step %d: %.1f ms (cpu experts %.1f, waiting for the GPU %.1f; experts gpu %d cpu %d); GPU timeline:",
+                n_gen, rt->last.total_ms, rt->last.cpu_moe_ms, rt->last.wait_ms, rt->last.gpu_experts, rt->last.cpu_experts);
         for (auto& [g, ms] : rt->last_groups) fprintf(stderr, " %s %.1f", g.c_str(), ms);
       }
       continue;
@@ -181,6 +176,12 @@ int main(int argc, char** argv) {
   const double t_tg = std::chrono::duration<double>(Clock::now() - t2).count();
   printf("\n");
   fflush(stdout);
+#ifdef DS_RUNTIME
+  if (rt && rt->total_gpu_experts + rt->total_cpu_experts > 0)
+    fprintf(stderr, "# routed experts: %.1f%% on GPUs (%ld of %ld)\n",
+            100.0 * rt->total_gpu_experts / (rt->total_gpu_experts + rt->total_cpu_experts), rt->total_gpu_experts,
+            rt->total_gpu_experts + rt->total_cpu_experts);
+#endif
   fprintf(stderr, "# prompt: %zu tokens in %.2f s = %.2f t/s; generation: %d tokens in %.2f s = %.2f t/s\n",
           toks.size(), t_pp, toks.size() / t_pp, n_gen, t_tg, n_gen > 0 ? n_gen / t_tg : 0.0);
   llama_model_free(tok_model);

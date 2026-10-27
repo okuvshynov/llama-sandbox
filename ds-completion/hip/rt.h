@@ -12,7 +12,9 @@
 #pragma once
 
 #include "forward.h"  // Taps, engram_rows
+#include "expert_pool.h"
 #include "fp4_moe.h"
+#include "kernels.h"
 #include "model.h"
 
 #include <hip/hip_runtime.h>
@@ -28,13 +30,17 @@ struct RtOptions {
   int gpu = 0;         // the die for the dense part and the state (ROCm device index)
   int n_threads = 16;  // CPU expert kernel
   int max_ctx = 4096;  // capacity of the compressed caches
+  // routed experts on GPUs (expert_pool.h): a ranked placement file fills these dies' free
+  // memory, keeping `reserve_gb` free on each; empty = every routed expert on the CPU
+  std::string placement;
+  std::vector<int> moe_dies = {0, 1, 2, 3};
+  double reserve_gb = 0.75;
 };
 
 class Runtime {
  public:
-  // fp8_path is fp8pack's output for the same model. gpu_moe: layers whose routed experts are
-  // all resident on a GPU (layer -> device); the rest run on the CPU.
-  Runtime(const Model& m, RtOptions opt, const std::string& fp8_path, const std::map<int, int>& gpu_moe = {});
+  // fp8_path is fp8pack's output for the same model
+  Runtime(const Model& m, RtOptions opt, const std::string& fp8_path);
   ~Runtime();
 
   // one step for `token` at position n_past(): returns the logits (empty when
@@ -52,7 +58,8 @@ class Runtime {
   int n_past() const { return n_past_; }
 
   // time spent per decode step (host wall clock), split at the CPU-expert waits
-  struct Times { double total_ms = 0, cpu_moe_ms = 0, wait_ms = 0; } last;
+  struct Times { double total_ms = 0, cpu_moe_ms = 0, wait_ms = 0; int gpu_experts = 0, cpu_experts = 0; } last;
+  long total_gpu_experts = 0, total_cpu_experts = 0;  // over the run (hit rate)
   // profile = true: GPU events between groups of launches; per group, the GPU time of the
   // last step (gaps included: a group charged with idle time was waiting on the host)
   bool profile = false;
@@ -94,20 +101,27 @@ class Runtime {
   void* fp8_buf = nullptr;  // all fp8 weights + scales
   float* freqs_buf = nullptr;
   std::unique_ptr<CpuMoeKernel> cpu_moe;
-  // layers with all experts in HBM: on the runtime's GPU they run on its stream; on another die
-  // the inputs go there through pinned host memory and the result comes back the same way,
-  // ordered by events (no host waits), while this GPU does the shared expert
-  struct GpuMoeLayer {
-    int dev;
-    GpuExperts ex;
-    hipStream_t st = nullptr;  // on dev (another die only)
+  // Routed experts on GPUs: per die a pool of expert slots (placement die i = opt.moe_dies[i]).
+  // Each layer, a dispatch kernel splits the chosen experts into one list per die and one for
+  // the CPU. The die holding the dense part runs its list on the main stream; another die gets
+  // the staged block (x + lists) through pinned host memory and sends its result back the same
+  // way, ordered by events; the CPU runs the misses. The parts are summed in a fixed order.
+  struct Die {
+    int dev = -1;
+    ExpertPool pool;
+    void* scratch = nullptr;
+    float* y_home = nullptr;     // its result on the home die
+    // another die only:
+    hipStream_t st = nullptr;
     hipEvent_t done = nullptr;
-    void* scratch;
-    char* d_in = nullptr;      // x, ids, w on dev (same layout as MoeIn)
+    char* d_in = nullptr;        // the staged block on dev
     float *d_y = nullptr, *h_y = nullptr;
   };
-  std::map<int, GpuMoeLayer> gpu_moe;
-  hipEvent_t ev_staged;  // the router's outputs are in h_moe
+  std::vector<Die> dies;
+  Placement placement;
+  int* d_table = nullptr;       // [n_layer][n_expert]: die << 16 | slot, or -1 (home die)
+  hipEvent_t ev_staged;         // the block (x, router outputs, lists) is in host memory
+  void setup_experts();
 
   // device scratch (one token)
   float *h, *h2, *pre, *a_pre, *a_post, *a_comb, *f_pre, *f_post, *f_comb, *mixes;
@@ -120,9 +134,10 @@ class Runtime {
   int *rids, *iota;
   std::map<int, int*> topk_buf;        // [index source] its selection buffer
   std::map<int, const int*> topk_cur;  // [index source] this step's selection (topk_buf or iota)
-  // pinned host staging for the CPU experts and the engram rows
-  // the CPU experts' inputs, staged together so one copy moves them: x [n_embd], ids [8], w [8]
-  struct MoeIn { float* x; int* ids; float* w; } d_moe, h_moe;
+  // the routed experts' inputs, staged together so one copy moves them (device and pinned host):
+  // x [n_embd], router ids [8], weights [8], lists [n_dies + 1] (the last: the CPU's)
+  struct MoeIn { float* x; int* ids; float* w; MoeList* lists; } d_moe, h_moe;
+  size_t moe_block_bytes = 0;
   float *h_yr, *h_erows, *att_scratch;
   hipEvent_t ev;
 

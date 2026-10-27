@@ -48,7 +48,7 @@ measure "runtime kernels alone (die 0)" "us$" ./bin-hip/bench-kernels
 measure "GPU experts, one layer (die 0)" "relerr|per layer" ./bin-hip/bench-fp4-moe -m "$M" --layer 20 --reps 300
 measure "decode, runtime, dense on die 0, experts on the CPU" "# step 1[3-5]:|generation:" \
   ./bin-hip/ds-completion -m "$M" -p "$P" --chat -n 32 -t 32 --gpu 0 --rt "$F8" --profile
-measure "decode, runtime + 13 expert layers on dies 0-3" "# step 1[3-5]:|generation:|uploaded" \
+measure "decode, runtime + experts placed on dies 0-3 (study30)" "# step 1[3-5]:|generation:|routed experts" \
   ./bin-hip/ds-completion -m "$M" -p "$P" --chat -n 32 -t 32 --gpu 0 --rt "$F8" --profile \
-  --gpu-moe 0:27,1:36-39,2:32-35,3:28-31
+  --placement placements/study30.txt
 log "# done $(date -Is)"

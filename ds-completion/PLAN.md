@@ -18,7 +18,7 @@ Correctness and the base path
 | 6 | Own HIP decode runtime (D3) | done | every op of a token in our kernels on one die: 9.4 -> ~10 t/s |
 | 7 | Exact CPU expert kernel (A3) | done | AVX-512 fp4 x fp8, ~68 GB/s, faster than ggml and exact |
 | 8 | Exact GPU expert kernel | done | one layer's 6 experts in 0.39 ms on a die (287 GB/s) |
-| 9 | Whole expert layers on GPUs | done | `--gpu-moe`: 15 layers resident on 4 dies -> 12.2 t/s |
+| 9 | Whole expert layers on GPUs | done, replaced | `--gpu-moe`: 15 layers resident on 4 dies -> 12.2 t/s; superseded by item 15 |
 | 10 | Prompt through the runtime | done | frees 14 GB on die 0; prompt 6 -> 10 t/s |
 | 11 | Remove ggml's GPU path | done | the runtime is self-contained; no fork HIP build needed |
 | 12 | GPU clock sweep | done | dense GPU part 38 -> 29 ms from sclk 0 to 8; level 4-6 is the sweet spot |
@@ -29,7 +29,7 @@ Speed
 |---|---|---|---|
 | 13 | Routing statistics (A0) | done | 30 prompts: fixed hot sets transfer poorly (71% at 128 GB), an adaptive LRU cache reaches 95% with ~11 loads per token (README step 13) |
 | 14 | HIP graphs + kernel fusion (D) | started | engram per step + experts mapped at load done (~1%); graphs save little on this ROCm, fusion ~37 -> ~22 launches per layer for ~2-3 ms (README step 12) |
-| 15 | Per-layer expert split, CPU and all dies concurrently (A1/EP) | next | each layer's hits on the dies and misses on the CPU at once, with a resident-expert table per die |
+| 15 | Per-layer expert split, CPU and all dies concurrently (A1/EP) | done (steps 1-5) | `--placement`: fixed set from the study, 81% on GPUs, 15.5 t/s on a held-out prompt (README step 14) |
 | 16 | Adaptive expert cache (A1 + A2) | next | start from a prior hot set, load missed experts into HBM in the background (LRU): ~95% hits at 128 GB, est. ~25 t/s |
 | 17 | Tensor parallelism, 2-way then 4-way (C1/C2) | planned | split the dense GEMVs over dies: ~-6..10 ms per step, matters once experts are mostly on GPUs |
 | 18 | Shared expert by TP, routed by EP (C4) | planned | the dense shared expert splits like any other GEMV under TP |
