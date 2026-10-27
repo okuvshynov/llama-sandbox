@@ -13,6 +13,7 @@ Status, 2026-10-27:
 
 Performance work from here on is planned in [PLAN.md](PLAN.md). The short version of how to run
 it and what it does now: [QUICKSTART.md](QUICKSTART.md).
+Operand types and accumulation: [NUMERICS.md](NUMERICS.md).
 
 ## Tools
 
