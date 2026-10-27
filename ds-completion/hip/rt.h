@@ -103,9 +103,11 @@ class Runtime {
   std::unique_ptr<CpuMoeKernel> cpu_moe;
   // Routed experts on GPUs: per die a pool of expert slots (placement die i = opt.moe_dies[i]).
   // Each layer, a dispatch kernel splits the chosen experts into one list per die and one for
-  // the CPU. The die holding the dense part runs its list on the main stream; another die gets
-  // the staged block (x + lists) through pinned host memory and sends its result back the same
-  // way, ordered by events; the CPU runs the misses. The parts are summed in a fixed order.
+  // the CPU. No die waits for the host: the home die runs its list on a second stream next to
+  // the shared expert; every other die gets the staged block (x + lists) through pinned host
+  // memory as soon as it is there, reads its count on the device (0: exits early) and sends its
+  // result back the same way, ordered by events. The host only runs the CPU's misses. The parts
+  // are summed in a fixed order (an idle die contributes exact zeros).
   struct Die {
     int dev = -1;
     ExpertPool pool;
@@ -121,6 +123,8 @@ class Runtime {
   Placement placement;
   int* d_table = nullptr;       // [n_layer][n_expert]: die << 16 | slot, or -1 (home die)
   hipEvent_t ev_staged;         // the block (x, router outputs, lists) is in host memory
+  hipStream_t s_local = nullptr;  // home die: its own expert list, next to the shared expert
+  hipEvent_t ev_dispatched = nullptr, ev_local = nullptr;
   void setup_experts();
 
   // device scratch (one token)

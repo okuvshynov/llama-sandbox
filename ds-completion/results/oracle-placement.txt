@@ -26,3 +26,11 @@ wrote placements/oracle-code-rust.txt: 15360 pairs, 8224 used
 # routed experts: 97.3% on GPUs (66077 of 67920)
 # prompt: 28 tokens in 1.80 s = 15.60 t/s; generation: 256 tokens in 16.02 s = 15.98 t/s
    same completion as the logged run
+# after fix 1 (no die waits for the host), 256 tokens, sclk 2
+concurrency  study30              82.1% on GPUs (52620 of 64080) gen 256 tokens in 15.99 s = 16.01 t/s 
+concurrency  oracle-concurrency   97.5% on GPUs (62465 of 64080) gen 256 tokens in 13.62 s = 18.79 t/s 
+code-rust    study30              61.4% on GPUs (41707 of 67920) gen 256 tokens in 18.98 s = 13.49 t/s 
+code-rust    oracle-code-rust     97.2% on GPUs (66052 of 67920) gen 256 tokens in 14.66 s = 17.46 t/s 
+# oracle-concurrency profile (median step, ms):
+steps 253  step 46.9  cpu 4.1  host-wait 18.9
+  attn.out 6.80  ffn.shared 6.60  hc 5.20  attn.q 4.60  ffn.wait_for_gpu_experts 4.60  ffn.wait_for_cpu_experts 3.50  ffn.router 3.20  attn.core 3.10  head 2.40  ffn.dispatch 1.60  attn.indexer 1.00  attn.kv 1.00  attn.compressor 0.80  engram 0.80  ffn.add 0.60  engram.fetch 0.40

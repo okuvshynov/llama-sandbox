@@ -272,6 +272,9 @@ void Runtime::setup_experts() {
     CHECK(hipSetDevice(home));
     d.y_home = dalloc<float>(E);
   }
+  CHECK(hipStreamCreateWithFlags(&s_local, hipStreamNonBlocking));
+  CHECK(hipEventCreateWithFlags(&ev_dispatched, hipEventDisableTiming));
+  CHECK(hipEventCreateWithFlags(&ev_local, hipEventDisableTiming));
   std::vector<int> cap;
   for (const Die& d : dies) cap.push_back(pool_slots_that_fit(d.dev, E, F, (size_t)(opt.reserve_gb * 1e9)));
   std::vector<bool> loaded(hp.n_layer);
@@ -339,6 +342,12 @@ Runtime::~Runtime() {
   }
   (void)hipSetDevice(opt.gpu);
   if (d_table) (void)hipFree(d_table);
+  if (s_local) {
+    (void)hipStreamSynchronize(s_local);
+    (void)hipStreamDestroy(s_local);
+    (void)hipEventDestroy(ev_dispatched);
+    (void)hipEventDestroy(ev_local);
+  }
   (void)hipEventDestroy(ev_staged);
   if (route_log) fclose(route_log);
   if (d_route) (void)hipFree(d_route);
@@ -519,30 +528,23 @@ void Runtime::moe(int L, const float* xin, float* out, Taps* taps) {
   const int n_dies = (int)dies.size();
   mark("ffn.dispatch");
   k_moe_dispatch(rids, rw, KE, d_table ? d_table + (size_t)L * hp.n_expert : nullptr, n_dies, d_moe.lists, s);
+  if (n_dies) CHECK(hipEventRecord(ev_dispatched, s));
   CHECK(hipMemcpyAsync(h_moe.x, d_moe.x, moe_block_bytes, hipMemcpyDeviceToHost, s));
   CHECK(hipEventRecord(ev_staged, s));
-  // the shared expert keeps this GPU busy while the host reads the lists
-  mark("ffn.shared");
-  quant(xin, E, A);
-  gemv8(w.gate_sh, A, gate);
-  gemv8(w.up_sh, A, up);
-  k_swiglu(gate, up, hp.swiglu_clamp_sh[L], F, act, s);
-  quant(act, F, B);
-  gemv8(w.down_sh, B, ysh);
-  auto t0 = Clock::now();
-  CHECK(hipEventSynchronize(ev_staged));
-  last.wait_ms += ms_since(t0);
-  const MoeList& cpu_list = h_moe.lists[n_dies];
   const float* parts[kMoeMaxDies + 1] = {};
-  // other dies with work: their stream copies the block in, runs the list, sends y back
+  bool local = false;
   for (int i = 0; i < n_dies; i++) {
     Die& d = dies[i];
-    const int cnt = h_moe.lists[i].count;
-    last.gpu_experts += cnt;
-    total_gpu_experts += cnt;
-    if (cnt == 0) continue;
     parts[i] = d.y_home;
-    if (!d.st) continue;
+    if (!d.st) {  // the home die: its list on the second stream, next to the shared expert
+      local = true;
+      CHECK(hipStreamWaitEvent(s_local, ev_dispatched, 0));
+      const MoeList* dl = d_moe.lists + i;
+      fp4_moe(d.pool.view, d_moe.x, dl->ids, dl->w, KE, hp.swiglu_clamp[L], d.y_home, d.scratch, s_local, &dl->count);
+      CHECK(hipEventRecord(ev_local, s_local));
+      continue;
+    }
+    // another die: starts when the block is in host memory, no host involvement
     CHECK(hipSetDevice(d.dev));
     CHECK(hipStreamWaitEvent(d.st, ev_staged, 0));
     CHECK(hipMemcpyAsync(d.d_in, h_moe.x, moe_block_bytes, hipMemcpyHostToDevice, d.st));
@@ -552,14 +554,22 @@ void Runtime::moe(int L, const float* xin, float* out, Taps* taps) {
     CHECK(hipEventRecord(d.done, d.st));
     CHECK(hipSetDevice(opt.gpu));
   }
-  // this die's own list, on the main stream
-  for (int i = 0; i < n_dies; i++)
-    if (!dies[i].st && parts[i]) {
-      mark("ffn.experts_here");
-      const MoeList* dl = d_moe.lists + i;
-      fp4_moe(dies[i].pool.view, d_moe.x, dl->ids, dl->w, KE, hp.swiglu_clamp[L], dies[i].y_home, dies[i].scratch, s, &dl->count);
-    }
-  // the CPU's misses
+  mark("ffn.shared");
+  quant(xin, E, A);
+  gemv8(w.gate_sh, A, gate);
+  gemv8(w.up_sh, A, up);
+  k_swiglu(gate, up, hp.swiglu_clamp_sh[L], F, act, s);
+  quant(act, F, B);
+  gemv8(w.down_sh, B, ysh);
+  // the host: the lists (counts for the statistics) and the CPU's misses
+  auto t0 = Clock::now();
+  CHECK(hipEventSynchronize(ev_staged));
+  last.wait_ms += ms_since(t0);
+  const MoeList& cpu_list = h_moe.lists[n_dies];
+  for (int i = 0; i < n_dies; i++) {
+    last.gpu_experts += h_moe.lists[i].count;
+    total_gpu_experts += h_moe.lists[i].count;
+  }
   last.cpu_experts += cpu_list.count;
   total_cpu_experts += cpu_list.count;
   if (cpu_list.count > 0) {
@@ -572,10 +582,11 @@ void Runtime::moe(int L, const float* xin, float* out, Taps* taps) {
     CHECK(hipMemcpyAsync(yr, h_yr, E * 4, hipMemcpyHostToDevice, s));
     parts[n_dies] = yr;
   }
-  // the other dies' results, waited for in the stream
+  // the dies' results, waited for in the stream
+  if (n_dies) mark("ffn.wait_for_gpu_experts");
+  if (local) CHECK(hipStreamWaitEvent(s, ev_local, 0));
   for (int i = 0; i < n_dies; i++)
-    if (dies[i].st && parts[i]) {
-      mark("ffn.wait_for_other_dies");
+    if (dies[i].st) {
       CHECK(hipStreamWaitEvent(s, dies[i].done, 0));
       CHECK(hipMemcpyAsync(dies[i].y_home, dies[i].h_y, E * 4, hipMemcpyHostToDevice, s));
     }

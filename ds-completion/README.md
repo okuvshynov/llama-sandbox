@@ -911,3 +911,23 @@ experts on GPUs ~20 ms where the kernels need ~6-10 (die 0's lists run after the
 the other dies start only after the host reads the lists; router + dispatch + sum ~5 ms). Rare
 CPU misses cost ~0.9 ms each (thread wake-up; `OMP_WAIT_POLICY=active`: CPU 7.8 -> 2.7 ms per
 step); frequent ones ~0.5 ms each either way (the CPU kernel on 1-2 experts).
+
+## Step 16: no die waits for the host (expert path fix 1)
+
+`Runtime::moe` reordered: the home die runs its own expert list on a second stream next to the
+shared expert; every other die starts as soon as the staged block is in host memory and reads
+its count on the device (0: exits early); the host only runs the CPU's misses. Gate: no
+placement, study30 and all-GPU placements identical to step 14 row for row; end-to-end logits
+bit-identical.
+
+| prompt (256 tokens, sclk 2) | placement | step 15 | now |
+|---|---|---|---|
+| concurrency | study30 | 15.2 t/s | 16.0 t/s (82% on GPUs) |
+| concurrency | oracle | 15.9 t/s | **18.8 t/s** (97.5%) |
+| code-rust | study30 | 12.6 t/s | 13.5 t/s (61%) |
+| code-rust | oracle | 16.0 t/s | 17.5 t/s (97.2%) |
+
+Oracle step (concurrency, ~47 ms profiled, was ~54): the expert-related groups (router,
+dispatch, shared expert with the home die's list next to it, waits for GPU and CPU experts,
+add) take ~20 ms, down from ~25. Next: the GPU expert kernel for 1-3 experts (~75 us fixed per
+call) and the CPU threads' wake-up for rare misses.
