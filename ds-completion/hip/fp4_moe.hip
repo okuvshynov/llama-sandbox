@@ -25,11 +25,17 @@ __global__ void unpack_blocks_kernel(const uint8_t* src, size_t n_blocks, uint8_
   for (int i = 0; i < 16; i++) codes[b * 16 + i] = s[1 + i];
 }
 
+void fp4_unpack(const uint8_t* blocks, size_t n_blocks, uint8_t* codes, uint8_t* scales, hipStream_t s) {
+  unpack_blocks_kernel<<<(unsigned)((n_blocks + 255) / 256), 256, 0, s>>>(blocks, n_blocks, codes, scales);
+}
+
 GpuMatrix fp4_upload(const void* src, int K, int N, int n_expert, hipStream_t s) {
   GpuMatrix m;
   m.N = N;
   m.K = K;
   const size_t blocks_per_expert = (size_t)N * K / 32;
+  m.codes_stride = blocks_per_expert * 16;
+  m.scales_stride = blocks_per_expert;
   CHECK(hipMalloc(&m.codes, blocks_per_expert * n_expert * 16));
   CHECK(hipMalloc(&m.scales, blocks_per_expert * n_expert));
   // through a staging buffer, 32 experts at a time
@@ -40,8 +46,7 @@ GpuMatrix fp4_upload(const void* src, int K, int N, int n_expert, hipStream_t s)
     const int ne = std::min(chunk, n_expert - e0);
     const size_t nb = blocks_per_expert * ne;
     CHECK(hipMemcpyAsync(stage, (const uint8_t*)src + blocks_per_expert * e0 * 17, nb * 17, hipMemcpyHostToDevice, s));
-    unpack_blocks_kernel<<<(unsigned)((nb + 255) / 256), 256, 0, s>>>(stage, nb, m.codes + blocks_per_expert * e0 * 16,
-                                                                     m.scales + blocks_per_expert * e0);
+    fp4_unpack(stage, nb, m.codes + blocks_per_expert * e0 * 16, m.scales + blocks_per_expert * e0, s);
   }
   CHECK(hipStreamSynchronize(s));
   CHECK(hipFree(stage));
@@ -117,18 +122,20 @@ __device__ inline float dot2(uint32_t a, uint32_t b, float c) {
 // shared one when x_stride == 0). LPR lanes per row, each lane one 32-block per step.
 template <int LPR>
 __global__ void __launch_bounds__(256) fp4_gemv_kernel(const uint8_t* __restrict__ codes, const uint8_t* __restrict__ scales,
-                                                       int N, int K, const int* __restrict__ ids,
+                                                       int N, int K, size_t codes_stride, size_t scales_stride,
+                                                       const int* __restrict__ ids, const int* __restrict__ count,
                                                        const uint8_t* __restrict__ xq, const float* __restrict__ xs,
                                                        int x_stride, float* __restrict__ y) {
-  const int j = blockIdx.y, e = ids[j];
+  const int j = blockIdx.y;
+  if (count && j >= *count) return;  // the whole block: no barriers below
+  const int e = ids[j];
   const int lane = threadIdx.x & 63;
   const int row = (blockIdx.x * (blockDim.x >> 6) + (threadIdx.x >> 6)) * (64 / LPR) + lane / LPR;
   const int l = lane % LPR, nb = K / 32;
   const bool live = row < N;
   const int r = live ? row : N - 1;
-  const size_t rb = (size_t)e * N + r;  // row index over all experts
-  const uint8_t* wc = codes + rb * (K / 2);
-  const uint8_t* ws = scales + rb * nb;
+  const uint8_t* wc = codes + (size_t)e * codes_stride + (size_t)r * (K / 2);
+  const uint8_t* ws = scales + (size_t)e * scales_stride + (size_t)r * nb;
   const uint8_t* xr = xq + (size_t)j * x_stride;
   const float* xsr = xs + (size_t)j * (x_stride / 32);
   float acc = 0.0f;
@@ -159,30 +166,35 @@ __global__ void __launch_bounds__(256) fp4_gemv_kernel(const uint8_t* __restrict
   if (live && l == 0) y[(size_t)j * N + row] = acc;
 }
 
-static void fp4_gemv(const GpuMatrix& m, const int* ids, int k, const uint8_t* xq, const float* xs, int x_stride, float* y,
-                     hipStream_t s) {
+static void fp4_gemv(const GpuMatrix& m, const int* ids, const int* count, int k, const uint8_t* xq, const float* xs,
+                     int x_stride, float* y, hipStream_t s) {
   const int nb = m.K / 32;
   if (nb >= 128) {
     constexpr int LPR = 16;
-    fp4_gemv_kernel<LPR><<<dim3(cdiv(m.N, 4 * 64 / LPR), k), 256, 0, s>>>(m.codes, m.scales, m.N, m.K, ids, xq, xs, x_stride, y);
+    fp4_gemv_kernel<LPR><<<dim3(cdiv(m.N, 4 * 64 / LPR), k), 256, 0, s>>>(m.codes, m.scales, m.N, m.K, m.codes_stride,
+                                                                          m.scales_stride, ids, count, xq, xs, x_stride, y);
   } else {
     constexpr int LPR = 8;
-    fp4_gemv_kernel<LPR><<<dim3(cdiv(m.N, 4 * 64 / LPR), k), 256, 0, s>>>(m.codes, m.scales, m.N, m.K, ids, xq, xs, x_stride, y);
+    fp4_gemv_kernel<LPR><<<dim3(cdiv(m.N, 4 * 64 / LPR), k), 256, 0, s>>>(m.codes, m.scales, m.N, m.K, m.codes_stride,
+                                                                          m.scales_stride, ids, count, xq, xs, x_stride, y);
   }
 }
 
 // ------------------------------------------------------------------ the block
 
-__global__ void moe_act_kernel(const float* gate, const float* up, const float* w, float lim, int F, int n, float* act) {
+__global__ void moe_act_kernel(const float* gate, const float* up, const float* w, float lim, int F, int n,
+                               const int* count, float* act) {
   const int i = blockIdx.x * blockDim.x + threadIdx.x;
   if (i >= n) return;
+  if (count && i / F >= *count) { act[i] = 0.0f; return; }  // unused expert: finite, never read
   const float g = fminf(gate[i], lim), u = fminf(fmaxf(up[i], -lim), lim);
   act[i] = w[i / F] * (g / (1.0f + expf(-g)) * u);  // the routing weight before w2, as the reference
 }
 
-__global__ void expert_sum_kernel(const float* d, int k, int E, float* y) {
+__global__ void expert_sum_kernel(const float* d, int k, const int* count, int E, float* y) {
   const int i = blockIdx.x * blockDim.x + threadIdx.x;
   if (i >= E) return;
+  if (count) k = *count;
   float v = 0.0f;
   for (int j = 0; j < k; j++) v += d[(size_t)j * E + i];  // expert order, as the CPU kernel
   y[i] = v;
@@ -194,7 +206,7 @@ size_t fp4_moe_scratch_bytes(int E, int F, int k) {
 }
 
 void fp4_moe(const GpuExperts& ex, const float* x, const int* ids, const float* w, int k, float limit, float* y,
-             void* scratch, hipStream_t s) {
+             void* scratch, hipStream_t s, const int* count) {
   const int E = ex.gate.K, F = ex.gate.N;
   char* p = (char*)scratch;
   auto take = [&](size_t bytes) { char* r = p; p += (bytes + 63) / 64 * 64; return r; };
@@ -207,10 +219,10 @@ void fp4_moe(const GpuExperts& ex, const float* x, const int* ids, const float* 
   float* asc = (float*)take((size_t)k * F / 32 * 4);
   float* d = (float*)take((size_t)k * E * 4);
   quant_paired_kernel<<<cdiv(E, 256), 256, 0, s>>>(x, xq, xs, E);
-  fp4_gemv(ex.gate, ids, k, xq, xs, 0, g, s);
-  fp4_gemv(ex.up, ids, k, xq, xs, 0, u, s);
-  moe_act_kernel<<<cdiv(k * F, 256), 256, 0, s>>>(g, u, w, limit, F, k * F, a);
-  quant_paired_kernel<<<cdiv(k * F, 256), 256, 0, s>>>(a, aq, asc, k * F);
-  fp4_gemv(ex.down, ids, k, aq, asc, F, d, s);
-  expert_sum_kernel<<<cdiv(E, 256), 256, 0, s>>>(d, k, E, y);
+  fp4_gemv(ex.gate, ids, count, k, xq, xs, 0, g, s);
+  fp4_gemv(ex.up, ids, count, k, xq, xs, 0, u, s);
+  moe_act_kernel<<<cdiv(k * F, 256), 256, 0, s>>>(g, u, w, limit, F, k * F, count, a);
+  quant_paired_kernel<<<cdiv(k * F, 256), 256, 0, s>>>(a, aq, asc, k * F);  // per expert's 32-blocks: unused ones harmless
+  fp4_gemv(ex.down, ids, count, k, aq, asc, F, d, s);
+  expert_sum_kernel<<<cdiv(E, 256), 256, 0, s>>>(d, k, count, E, y);
 }

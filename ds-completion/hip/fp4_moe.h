@@ -16,10 +16,12 @@
 #include <hip/hip_runtime.h>
 #include <cstdint>
 
-struct GpuMatrix {          // one expert tensor of a layer, all experts
-  uint8_t* codes;           // [n_expert][N][K / 2]
-  uint8_t* scales;          // [n_expert][N][K / 32]
+struct GpuMatrix {          // one expert tensor (gate, up or down) for a set of experts
+  uint8_t* codes;           // expert i at codes + i * codes_stride: [N][K / 2]
+  uint8_t* scales;          // expert i at scales + i * scales_stride: [N][K / 32]
   int N, K;
+  size_t codes_stride, scales_stride;  // bytes between experts: a layer's tensor packs them
+                                       // densely, an expert pool (expert_pool.h) by slot
 };
 
 struct GpuExperts { GpuMatrix gate, up, down; };
@@ -28,10 +30,14 @@ struct GpuExperts { GpuMatrix gate, up, down; };
 // (allocates). `src` is the host (mmap) data.
 GpuMatrix fp4_upload(const void* src, int K, int N, int n_expert, hipStream_t s);
 void fp4_free(GpuMatrix& m);
+// ggml block_mxfp4 (17 bytes: scale, 16 code bytes) already on the device -> codes + scales
+void fp4_unpack(const uint8_t* blocks, size_t n_blocks, uint8_t* codes, uint8_t* scales, hipStream_t s);
 
 // y = sum_j down_j(fq8(w_j * swiglu_clamp(gate_j(fq8 x), up_j(fq8 x)))), k routed experts with
-// ids/w on the device. scratch: k * (3 * F + 2 * F / 32 + E) floats + (E + k * F) bytes, from
-// fp4_moe_scratch_bytes.
+// ids/w on the device (ids index the GpuMatrix experts: expert ids for a layer's tensors, slots
+// for a pool). With `count` (device int, 0..k) only the first *count experts are used, and k
+// is the maximum; count 0 gives y = 0. scratch: k * (3 * F + 2 * F / 32 + E) floats +
+// (E + k * F) bytes, from fp4_moe_scratch_bytes.
 size_t fp4_moe_scratch_bytes(int E, int F, int k);
 void fp4_moe(const GpuExperts& ex, const float* x, const int* ids, const float* w, int k, float limit, float* y,
-             void* scratch, hipStream_t s);
+             void* scratch, hipStream_t s, const int* count = nullptr);

@@ -123,6 +123,23 @@ def lru_warm(keys, C, prior_counts):
     return hits / keys.size, misses / len(keys)
 
 
+def emit_placement(path, keys, n_pairs, sources, caps):
+    """Ranked (layer, expert) pairs, most used first: the runtime keeps the top ones that fit in
+    HBM (hip/expert_pool.h). Pairs never used are listed too, after the used ones, in layer order,
+    so any capacity can be filled."""
+    counts = np.bincount(keys.ravel(), minlength=n_pairs)
+    order = np.lexsort((np.arange(n_pairs), -counts))  # by count desc, ties by (layer, expert)
+    with open(path, "w") as f:
+        f.write("# ds-completion expert placement v1: ranked (layer expert count), most used first\n")
+        f.write(f"# from {len(sources)} routing logs, {len(keys)} tokens: " + " ".join(
+            s.rsplit("/", 1)[-1] for s in sources) + "\n")
+        for b, C in caps.items():
+            f.write(f"# top {C} (~{b} GB of HBM) serve {hit_rate(keys, top_set(keys, C, n_pairs)):.1%} of these tokens (in-sample; held-out is lower, README step 13)\n")
+        for key in order:
+            f.write(f"{key // 384} {key % 384} {counts[key]}\n")
+    print(f"wrote {path}: {n_pairs} pairs, {int((counts > 0).sum())} used")
+
+
 def est_tps(hit, L=40, k=6):
     """decode t/s if hits run on GPUs (spread over 4 dies) concurrently with misses on the CPU"""
     per_layer = max((1 - hit) * k * CPU_EXPERT_MS, hit * k * GPU_EXPERT_MS / 4)
@@ -137,6 +154,7 @@ def main():
     ap.add_argument("--windows", default="16,64,256,1024")
     ap.add_argument("--cross", default="", help="prompt table (name, category, ...): held-out tests")
     ap.add_argument("--no-temporal", action="store_true", help="skip the (slow) window / LRU policies")
+    ap.add_argument("--emit-placement", default="", help="write the ranked (layer, expert) list of these logs and exit")
     a = ap.parse_args()
 
     def load(paths):
@@ -160,6 +178,9 @@ def main():
 
     all_keys = np.concatenate([pairs(d["ids"]) for _, d, _, _ in logs])
     tokens = len(all_keys)
+    if a.emit_placement:
+        emit_placement(a.emit_placement, all_keys, n_pairs, [p for p, _, _, _ in logs], caps)
+        return
     print(f"# {len(logs)} log(s), {tokens} tokens ({'prompt + generated' if a.prompt else 'generated'})")
     if tokens == 0:
         return
