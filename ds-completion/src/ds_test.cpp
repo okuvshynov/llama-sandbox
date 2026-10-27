@@ -8,6 +8,9 @@
 //       arithmetic in isolation, plus the state it builds (KV caches, compressor groups) from
 //       reference inputs. Layers run in order up to the highest one asked for, because consumer
 //       layers read the caches their source layer wrote.
+//   ds-test -m <model> -g data/golden/hello-fp32 --gpu 0 --runtime <dense-fp8.gguf> (bin-hip)
+//       As above, but the decode steps run through the own runtime (hip/rt.h); the prefill
+//       step still runs through the Engine (GPU, fake quantization kept).
 //   ds-test -m <model> -g data/golden/hello --e2e data/ds/hello.f32
 //       End to end: the full forward on the reference's token sequence, the logits of every
 //       step written as [steps][n_vocab] f32 (compare with ref/compare_logits.py).
@@ -17,6 +20,9 @@
 // queries whose selected compressed positions are the same set (index-source layers).
 
 #include "forward.h"
+#ifdef DS_RUNTIME
+#include "rt.h"
+#endif
 
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -105,7 +111,8 @@ static std::vector<int> parse_list(const char* s) {
 
 int main(int argc, char** argv) {
   setvbuf(stdout, nullptr, _IOLBF, 0);
-  std::string model_path, gdir, e2e;
+  std::string model_path, gdir, e2e, rt_path;
+  bool determinism = false;
   std::vector<int> layers;
   Options opt;
   for (int i = 1; i < argc; i++) {
@@ -117,7 +124,11 @@ int main(int argc, char** argv) {
     else if (a == "--no-quant") opt.exact_quant = false;
     else if (a == "-t") opt.n_threads = atoi(next());
     else if (a == "--gpu") opt.gpu = atoi(next());
+    else if (a == "--gpu-exact") opt.gpu_exact_quant = true;
     else if (a == "--e2e") e2e = next();
+    else if (a == "--runtime") rt_path = next();
+    else if (a == "--determinism") determinism = true;
+    else if (a == "--profile") opt.profile = true;  // GPU mode: also syncs at every backend switch
     else { fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
   }
   if (model_path.empty() || gdir.empty()) {
@@ -133,7 +144,14 @@ int main(int argc, char** argv) {
   m.load(model_path, load);
   if (layers.empty()) for (int L = 0; L <= L_max; L++) layers.push_back(L);
   std::set<int> report(layers.begin(), layers.end());
+  if (!rt_path.empty()) opt.gpu_exact_quant = true;  // prefill caches with the reference's rounding
   Engine eng(m, opt);
+#ifdef DS_RUNTIME
+  std::unique_ptr<Runtime> rt;
+  if (!rt_path.empty()) rt.reset(new Runtime(eng, rt_path));
+#else
+  if (!rt_path.empty()) { fprintf(stderr, "--runtime needs the bin-hip build\n"); return 2; }
+#endif
   printf("# golden %s: %d steps; exact fake-quant %s\n", gdir.c_str(), G.n_steps, opt.exact_quant ? "on" : "off");
 
   if (!e2e.empty()) {
@@ -142,7 +160,11 @@ int main(int argc, char** argv) {
       const GTensor* tk = G.get(s, -1, "tokens");
       std::vector<int32_t> toks(tk->i(), tk->i() + tk->numel());
       auto t0 = std::chrono::steady_clock::now();
+#ifdef DS_RUNTIME
+      std::vector<float> logits = (rt && toks.size() == 1) ? rt->decode(toks[0]) : eng.forward(toks);
+#else
       std::vector<float> logits = eng.forward(toks);
+#endif
       const double dt = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
       fwrite(logits.data(), sizeof(float), logits.size(), f);
       const int best = (int)(std::max_element(logits.begin(), logits.end()) - logits.begin());
@@ -155,6 +177,34 @@ int main(int argc, char** argv) {
     return 0;
   }
 
+  if (determinism) {
+    // two engines, the same golden inputs, every tap compared bit for bit (prefill step only)
+    Engine eng2(m, opt);
+    const GTensor* tk = G.get(0, -1, "tokens");
+    std::vector<int32_t> toks(tk->i(), tk->i() + tk->numel());
+    eng.begin_chunk(toks);
+    eng2.begin_chunk(toks);
+    for (int L = 0; L <= L_max; L++) {
+      const bool is_engram = m.layers[L].kind.engram >= 0;
+      const GTensor* hin = G.get(0, L, is_engram ? "engram_in" : "h_in");
+      const GTensor* pin = G.get(0, L, "pre_in");
+      std::vector<float> h(hin->f(), hin->f() + hin->numel()), p(pin->f(), pin->f() + pin->numel());
+      Taps a = eng.run_layer(L, h, p), b = eng2.run_layer(L, h, p);
+      printf("layer %2d:", L);
+      for (auto& [name, ta] : a) {
+        const Tap& tb = b[name];
+        size_t ndiff = 0;
+        double mx = 0;
+        for (size_t i = 0; i < ta.f.size(); i++)
+          if (memcmp(&ta.f[i], &tb.f[i], 4)) { ndiff++; mx = std::max(mx, (double)fabsf(ta.f[i] - tb.f[i])); }
+        for (size_t i = 0; i < ta.i.size(); i++) ndiff += ta.i[i] != tb.i[i];
+        printf(" %s=%s", name.c_str(), ndiff ? (std::to_string(ndiff) + "(" + std::to_string(mx) + ")").c_str() : "same");
+      }
+      printf("\n");
+    }
+    return 0;
+  }
+
   const char* keys[] = {"h_in", "attn_in", "attn_out", "ffn_in", "ffn_out", "h_out", "pre_out", "router_w"};
   printf("%4s %3s", "step", "L");
   for (const char* k : keys) printf(" %9s", k);
@@ -164,7 +214,19 @@ int main(int argc, char** argv) {
     const GTensor* tk = G.get(s, -1, "tokens");
     std::vector<int32_t> toks(tk->i(), tk->i() + tk->numel());
     const int T = (int)toks.size();
-    eng.begin_chunk(toks);
+#ifdef DS_RUNTIME
+    const bool use_rt = rt && T == 1;  // decode steps through the runtime
+#else
+    const bool use_rt = false;
+#endif
+    const int p0_step = eng.st.n_past;
+    if (use_rt) {
+#ifdef DS_RUNTIME
+      rt->begin_step(toks[0]);
+#endif
+    } else {
+      eng.begin_chunk(toks);
+    }
     for (int L = 0; L <= L_max; L++) {
       const bool is_engram = m.layers[L].kind.engram >= 0;
       const GTensor* hin = G.get(s, L, is_engram ? "engram_in" : "h_in");
@@ -172,7 +234,11 @@ int main(int argc, char** argv) {
       if (!hin || !pin) { fprintf(stderr, "golden lacks step %d layer %d\n", s, L); return 1; }
       std::vector<float> h(hin->f(), hin->f() + hin->numel()), p(pin->f(), pin->f() + pin->numel());
       auto t0 = std::chrono::steady_clock::now();
+#ifdef DS_RUNTIME
+      Taps tp = use_rt ? rt->run_layer(L, h, p) : eng.run_layer(L, h, p);
+#else
       Taps tp = eng.run_layer(L, h, p);
+#endif
       const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
       if (!report.count(L)) continue;
       printf("%4d %3d", s, L);
@@ -195,7 +261,7 @@ int main(int argc, char** argv) {
       const GTensor* rk = G.get(s, L, "topk");
       if (rk && tp.count("topk")) {
         const int K = (int)tp["topk"].ne[0], Kr = (int)rk->shape.back();
-        const int r = m.layers[L].kind.ratio, p0 = eng.st.n_past;
+        const int r = m.layers[L].kind.ratio, p0 = p0_step;
         // the reference stores picks shifted by the window part's length: the prefill chunk's
         // own keys (T) at start_pos 0, the full ring (W) when decoding
         const int off = p0 == 0 ? T : m.hp.window;
@@ -224,7 +290,13 @@ int main(int argc, char** argv) {
       }
       printf(" %7.0f\n", ms);
     }
-    eng.end_chunk();
+    if (use_rt) {
+#ifdef DS_RUNTIME
+      rt->end_step();
+#endif
+    } else {
+      eng.end_chunk();
+    }
   }
   return 0;
 }

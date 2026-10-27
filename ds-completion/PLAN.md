@@ -263,7 +263,7 @@ Each item has a gate (correctness) and a number (speed). Rough per-token targets
 |---|---|---|---|
 | 0 | **A0 routing stats + D0 launch/graph measurements** | cheap; both decide later designs | 6.0 t/s (no change) |
 | 1 | **B0+B1: fp8 dense + exact fp8 GEMV on one die** (done as standalone: README "Step 5"; per-layer matmuls 832 -> 311 us, exact) | halves GPU bytes; first custom kernel, sets up the runtime; brings exact numerics to the GPU | ~7-8 t/s (CPU-bound) |
-| 2 | **D2 / own decode runtime on one die** (fused attention + hc, few launches) | removes the launch half of the GPU time | ~8-9 t/s (still CPU-bound) |
+| 2 | **D2 / own decode runtime on one die** (fused attention + hc, few launches) (done: README "Step 6", 9.4 t/s, exact and deterministic; CPU experts now 72 of 109 ms) | removes the launch half of the GPU time | ~8-9 t/s (still CPU-bound) |
 | 3 | **C2 -> C1: TP 2-way (XGMI pair), then 4-way** | 4x dense bandwidth, frees HBM for experts | ~10-12 t/s (CPU experts now ~75% of the step) |
 | 4 | **A1: static hot experts on the dies (EP), CPU for misses, overlapped** | the biggest lever | ~20-30 t/s, depending on A0's hit rate |
 | 5 | **A3: CPU expert kernel** | the misses get cheaper | +10-30% on top of 4 |

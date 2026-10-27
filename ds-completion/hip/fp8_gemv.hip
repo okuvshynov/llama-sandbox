@@ -25,21 +25,24 @@ __device__ inline uint8_t e4m3_code(float v) {
   return (uint8_t)(((h >> 7) & 0x7F) | ((h >> 8) & 0x80));
 }
 
-// one thread per 32-block: the reference's act_quant(x, 32, "ue8m0")
-__global__ void quant_act_kernel(const float* x, uint8_t* q, float* s, int n_blocks) {
-  const int b = blockIdx.x * blockDim.x + threadIdx.x;
-  if (b >= n_blocks) return;
-  const float* xb = x + (size_t)b * 32;
-  float amax = 0.0f;
-  for (int j = 0; j < 32; j++) amax = fmaxf(amax, fabsf(xb[j]));
+// one thread per value, 32 lanes per block of the reference's act_quant(x, 32, "ue8m0"):
+// the block's absmax by shuffles, then every lane rounds its own value
+__global__ void quant_act_kernel(const float* x, uint8_t* q, float* s, int n) {
+  const int i = blockIdx.x * blockDim.x + threadIdx.x;
+  const float v = i < n ? x[i] : 0.0f;
+  float amax = fabsf(v);
+#pragma unroll
+  for (int o = 16; o > 0; o >>= 1) amax = fmaxf(amax, __shfl_xor(amax, o, 32));
   const float sc = pow2_ceil(fmaxf(amax, 1e-4f) * (1.0f / 448.0f));
-  for (int j = 0; j < 32; j++) q[(size_t)b * 32 + j] = e4m3_code(e4m3_round(fminf(fmaxf(xb[j] / sc, -448.0f), 448.0f)));
-  s[b] = sc;
+  if (i < n) {
+    q[i] = e4m3_code(e4m3_round(fminf(fmaxf(v / sc, -448.0f), 448.0f)));
+    if ((i & 31) == 0) s[i / 32] = sc;
+  }
 }
 
 void fp8_quant_act(const float* x, uint8_t* q, float* s, int M, int K_total, hipStream_t stream) {
-  const int n_blocks = M * K_total / 32;
-  quant_act_kernel<<<(n_blocks + 255) / 256, 256, 0, stream>>>(x, q, s, n_blocks);
+  const int n = M * K_total;
+  quant_act_kernel<<<(n + 255) / 256, 256, 0, stream>>>(x, q, s, n);
 }
 
 // ---------------------------------------------------------------- GEMV

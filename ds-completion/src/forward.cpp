@@ -7,6 +7,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <set>
 #include <cstring>
 #include <functional>
@@ -46,6 +47,28 @@ struct Plan {
   std::vector<std::vector<int32_t>> engram_ids;  // [engram slot][T * n_cols] rows of the table
   std::vector<float> one_hot_pre;   // [hc, T]: the first block's pre-mix (copy 0)
 };
+
+std::vector<int32_t> engram_rows(const Hparams& hp, const std::vector<int32_t>& hist, int e, int q) {
+  // engram.py NgramHashState.forward: hash the 2..n-grams ending at position q
+  const int n_gram = hp.engram_ngram, n_head = hp.engram_heads, n_cols = hp.engram_cols();
+  const uint64_t pad = (uint64_t)hp.engram_token_map[hp.engram_pad];
+  const uint64_t* mult = hp.engram_mult.data() + (size_t)e * n_gram;
+  const uint64_t* primes = hp.engram_primes.data() + (size_t)e * n_cols;
+  const uint64_t* offs = hp.engram_offsets.data() + (size_t)e * n_cols;
+  uint64_t tok[8];
+  for (int s = 0; s < n_gram; s++)  // once a look-back hits the start, every longer one is padded
+    tok[s] = q - s < 0 ? pad : (uint64_t)hp.engram_token_map[hist[q - s]];
+  std::vector<int32_t> ids(n_cols);
+  uint64_t rolling = tok[0] * mult[0];
+  for (int o = 1; o < n_gram; o++) {
+    rolling ^= tok[o] * mult[o];
+    for (int h = 0; h < n_head; h++) {
+      const int col = (o - 1) * n_head + h;
+      ids[col] = (int32_t)(rolling % primes[col] + offs[col]);
+    }
+  }
+  return ids;
+}
 
 static Plan make_plan(const Hparams& hp, const State& st, const std::vector<int32_t>& toks, int max_ctx) {
   Plan p;
@@ -109,29 +132,14 @@ static Plan make_plan(const Hparams& hp, const State& st, const std::vector<int3
     for (int pp = tail0; pp < p0 + T && r > 1; pp++) rp.tail_slots.push_back(pp % r);
   }
 
-  // engram hashes (engram.py NgramHashState.forward): the n-grams ending at each position
+  // engram hashes: the n-grams ending at each position
   std::vector<int32_t> hist = st.tokens;
   hist.insert(hist.end(), toks.begin(), toks.end());
-  const int n_gram = hp.engram_ngram, n_head = hp.engram_heads, n_cols = hp.engram_cols();
-  const uint64_t pad = (uint64_t)hp.engram_token_map[hp.engram_pad];
   for (size_t e = 0; e < hp.engram_layers.size(); e++) {
-    std::vector<int32_t> ids((size_t)T * n_cols);
-    const uint64_t* mult = hp.engram_mult.data() + e * n_gram;
-    const uint64_t* primes = hp.engram_primes.data() + e * n_cols;
-    const uint64_t* offs = hp.engram_offsets.data() + e * n_cols;
+    std::vector<int32_t> ids;
     for (int i = 0; i < T; i++) {
-      const int q = p0 + i;
-      uint64_t tok[8];
-      for (int s = 0; s < n_gram; s++)  // once a look-back hits the start, every longer one is padded
-        tok[s] = q - s < 0 ? pad : (uint64_t)hp.engram_token_map[hist[q - s]];
-      uint64_t rolling = tok[0] * mult[0];
-      for (int o = 1; o < n_gram; o++) {
-        rolling ^= tok[o] * mult[o];
-        for (int h = 0; h < n_head; h++) {
-          const int col = (o - 1) * n_head + h;
-          ids[(size_t)i * n_cols + col] = (int32_t)(rolling % primes[col] + offs[col]);
-        }
-      }
+      std::vector<int32_t> one = engram_rows(hp, hist, (int)e, p0 + i);
+      ids.insert(ids.end(), one.begin(), one.end());
     }
     p.engram_ids.push_back(std::move(ids));
   }
@@ -267,6 +275,10 @@ Engine::Engine(const Model& m_, Options o) : m(m_), hp(m_.hp), opt(o) {
   out_w = m.output;
   out_norm_w = m.output_norm;
   if (opt.gpu >= 0) {
+    // rocBLAS (ggml's f32/bf16 matmuls at batch 9-63) may split K and accumulate with atomics,
+    // which makes results vary run to run in the last bits; fp8 rounding downstream then turns
+    // that into different completions. Forbid it (read when rocBLAS creates its handle).
+    setenv("ROCBLAS_DEFAULT_ATOMICS_MODE", "0", /*overwrite*/ 0);
     ggml_backend_dev_t dev = nullptr;
     for (size_t i = 0, k = 0; i < ggml_backend_dev_count(); i++) {
       ggml_backend_dev_t d = ggml_backend_dev_get(i);
@@ -275,9 +287,9 @@ Engine::Engine(const Model& m_, Options o) : m(m_), hp(m_.hp), opt(o) {
     if (!dev) throw err("no GPU device " + std::to_string(opt.gpu));
     gpu = dense = ggml_backend_dev_init(dev, nullptr);
     in_buft = ggml_backend_dev_host_buffer_type(dev);
-    if (opt.exact_quant) {
-      // the fake-quant ops are CPU custom ops: on the GPU each would cost a round trip
-      fprintf(stderr, "# GPU mode: fake quantization off (CPU-only ops)\n");
+    if (opt.exact_quant && !opt.gpu_exact_quant) {
+      // the fake-quant ops are CPU custom ops: on the GPU each costs a round trip
+      fprintf(stderr, "# GPU mode: fake quantization off (CPU-only ops; --gpu-exact keeps it, slowly)\n");
       opt.exact_quant = false;
     }
     // copy the dense weights to the device
@@ -457,6 +469,7 @@ ggml_tensor* Engine::compressor(Graph& g, int L, ggml_tensor* x) {
   const RatioPlan& rp = plan->ratio.at(r);
   const std::string sr = std::to_string(r);
   ggml_tensor* kvn = ggml_mul_mat(c, w32(l.cmp_kv), x);  // [HD, T] (fp32 linear, no activation quant)
+  g.tap("dbg.cmp_kvn", kvn);
   ggml_tensor* lat = nullptr;
   if (r == 1) {
     lat = kvn;  // a group of one token: no pooling
@@ -492,10 +505,12 @@ ggml_tensor* Engine::compressor(Graph& g, int L, ggml_tensor* x) {
   ik = rope(g, ggml_reshape_3d(c, ik, IDX, 1, rp.n_g), lpos, L, IDX - RD);
   ik = ggml_reshape_2d(c, ik, IDX, rp.n_g);
   if (opt.exact_quant) ik = fq_fp4(c, ik);
+  g.tap("dbg.cmp_ik", ik);
   g.idx_k_cur[L] = ggml_set_rows(c, st.idx_k.at(L), ik, rows);
   ggml_tensor* kl = rope(g, ggml_reshape_3d(c, lat, HD, 1, rp.n_g), lpos, L, HD - RD);
   kl = ggml_reshape_2d(c, kl, HD, rp.n_g);
   if (opt.exact_quant) kl = fq_fp4_e4(c, kl);
+  g.tap("dbg.cmp_lat", kl);
   g.comp_cur[L] = ggml_set_rows(c, st.comp.at(L), kl, rows);
   return g.comp_cur[L];
 }
@@ -515,7 +530,10 @@ ggml_tensor* Engine::indexer(Graph& g, int L, ggml_tensor* x, ggml_tensor* qr) {
   ggml_tensor* keys = g.idx_k_cur.count(l.kind.kv_from) ? g.idx_k_cur[l.kind.kv_from] : st.idx_k.at(l.kind.kv_from);
   keys = ggml_view_3d(c, keys, IDX, 1, rp.n_comp, keys->nb[1], keys->nb[1], 0);
   ggml_tensor* mask = g.input("idx_mask." + std::to_string(r), GGML_TYPE_F16, {rp.n_comp, T}, &rp.idx_mask);
+  g.tap("dbg.idx_q", q);
+  g.tap("dbg.idx_w", w);
   ggml_tensor* score = ggml_lightning_indexer(c, ggml_cont(c, q), keys, w, mask);  // [n_comp, T]
+  g.tap("dbg.idx_score", score);
   // (layers after the candidate source would only score inside its 2048 candidate blocks;
   // below 16k tokens that is every block, see make_plan)
   ggml_tensor* idx = ggml_top_k(c, score, rp.K);
@@ -575,8 +593,10 @@ ggml_tensor* Engine::attention(Graph& g, int L, ggml_tensor* x) {
     }
   }
   // one softmax over window + compressed keys, with a per-head sink logit in the denominator
+  g.tap("dbg.scores", scores);
   ggml_tensor* p = ggml_soft_max_ext(c, scores, mask, 1.0f / sqrtf((float)HD), 0.0f);  // [W + T + K, T, NH]
   ggml_soft_max_add_sinks(p, l.sinks);
+  g.tap("dbg.p", p);
   const int NW = W + T;
   ggml_tensor* pw = ggml_view_3d(c, p, NW, T, NH, p->nb[1], p->nb[2], 0);
   ggml_tensor* o = ggml_mul_mat(c, ggml_cont(c, ggml_transpose(c, Kw)), pw);  // [HD, T, NH]
@@ -586,6 +606,7 @@ ggml_tensor* Engine::attention(Graph& g, int L, ggml_tensor* x) {
     pc = ggml_cont(c, ggml_permute(c, pc, 0, 2, 1, 3));                         // [K, NH, T]
     o = ggml_add(c, o, ggml_mul_mat(c, ggml_cont(c, ggml_permute(c, Kc, 1, 0, 2, 3)), pc));
   }
+  g.tap("dbg.o", o);
   o = rope(g, ggml_cont(c, o), pos, L, HD - RD, /*inverse*/ true);  // take the query's rotation back out
 
   // grouped low-rank output: group j of 8 heads -> o_lora, then all groups -> n_embd

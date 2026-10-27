@@ -8,9 +8,14 @@
 // strings encoding/encoding.py produces); otherwise the prompt is raw text after BOS.
 // Only the tokenizer comes from libllama (vocab-only load); the forward pass is forward.cpp.
 // --gpu D (bin-hip build): the dense weights and the state on GPU D, routed experts on the CPU.
+// --rt <dense-fp8.gguf> (with --gpu): decode through the own runtime (hip/rt.h, exact fp8);
+// the prompt is still prefilled by the ggml Engine.
 
 #include "forward.h"
 #include "llama.h"
+#ifdef DS_RUNTIME
+#include "rt.h"
+#endif
 
 #include <algorithm>
 #include <chrono>
@@ -39,7 +44,7 @@ static std::string piece(const llama_vocab* v, int32_t tok) {
 }
 
 int main(int argc, char** argv) {
-  std::string model_path, prompt, mode = "raw";
+  std::string model_path, prompt, mode = "raw", rt_path;
   int n_predict = 128;
   Options opt;
   for (int i = 1; i < argc; i++) {
@@ -52,7 +57,9 @@ int main(int argc, char** argv) {
     else if (a == "-n") n_predict = atoi(next());
     else if (a == "-t") opt.n_threads = atoi(next());
     else if (a == "--gpu") opt.gpu = atoi(next());
+    else if (a == "--gpu-exact") opt.gpu_exact_quant = true;
     else if (a == "--profile") opt.profile = true;
+    else if (a == "--rt") rt_path = next();
     else if (a == "--debug-skip-routed") opt.debug_skip_routed = true;
     else if (a == "--no-quant") opt.exact_quant = false;
     else if (a == "--max-ctx") opt.max_ctx = atoi(next());
@@ -89,7 +96,17 @@ int main(int argc, char** argv) {
     fprintf(stderr, "load failed: %s\n", e.what());
     return 1;
   }
+  if (!rt_path.empty()) opt.gpu_exact_quant = true;  // prefill with the reference's rounding, like the runtime
   Engine eng(m, opt);
+#ifdef DS_RUNTIME
+  std::unique_ptr<Runtime> rt;
+  if (!rt_path.empty()) {
+    rt.reset(new Runtime(eng, rt_path));
+    rt->profile = opt.profile;
+  }
+#else
+  if (!rt_path.empty()) { fprintf(stderr, "--rt needs the bin-hip build\n"); return 2; }
+#endif
   const double t_load = std::chrono::duration<double>(Clock::now() - t0).count();
   fprintf(stderr, "# loaded in %.1f s; prompt %zu tokens; fake-quant %s; %d threads\n", t_load, toks.size(),
           (opt.exact_quant && opt.gpu < 0) ? "on" : "off", opt.n_threads);
@@ -108,6 +125,17 @@ int main(int argc, char** argv) {
     fwrite(p.data(), 1, p.size(), stdout);
     fflush(stdout);
     if (n_gen + 1 == n_predict) { n_gen++; break; }
+#ifdef DS_RUNTIME
+    if (rt) {
+      logits = rt->decode(next);
+      if (opt.profile) {
+        fprintf(stderr, "\n# step %d: %.1f ms (cpu experts %.1f, waiting for the GPU %.1f); GPU timeline:", n_gen,
+                rt->last.total_ms, rt->last.cpu_moe_ms, rt->last.wait_ms);
+        for (auto& [g, ms] : rt->last_groups) fprintf(stderr, " %s %.1f", g.c_str(), ms);
+      }
+      continue;
+    }
+#endif
     logits = eng.forward({next});
     if (opt.profile) {
       const Profile& p = eng.last_profile;

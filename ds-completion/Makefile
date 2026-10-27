@@ -26,9 +26,18 @@ LDLIBS   = $(GGML_LIBS) -fopenmp -lpthread -ldl
 CORE   = src/model.cpp src/forward.cpp src/fakequant.cpp
 CORE_H = src/model.h src/forward.h src/fakequant.h
 
+# HIP builds: ds-completion and ds-test also carry the own decode runtime (hip/), compiled by
+# hipcc into objects that the g++ link picks up
+ROCM = /opt/rocm-6.3.4
+ifeq ($(HIP),1)
+RT_OBJ   = $(BIN)/obj/rt.o $(BIN)/obj/kernels.o $(BIN)/obj/fp8_gemv.o
+RT_FLAGS = -DDS_RUNTIME -D__HIP_PLATFORM_AMD__ -Ihip -I$(ROCM)/include
+RT_LIBS  = $(RT_OBJ) -L$(ROCM)/lib -Wl,-rpath,$(ROCM)/lib -lamdhip64
+endif
+
 all: $(BIN)/ds-completion $(BIN)/ds-inspect $(BIN)/ds-test $(BIN)/test-fakequant $(BIN)/llama-logits $(BIN)/fp8pack
 ifeq ($(HIP),1)
-all: $(BIN)/test-matmul-prec $(BIN)/bench-fp8 $(BIN)/bench-ggml-bf16
+all: $(BIN)/test-matmul-prec $(BIN)/bench-fp8 $(BIN)/bench-ggml-bf16 $(BIN)/bench-kernels
 endif
 
 # GPU only: ggml's bf16 matmul on the dense shapes (the step-4 baseline for bench-fp8)
@@ -37,8 +46,8 @@ $(BIN)/bench-ggml-bf16: src/bench_ggml_bf16.cpp
 	$(CXX) $(CXXFLAGS) -o $@ $< $(LDLIBS)
 
 # our own HIP kernels (PLAN.md B1 onwards), compiled with the ROCm the fork was built against
-HIPCC    = /opt/rocm-6.3.4/bin/hipcc
-HIPFLAGS = -std=c++17 -O3 --offload-arch=gfx906 -Ihip -Isrc -I$(FORK)/ggml/include
+HIPCC    = $(ROCM)/bin/hipcc
+HIPFLAGS = -std=c++17 -O3 -fPIC --offload-arch=gfx906 -Ihip -Isrc -I$(FORK)/ggml/include
 
 $(BIN)/bench-fp8: hip/bench_fp8.cpp hip/fp8_gemv.hip hip/fp8_gemv.h src/fakequant.cpp
 	@mkdir -p $(BIN)
@@ -51,13 +60,25 @@ $(BIN)/test-matmul-prec: src/test_matmul_prec.cpp
 	$(CXX) $(CXXFLAGS) -o $@ $< $(LDLIBS)
 
 # the CLI: libllama only for the tokenizer (vocab-only load)
-$(BIN)/ds-completion: src/ds_completion.cpp $(CORE) $(CORE_H)
+$(BIN)/ds-completion: src/ds_completion.cpp $(CORE) $(CORE_H) $(RT_OBJ)
 	@mkdir -p $(BIN)
-	$(CXX) $(CXXFLAGS) -o $@ src/ds_completion.cpp $(CORE) $(LLAMA_LIB) $(LDLIBS)
+	$(CXX) $(CXXFLAGS) $(RT_FLAGS) -o $@ src/ds_completion.cpp $(CORE) $(RT_LIBS) $(LLAMA_LIB) $(LDLIBS)
 
-$(BIN)/ds-test: src/ds_test.cpp $(CORE) $(CORE_H)
+$(BIN)/ds-test: src/ds_test.cpp $(CORE) $(CORE_H) $(RT_OBJ)
 	@mkdir -p $(BIN)
-	$(CXX) $(CXXFLAGS) -o $@ src/ds_test.cpp $(CORE) $(LDLIBS)
+	$(CXX) $(CXXFLAGS) $(RT_FLAGS) -o $@ src/ds_test.cpp $(CORE) $(RT_LIBS) $(LDLIBS)
+
+$(BIN)/bench-kernels: hip/bench_kernels.cpp hip/kernels.hip hip/fp8_gemv.hip hip/kernels.h hip/fp8_gemv.h
+	@mkdir -p $(BIN)
+	$(HIPCC) $(HIPFLAGS) -o $@ hip/bench_kernels.cpp hip/kernels.hip hip/fp8_gemv.hip
+
+$(BIN)/obj/%.o: hip/%.hip hip/kernels.h hip/fp8_gemv.h
+	@mkdir -p $(BIN)/obj
+	$(HIPCC) $(HIPFLAGS) -c -o $@ $<
+
+$(BIN)/obj/rt.o: hip/rt.cpp hip/rt.h hip/kernels.h hip/fp8_gemv.h $(CORE_H)
+	@mkdir -p $(BIN)/obj
+	$(HIPCC) $(HIPFLAGS) -c -o $@ $<
 
 $(BIN)/ds-inspect: src/ds_inspect.cpp src/model.cpp src/model.h
 	@mkdir -p $(BIN)

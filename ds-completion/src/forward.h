@@ -26,7 +26,8 @@ struct Options {
   int n_threads = 16;
   int gpu = -1;  // >= 0: dense weights + state on this GPU (ROCm device index); experts stay on the CPU
   bool profile = false;
-  bool debug_skip_routed = false;  // debugging/timing only: routed experts contribute nothing  // GPU mode: time each run of same-backend nodes (adds a sync per run)
+  bool debug_skip_routed = false;
+  bool gpu_exact_quant = false;  // GPU mode: keep the fake quantization (its CPU ops cost round trips)  // debugging/timing only: routed experts contribute nothing  // GPU mode: time each run of same-backend nodes (adds a sync per run)
 };
 
 // Where a forward's wall time went (GPU mode with Options::profile).
@@ -56,10 +57,17 @@ struct Tap {
 };
 using Taps = std::map<std::string, Tap>;
 
+// The engram table rows (absolute, n_cols of them) for the token at position q of `hist`
+// (all tokens so far, including q), for engram slot e.
+std::vector<int32_t> engram_rows(const Hparams& hp, const std::vector<int32_t>& hist, int e, int q);
+
 struct Plan;     // host-side position bookkeeping for one chunk (forward.cpp)
 struct GraphIn;  // the per-graph input tensors (forward.cpp)
 
+class Runtime;  // hip/rt.h: the own decode path, which shares this engine's GPU state and weights
+
 class Engine {
+  friend class Runtime;
  public:
   Engine(const Model& m, Options opt);
   ~Engine();

@@ -4,12 +4,15 @@ Goal: `./ds-completion -m <model> -p "prompt"`. One model, one machine, one
 sequence. Priorities: correctness, clarity, then performance. Non-goals: other
 models, other quants, other hardware, serving features.
 
-Status: steps 1-4 done, 2026-10-26.
+Status, 2026-10-27:
 
 - CPU only: 3.5 t/s decode, matching the reference (fork: 3.5 t/s).
-- Dense part on one GPU, routed experts on the CPU: **6.0 t/s**.
+- Dense part on one GPU through ggml, routed experts on the CPU: 6.0 t/s.
+- Own decode runtime on one GPU (exact fp8, deterministic), routed experts on the CPU:
+  **9.4 t/s**. The CPU experts are now 2/3 of every step.
 
-Performance work from here on is planned in [PLAN.md](PLAN.md).
+Performance work from here on is planned in [PLAN.md](PLAN.md). The short version of how to run
+it and what it does now: [QUICKSTART.md](QUICKSTART.md).
 
 ## Tools
 
@@ -21,6 +24,11 @@ make HIP=1   # -> bin-hip/, needs the fork's build-hip (see Step 4)
 bin-hip/ds-completion -m $M -p "..." --chat --gpu 0 [--profile]   # dense part on GPU 0
 bin/fp8pack -m $M -o ~/llms/ds-1017-fp8/dense-fp8.gguf            # fp8 repack (PLAN.md B0), 20 s
 bin-hip/bench-fp8 ~/llms/ds-1017-fp8/dense-fp8.gguf [--ms 1,4] [--sweep]  # fp8 GEMV (B1)
+F8=~/llms/ds-1017-fp8/dense-fp8.gguf
+bin-hip/ds-completion -m $M -p "..." --chat --gpu 0 --rt $F8 [--profile]   # own decode runtime
+bin-hip/ds-test -m $M -g data/golden/hello-fp32 --gpu 0 --runtime $F8      # its per-layer gate
+bin-hip/ds-test -m $M -g data/golden/hello-fp32-nq --gpu 0 --no-quant --determinism  # bitwise repeatability
+bin-hip/bench-kernels                                                    # each runtime kernel alone
 bin/ds-inspect -m $M [--layers 0,1,2-5] [--touch]
 bin/ds-test -m $M -g data/golden/hello [--layers 0-39] [--no-quant]  # teacher-forced, per layer
 bin/ds-test -m $M -g data/golden/hello --e2e data/ds/hello.f32       # end-to-end logits
@@ -497,3 +505,87 @@ What this says:
   weight load (decode + 8 dot2 per 16 codes per column). This matters for speculative verify
   batches (PLAN.md E1) and will need a different inner loop (LDS-staged activations, or int8
   sdot4 on scaled codes).
+
+## Step 6: the own decode runtime on one die (PLAN.md section 3, option 2)
+
+`hip/rt.{h,cpp}` with `hip/kernels.{h,hip}` and `hip/fp8_gemv.*`: one token per step through our
+own HIP kernels.
+
+- **Shared state with the ggml Engine.** The runtime uses the Engine's state (window rings,
+  compressor groups, compressed KV, index keys: the same GPU tensors) and its GPU copies of the
+  small f32/bf16 weights (norms, hc, router, compressor, indexer projections, head).
+- **Prefill** still runs through `Engine::forward`; decode runs here.
+- **fp8 weights** come from `dense-fp8.gguf` (6.37 GiB on the die), through the exact fp8 GEMV.
+- **Routed experts on the CPU:** one cached ggml CPU graph per layer (fq8 -> mul_mat_id ->
+  swiglu_clamp -> weights -> fq8 -> mul_mat_id -> sum), built once and reused every step. It
+  runs while the GPU does the shared expert.
+- **Numerics are the reference's:** fp32 throughout, with fake quantization at the same points
+  (activations before every fp8 GEMV, window KV, compressed KV, indexer q/k), and rotary
+  frequencies computed on the host in precompute_freqs_cis's fp32 op order.
+
+Gate (`ds-test --runtime`: prefill through the Engine with fake quantization, then every
+decode step teacher forced through the runtime, all 40 layers, vs the fp32 + fake-quant
+reference):
+
+- attn_out median **7.5e-8** over 160 decode rows, the same as the CPU exact path (7.2e-8).
+  The tail (p90 2.5e-3) is the same fp8 rounding flips at the same rows.
+- No expert-set or top-k mismatch on any decode row. ffn_out ~1e-2 is the CPU experts' q8_0
+  activations, as before.
+
+**Determinism** (found while testing the runtime):
+
+- **rocBLAS atomics.** The ggml GPU path was not repeatable: logits differed by up to 13 between
+  identical runs. The first differing tensor (`ds-test --determinism`: two engines, the same
+  inputs, every tap compared bitwise) was an f32 matmul at batch 10, which rocBLAS computes
+  with split-K atomics. Every later fp8 rounding then amplified the last-bit differences.
+  `ROCBLAS_DEFAULT_ATOMICS_MODE=0`, set in the Engine before the GPU backend starts, makes it
+  bitwise repeatable. The runtime gives the same completion every run.
+- **Known issue, not investigated: `--gpu-exact` decode through the ggml path** (fake-quant
+  custom ops on the CPU inside a GPU graph, at one token per step) is still not repeatable, and
+  its KL against the reference is 6.2e-2 (plain `--gpu`: 1.4e-2). Its prefill (multi-token) is
+  repeatable, and that is the only part the runtime uses. ggml decode is superseded by the
+  runtime.
+
+End to end vs the real reference (hello, 17 steps, `ds-test --runtime --e2e`): argmax 16/17
+(the same near tie), **mean KL 1.43e-2**. That is the closest of all modes (CPU exact 1.8e-2,
+ggml GPU 2.0e-2, fork 2.5e-2), as expected for exact fp8 GEMVs.
+
+Speed ("Write a haiku about memory bandwidth.", --chat, 32 threads):
+
+| | decode |
+|---|---|
+| ggml, dense on GPU 0 (step 4) | 6.0 t/s |
+| runtime v1 (plain kernels) | 8.1 t/s |
+| runtime v2 (kernels fixed, below) | **9.4 t/s** |
+
+The completion is "Data floods the lanes, / A momentary river— / Then the path is clear."; the
+CPU exact path gives the same first line, then a different near-tie.
+
+What it took to go from v1 to v2 (`bin-hip/bench-kernels` times each kernel alone; the floors
+are 1.9 us per empty launch and ~10 us per 20 KB pinned copy):
+
+| kernel | v1 | v2 | what was wrong |
+|---|---|---|---|
+| fp8 activation quantizer | ~30 us | 3.5 us | one thread per 32-block, serial; now one thread per value, amax by shuffles; inputs quantized once, not once per GEMV |
+| attention (64 heads, 128 + 512 keys) | 213 us | 122 us | one block per head: every key re-read 64x, and each wave's key loads waited one by one; now 8 heads x 32 keys per block, keys through LDS tiles, no cross-lane sums for the scores |
+| router top-6 | 61 us | 29 us | small arrays indexed by a runtime counter lived in scratch memory (1 KB/lane); now compile-time and unrolled |
+| hc Sinkhorn split | 53 us | 20 us | 4x4 Sinkhorn on one thread; now 16 lanes with row/column shuffles |
+| indexer scores (1100 keys) | 92 us | 37 us | each lane walked a 128-dim dot from global memory; now key tiles in LDS, q transposed |
+| CPU-expert input copies | 3 per layer | 1 | x, ids and weights staged in one buffer |
+
+Per decode token now (`--profile`, GPU events between groups of launches):
+
+| group | ms |
+|---|---|
+| waiting for the CPU experts | **72** |
+| attention out (wo_a + wo_b) | 6.8 |
+| attention q (q_a, q_b) | 5.0 |
+| hc (mixes, Sinkhorn, pre, post) | 5.1 |
+| router (+ the staging copy) | 4.0 |
+| shared expert | 3.6 |
+| attention core | 2.8 |
+| head | 2.5 |
+| engram, kv, indexer, compressor, add | 4.9 |
+
+The GPU part is ~37 ms; the CPU experts (4.2 GB at ~58 GB/s) are 2/3 of the step. Next by
+size: the CPU expert kernel (PLAN A3), then TP (C), then experts on the dies (A1).
