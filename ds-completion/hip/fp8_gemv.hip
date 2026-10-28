@@ -127,11 +127,102 @@ __global__ void __launch_bounds__(256) fp8_gemv_kernel(const uint8_t* __restrict
     }
 }
 
+// Several inputs (M >= 2). A one-input call is bound by memory; with M inputs the old loop
+// was bound by arithmetic, and mostly by decoding: every row set decoded all M inputs again
+// (~240 of ~350 instructions per step at M = 6). Here the block decodes each tile of the inputs
+// once, into shared memory as fp16 (low and high halves of every 16 codes in two arrays, so a
+// lane's 16-byte reads are consecutive across lanes); a lane then decodes its R weight rows and
+// reuses each input's fp16 values for all of them.
+// Same work split, same per-lane order of k steps and the same per-element expression as
+// fp8_gemv_kernel, so every row's result is bit-identical to a one-input call. A block's rows
+// lie in one group.
+template <int LPR, int R, int M>
+__global__ void __launch_bounds__(256) fp8_gemv_lds_kernel(const uint8_t* __restrict__ w, const uint8_t* __restrict__ ws,
+                                                           int N, int K, int rpg, const uint8_t* __restrict__ xq,
+                                                           const float* __restrict__ xs, float* __restrict__ y) {
+  constexpr int KT = 1024, ROWS = 4 * (64 / LPR) * R;
+  __shared__ uint4 xlo[M][KT / 16], xhi[M][KT / 16];  // fp16 of codes 0-7 / 8-15 of each 16
+  __shared__ float st[M][KT / 32];
+  const int lane = threadIdx.x & 63;
+  const int set = (blockIdx.x * (blockDim.x >> 6) + (threadIdx.x >> 6)) * (64 / LPR) + lane / LPR;
+  const int row0 = set * R;
+  const int l = lane % LPR;
+  const bool live = row0 < N;
+  const int r0 = live ? row0 : N - R;  // dead lanes still load tiles and take part in the shuffles
+  const int g = (blockIdx.x * ROWS) / rpg;
+  const int K_total = K * (N / rpg);
+  const uint8_t* wr = w + (size_t)r0 * K;
+  const uint8_t* sr = ws + (size_t)(r0 / 32) * (K / 32);
+  const uint8_t* xg = xq + (size_t)g * K;
+  const float* xsg = xs + (size_t)g * (K / 32);
+  float acc[R][M];
+#pragma unroll
+  for (int i = 0; i < R; i++)
+#pragma unroll
+    for (int m = 0; m < M; m++) acc[i][m] = 0.0f;
+
+  for (int k0 = 0; k0 < K; k0 += KT) {
+    const int kn = min(KT, K - k0);  // a multiple of LPR * 16, as K and KT are
+    __syncthreads();                 // the previous tile is consumed
+    for (int i = threadIdx.x; i < M * (kn / 16); i += blockDim.x) {
+      const int m = i / (kn / 16), j = i % (kn / 16);
+      uint32_t h[8];
+      decode16(*(const uint4*)(xg + (size_t)m * K_total + k0 + j * 16), h);
+      xlo[m][j] = make_uint4(h[0], h[1], h[2], h[3]);
+      xhi[m][j] = make_uint4(h[4], h[5], h[6], h[7]);
+    }
+    for (int i = threadIdx.x; i < M * (kn / 32); i += blockDim.x) {
+      const int m = i / (kn / 32), j = i % (kn / 32);
+      st[m][j] = xsg[(size_t)m * (K_total / 32) + k0 / 32 + j];
+    }
+    __syncthreads();
+    for (int k = k0 + l * 16; k < k0 + kn; k += LPR * 16) {  // this lane's steps, in order
+      const float wscale = __uint_as_float((uint32_t)sr[k / 32] << 23) * 65536.0f;
+      uint32_t hw[R][8];
+#pragma unroll
+      for (int i = 0; i < R; i++) decode16(*(const uint4*)(wr + (size_t)i * K + k), hw[i]);
+      const int j = (k - k0) / 16;
+#pragma unroll
+      for (int m = 0; m < M; m++) {
+        const uint4 a = xlo[m][j], b = xhi[m][j];
+        const uint32_t hx[8] = {a.x, a.y, a.z, a.w, b.x, b.y, b.z, b.w};
+        const float sc = wscale * st[m][(k - k0) / 32];
+#pragma unroll
+        for (int i = 0; i < R; i++) {
+          float p = 0.0f;
+#pragma unroll
+          for (int e = 0; e < 8; e++) p = dot2(hw[i][e], hx[e], p);
+          acc[i][m] += p * sc;
+        }
+      }
+    }
+  }
+#pragma unroll
+  for (int i = 0; i < R; i++)
+#pragma unroll
+    for (int m = 0; m < M; m++) {
+      float v = acc[i][m];
+#pragma unroll
+      for (int o = LPR / 2; o > 0; o >>= 1) v += __shfl_xor(v, o, 64);
+      if (live && l == 0) y[(size_t)m * N + row0 + i] = v;
+    }
+}
+
 template <int LPR, int R>
 static void launch_r(const uint8_t* w, const uint8_t* ws, int N, int K, int rpg, Fp8Act x, int M, float* y,
                      hipStream_t stream) {
   const int rows_per_block = 4 * (64 / LPR) * R;  // 4 waves
   const dim3 grid((N + rows_per_block - 1) / rows_per_block), block(256);
+  // several inputs, rows split over 8 or 16 lanes: through shared memory (results/bench-fp8-multi.txt;
+  // with 64 lanes per row a block covers too few rows to pay for decoding the tiles)
+  if (M >= 2 && LPR <= 16 && rpg % rows_per_block == 0) {
+    switch (M) {
+#define CASE(m) case m: fp8_gemv_lds_kernel<LPR, R, m><<<grid, block, 0, stream>>>(w, ws, N, K, rpg, x.q, x.s, y); break;
+      CASE(2) CASE(3) CASE(4) CASE(5) CASE(6) CASE(7) CASE(8)
+#undef CASE
+    }
+    return;
+  }
   switch (M) {
 #define CASE(m) case m: fp8_gemv_kernel<LPR, R, m><<<grid, block, 0, stream>>>(w, ws, N, K, rpg, x.q, x.s, y); break;
     CASE(1) CASE(2) CASE(3) CASE(4) CASE(5) CASE(6) CASE(7) CASE(8)
@@ -160,7 +251,8 @@ void fp8_gemv_cfg(const uint8_t* w, const uint8_t* w_scale, int N, int K, int ro
     // then keep >= 1024 waves in flight (16 per CU) when the rows are few
     while (lpr < 64 && (int64_t)N * lpr / 64 < 1024 && K % (2 * lpr * 16) == 0) lpr *= 2;
   }
-  if (r == 0) r = (M >= 4 && (int64_t)N * lpr / 64 / 4 >= 512) ? 4 : 1;  // one row per wave unless batched
+  // several inputs: two rows per lane group; four for 8 inputs over 64-lane rows (sweeps at M = 6, 8)
+  if (r == 0) r = M == 1 ? 1 : (M >= 8 && lpr == 64 && N >= 2048) ? 4 : 2;
   switch (lpr) {
     case 64: launch_lpr<64>(w, w_scale, N, K, rows_per_group, x, M, y, stream, r); break;
     case 32: launch_lpr<32>(w, w_scale, N, K, rows_per_group, x, M, y, stream, r); break;

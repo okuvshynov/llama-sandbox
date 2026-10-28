@@ -1137,3 +1137,30 @@ model, keeps the matching prefix plus the main model's own next token, and commi
   step). What's left in the verify step: CPU misses 68 ms (they grow with the tokens verified),
   fp8 at 6 tokens (attn.out 20 + shared 16 + q 10: activation decoding per row), attention core
   20 (per token by design), router 10.5.
+
+## Step 24: multi-token fp8 GEMV
+
+- At 6 inputs the fp8 GEMV took ~3x a one-input call. Counting instructions: with one row per
+  lane group, every row decoded all M inputs again (~240 of ~350 instructions per step).
+- Tried and dropped: storing the activations pre-decoded as fp16 (twice the bytes per load;
+  slower even at M = 1); bigger blocks for the tile kernel (no gain over 64-lane rows).
+- Kept (`fp8_gemv_cfg`, M >= 2): rows split over 8 or 16 lanes -> a new kernel decodes each
+  1024-wide tile of the inputs once per block into shared memory as fp16, and every lane reuses
+  it for its rows; rows over 64 lanes -> the old kernel. Two rows per lane group (four at M = 8
+  over 64 lanes). Same lanes per row and the same per-lane order of k steps and per-element
+  expression as one input, so still bit-identical (`bench-fp8 --bitwise`: 63 of 63).
+- fp8 time per layer (no engram; `results/bench-fp8-multi.txt`): M=2 427 -> 360 us, M=5
+  745 -> 572, M=6 877 -> 623, M=8 1002 -> 903; M=1 unchanged.
+- Gates: e2e logits and drafts byte-identical; `--spec` identical to plain greedy on 4 prompts
+  x 5 draft lengths. Verify step of 6 tokens 181 -> 171 ms; draft 11.7 ms.
+
+| | plain | n=1 | n=2 | n=3 | n=4 | n=5 |
+|---|---|---|---|---|---|---|
+| chat (concurrency) | 20.5 | **20.9** | 20.7 | 19.8 | 18.1 | 16.6 |
+| code (code-rust) | 17.2 | 18.5 | 19.9 | 19.5 | **20.8** | 20.1 |
+| math (think) | 21.0 | 21.8 | **22.2** | 21.3 | 20.7 | 19.4 |
+| zh essay | **17.3** | 15.6 | 13.7 | 11.4 | 10.2 | 8.7 |
+
+  Code +21%, math +6%, chat +2%, zh -10%. Over 64-lane rows (attn.out, shared expert, q_a)
+  the multi-token fp8 is still ~2x one input; the CPU misses (68 ms of 171) are now the
+  largest part of a verify step.

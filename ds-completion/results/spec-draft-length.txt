@@ -33,3 +33,12 @@ zh-essay       17.32   15.13  13.45  11.40   9.77   8.29
 # * plain without the draft loaded, same build
 # verify step of 6 tokens (chat, median): 181 ms (was 207): cpu experts 68, attn.core 20, attn.out 20, shared 16,
 #   router 10.5, attn.q 9.6, hc 6.2 (was 25), indexer 5.7, compressor 5.6, head 4.9 (was 9.8), rest ~13
+# after the multi-token fp8 GEMV (results/bench-fp8-multi.txt); draft 11.7 ms; output identical in every run
+#              plain*  n=1    n=2    n=3    n=4    n=5   t/s
+concurrency    20.51   20.94  20.65  19.77  18.07  16.56
+code-rust      17.24   18.50  19.92  19.51  20.81  20.09
+math-proof     20.95   21.82  22.19  21.29  20.71  19.35
+zh-essay       17.32   15.62  13.67  11.41  10.17   8.71
+# * plain without the draft loaded (step 23's numbers; the one-input fp8 path is unchanged)
+# verify step of 6 tokens (chat, median): 171 ms (was 181): cpu experts 68, attn.core 20, attn.out 14.6 (was 19.6),
+#   shared 14.1 (15.9), router 10.4, attn.q 6.5 (9.6), hc 6.2, indexer 5.7, compressor 5.6, head 4.8, rest ~13
