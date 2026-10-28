@@ -5,6 +5,7 @@
 #include "kernels.h"
 
 #include <cstdio>
+#include <cstring>
 #include <functional>
 #include <vector>
 
@@ -20,9 +21,66 @@ static T* dmalloc(size_t n) {
   return (T*)p;
 }
 
-int main() {
+// deterministic pseudo-random fill (no host copy of the 1.3 GB head shape)
+__global__ void fill_kernel(float* x, size_t n, uint32_t seed) {
+  const size_t i = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+  if (i >= n) return;
+  uint32_t h = (uint32_t)i * 2654435761u ^ seed;
+  h ^= h >> 13; h *= 0x5bd1e995; h ^= h >> 15;
+  x[i] = ((h & 0xFFFF) / 32768.0f - 1.0f) * 0.25f;
+}
+__global__ void fill_bf16_kernel(uint16_t* x, size_t n, uint32_t seed) {
+  const size_t i = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+  if (i >= n) return;
+  uint32_t h = (uint32_t)i * 2654435761u ^ seed;
+  h ^= h >> 13; h *= 0x5bd1e995; h ^= h >> 15;
+  const float v = ((h & 0xFFFF) / 32768.0f - 1.0f) * 0.05f;
+  x[i] = (uint16_t)(__float_as_uint(v) >> 16);
+}
+
+// --bitwise: the M-input kernels against their single-input versions, bit for bit
+static int bitwise_tests(hipStream_t s) {
+  struct Case { const char* name; int N, K; bool bf16; };
+  const Case cases[] = {{"head bf16 129280 x 5120", 129280, 5120, true}, {"hc_fn f32 24 x 20480", 24, 20480, false},
+                        {"router f32 384 x 5120", 384, 5120, false}, {"idx_proj bf16 32 x 5120", 32, 5120, true}};
+  int bad = 0;
+  for (const Case& c : cases) {
+    void* w;
+    float *x, *y1, *yM, *part;
+    CHECK(hipMalloc(&w, (size_t)c.N * c.K * (c.bf16 ? 2 : 4)));
+    CHECK(hipMalloc(&x, (size_t)8 * c.K * 4));
+    CHECK(hipMalloc(&y1, (size_t)c.N * 4));
+    CHECK(hipMalloc(&yM, (size_t)8 * c.N * 4));
+    CHECK(hipMalloc(&part, (size_t)kSplitMax * c.N * 8 * 4));
+    const size_t nw = (size_t)c.N * c.K;
+    if (c.bf16) fill_bf16_kernel<<<(unsigned)((nw + 255) / 256), 256, 0, s>>>((uint16_t*)w, nw, 7);
+    else fill_kernel<<<(unsigned)((nw + 255) / 256), 256, 0, s>>>((float*)w, nw, 7);
+    fill_kernel<<<(8 * c.K + 255) / 256, 256, 0, s>>>(x, (size_t)8 * c.K, 11);
+    std::vector<float> h1(c.N), hM((size_t)8 * c.N);
+    for (int M = 2; M <= 8; M++) {
+      if (c.bf16) k_gemv_bf16_m((const uint16_t*)w, c.N, c.K, x, M, yM, part, s);
+      else k_gemv_f32_m((const float*)w, c.N, c.K, x, M, yM, part, s);
+      CHECK(hipMemcpyAsync(hM.data(), yM, (size_t)M * c.N * 4, hipMemcpyDeviceToHost, s));
+      long diff = 0;
+      for (int m = 0; m < M; m++) {
+        if (c.bf16) k_gemv_bf16((const uint16_t*)w, c.N, c.K, x + (size_t)m * c.K, y1, part, s);
+        else k_gemv_f32((const float*)w, c.N, c.K, x + (size_t)m * c.K, y1, part, s);
+        CHECK(hipMemcpyAsync(h1.data(), y1, c.N * 4, hipMemcpyDeviceToHost, s));
+        CHECK(hipStreamSynchronize(s));
+        diff += memcmp(h1.data(), hM.data() + (size_t)m * c.N, c.N * 4) != 0;
+      }
+      printf("%-28s M=%d: %s\n", c.name, M, diff ? "DIFFERS from single-input" : "bit-identical");
+      bad += diff != 0;
+    }
+    for (void* p : {w, (void*)x, (void*)y1, (void*)yM, (void*)part}) CHECK(hipFree(p));
+  }
+  return bad;
+}
+
+int main(int argc, char** argv) {
   hipStream_t s;
   CHECK(hipStreamCreate(&s));
+  if (argc > 1 && !strcmp(argv[1], "--bitwise")) return bitwise_tests(s) ? 1 : 0;
   hipEvent_t e0, e1;
   CHECK(hipEventCreate(&e0));
   CHECK(hipEventCreate(&e1));

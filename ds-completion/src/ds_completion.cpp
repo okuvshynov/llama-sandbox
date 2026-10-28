@@ -198,6 +198,11 @@ int main(int argc, char** argv) {
         const std::vector<int32_t> next = rt->verify(chunk);
         int k = 0;
         while (k + 1 < (int)chunk.size() && chunk[k + 1] == next[k]) k++;
+        if (profile) {
+          fprintf(stderr, "\n# verify %d tokens: %.1f ms (cpu experts %.1f; experts gpu %d cpu %d); GPU timeline:", (int)chunk.size(),
+                  rt->last.total_ms, rt->last.cpu_moe_ms, rt->last.gpu_experts, rt->last.cpu_experts);
+          for (auto& [g, ms] : rt->last_groups) fprintf(stderr, " %s %.1f", g.c_str(), ms);
+        }
         rt->commit(k + 1);
         spec_steps++;
         spec_accepted += k;

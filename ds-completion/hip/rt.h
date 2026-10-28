@@ -75,6 +75,7 @@ class Runtime {
   // it is keyed by position and only read after the token completing it, which the real tokens
   // rewrite.
   std::vector<int32_t> verify(const std::vector<int32_t>& chunk);
+  static constexpr int kChunk = DSpark::kMaxChunk;  // most tokens one forward runs at once
   void commit(int n_keep);
   DraftResult draft(int32_t anchor, bool keep_logits = false);
   void draft_log_hidden(const std::string& path) {
@@ -164,8 +165,9 @@ class Runtime {
   Codes A, B;
   float *cmp_kvn, *cmp_sc, *lat, *ik, *iq, *iw, *iscore, *gate, *up, *act, *router_logits, *rw, *erows, *ekv;
   int *rids, *iota;
-  std::map<int, int*> topk_buf;        // [index source] its selection buffer
-  std::map<int, const int*> topk_cur;  // [index source] this step's selection (topk_buf or iota)
+  std::map<int, int*> topk_buf;  // [index source] its selection buffers, [kChunk][idx_topk]
+  std::vector<std::map<int, const int*>> topk_cur = std::vector<std::map<int, const int*>>(kChunk);
+                                 // [token of the chunk][index source] its selection (topk_buf or iota)
   // the routed experts' inputs, staged together so one copy moves them (device and pinned host):
   // x [n_embd], router ids [8], weights [8], lists [n_dies + 1] (the last: the CPU's)
   struct MoeIn { float* x; int* ids; float* w; MoeList* lists; } d_moe, h_moe;
@@ -191,13 +193,17 @@ class Runtime {
   int32_t token = 0;
   std::vector<int32_t> hist;  // tokens including the current one (engram)
 
-  void quant(const float* xin, int n, Codes c);
-  void gemv8(const Fp8W& w, Codes c, float* yout, int rows_per_group = 0);
-  void attention(int L, const float* xin, float* out);
+  // M rows at once (a chunk of tokens): every row as a single-row call would give, bit for bit
+  void quant(const float* xin, int n, Codes c, int M = 1);
+  void gemv8(const Fp8W& w, Codes c, float* yout, int rows_per_group = 0, int M = 1);
+  // the chunk's M tokens are at positions pos .. pos + M - 1; per-token buffers are [M][...]
+  void attention(int L, const float* xin, float* out, int M = 1);
+  void attn_core(int L, int t, const float* x_t, float* q_t, const float* kvv_t, Codes qr_t, float* o_t);
   void moe(int L, const float* xin, float* out, Taps* taps);
-  void block(int L, Taps* taps);
-  void engram(int L);
-  void fetch_engram_rows();
+  void block(int L, Taps* taps, int M = 1);
+  void engram(int L, int M = 1);
+  void fetch_engram_rows(const std::vector<int32_t>& chunk);
+  std::vector<int32_t> forward_chunk(const std::vector<int32_t>& toks);  // the greedy next token after each
   void tap(Taps* taps, const char* name, const float* d, std::vector<int64_t> ne);
   void mark(const char* group);
   std::vector<std::pair<const char*, hipEvent_t>> marks;

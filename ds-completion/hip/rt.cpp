@@ -169,30 +169,32 @@ Runtime::Runtime(const Model& model, RtOptions options, const std::string& fp8_p
   cpu_moe.reset(new CpuMoeKernel(hp.n_embd, hp.n_ff_exp, hp.n_expert_used, opt.n_threads));
 
   const int E = hp.n_embd, HC = hp.hc_mult, HD = hp.head_dim, NH = hp.n_head;
-  h = dalloc<float>(E * HC);
-  h2 = dalloc<float>(E * HC);
-  pre = dalloc<float>(HC);
-  a_pre = dalloc<float>(HC);
-  a_post = dalloc<float>(HC);
-  a_comb = dalloc<float>(HC * HC);
-  f_pre = dalloc<float>(HC);
-  f_post = dalloc<float>(HC);
-  f_comb = dalloc<float>(HC * HC);
-  mixes = dalloc<float>((2 + HC) * HC);
-  x = dalloc<float>(E);
-  t1 = dalloc<float>(hp.q_lora);
-  qr = dalloc<float>(hp.q_lora);
-  q = dalloc<float>(NH * HD);
-  kvv = dalloc<float>(HD);
-  o = dalloc<float>(NH * HD);
-  oa = dalloc<float>(hp.o_groups * hp.o_lora);
-  y = dalloc<float>(E);
+  // per-token buffers hold a whole chunk: [kChunk][...]
+  const int C = kChunk;
+  h = dalloc<float>((size_t)C * E * HC);
+  h2 = dalloc<float>((size_t)C * E * HC);
+  pre = dalloc<float>(C * HC);
+  a_pre = dalloc<float>(C * HC);
+  a_post = dalloc<float>(C * HC);
+  a_comb = dalloc<float>(C * HC * HC);
+  f_pre = dalloc<float>(C * HC);
+  f_post = dalloc<float>(C * HC);
+  f_comb = dalloc<float>(C * HC * HC);
+  mixes = dalloc<float>(C * (2 + HC) * HC);
+  x = dalloc<float>((size_t)C * E);
+  t1 = dalloc<float>((size_t)C * hp.q_lora);
+  qr = dalloc<float>((size_t)C * hp.q_lora);
+  q = dalloc<float>((size_t)C * NH * HD);
+  kvv = dalloc<float>((size_t)C * HD);
+  o = dalloc<float>((size_t)C * NH * HD);
+  oa = dalloc<float>((size_t)C * hp.o_groups * hp.o_lora);
+  y = dalloc<float>((size_t)C * E);
   ysh = dalloc<float>(E);
   yr = dalloc<float>(E);
-  logits_d = dalloc<float>(hp.n_vocab);
+  logits_d = dalloc<float>((size_t)C * hp.n_vocab);
   partial = dalloc<float>((size_t)kSplitMax * std::max(hp.n_vocab, 32768));
-  A = {dalloc<uint8_t>(NH * HD), dalloc<float>(NH * HD / 32)};
-  B = {dalloc<uint8_t>(NH * HD), dalloc<float>(NH * HD / 32)};
+  A = {dalloc<uint8_t>((size_t)C * NH * HD), dalloc<float>((size_t)C * NH * HD / 32)};
+  B = {dalloc<uint8_t>((size_t)C * NH * HD), dalloc<float>((size_t)C * NH * HD / 32)};
   cmp_kvn = dalloc<float>(HD);
   cmp_sc = dalloc<float>(HD);
   lat = dalloc<float>(HD);
@@ -215,8 +217,8 @@ Runtime::Runtime(const Model& model, RtOptions options, const std::string& fp8_p
   rw = d_moe.w;
   rids = d_moe.ids;
   att_scratch = dalloc<float>((size_t)((hp.window + hp.idx_topk + 31) / 32) * NH * (HD + 2));
-  erows = dalloc<float>(hp.engram_layers.size() * hp.engram_cols() * hp.engram_dim);  // [engram slot][rows]
-  ekv = dalloc<float>((size_t)E * (HC + 1));
+  erows = dalloc<float>((size_t)hp.engram_layers.size() * C * hp.engram_cols() * hp.engram_dim);  // [slot][token][rows]
+  ekv = dalloc<float>((size_t)C * E * (HC + 1));
   {
     std::vector<int> v(opt.max_ctx);
     for (int i = 0; i < (int)v.size(); i++) v[i] = i;
@@ -224,7 +226,7 @@ Runtime::Runtime(const Model& model, RtOptions options, const std::string& fp8_p
     CHECK(hipMemcpy(iota, v.data(), v.size() * 4, hipMemcpyHostToDevice));
   }
   for (int L : hp.index_source_layers)
-    if (L < hp.n_layer && m.layers[L].loaded) topk_buf[L] = dalloc<int>(hp.idx_topk);
+    if (L < hp.n_layer && m.layers[L].loaded) topk_buf[L] = dalloc<int>((size_t)C * hp.idx_topk);
   // the sequence state, zeroed (masked-out slots must hold finite values: 0 x NaN would leak)
   S.resize(hp.n_layer);
   for (int L = 0; L < hp.n_layer; L++) {
@@ -242,7 +244,7 @@ Runtime::Runtime(const Model& model, RtOptions options, const std::string& fp8_p
     }
   }
   CHECK(hipHostMalloc(&h_yr, E * 4, 0));
-  CHECK(hipHostMalloc(&h_erows, hp.engram_layers.size() * hp.engram_cols() * hp.engram_dim * 4, 0));
+  CHECK(hipHostMalloc(&h_erows, hp.engram_layers.size() * C * hp.engram_cols() * hp.engram_dim * 4, 0));
   if (opt.max_ctx > kTopkMaxN) throw std::runtime_error("runtime: --max-ctx above the top-k kernel's limit");
   CHECK(hipEventCreateWithFlags(&ev_staged, hipEventDisableTiming));
 
@@ -273,12 +275,58 @@ std::vector<int32_t> Runtime::verify(const std::vector<int32_t>& chunk) {
     CHECK(hipMemcpyAsync(cmp_backup[L] + (size_t)r * HD, S[L].cmp_score, (size_t)r * HD * 4, hipMemcpyDeviceToDevice, s));
   }
   verifying = true;
-  std::vector<int32_t> next(M);
-  for (int i = 0; i < M; i++) {
-    const std::vector<float> lg = decode(chunk[i]);
-    next[i] = (int32_t)(std::max_element(lg.begin(), lg.end()) - lg.begin());
-  }
+  std::vector<int32_t> next = forward_chunk(chunk);
   verifying = false;
+  return next;
+}
+
+// M tokens at positions n_past .. in one forward: every token computed exactly as decode()
+// would compute it alone (batched kernels are bit-identical per row), the greedy next token
+// after each. The sequence advances by M.
+std::vector<int32_t> Runtime::forward_chunk(const std::vector<int32_t>& toks) {
+  const int M = (int)toks.size(), E = hp.n_embd, HC = hp.hc_mult;
+  const int64_t V = hp.n_vocab;
+  if (M < 1 || M > kChunk) throw std::runtime_error("forward_chunk: " + std::to_string(M) + " tokens");
+  if (n_past_ + M > opt.max_ctx) throw std::runtime_error("runtime: chunk past --max-ctx");
+  auto t0 = Clock::now();
+  pos = n_past_;
+  for (auto& tc : topk_cur) tc.clear();
+  last = Times{};
+  marks.clear();
+  mark("engram.fetch");
+  fetch_engram_rows(toks);
+  std::vector<float> emb((size_t)M * E), one_hot((size_t)M * HC, 0.0f);
+  for (int t = 0; t < M; t++) {
+    const ggml_bf16_t* row = (const ggml_bf16_t*)((const char*)m.tok_embd->data + (size_t)toks[t] * m.tok_embd->nb[1]);
+    for (int i = 0; i < E; i++) emb[(size_t)t * E + i] = ggml_bf16_to_fp32(row[i]);
+    one_hot[(size_t)t * HC] = 1.0f;
+  }
+  CHECK(hipMemcpyAsync(x, emb.data(), emb.size() * 4, hipMemcpyHostToDevice, s));
+  CHECK(hipMemcpyAsync(pre, one_hot.data(), one_hot.size() * 4, hipMemcpyHostToDevice, s));
+  for (int t = 0; t < M; t++) k_repeat(x + (size_t)t * E, E, HC, h + (size_t)t * E * HC, s);
+  for (int L = 0; L < hp.n_layer; L++) block(L, nullptr, M);
+  mark("head");
+  for (int t = 0; t < M; t++) k_hc_pre(h + (size_t)t * E * HC, pre + t * HC, E, x + (size_t)t * E, s);
+  k_rms_norm(x, out_norm, x, E, M, hp.rms_eps, s);
+  k_gemv_bf16_m(out_w, (int)V, E, x, M, logits_d, partial, s);
+  std::vector<float> lg((size_t)M * V);
+  mark("end");
+  CHECK(hipMemcpyAsync(lg.data(), logits_d, lg.size() * 4, hipMemcpyDeviceToHost, s));
+  CHECK(hipStreamSynchronize(s));
+  std::vector<int32_t> next(M);
+  for (int t = 0; t < M; t++)
+    next[t] = (int32_t)(std::max_element(lg.begin() + (size_t)t * V, lg.begin() + (size_t)(t + 1) * V) - (lg.begin() + (size_t)t * V));
+  n_past_ += M;
+  tokens_.insert(tokens_.end(), toks.begin(), toks.end());
+  if (profile) {
+    last_groups.clear();
+    for (size_t i = 0; i + 1 < marks.size(); i++) {
+      float ms;
+      CHECK(hipEventElapsedTime(&ms, marks[i].second, marks[i + 1].second));
+      last_groups[marks[i].first] += ms;
+    }
+  }
+  last.total_ms = ms_since(t0);
   return next;
 }
 
@@ -443,11 +491,11 @@ Runtime::~Runtime() {
 // ------------------------------------------------------------------ pieces
 
 // act_quant an activation into a code set (once per distinct input)
-void Runtime::quant(const float* xin, int n, Codes c) { fp8_quant_act(xin, c.q, c.s, 1, n, s); }
+void Runtime::quant(const float* xin, int n, Codes c, int M) { fp8_quant_act(xin, c.q, c.s, M, n, s); }
 
 // the exact fp8 GEMV on a quantized input (rows_per_group: block-diagonal, attn_output_a)
-void Runtime::gemv8(const Fp8W& w, Codes c, float* yout, int rows_per_group) {
-  fp8_gemv(w.q, w.s, w.N, w.K, rows_per_group ? rows_per_group : w.N, Fp8Act{c.q, c.s}, 1, yout, s);
+void Runtime::gemv8(const Fp8W& w, Codes c, float* yout, int rows_per_group, int M) {
+  fp8_gemv(w.q, w.s, w.N, w.K, rows_per_group ? rows_per_group : w.N, Fp8Act{c.q, c.s}, M, yout, s);
 }
 
 void Runtime::mark(const char* group) {
@@ -477,42 +525,73 @@ void Runtime::tap(Taps* taps, const char* name, const float* d, std::vector<int6
 // The engram rows depend only on the tokens, so every engram layer's rows are gathered at the
 // start of the step (host: hash, read the mmap'd mxfp8 rows, convert) and go to the GPU in one
 // copy; the layers then only compute. h_erows is rewritten next step, after end_step's sync.
-void Runtime::fetch_engram_rows() {
+void Runtime::fetch_engram_rows(const std::vector<int32_t>& chunk) {
   const int n_cols = hp.engram_cols(), D = hp.engram_dim, n_slots = (int)hp.engram_layers.size();
+  const size_t n = (size_t)n_cols * D;  // one token's rows of one slot
   const ggml_tensor* tab = m.engram_table;  // host mmap, mxfp8
   const auto to_float = ggml_get_type_traits(tab->type)->to_float;
-  for (int e = 0; e < n_slots; e++) {
-    const std::vector<int32_t> rows = engram_rows(hp, hist, e, pos);
-    for (int c = 0; c < n_cols; c++)
-      to_float((const char*)tab->data + (size_t)rows[c] * tab->nb[1], h_erows + ((size_t)e * n_cols + c) * D, D);
+  std::vector<int32_t> hs = tokens_;  // the history up to and including each chunk token
+  for (size_t t = 0; t < chunk.size(); t++) {
+    hs.push_back(chunk[t]);
+    for (int e = 0; e < n_slots; e++) {
+      const std::vector<int32_t> rows = engram_rows(hp, hs, e, pos + (int)t);
+      for (int c = 0; c < n_cols; c++)
+        to_float((const char*)tab->data + (size_t)rows[c] * tab->nb[1], h_erows + ((size_t)e * kChunk + t) * n + (size_t)c * D, D);
+    }
   }
-  CHECK(hipMemcpyAsync(erows, h_erows, (size_t)n_slots * n_cols * D * 4, hipMemcpyHostToDevice, s));
+  CHECK(hipMemcpyAsync(erows, h_erows, (size_t)n_slots * kChunk * n * 4, hipMemcpyHostToDevice, s));
 }
 
-void Runtime::engram(int L) {
-  const int n = hp.engram_cols() * hp.engram_dim;
-  quant(erows + (size_t)m.layers[L].kind.engram * n, n, B);
-  gemv8(W[L].engram_kv, B, ekv);
-  k_engram(h, ekv, W[L].engram_gate, hp.hc_mult, hp.n_embd, hp.rms_eps, s);
+void Runtime::engram(int L, int M) {
+  const int n = hp.engram_cols() * hp.engram_dim, E = hp.n_embd, HC = hp.hc_mult;
+  quant(erows + (size_t)m.layers[L].kind.engram * kChunk * n, n, B, M);
+  gemv8(W[L].engram_kv, B, ekv, 0, M);
+  for (int t = 0; t < M; t++)
+    k_engram(h + (size_t)t * E * HC, ekv + (size_t)t * E * (HC + 1), W[L].engram_gate, HC, E, hp.rms_eps, s);
 }
 
-void Runtime::attention(int L, const float* xin, float* out) {
+// Attention for the chunk's M tokens at positions pos ..: the projections batched (one weight
+// read), then per token in position order the window K/V, the compressor, the indexer and the
+// attention itself (each token sees exactly the state it would alone), then the output
+// projections batched.
+void Runtime::attention(int L, const float* xin, float* out, int M) {
+  const LayerW& w = W[L];
+  const int HD = hp.head_dim, NH = hp.n_head, E = hp.n_embd;
+  const float eps = hp.rms_eps;
+  const int p0 = pos;
+
+  mark("attn.q");
+  quant(xin, E, A, M);  // x feeds q_a and kv
+  gemv8(w.q_a, A, t1, 0, M);
+  k_rms_norm(t1, w.q_a_norm, qr, hp.q_lora, M, eps, s);
+  quant(qr, hp.q_lora, B, M);  // qr feeds q_b and the indexer's q_b
+  gemv8(w.q_b, B, q, 0, M);
+  mark("attn.kv");
+  gemv8(w.kv, A, kvv, 0, M);
+  for (int t = 0; t < M; t++) {
+    pos = p0 + t;
+    attn_core(L, t, xin + (size_t)t * E, q + (size_t)t * NH * HD, kvv + (size_t)t * HD,
+              Codes{B.q + (size_t)t * hp.q_lora, B.s + (size_t)t * hp.q_lora / 32}, o + (size_t)t * NH * HD);
+  }
+  pos = p0;
+  mark("attn.out");
+  quant(o, NH * HD, B, M);
+  gemv8(w.out_a, B, oa, hp.o_lora, M);  // block-diagonal over the 8 groups
+  quant(oa, hp.o_groups * hp.o_lora, B, M);
+  gemv8(w.out_b, B, out, 0, M);
+}
+
+// one token (chunk index t, at position pos): rope of q, its window K/V into the ring, the
+// compressor and indexer, the attention, and the inverse rope of its output
+void Runtime::attn_core(int L, int t, const float* xin, float* q_t, const float* kvv_t, Codes qr_t, float* o_t) {
   const LayerW& w = W[L];
   const LayerKind& k = m.layers[L].kind;
   const int HD = hp.head_dim, NH = hp.n_head, RD = hp.rope_dim, WIN = hp.window, E = hp.n_embd;
   const float eps = hp.rms_eps;
-
-  mark("attn.q");
-  quant(xin, E, A);  // x feeds q_a and kv
-  gemv8(w.q_a, A, t1);
-  k_rms_norm(t1, w.q_a_norm, qr, hp.q_lora, 1, eps, s);
-  quant(qr, hp.q_lora, B);  // qr feeds q_b and the indexer's q_b
-  gemv8(w.q_b, B, q);
-  k_rope(q, NH, HD, RD, w.freqs, pos, false, s);
-  mark("attn.kv");
-  gemv8(w.kv, A, kvv);
+  std::map<int, const int*>& tcur = topk_cur[t];
+  k_rope(q_t, NH, HD, RD, w.freqs, pos, false, s);
   float* ring = S[L].win;
-  k_kv_finish(kvv, w.kv_norm, HD, RD, w.freqs, pos, eps, ring + (size_t)(pos % WIN) * HD, s);
+  k_kv_finish(kvv_t, w.kv_norm, HD, RD, w.freqs, pos, eps, ring + (size_t)(pos % WIN) * HD, s);
 
   const int* topk = nullptr;
   int K = 0;
@@ -563,7 +642,7 @@ void Runtime::attention(int L, const float* xin, float* out) {
     comp = S[k.kv_from].comp;
     mark("attn.indexer");
     if (k.index_source && K > 0) {  // Indexer.forward, one query
-      gemv8(w.idx_q_b, B, iq);
+      gemv8(w.idx_q_b, qr_t, iq);
       k_rope(iq, hp.idx_heads, hp.idx_dim, RD, w.freqs, pos, false, s);
       k_fq4(iq, hp.idx_heads * hp.idx_dim, false, s);
       k_gemv_bf16(w.idx_proj, hp.idx_heads, E, xin, iw, partial, s);
@@ -571,22 +650,18 @@ void Runtime::attention(int L, const float* xin, float* out) {
       k_index_scores(iq, hp.idx_heads, hp.idx_dim, keys, n_comp, iw, 1.0f / sqrtf((float)hp.idx_dim) / sqrtf((float)hp.idx_heads),
                      iscore, s);
       if (K == n_comp) {
-        topk_cur[L] = iota;  // every compressed position is picked
+        tcur[L] = iota;  // every compressed position is picked
       } else {
-        k_topk(iscore, n_comp, K, topk_buf.at(L), s);
-        topk_cur[L] = topk_buf.at(L);
+        int* buf = topk_buf.at(L) + (size_t)t * hp.idx_topk;
+        k_topk(iscore, n_comp, K, buf, s);
+        tcur[L] = buf;
       }
     }
-    if (K > 0) topk = topk_cur.at(k.idx_from);
+    if (K > 0) topk = tcur.at(k.idx_from);
   }
   mark("attn.core");
-  k_attn_decode(q, NH, HD, ring, WIN, pos, comp, topk, K, w.sinks, 1.0f / sqrtf((float)HD), o, att_scratch, s);
-  k_rope(o, NH, HD, RD, w.freqs, pos, true, s);  // take the query's rotation back out
-  mark("attn.out");
-  quant(o, NH * HD, B);
-  gemv8(w.out_a, B, oa, hp.o_lora);  // block-diagonal over the 8 groups
-  quant(oa, hp.o_groups * hp.o_lora, B);
-  gemv8(w.out_b, B, out);
+  k_attn_decode(q_t, NH, HD, ring, WIN, pos, comp, topk, K, w.sinks, 1.0f / sqrtf((float)HD), o_t, att_scratch, s);
+  k_rope(o_t, NH, HD, RD, w.freqs, pos, true, s);  // take the query's rotation back out
 }
 
 void Runtime::moe(int L, const float* xin, float* out, Taps* taps) {
@@ -679,48 +754,61 @@ void Runtime::moe(int L, const float* xin, float* out, Taps* taps) {
   }
 }
 
-void Runtime::block(int L, Taps* taps) {
+void Runtime::block(int L, Taps* taps, int M) {
   const LayerW& w = W[L];
-  const int E = hp.n_embd, HC = hp.hc_mult;
+  const int E = hp.n_embd, HC = hp.hc_mult, MIX = (2 + HC) * HC;
   const float eps = hp.rms_eps;
+  auto ht = [&](int t) { return h + (size_t)t * E * HC; };
+  auto h2t = [&](int t) { return h2 + (size_t)t * E * HC; };
   mark("engram");
-  if (m.layers[L].kind.engram >= 0) engram(L);
+  if (m.layers[L].kind.engram >= 0) engram(L, M);
   tap(taps, "h_in", h, {E, HC, 1});
   if (dspark) {  // the draft reads this layer's input stream, averaged over the hc copies
-    const int t = dspark->target_index(L);
-    if (t >= 0) k_hc_pre(h, dspark->quarter, E, dspark->main_hidden + (size_t)t * E, s);
+    const int d = dspark->target_index(L);
+    const size_t nh = dspark->target_layers.size() * E;
+    if (d >= 0)
+      for (int t = 0; t < M; t++)  // while verifying, per chunk position (only kept ones seed the draft)
+        k_hc_pre(ht(t), dspark->quarter, E, (verifying ? dspark->hid_chunk + t * nh : dspark->main_hidden) + (size_t)d * E, s);
   }
   mark("hc");
   // each sublayer's mixes give the next sublayer's input mix (see Engine::block)
-  k_gemv_f32(w.hc_attn_fn, (2 + HC) * HC, E * HC, h, mixes, partial, s);
-  k_hc_split(h, E * HC, mixes, w.hc_attn_scale, w.hc_attn_base, eps, hp.hc_eps, hp.hc_iters, a_pre, a_post, a_comb, s);
-  k_hc_pre_norm(h, pre, w.attn_norm, E, eps, x, s);
+  for (int t = 0; t < M; t++) {
+    k_gemv_f32(w.hc_attn_fn, MIX, E * HC, ht(t), mixes + t * MIX, partial, s);
+    k_hc_split(ht(t), E * HC, mixes + t * MIX, w.hc_attn_scale, w.hc_attn_base, eps, hp.hc_eps, hp.hc_iters, a_pre + t * HC,
+               a_post + t * HC, a_comb + t * HC * HC, s);
+    k_hc_pre_norm(ht(t), pre + t * HC, w.attn_norm, E, eps, x + (size_t)t * E, s);
+  }
   tap(taps, "attn_in", x, {E, 1});
-  attention(L, x, y);
+  attention(L, x, y, M);
   tap(taps, "attn_out", y, {E, 1});
   mark("hc");
-  k_hc_post(y, h, a_post, a_comb, E, h2, s);
+  for (int t = 0; t < M; t++) k_hc_post(y + (size_t)t * E, ht(t), a_post + t * HC, a_comb + t * HC * HC, E, h2t(t), s);
   std::swap(h, h2);
-  k_gemv_f32(w.hc_ffn_fn, (2 + HC) * HC, E * HC, h, mixes, partial, s);
-  k_hc_split(h, E * HC, mixes, w.hc_ffn_scale, w.hc_ffn_base, eps, hp.hc_eps, hp.hc_iters, f_pre, f_post, f_comb, s);
-  k_hc_pre_norm(h, a_pre, w.ffn_norm, E, eps, d_moe.x, s);
-  tap(taps, "ffn_in", d_moe.x, {E, 1});
-  moe(L, d_moe.x, y, taps);
+  for (int t = 0; t < M; t++) {
+    k_gemv_f32(w.hc_ffn_fn, MIX, E * HC, ht(t), mixes + t * MIX, partial, s);
+    k_hc_split(ht(t), E * HC, mixes + t * MIX, w.hc_ffn_scale, w.hc_ffn_base, eps, hp.hc_eps, hp.hc_iters, f_pre + t * HC,
+               f_post + t * HC, f_comb + t * HC * HC, s);
+  }
+  for (int t = 0; t < M; t++) {  // the routed + shared experts, one token at a time
+    k_hc_pre_norm(ht(t), a_pre + t * HC, w.ffn_norm, E, eps, d_moe.x, s);
+    if (t == 0) tap(taps, "ffn_in", d_moe.x, {E, 1});
+    moe(L, d_moe.x, y + (size_t)t * E, taps);
+  }
   tap(taps, "ffn_out", y, {E, 1});
   mark("hc");
-  k_hc_post(y, h, f_post, f_comb, E, h2, s);
+  for (int t = 0; t < M; t++) k_hc_post(y + (size_t)t * E, ht(t), f_post + t * HC, f_comb + t * HC * HC, E, h2t(t), s);
   std::swap(h, h2);
-  CHECK(hipMemcpyAsync(pre, f_pre, HC * 4, hipMemcpyDeviceToDevice, s));
+  CHECK(hipMemcpyAsync(pre, f_pre, (size_t)M * HC * 4, hipMemcpyDeviceToDevice, s));
   tap(taps, "h_out", h, {E, HC, 1});
   tap(taps, "pre_out", pre, {HC, 1});
-  if (taps && m.layers[L].kind.index_source && topk_cur.count(L)) {
+  if (taps && m.layers[L].kind.index_source && topk_cur[0].count(L)) {
     const int n_comp = (pos + 1) / m.layers[L].kind.ratio, K = std::min(hp.idx_topk, n_comp);
-    Tap t;
-    t.ne = {K, 1};
-    t.i.resize(K);
-    CHECK(hipMemcpyAsync(t.i.data(), topk_cur[L], K * 4, hipMemcpyDeviceToHost, s));
+    Tap tp;
+    tp.ne = {K, 1};
+    tp.i.resize(K);
+    CHECK(hipMemcpyAsync(tp.i.data(), topk_cur[0][L], K * 4, hipMemcpyDeviceToHost, s));
     CHECK(hipStreamSynchronize(s));
-    (*taps)["topk"] = t;
+    (*taps)["topk"] = tp;
   }
 }
 
@@ -733,11 +821,11 @@ void Runtime::begin_step(int32_t tok) {
   token = tok;
   hist = tokens_;
   hist.push_back(tok);
-  topk_cur.clear();
+  for (auto& tc : topk_cur) tc.clear();
   last = Times{};
   marks.clear();
   mark("engram.fetch");
-  fetch_engram_rows();
+  fetch_engram_rows({tok});
 }
 
 // Routing log format (little endian):
@@ -809,10 +897,7 @@ std::vector<float> Runtime::decode(int32_t tok, bool want_logits) {
   CHECK(hipMemcpyAsync(pre, one_hot.data(), HC * 4, hipMemcpyHostToDevice, s));
   k_repeat(x, E, HC, h, s);
   for (int L = 0; L < hp.n_layer; L++) block(L, nullptr);
-  if (dspark && !verifying) dspark->seed(pos);  // this position's K/V into the draft's window rings
-  if (dspark && verifying)  // kept until commit: only accepted positions seed the draft
-    CHECK(hipMemcpyAsync(dspark->hid_chunk + (size_t)(pos - verify_p0) * dspark->target_layers.size() * hp.n_embd,
-                         dspark->main_hidden, dspark->target_layers.size() * hp.n_embd * 4, hipMemcpyDeviceToDevice, s));
+  if (dspark) dspark->seed(pos);  // this position's K/V into the draft's window rings
   if (!want_logits) {
     end_step();
     last.total_ms = ms_since(t0);

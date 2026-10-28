@@ -171,6 +171,57 @@ static void gemv(const T* W, int N, int K, const float* x, float* y, float* part
   split_sum_kernel<<<cdiv(N, 256), 256, 0, s>>>(partial, N, splits, y);
 }
 
+// M inputs: the same rows, splits and lane order as gemv_partial_kernel, one accumulator per input
+template <typename T, int VEC, int M>
+__global__ void gemv_partial_m_kernel(const T* W, int N, int K, int chunk, const float* x, float* partial) {
+  const int row = blockIdx.x * 4 + (threadIdx.x >> 6), lane = threadIdx.x & 63;
+  if (row >= N) return;
+  const int k0 = blockIdx.y * chunk, k1 = min(K, k0 + chunk);
+  const T* wr = W + (size_t)row * K;
+  float acc[M];
+#pragma unroll
+  for (int m = 0; m < M; m++) acc[m] = 0;
+  for (int k = k0 + lane * VEC; k < k1; k += 64 * VEC)
+#pragma unroll
+    for (int m = 0; m < M; m++) acc[m] += load_dot<T>(wr, x + (size_t)m * K, k);
+#pragma unroll
+  for (int m = 0; m < M; m++) {
+    const float v = warp_sum(acc[m]);
+    if (lane == 0) partial[((size_t)m * gridDim.y + blockIdx.y) * N + row] = v;
+  }
+}
+
+__global__ void split_sum_m_kernel(const float* partial, int N, int splits, float* y) {
+  const int n = blockIdx.x * blockDim.x + threadIdx.x, m = blockIdx.y;
+  if (n >= N) return;
+  float v = 0;
+  for (int s = 0; s < splits; s++) v += partial[((size_t)m * splits + s) * N + n];
+  y[(size_t)m * N + n] = v;
+}
+
+template <typename T, int VEC>
+static void gemv_m(const T* W, int N, int K, const float* x, int M, float* y, float* partial, hipStream_t s) {
+  int splits = 1;  // exactly as gemv()
+  while (splits < kSplitMax && (int64_t)N * splits < 2048 && K / (splits * 2) >= 64 * VEC * 2) splits *= 2;
+  const int step = 64 * VEC, chunk = cdiv(cdiv(K, splits), step) * step;
+  splits = cdiv(K, chunk);
+  const dim3 grid(cdiv(N, 4), splits);
+  switch (M) {
+#define CASE(mm) case mm: gemv_partial_m_kernel<T, VEC, mm><<<grid, 256, 0, s>>>(W, N, K, chunk, x, partial); break;
+    CASE(1) CASE(2) CASE(3) CASE(4) CASE(5) CASE(6) CASE(7) CASE(8)
+#undef CASE
+    default: throw std::runtime_error("gemv_m: M = " + std::to_string(M));
+  }
+  split_sum_m_kernel<<<dim3(cdiv(N, 256), M), 256, 0, s>>>(partial, N, splits, y);
+}
+
+void k_gemv_f32_m(const float* W, int N, int K, const float* x, int M, float* y, float* partial, hipStream_t s) {
+  gemv_m<float, 4>(W, N, K, x, M, y, partial, s);
+}
+void k_gemv_bf16_m(const uint16_t* W, int N, int K, const float* x, int M, float* y, float* partial, hipStream_t s) {
+  gemv_m<uint16_t, 8>(W, N, K, x, M, y, partial, s);
+}
+
 void k_gemv_f32(const float* W, int N, int K, const float* x, float* y, float* partial, hipStream_t s) {
   gemv<float, 4>(W, N, K, x, y, partial, s);
 }
