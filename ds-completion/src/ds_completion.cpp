@@ -60,6 +60,7 @@ int main(int argc, char** argv) {
   std::vector<int> moe_dies = {0, 1, 2, 3};
   [[maybe_unused]] std::string dspark_path;
   bool spec = false;
+  [[maybe_unused]] int spec_n = 0;
   for (int i = 1; i < argc; i++) {
     std::string a = argv[i];
     auto next = [&] { if (i + 1 >= argc) { fprintf(stderr, "missing value for %s\n", a.c_str()); exit(2); } return argv[++i]; };
@@ -71,7 +72,8 @@ int main(int argc, char** argv) {
     else if (a == "-t") opt.n_threads = atoi(next());
     else if (a == "--gpu") gpu = atoi(next());
     else if (a == "--dspark") dspark_path = next();
-    else if (a == "--spec") spec = true;  // with --rt and --dspark: speculative decoding (greedy, same output)  // runtime: the DSpark draft GGUF (shadow mode: drafts measured, not used)
+    else if (a == "--spec") spec = true;
+    else if (a == "--spec-n") spec_n = atoi(next());  // drafts verified per step (default: all the draft makes)  // with --rt and --dspark: speculative decoding (greedy, same output)  // runtime: the DSpark draft GGUF (shadow mode: drafts measured, not used)
     else if (a == "--placement") placement = next();  // runtime: routed experts on GPUs (expert_pool.h)
     else if (a == "--moe-dies") {
       moe_dies.clear();
@@ -193,6 +195,7 @@ int main(int argc, char** argv) {
         const DraftResult d = rt->draft(anchor);
         draft_ms += std::chrono::duration<double, std::milli>(Clock::now() - td).count();
         std::vector<int32_t> chunk(d.ids.begin(), d.ids.end());  // [anchor, drafts]
+        if (spec_n > 0 && (int)chunk.size() > spec_n + 1) chunk.resize(spec_n + 1);  // verify only the first spec_n drafts
         const int room = opt.max_ctx - rt->n_past();
         if ((int)chunk.size() > room) chunk.resize(std::max(room, 1));
         const std::vector<int32_t> next = rt->verify(chunk);

@@ -1,0 +1,12 @@
+concurrency  plain, no draft loaded: 19.91 t/s
+concurrency  n=1: 14.73 t/s  output identical  (170 verify steps, 0.76 drafts accepted per step, 1.76 tokens per step)
+concurrency  n=2: 14.23 t/s  output identical  (132 verify steps, 1.27 drafts accepted per step, 2.27 tokens per step)
+concurrency  n=3: 12.60 t/s  output identical  (118 verify steps, 1.53 drafts accepted per step, 2.54 tokens per step)
+concurrency  n=4: 11.12 t/s  output identical  (110 verify steps, 1.72 drafts accepted per step, 2.73 tokens per step)
+concurrency  n=5: 9.67 t/s  output identical  (108 verify steps, 1.77 drafts accepted per step, 2.78 tokens per step)
+code-rust  plain, no draft loaded: 17.66 t/s
+code-rust  n=1: 14.50 t/s  output identical  (153 verify steps, 0.96 drafts accepted per step, 1.96 tokens per step)
+code-rust  n=2: 15.62 t/s  output identical  (105 verify steps, 1.87 drafts accepted per step, 2.86 tokens per step)
+code-rust  n=3: 15.56 t/s  output identical  (83 verify steps, 2.61 drafts accepted per step, 3.61 tokens per step)
+code-rust  n=4: 14.88 t/s  output identical  (71 verify steps, 3.23 drafts accepted per step, 4.23 tokens per step)
+code-rust  n=5: 14.71 t/s  output identical  (61 verify steps, 3.92 drafts accepted per step, 4.92 tokens per step)

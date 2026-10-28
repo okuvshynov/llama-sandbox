@@ -3,6 +3,7 @@
 #include <hip/hip_fp16.h>
 
 #include <algorithm>
+#include <cstring>
 #include <stdexcept>
 #include <string>
 
@@ -40,16 +41,20 @@ GpuMatrix fp4_upload(const void* src, int K, int N, int n_expert, hipStream_t s)
   CHECK(hipMalloc(&m.scales, blocks_per_expert * n_expert));
   // through a staging buffer, 32 experts at a time
   const int chunk = 32;
-  uint8_t* stage;
+  uint8_t *stage, *host;  // through pinned host memory, not straight from the mmap (expert_pool.h)
   CHECK(hipMalloc(&stage, blocks_per_expert * chunk * 17));
+  CHECK(hipHostMalloc(&host, blocks_per_expert * chunk * 17, 0));
   for (int e0 = 0; e0 < n_expert; e0 += chunk) {
     const int ne = std::min(chunk, n_expert - e0);
     const size_t nb = blocks_per_expert * ne;
-    CHECK(hipMemcpyAsync(stage, (const uint8_t*)src + blocks_per_expert * e0 * 17, nb * 17, hipMemcpyHostToDevice, s));
+    CHECK(hipStreamSynchronize(s));  // the previous chunk's copy out of `host` is done
+    memcpy(host, (const uint8_t*)src + blocks_per_expert * e0 * 17, nb * 17);
+    CHECK(hipMemcpyAsync(stage, host, nb * 17, hipMemcpyHostToDevice, s));
     fp4_unpack(stage, nb, m.codes + blocks_per_expert * e0 * 16, m.scales + blocks_per_expert * e0, s);
   }
   CHECK(hipStreamSynchronize(s));
   CHECK(hipFree(stage));
+  CHECK(hipHostFree(host));
   return m;
 }
 

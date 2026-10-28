@@ -1,5 +1,6 @@
 #include "expert_pool.h"
 
+#include <cstring>
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
@@ -31,6 +32,11 @@ ExpertPool pool_create(int dev, int n_slots, int E, int F) {
   p.slot_bytes = pool_slot_bytes(E, F);
   if (n_slots > 0) CHECK(hipMalloc(&p.base, (size_t)n_slots * p.slot_bytes));
   CHECK(hipMalloc(&p.stage, (size_t)F * E / 32 * 17));
+  for (int b = 0; b < 2; b++) {
+    CHECK(hipHostMalloc(&p.host_stage[b], (size_t)F * E / 32 * 17, 0));
+    CHECK(hipEventCreateWithFlags(&p.host_free[b], hipEventDisableTiming));
+    CHECK(hipEventRecord(p.host_free[b], 0));
+  }
   // slot layout: gate codes, gate scales, up codes, up scales, down codes, down scales
   size_t off = 0;
   auto mat = [&](int N, int K) {
@@ -69,7 +75,12 @@ void pool_load(ExpertPool& p, int slot, const void* gate, const void* up, const 
   for (auto [src, m] : {std::make_pair(gate, &p.view.gate), std::make_pair(up, &p.view.up),
                         std::make_pair(down, &p.view.down)}) {
     const size_t n_blocks = (size_t)m->N * m->K / 32;
-    CHECK(hipMemcpyAsync(p.stage, src, n_blocks * 17, hipMemcpyHostToDevice, s));
+    const int b = p.next_buf;
+    p.next_buf ^= 1;
+    CHECK(hipEventSynchronize(p.host_free[b]));  // its previous copy is done
+    memcpy(p.host_stage[b], src, n_blocks * 17);
+    CHECK(hipMemcpyAsync(p.stage, p.host_stage[b], n_blocks * 17, hipMemcpyHostToDevice, s));
+    CHECK(hipEventRecord(p.host_free[b], s));
     fp4_unpack(p.stage, n_blocks, m->codes + base, m->scales + base, s);
   }
 }
@@ -81,6 +92,10 @@ void pool_free(ExpertPool& p) {
   CHECK(hipSetDevice(p.dev));
   (void)hipFree(p.base);
   (void)hipFree(p.stage);
+  for (int b = 0; b < 2; b++) {
+    if (p.host_stage[b]) (void)hipHostFree(p.host_stage[b]);
+    if (p.host_free[b]) (void)hipEventDestroy(p.host_free[b]);
+  }
   CHECK(hipSetDevice(prev));
   p = ExpertPool{};
 }

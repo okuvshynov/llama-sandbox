@@ -23,6 +23,12 @@ struct ExpertPool {
   size_t slot_bytes = 0;
   uint8_t* base = nullptr;     // n_slots * slot_bytes on dev
   uint8_t* stage = nullptr;    // raw mxfp4 blocks of one matrix, on dev
+  // pinned host staging, two buffers in turn: copying straight from the model's mmap (pageable,
+  // file-backed) intermittently crashed the GPU's copy engine ("page not present") when 4 dies
+  // loaded at once; a host memcpy into pinned memory first avoids it
+  uint8_t* host_stage[2] = {nullptr, nullptr};
+  hipEvent_t host_free[2] = {nullptr, nullptr};  // the copy out of that buffer has finished
+  int next_buf = 0;
   GpuExperts view;             // the three matrices, addressed by slot
 };
 
