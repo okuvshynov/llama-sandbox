@@ -1237,3 +1237,30 @@ model, keeps the matching prefix plus the main model's own next token, and commi
   68, attention core 20, attention output 15, shared expert 14, router 10, q 7, hc 6,
   indexer + compressor 11, head 5); 121 ms with the oracle placement (CPU misses 9, GPU
   experts 9).
+
+## Step 27: speculation and the GPU clock (sclk levels 0, 2, 8)
+
+`scripts/spec-sclk.sh` at the current sclk level (set by hand): the 8 held-out prompts, plain and
+`--spec` back to back, study30, with the 4 dies' power sampled every 100 ms; then the median
+6-token verify step. Outputs byte-identical across all three levels (`results/spec-sclk/`).
+Means over the 8 prompts (`results/spec-sclk/summary.txt`):
+
+| sclk level (MHz) | plain t/s | `--spec` t/s | spec gain | 4-die power plain / spec | J/token plain / spec | verify step (6 tokens) |
+|---|---|---|---|---|---|---|
+| 0 (999) | 16.8 | 19.1 | +14% | 168 / 158 W | 10.0 / 8.4 | 184 ms |
+| 2 (1204) | 17.8 | 20.3 | +14% | 176 / 165 W | 9.9 / 8.3 | 170 ms |
+| 8 (1730) | 19.2 | 22.3 | +16% | 236 / 217 W | 12.4 / 9.9 | 152 ms |
+
+- The clock helps speculation only a little more than plain (+9% vs +8% from level 2 to 8). In
+  the verify step the GPU parts scale with the clock (~108 / 98 / 74 ms at levels 0 / 2 / 8:
+  attention core 24 / 20 / 15, fp8 projections and shared expert 41 / 35 / 27, router 12 / 10
+  / 8), but the CPU expert misses do not (66 / 67 / 73 ms) and are half the step at level 8.
+- Level 0 saves ~8 W against level 2 and is ~6% slower: the same energy per token, so level 2
+  dominates it. Level 8 costs ~30% more power and ~17-25% more energy per token for ~8-9%
+  more speed.
+- `--spec` uses less energy per token than plain at every level (the dies draw less and finish
+  sooner).
+- Expected after the adaptive expert cache: a verify step that is mostly GPU work (the oracle
+  placement's 121 ms at level 2), where the clock should be worth ~20-25%.
+- Run-to-run noise: plain at level 2 measured 4-10% faster here than in step 26's runs a few
+  hours earlier; within one level, plain and `--spec` ran back to back.

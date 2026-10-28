@@ -1,0 +1,13 @@
+# sclk level 2 (1204Mhz), 2026-10-28T15:23:45-04:00; study30, 16 threads
+# prompt  plain: t/s W J/token  |  spec: t/s W J/token  |  speedup  tokens/step  same output as 
+tcp-udp        19.25  181   9.40  |   20.57  170   8.26  |  +7%  2.16  -
+py-lru         18.54  179   9.65  |   21.13  165   7.81  |  +14%  2.88  -
+cpp-matrix     18.03  178   9.87  |   21.91  163   7.44  |  +22%  4.00  -
+sql-report     17.53  176  10.04  |   20.44  166   8.12  |  +17%  2.80  -
+geometry       18.77  179   9.54  |   22.95  169   7.36  |  +22%  3.57  -
+zh-travel      16.15  172  10.65  |   16.16  163  10.09  |  +0%  1.95  -
+ja-email       15.65  171  10.93  |   16.04  162  10.10  |  +2%  2.08  -
+summary-json   18.52  174   9.40  |   23.38  163   6.97  |  +26%  3.93  -
+# verify step of 6 tokens (concurrency, 50 steps): median 169.6 ms, host CPU experts 78.8 ms
+#   ffn.wait_for_cpu_experts 67.2  attn.core 20.1  attn.out 14.5  ffn.shared 13.9  ffn.router 10.4  attn.q 6.5  hc 6.2  attn.indexer 5.8  attn.compressor 5.7  head 4.8  ffn.wait_for_gpu_experts 3.1  ffn.dispatch 2.4  ffn.add 1.9  attn.kv 1.7  engram 1.7  engram.fetch 1.4
+# done 2026-10-28T15:33:09-04:00

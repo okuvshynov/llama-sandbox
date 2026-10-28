@@ -182,7 +182,8 @@ threads)
    random, and the real placement.
 7. **Measure:** held-out prompts, live hit rate vs simulated, t/s vs ~18, per-layer CPU vs GPU.
 
-Phase 2: adaptive swapping (**next**)
+Phase 2: adaptive swapping (**next**; the detailed plan is "Adaptive expert cache" below. The
+items here are the first sketch.)
 
 7a. **Pinned staging for loads:** today's upload copies straight from the mmap (pageable,
     4.6 GB/s for all dies); the cache needs ~4.8 GB/s in the background. Copy through pinned
@@ -203,6 +204,65 @@ router + dispatch fusion (item 22a).
 Risks: the host still syncs once per layer to learn the misses (~40 waits per step); the
 background loads compete with the CPU miss kernel for memory bandwidth and with the staging
 copies for PCIe.
+
+## Adaptive expert cache: plan (2026-10-28)
+
+Goal: the GPU expert pools follow the experts in use (LRU, warm-started from study30) instead of
+a fixed placement. Expected with ~95% hits: steps close to the oracle runs, plain ~23-25 t/s
+(today 17-21), `--spec` chat ~27-29 and code ~35-40 t/s (oracle: 29.3 / 40.8).
+
+**The problem to solve first: an expert's bits depend on where it runs.** The GPU kernel sums
+with fp16 dot instructions and a lane tree, the CPU kernel with AVX-512 FMAs and another tree,
+and each die and the CPU pre-sum their own experts. Both are exact to the reference's error
+level, not bit-identical to each other. With a fixed placement that is harmless; with an
+adaptive cache, residency depends on when background loads finish, so repeated runs could
+differ and `--spec` would no longer equal plain greedy.
+
+- **A. Placement-invariant expert numerics (preferred).** Every expert writes its own output
+  row; one kernel adds shared + routed in router-rank order; the CPU and GPU kernels use one
+  summation order (the CPU emulating the GPU's, or both moving to exact integer sums per
+  32-block). Output then does not depend on placement or cache at all: the gate becomes "any
+  cache setting = the CPU-only run, byte for byte", and the cache can be fully asynchronous.
+  Risk: the CPU kernel's speed.
+- **B. Deterministic cache schedule (fallback).** Cache decisions only from committed tokens;
+  a loaded expert counts as resident from position p + D exactly (the dispatch checks per
+  token; the host waits if a load is late). Keeps today's kernels; output depends on the cache
+  policy, as it depends on the placement today.
+
+Phases:
+
+0. **A or B, by measurement:** test whether v_dot2_f32_f16 rounds once or twice; prototype the
+   CPU expert kernel in the GPU's order and measure it. Within ~15% of today's speed -> A,
+   else B.
+1. **Simulation with realistic constraints** (`route_stats.py`, CPU only): load latency, a
+   per-step load budget, speculative verify chunks (up to 6 tokens' misses per layer,
+   rejected drafts included). Output: hit rate and loads per step by budget; whether loads
+   should come from all misses or committed tokens only.
+2. **Load path, measured alone:** ~200-450 loads/s at 18.8 MB (11 per token at 20-40 t/s).
+   mmap -> pinned memcpy costs ~2-3 ms CPU per expert, so 2-4 loader threads, then an async
+   copy on a low-priority stream per die, then unpack. Also test registering the whole expert
+   mmap with the GPUs (DMA straight from the page cache, no host copy). Measure throughput and
+   the effect on the CPU miss kernel and on verify steps.
+3. **Cache manager on the host:** LRU per die, warm-started from study30; new experts placed so
+   each layer stays spread over the dies. Table changes at step boundaries only: an evicted
+   expert leaves the table before its slot is overwritten; a slot is overwritten only after
+   the work that may read it (an event per die); a loaded expert is published only when its
+   copy and unpack are done.
+4. **Tune** budget and trigger rule (simulation, then live).
+5. **Measure:** plain and `--spec` on the held-out set; live hit rate vs simulated; loads per
+   token; verify-step profile against the oracle's 121 ms.
+
+Gates: A: any cache configuration byte-identical to the CPU-only run, plain and `--spec`.
+B: repeated runs identical, `--spec` = plain under the same cache settings. Both: a stress test
+with a tiny cache (constant evictions) and random placement.
+
+Clock (README step 27): today sclk 2 -> 8 gives only +9% with `--spec`, because the CPU misses
+(~70 ms of a 6-token verify step) do not scale with it; with the cache the step is mostly GPU
+work, so phase 5 should measure sclk 2 and 8 again.
+
+Risks: the CPU kernel's speed under A; memory bandwidth (loads + CPU misses share ~112 GB/s);
+PCIe shared with the per-layer staging copies; hit rate under speculation below the
+simulation's 95% (rejected drafts, late loads).
 
 ## History
 

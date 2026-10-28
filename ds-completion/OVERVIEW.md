@@ -134,7 +134,10 @@ token -> embedding (host) -> 40 x [ engram (layers 1, 14) -> attention block -> 
 - **A rare GPU memory fault** at startup came from copying experts straight out of the mmap;
   staging through pinned memory removed it (and made uploads 4x faster).
 - **GPU clock** (sclk) matters for latency-bound kernels, little for bandwidth-bound ones:
-  sclk 4-6 gives most of the speed at much less power than 8.
+  sclk 4-6 gives most of the speed at much less power than 8. With speculation too, the clock
+  buys little while CPU expert misses are half of a verify step: level 2 -> 8 gives +8% plain,
+  +9% `--spec`, for ~30% more power (README step 27); level 0 is slower at the same energy per
+  token as level 2.
 
 ## 6. Where a token's time goes now (sclk 2, 16 threads)
 
@@ -159,7 +162,8 @@ With speculative decoding, a verify step of 6 tokens (`results/spec-profiles.txt
 | router, hyper-connections, indexer, compressor, head, rest | ~48 | ~54 |
 | **step** | **171** | **121** |
 
-plus the draft, ~12 ms. One token alone costs ~50 ms, so 6 tokens verified cost ~3.4x one; the
+plus the draft, ~12 ms (at sclk 8 the GPU parts shrink ~25%; the CPU misses do not: 152 ms).
+One token alone costs ~50 ms, so 6 tokens verified cost ~3.4x one; the
 win depends on how many guesses are right (2 per step on chat, 4 on code).
 
 ## 7. What is next
@@ -180,7 +184,8 @@ V4.1-Pro (engram on SSD is easy; experts barely fit in two machines' RAM).
 ## 8. Open questions for review
 
 - Which prompts represent real use? The placement and the cache's starting set depend on it.
-- Which GPU clock level is acceptable for power (sclk 2 today; 4-6 is the sweet spot)?
+- Which GPU clock level is acceptable for power (sclk 2 today; 4-6 is the sweet spot; level 8
+  costs ~17-25% more energy per token for ~8-9% speed while CPU misses dominate)?
 - Is the remaining correctness risk acceptable: near-tie fp8 rounding flips make the top token
   differ from the reference occasionally (1 of 17 steps on the test prompt), in every
   implementation we compared, the llama.cpp fork included.

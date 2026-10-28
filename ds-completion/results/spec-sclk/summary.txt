@@ -1,0 +1,5 @@
+# summary: means over the 8 held-out prompts (scripts/spec-sclk.sh; per-prompt rows in sclk<level>.txt)
+# level MHz | plain t/s W J/token | spec t/s W J/token | spec gain | verify step of 6 tokens
+0 999 | 16.8 168 10.0 | 19.1 158 8.4 | +14% | 184.4 ms
+2 1204 | 17.8 176 9.9 | 20.3 165 8.3 | +14% | 169.6 ms
+8 1730 | 19.2 236 12.4 | 22.3 217 9.9 | +16% | 151.7 ms

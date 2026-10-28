@@ -1,0 +1,37 @@
+# Dense Matrix Class in C++
+
+Here's a complete implementation of a dense matrix class using `std::vector`:
+
+```cpp
+#include <vector>
+#include <stdexcept>
+#include <iostream>
+#include <iomanip>
+#include <cstddef>
+
+class Matrix {
+public:
+    // Constructors
+    Matrix() : rows_(0), cols_(0) {}
+
+    Matrix(std::size_t rows, std::size_t cols, double init = 0.0)
+        : rows_(rows), cols_(cols), data_(rows * cols, init) {}
+
+    // Construct from nested initializer list
+    Matrix(std::initializer_list<std::initializer_list<double>> init) {
+        rows_ = init.size();
+        cols_ = (rows_ > 0) ? init.begin()->size() : 0;
+        data_.reserve(rows_ * cols_);
+        for (const auto& row : init) {
+            if (row.size() != cols_)
+                throw std::invalid_argument("Inconsistent row sizes");
+            data_.insert(data_.end(), row.begin(), row.end());
+        }
+    }
+
+    // Element access
+    double& operator()(std::size_t r, std::size_t c) {
+        return data_[r * cols_ + c];
+    }
+    const double& operator()(std::size_t r, std::size_t c) const {
+        return data_[r *
