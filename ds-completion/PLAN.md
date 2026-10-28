@@ -36,7 +36,7 @@ Speed
 | 16 | Adaptive expert cache (A1 + A2) | next | start from the study30 set, load missed experts into HBM in the background (LRU): ~95% hits at 128 GB, est. ~23 t/s; needs pinned staging first (loads ~4.8 GB/s) |
 | 17 | Tensor parallelism, 2-way then 4-way (C1/C2) | planned | split the dense GEMVs over dies: ~-6..10 ms per step, matters once experts are mostly on GPUs |
 | 18 | Shared expert by TP, routed by EP (C4) | planned | the dense shared expert splits like any other GEMV under TP |
-| 19 | DSpark speculative decoding (E1) | planned | several tokens per weight read; needs the full 1017 checkpoint's MTP weights |
+| 19 | DSpark speculative decoding (E1) | in progress | shadow mode done: 2.95 / 5.10 tokens per main step (chat / code); batched verification next (plan below) |
 | 20 | Batched prompt processing (F) | planned | read each weight once for many prompt tokens; matters for long prompts |
 | 21 | Dynamic expert cache (A2) | merged into 16 | item 13 showed recent usage beats fixed sets |
 | 22 | Faster GPU fp4 expert kernel | partly done | 287 -> 406 GB/s (item 8); the per-row fp8 activation decode is the next cost; matters little while it overlaps |
@@ -93,6 +93,55 @@ What follows:
    comes first.
 4. **At high hit rates the remaining expert cost is fixed per-layer overhead** (dispatch, copies,
    waits: ~7 ms per token), not expert math.
+
+## Speculative decoding with DSpark: batched verification plan (2026-10-28)
+
+Shadow mode (README step 19): with our exact numerics a verified step would yield 2.95 tokens
+(chat) and 5.10 (code). This plan turns it into real speculative decoding, greedy, with a
+strong gate: **speculative output must equal plain greedy output token for token**.
+
+A verify step: the main model runs [anchor, d1..d5] at positions p..p+5 in one pass; with a_i
+its top token after position p+i, it keeps the longest run d(i+1) = a(i) and emits a_0..a_k;
+positions after p+k are discarded; a_k is the next anchor; the draft reruns from p+k.
+
+What a rejection must undo:
+
+| state | after rejected positions | approach |
+|---|---|---|
+| window ring (128 slots per layer) | a rejected token's slot overwrote an older position still in the window | stage the chunk's K/V; write only accepted positions into the ring (commit) |
+| compressor groups, compressed KV, index keys | keyed by position, read only after the token completing them | nothing: the real tokens rewrite them (self-healing) |
+| draft windows | - | seed only accepted positions |
+| n_past, token history (engram) | - | truncate to the accepted prefix |
+
+Phases:
+
+0. **Precondition:** batched kernels must give each token the same bits as single-token runs
+   (fp8 GEMV: lanes per row do not depend on M; rows per wave change at M >= 4). Gate: M = 1
+   vs M = 6 outputs bitwise equal, for every batched kernel.
+1. **Verify loop, no batching:** the chunk's tokens through today's single-token path one by
+   one; rollback by saving/restoring window slots; accept logic; draft re-anchoring. Gate:
+   speculative = plain greedy output, several prompts, 256+ tokens, past the 128-token window
+   wrap. No speedup (6x the work); it validates the loop.
+2. **Batched forward (M <= 6):** GEMVs for all tokens in one weight read (fp8, bf16 head);
+   small kernels with rows = M; attention per query with staged keys in the same key order
+   as M = 1 (bit-identical); compressor/indexer in position order; experts as (token, expert)
+   pairs on GPUs and CPU, each expert read once. Gates: token-for-token as above, and a
+   per-layer test of a chunk against the single-token path (bitwise).
+3. **Faster draft:** the head read once for 5 positions, Markov step and argmax on the GPU.
+   26 -> ~6 ms.
+4. **Draft length from the confidence head:** verify fewer tokens when unsure (output stays
+   greedy).
+5. **Measure and document:** held-out prompts, study30 and oracle placements, profiles.
+
+Expected per verify step (6 tokens, sclk 2, after phases 2-3): fp8 GEMVs ~31 ms, head + small
+kernels ~18, attention ~18, GPU experts ~12, CPU misses ~40-60 (study30) or ~10 (good
+cache), draft ~6: ~125-145 ms (study30) or ~95 ms. That is chat ~21-24 t/s (~31 with a good
+cache), code ~35-40 t/s (~54), against ~20 / ~17 today.
+
+Risks: CPU misses scale with the tokens verified (speculation and the adaptive cache
+reinforce each other; phase 4 matters for chat); attention per query may need a multi-query
+kernel; bit-identity must hold in every batched kernel (fallback gate: the reference's error
+level); the draft's 7.7 GB on GPU 0 costs ~6% of expert slots.
 
 ## Expert placement and cache: implementation plan (2026-10-27)
 
