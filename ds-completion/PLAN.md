@@ -236,8 +236,9 @@ Phases:
    else B.
 1. **Simulation with realistic constraints** (`route_stats.py`, CPU only): load latency, a
    per-step load budget, speculative verify chunks (up to 6 tokens' misses per layer,
-   rejected drafts included). Output: hit rate and loads per step by budget; whether loads
-   should come from all misses or committed tokens only.
+   rejected drafts included). Output: hit rate and loads per step by budget, admission rule
+   and rebalance period (the aggressiveness knobs below); whether loads should come from all
+   misses or committed tokens only.
 2. **Load path, measured alone:** ~200-450 loads/s at 18.8 MB (11 per token at 20-40 t/s).
    mmap -> pinned memcpy costs ~2-3 ms CPU per expert, so 2-4 loader threads, then an async
    copy on a low-priority stream per die, then unpack. Also test registering the whole expert
@@ -248,9 +249,29 @@ Phases:
    expert leaves the table before its slot is overwritten; a slot is overwritten only after
    the work that may read it (an event per die); a loaded expert is published only when its
    copy and unpack are done.
-4. **Tune** budget and trigger rule (simulation, then live).
+4. **Tune** budget, admission rule and rebalance period (simulation, then live); expose them on
+   the CLI with the tuned default.
 5. **Measure:** plain and `--spec` on the held-out set; live hit rate vs simulated; loads per
    token; verify-step profile against the oracle's 121 ms.
+
+**Aggressiveness is a setting, not a constant.** Updating is a spectrum: static study30
+(~71% simulated hits, 0 loads), rare rebalancing (swap in the top of the last 256-1,024
+tokens: ~94%, 12-15 loads per token), continuous LRU (~95%, ~11 loads per token; README
+step 13). More is not always better: a load moves 18.8 MB (host copy + PCIe, competing with
+the CPU miss kernel and the staging copies), a CPU miss costs ~0.27 ms per expert-token on the
+critical path, so a load pays only if the expert is used several times before eviction; too
+aggressive thrashes. Expected: diminishing returns, most of the gain from a small budget.
+Knobs:
+- **Load budget:** at most N experts (or MB/s) per step; 0 = today's static placement.
+- **Admission rule:** load only after k misses in a recent window (frequency) instead of on the
+  first miss (LRU); filters one-off experts, which matters under speculation (rejected drafts
+  route to experts that may never be needed again).
+- **Rebalance period:** the batch alternative, every N tokens swap in the window's top
+  non-resident experts.
+Phase 1 sweeps them (hit rate vs loads per token: where the curve flattens), phase 4 picks the
+default from live runs; a CLI option (e.g. `--cache-loads N`) keeps it adjustable. Under A every
+setting gives the same output bits (a pure speed/resource trade-off); under B each setting is
+deterministic but settings differ from each other.
 
 Gates: A: any cache configuration byte-identical to the CPU-only run, plain and `--spec`.
 B: repeated runs identical, `--spec` = plain under the same cache settings. Both: a stress test
