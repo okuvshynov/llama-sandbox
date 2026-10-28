@@ -169,9 +169,11 @@ class Runtime {
   std::vector<std::map<int, const int*>> topk_cur = std::vector<std::map<int, const int*>>(kChunk);
                                  // [token of the chunk][index source] its selection (topk_buf or iota)
   // the routed experts' inputs, staged together so one copy moves them (device and pinned host):
-  // x [n_embd], router ids [8], weights [8], lists [n_dies + 1] (the last: the CPU's)
-  struct MoeIn { float* x; int* ids; float* w; MoeList* lists; } d_moe, h_moe;
-  size_t moe_block_bytes = 0;
+  // lists [kChunk][kMoeListStride] (per token: the dies', then the CPU's), then x [kChunk][n_embd];
+  // a chunk of M copies the lists and its M rows of x
+  struct MoeIn { MoeList* lists; float* x; } d_moe, h_moe;
+  size_t moe_lists_bytes = 0;
+  size_t moe_block_bytes(int M) const { return moe_lists_bytes + (size_t)M * hp.n_embd * 4; }
   float *h_yr, *h_erows, *att_scratch;
 
   FILE* route_log = nullptr;
@@ -199,7 +201,8 @@ class Runtime {
   // the chunk's M tokens are at positions pos .. pos + M - 1; per-token buffers are [M][...]
   void attention(int L, const float* xin, float* out, int M = 1);
   void attn_core(int L, int t, const float* x_t, float* q_t, const float* kvv_t, Codes qr_t, float* o_t);
-  void moe(int L, const float* xin, float* out, Taps* taps);
+  // the routed + shared experts of the chunk's M tokens (x [M][E] staged in d_moe.x)
+  void moe(int L, float* out, int M, Taps* taps);
   void block(int L, Taps* taps, int M = 1);
   void engram(int L, int M = 1);
   void fetch_engram_rows(const std::vector<int32_t>& chunk);

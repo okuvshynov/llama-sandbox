@@ -100,9 +100,11 @@ struct MoeList {
   int ids[kMoeMaxK];    // slots on a die; expert ids for the CPU
   float w[kMoeMaxK];    // routing weights
 };
-// table: [n_expert] of this layer, die << 16 | slot, or -1 (CPU). lists[0..n_dies) are the
-// dies, lists[n_dies] the CPU.
-void k_moe_dispatch(const int* ids, const float* w, int k, const int* table, int n_dies, MoeList* lists, hipStream_t s);
+// table: [n_expert] of this layer, die << 16 | slot, or -1 (CPU). For token t of M: ids/w at
+// + t * kMoeIdStride, lists at + t * kMoeListStride; lists[0..n_dies) are the dies, lists[n_dies]
+// the CPU.
+constexpr int kMoeIdStride = 8, kMoeListStride = kMoeMaxDies + 1;
+void k_moe_dispatch(const int* ids, const float* w, int k, const int* table, int n_dies, MoeList* lists, int M, hipStream_t s);
 // y = a + parts[0] + ... + parts[n - 1] in this order (null parts skipped)
 void k_add_parts(const float* a, const float* const* parts, int n, float* y, int len, hipStream_t s);
 // y[j][i] = x[i] for j < copies (the embedding into hc copies)

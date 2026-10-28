@@ -189,8 +189,8 @@ Runtime::Runtime(const Model& model, RtOptions options, const std::string& fp8_p
   o = dalloc<float>((size_t)C * NH * HD);
   oa = dalloc<float>((size_t)C * hp.o_groups * hp.o_lora);
   y = dalloc<float>((size_t)C * E);
-  ysh = dalloc<float>(E);
-  yr = dalloc<float>(E);
+  ysh = dalloc<float>((size_t)C * E);
+  yr = dalloc<float>((size_t)C * E);
   logits_d = dalloc<float>((size_t)C * hp.n_vocab);
   partial = dalloc<float>((size_t)kSplitMax * std::max(hp.n_vocab, 32768));
   A = {dalloc<uint8_t>((size_t)C * NH * HD), dalloc<float>((size_t)C * NH * HD / 32)};
@@ -202,20 +202,21 @@ Runtime::Runtime(const Model& model, RtOptions options, const std::string& fp8_p
   iq = dalloc<float>(hp.idx_heads * hp.idx_dim);
   iw = dalloc<float>(hp.idx_heads);
   iscore = dalloc<float>(kTopkMaxN);
-  gate = dalloc<float>(hp.n_ff_exp);
-  up = dalloc<float>(hp.n_ff_exp);
-  act = dalloc<float>(hp.n_ff_exp);
-  router_logits = dalloc<float>(hp.n_expert);
+  gate = dalloc<float>((size_t)C * hp.n_ff_exp);
+  up = dalloc<float>((size_t)C * hp.n_ff_exp);
+  act = dalloc<float>((size_t)C * hp.n_ff_exp);
+  router_logits = dalloc<float>((size_t)C * hp.n_expert);
   {  // device + pinned host staging of the routed experts' inputs, one contiguous block each
-    moe_block_bytes = (size_t)E * 4 + 8 * 4 + 8 * 4 + (kMoeMaxDies + 1) * sizeof(MoeList);
-    char* d = dalloc<char>(moe_block_bytes);
+    moe_lists_bytes = (size_t)C * kMoeListStride * sizeof(MoeList);
+    const size_t bytes = moe_block_bytes(C);
+    char* d = dalloc<char>(bytes);
     char* hm;
-    CHECK(hipHostMalloc((void**)&hm, moe_block_bytes, 0));
-    d_moe = {(float*)d, (int*)(d + E * 4), (float*)(d + E * 4 + 32), (MoeList*)(d + E * 4 + 64)};
-    h_moe = {(float*)hm, (int*)(hm + E * 4), (float*)(hm + E * 4 + 32), (MoeList*)(hm + E * 4 + 64)};
+    CHECK(hipHostMalloc((void**)&hm, bytes, 0));
+    d_moe = {(MoeList*)d, (float*)(d + moe_lists_bytes)};
+    h_moe = {(MoeList*)hm, (float*)(hm + moe_lists_bytes)};
   }
-  rw = d_moe.w;
-  rids = d_moe.ids;
+  rw = dalloc<float>((size_t)C * kMoeIdStride);
+  rids = dalloc<int>((size_t)C * kMoeIdStride);
   att_scratch = dalloc<float>((size_t)((hp.window + hp.idx_topk + 31) / 32) * NH * (HD + 2));
   erows = dalloc<float>((size_t)hp.engram_layers.size() * C * hp.engram_cols() * hp.engram_dim);  // [slot][token][rows]
   ekv = dalloc<float>((size_t)C * E * (HC + 1));
@@ -243,7 +244,7 @@ Runtime::Runtime(const Model& model, RtOptions options, const std::string& fp8_p
       S[L].idx_k = dalloc<float>((size_t)opt.max_ctx / r * hp.idx_dim);
     }
   }
-  CHECK(hipHostMalloc(&h_yr, E * 4, 0));
+  CHECK(hipHostMalloc(&h_yr, (size_t)C * E * 4, 0));
   CHECK(hipHostMalloc(&h_erows, hp.engram_layers.size() * C * hp.engram_cols() * hp.engram_dim * 4, 0));
   if (opt.max_ctx > kTopkMaxN) throw std::runtime_error("runtime: --max-ctx above the top-k kernel's limit");
   CHECK(hipEventCreateWithFlags(&ev_staged, hipEventDisableTiming));
@@ -378,16 +379,16 @@ void Runtime::setup_experts() {
     Die& d = dies[i];
     d.dev = opt.moe_dies[i];
     CHECK(hipSetDevice(d.dev));
-    CHECK(hipMalloc(&d.scratch, fp4_moe_scratch_bytes(E, F, kMoeMaxK)));
+    CHECK(hipMalloc(&d.scratch, fp4_moe_scratch_bytes(E, F, kMoeMaxK, kChunk)));
     if (d.dev != home) {
       CHECK(hipStreamCreateWithFlags(&d.st, hipStreamNonBlocking));
       CHECK(hipEventCreateWithFlags(&d.done, hipEventDisableTiming));
-      CHECK(hipMalloc(&d.d_in, moe_block_bytes));
-      CHECK(hipMalloc(&d.d_y, E * 4));
-      CHECK(hipHostMalloc(&d.h_y, E * 4, 0));
+      CHECK(hipMalloc(&d.d_in, moe_block_bytes(kChunk)));
+      CHECK(hipMalloc(&d.d_y, (size_t)kChunk * E * 4));
+      CHECK(hipHostMalloc(&d.h_y, (size_t)kChunk * E * 4, 0));
     }
     CHECK(hipSetDevice(home));
-    d.y_home = dalloc<float>(E);
+    d.y_home = dalloc<float>((size_t)kChunk * E);
   }
   CHECK(hipStreamCreateWithFlags(&s_local, hipStreamNonBlocking));
   CHECK(hipEventCreateWithFlags(&ev_dispatched, hipEventDisableTiming));
@@ -479,11 +480,11 @@ Runtime::~Runtime() {
                   (void*)f_comb, (void*)mixes, (void*)x, (void*)t1, (void*)qr, (void*)q, (void*)kvv, (void*)o, (void*)oa,
                   (void*)y, (void*)ysh, (void*)yr, (void*)logits_d, (void*)partial, (void*)A.q, (void*)A.s, (void*)B.q, (void*)B.s, (void*)cmp_kvn,
                   (void*)cmp_sc, (void*)lat, (void*)ik, (void*)iq, (void*)iw, (void*)iscore, (void*)gate, (void*)up,
-                  (void*)act, (void*)router_logits, (void*)d_moe.x, (void*)att_scratch, (void*)erows, (void*)ekv, (void*)iota,
+                  (void*)act, (void*)router_logits, (void*)d_moe.lists, (void*)rw, (void*)rids, (void*)att_scratch, (void*)erows, (void*)ekv, (void*)iota,
                   fp8_buf, (void*)freqs_buf})
     (void)hipFree(p);
   for (auto& [L, p] : topk_buf) (void)hipFree(p);
-  for (void* p : {(void*)h_moe.x, (void*)h_yr, (void*)h_erows}) (void)hipHostFree(p);
+  for (void* p : {(void*)h_moe.lists, (void*)h_yr, (void*)h_erows}) (void)hipHostFree(p);
   for (hipEvent_t e : ev_pool) (void)hipEventDestroy(e);
   (void)hipStreamDestroy(s);
 }
@@ -664,86 +665,100 @@ void Runtime::attn_core(int L, int t, const float* xin, float* q_t, const float*
   k_rope(o_t, NH, HD, RD, w.freqs, pos, true, s);  // take the query's rotation back out
 }
 
-void Runtime::moe(int L, const float* xin, float* out, Taps* taps) {
+void Runtime::moe(int L, float* out, int M, Taps* taps) {
   const LayerW& w = W[L];
   const int E = hp.n_embd, F = hp.n_ff_exp, KE = hp.n_expert_used;
+  const float* xin = d_moe.x;  // [M][E]
   mark("ffn.router");
-  k_gemv_f32(w.gate_inp, hp.n_expert, E, xin, router_logits, partial, s);
-  k_router(router_logits, w.gate_bias, hp.n_expert, KE, hp.expert_weights_norm, hp.expert_weights_scale, rids, rw, s);
-  if (route_log) {  // ids and weights next to each other per layer: [ids 8 | weights 8]
+  k_gemv_f32_m(w.gate_inp, hp.n_expert, E, xin, M, router_logits, partial, s);
+  for (int t = 0; t < M; t++)
+    k_router(router_logits + (size_t)t * hp.n_expert, w.gate_bias, hp.n_expert, KE, hp.expert_weights_norm,
+             hp.expert_weights_scale, rids + t * kMoeIdStride, rw + t * kMoeIdStride, s);
+  if (route_log && M == 1) {  // ids and weights next to each other per layer: [ids 8 | weights 8]
     CHECK(hipMemcpyAsync(d_route + L * 16, rids, KE * 4, hipMemcpyDeviceToDevice, s));
     CHECK(hipMemcpyAsync(d_route + L * 16 + 8, rw, KE * 4, hipMemcpyDeviceToDevice, s));
   }
-  if (xin != d_moe.x) throw std::runtime_error("moe input must be staged in d_moe.x");
-  // split the chosen experts by where they live, and stage x + router outputs + lists to the
-  // host in one copy (the CPU and the other dies read it there)
+  // split every token's experts by where they live, and stage the lists + x to the host in one
+  // copy (the CPU and the other dies read it there)
   const int n_dies = (int)dies.size();
   mark("ffn.dispatch");
-  k_moe_dispatch(rids, rw, KE, d_table ? d_table + (size_t)L * hp.n_expert : nullptr, n_dies, d_moe.lists, s);
+  k_moe_dispatch(rids, rw, KE, d_table ? d_table + (size_t)L * hp.n_expert : nullptr, n_dies, d_moe.lists, M, s);
   if (n_dies) CHECK(hipEventRecord(ev_dispatched, s));
-  CHECK(hipMemcpyAsync(h_moe.x, d_moe.x, moe_block_bytes, hipMemcpyDeviceToHost, s));
+  const size_t block = moe_block_bytes(M);
+  CHECK(hipMemcpyAsync(h_moe.lists, d_moe.lists, moe_lists_bytes, hipMemcpyDeviceToHost, s));
+  CHECK(hipMemcpyAsync(h_moe.x, d_moe.x, (size_t)M * E * 4, hipMemcpyDeviceToHost, s));
   CHECK(hipEventRecord(ev_staged, s));
-  const float* parts[kMoeMaxDies + 1] = {};
+  constexpr int LS = kMoeListStride * (int)(sizeof(MoeList) / 4);  // a token's lists, in ints
+  auto sel = [&](const MoeList* lists, int die) {  // die `die`'s list of every token
+    return ExpertSel{lists[die].ids, lists[die].w, &lists[die].count, LS};
+  };
   bool local = false;
   for (int i = 0; i < n_dies; i++) {
     Die& d = dies[i];
-    parts[i] = d.y_home;
-    if (!d.st) {  // the home die: its list on the second stream, next to the shared expert
+    if (!d.st) {  // the home die: its lists on the second stream, next to the shared expert
       local = true;
       CHECK(hipStreamWaitEvent(s_local, ev_dispatched, 0));
-      const MoeList* dl = d_moe.lists + i;
-      fp4_moe(d.pool.view, d_moe.x, dl->ids, dl->w, KE, hp.swiglu_clamp[L], d.y_home, d.scratch, s_local, &dl->count);
+      fp4_moe_chunk(d.pool.view, xin, sel(d_moe.lists, i), KE, M, hp.swiglu_clamp[L], d.y_home, d.scratch, s_local);
       CHECK(hipEventRecord(ev_local, s_local));
       continue;
     }
     // another die: starts when the block is in host memory, no host involvement
     CHECK(hipSetDevice(d.dev));
     CHECK(hipStreamWaitEvent(d.st, ev_staged, 0));
-    CHECK(hipMemcpyAsync(d.d_in, h_moe.x, moe_block_bytes, hipMemcpyHostToDevice, d.st));
-    const MoeList* dl = (const MoeList*)(d.d_in + E * 4 + 64) + i;
-    fp4_moe(d.pool.view, (const float*)d.d_in, dl->ids, dl->w, KE, hp.swiglu_clamp[L], d.d_y, d.scratch, d.st, &dl->count);
-    CHECK(hipMemcpyAsync(d.h_y, d.d_y, E * 4, hipMemcpyDeviceToHost, d.st));
+    CHECK(hipMemcpyAsync(d.d_in, h_moe.lists, block, hipMemcpyHostToDevice, d.st));
+    fp4_moe_chunk(d.pool.view, (const float*)(d.d_in + moe_lists_bytes), sel((const MoeList*)d.d_in, i), KE, M,
+                  hp.swiglu_clamp[L], d.d_y, d.scratch, d.st);
+    CHECK(hipMemcpyAsync(d.h_y, d.d_y, (size_t)M * E * 4, hipMemcpyDeviceToHost, d.st));
     CHECK(hipEventRecord(d.done, d.st));
     CHECK(hipSetDevice(opt.gpu));
   }
   mark("ffn.shared");
-  quant(xin, E, A);
-  gemv8(w.gate_sh, A, gate);
-  gemv8(w.up_sh, A, up);
-  k_swiglu(gate, up, hp.swiglu_clamp_sh[L], F, act, s);
-  quant(act, F, B);
-  gemv8(w.down_sh, B, ysh);
-  // the host: the lists (counts for the statistics) and the CPU's misses
+  quant(xin, E, A, M);
+  gemv8(w.gate_sh, A, gate, 0, M);
+  gemv8(w.up_sh, A, up, 0, M);
+  k_swiglu(gate, up, hp.swiglu_clamp_sh[L], M * F, act, s);
+  quant(act, F, B, M);
+  gemv8(w.down_sh, B, ysh, 0, M);
+  // the host: the lists (counts for the statistics) and the CPU's misses, token by token
   auto t0 = Clock::now();
   CHECK(hipEventSynchronize(ev_staged));
   last.wait_ms += ms_since(t0);
-  const MoeList& cpu_list = h_moe.lists[n_dies];
-  for (int i = 0; i < n_dies; i++) {
-    last.gpu_experts += h_moe.lists[i].count;
-    total_gpu_experts += h_moe.lists[i].count;
+  std::vector<char> has_cpu(M, 0);
+  bool any_cpu = false;
+  for (int t = 0; t < M; t++) {
+    const MoeList* lt = h_moe.lists + (size_t)t * kMoeListStride;
+    for (int i = 0; i < n_dies; i++) {
+      last.gpu_experts += lt[i].count;
+      total_gpu_experts += lt[i].count;
+    }
+    last.cpu_experts += lt[n_dies].count;
+    total_cpu_experts += lt[n_dies].count;
+    if (lt[n_dies].count > 0) {
+      if (!any_cpu) mark("ffn.wait_for_cpu_experts");
+      any_cpu = has_cpu[t] = true;
+      auto t1c = Clock::now();
+      const Layer& hl = m.layers[L];  // host tensors: the experts live in the mmap
+      cpu_moe->forward(CpuExperts{hl.gate_exps, hl.up_exps, hl.down_exps, hp.swiglu_clamp[L]}, h_moe.x + (size_t)t * E,
+                       lt[n_dies].ids, lt[n_dies].w, lt[n_dies].count, h_yr + (size_t)t * E);
+      last.cpu_moe_ms += ms_since(t1c);
+    }
   }
-  last.cpu_experts += cpu_list.count;
-  total_cpu_experts += cpu_list.count;
-  if (cpu_list.count > 0) {
-    mark("ffn.wait_for_cpu_experts");
-    auto t1c = Clock::now();
-    const Layer& hl = m.layers[L];  // host tensors: the experts live in the mmap
-    cpu_moe->forward(CpuExperts{hl.gate_exps, hl.up_exps, hl.down_exps, hp.swiglu_clamp[L]}, h_moe.x, cpu_list.ids, cpu_list.w,
-                     cpu_list.count, h_yr);
-    last.cpu_moe_ms += ms_since(t1c);
-    CHECK(hipMemcpyAsync(yr, h_yr, E * 4, hipMemcpyHostToDevice, s));
-    parts[n_dies] = yr;
-  }
+  if (any_cpu) CHECK(hipMemcpyAsync(yr, h_yr, (size_t)M * E * 4, hipMemcpyHostToDevice, s));
   // the dies' results, waited for in the stream
   if (n_dies) mark("ffn.wait_for_gpu_experts");
   if (local) CHECK(hipStreamWaitEvent(s, ev_local, 0));
   for (int i = 0; i < n_dies; i++)
     if (dies[i].st) {
       CHECK(hipStreamWaitEvent(s, dies[i].done, 0));
-      CHECK(hipMemcpyAsync(dies[i].y_home, dies[i].h_y, E * 4, hipMemcpyHostToDevice, s));
+      CHECK(hipMemcpyAsync(dies[i].y_home, dies[i].h_y, (size_t)M * E * 4, hipMemcpyHostToDevice, s));
     }
   mark("ffn.add");
-  k_add_parts(ysh, parts, n_dies + 1, out, E, s);  // fixed order: dies, then the CPU
+  for (int t = 0; t < M; t++) {  // fixed order: dies, then the CPU (if this token had misses)
+    const float* parts[kMoeMaxDies + 1] = {};
+    for (int i = 0; i < n_dies; i++) parts[i] = dies[i].y_home + (size_t)t * E;
+    if (has_cpu[t]) parts[n_dies] = yr + (size_t)t * E;
+    k_add_parts(ysh + (size_t)t * E, parts, n_dies + 1, out + (size_t)t * E, E, s);
+  }
   if (taps) {
     tap(taps, "router_w", rw, {KE, 1});  // (synchronizes the stream)
     Tap ti;
@@ -789,11 +804,9 @@ void Runtime::block(int L, Taps* taps, int M) {
     k_hc_split(ht(t), E * HC, mixes + t * MIX, w.hc_ffn_scale, w.hc_ffn_base, eps, hp.hc_eps, hp.hc_iters, f_pre + t * HC,
                f_post + t * HC, f_comb + t * HC * HC, s);
   }
-  for (int t = 0; t < M; t++) {  // the routed + shared experts, one token at a time
-    k_hc_pre_norm(ht(t), a_pre + t * HC, w.ffn_norm, E, eps, d_moe.x, s);
-    if (t == 0) tap(taps, "ffn_in", d_moe.x, {E, 1});
-    moe(L, d_moe.x, y + (size_t)t * E, taps);
-  }
+  for (int t = 0; t < M; t++) k_hc_pre_norm(ht(t), a_pre + t * HC, w.ffn_norm, E, eps, d_moe.x + (size_t)t * E, s);
+  tap(taps, "ffn_in", d_moe.x, {E, 1});
+  moe(L, y, M, taps);
   tap(taps, "ffn_out", y, {E, 1});
   mark("hc");
   for (int t = 0; t < M; t++) k_hc_post(y + (size_t)t * E, ht(t), f_post + t * HC, f_comb + t * HC * HC, E, h2t(t), s);

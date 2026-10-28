@@ -145,6 +145,48 @@ int main(int argc, char** argv) {
     }
     printf("\n");
 
+    // 2b. a chunk of tokens: fp4_moe_chunk against one fp4_moe per token, bit for bit
+    {
+      const int Mc = 6, stride = 1 + 2 * K;  // per token: count, ids[K], w[K] (as MoeList)
+      std::vector<int> sel_i((size_t)Mc * stride, 0);
+      std::vector<float> xc((size_t)Mc * E);
+      for (auto& v : xc) v = nd(rng);
+      for (int t = 0; t < Mc; t++) {
+        const int n = t % (K + 1);  // counts 0..6
+        sel_i[(size_t)t * stride] = n;
+        for (int j = 0; j < n; j++) {
+          sel_i[(size_t)t * stride + 1 + j] = pl.slot[(size_t)layer * X + experts[(j + t) % K]];
+          const float wv = 0.1f + (rng() % 1000) / 1000.0f;
+          memcpy(&sel_i[(size_t)t * stride + 1 + K + j], &wv, 4);
+        }
+      }
+      int* dsel;
+      float *dxc, *dyc, *dy1;
+      void* scr_c;
+      CHECK(hipMalloc(&dsel, sel_i.size() * 4));
+      CHECK(hipMalloc(&dxc, xc.size() * 4));
+      CHECK(hipMalloc(&dyc, (size_t)Mc * E * 4));
+      CHECK(hipMalloc(&dy1, (size_t)E * 4));
+      CHECK(hipMalloc(&scr_c, fp4_moe_scratch_bytes(E, F, K, Mc)));
+      CHECK(hipMemcpy(dsel, sel_i.data(), sel_i.size() * 4, hipMemcpyHostToDevice));
+      CHECK(hipMemcpy(dxc, xc.data(), xc.size() * 4, hipMemcpyHostToDevice));
+      fp4_moe_chunk(pools[i].view, dxc, ExpertSel{dsel + 1, (const float*)(dsel + 1 + K), dsel, stride}, K, Mc,
+                    hp.swiglu_clamp[layer], dyc, scr_c, s);
+      std::vector<float> yc((size_t)Mc * E), y1(E);
+      CHECK(hipMemcpyAsync(yc.data(), dyc, yc.size() * 4, hipMemcpyDeviceToHost, s));
+      int diff = 0;
+      for (int t = 0; t < Mc; t++) {
+        fp4_moe(pools[i].view, dxc + (size_t)t * E, dsel + (size_t)t * stride + 1, (const float*)(dsel + (size_t)t * stride + 1 + K), K,
+                hp.swiglu_clamp[layer], dy1, scratch, s, dsel + (size_t)t * stride);
+        CHECK(hipMemcpyAsync(y1.data(), dy1, E * 4, hipMemcpyDeviceToHost, s));
+        CHECK(hipStreamSynchronize(s));
+        diff += memcmp(y1.data(), yc.data() + (size_t)t * E, E * 4) != 0;
+      }
+      printf("die %d chunk of %d tokens (counts 0..%d) vs one call per token: %s\n", dies[i], Mc, K,
+             diff ? "DIFFERS" : "bit-identical");
+      for (void* p : {(void*)dsel, (void*)dxc, (void*)dyc, (void*)dy1, scr_c}) CHECK(hipFree(p));
+    }
+
     // 3. time by count: random resident experts of this die (any layer) each rep
     std::vector<int> die_slots;
     for (int k = 0; k < pl.used[i]; k++) die_slots.push_back(k);

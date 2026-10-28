@@ -664,8 +664,12 @@ void k_engram(float* h, const float* kv, const float* gate_w, int hc, int n, flo
 // ================================================================== misc
 
 
-// one thread: k is 6
+// one thread per token: k is 6
 __global__ void moe_dispatch_kernel(const int* ids, const float* w, int k, const int* table, int n_dies, MoeList* lists) {
+  const int t = threadIdx.x;
+  ids += t * kMoeIdStride;
+  w += t * kMoeIdStride;
+  lists += t * kMoeListStride;
   for (int d = 0; d <= n_dies; d++) lists[d].count = 0;
   for (int j = 0; j < k; j++) {
     const int code = table ? table[ids[j]] : -1;
@@ -676,8 +680,8 @@ __global__ void moe_dispatch_kernel(const int* ids, const float* w, int k, const
   }
 }
 
-void k_moe_dispatch(const int* ids, const float* w, int k, const int* table, int n_dies, MoeList* lists, hipStream_t s) {
-  moe_dispatch_kernel<<<1, 1, 0, s>>>(ids, w, k, table, n_dies, lists);
+void k_moe_dispatch(const int* ids, const float* w, int k, const int* table, int n_dies, MoeList* lists, int M, hipStream_t s) {
+  moe_dispatch_kernel<<<1, M, 0, s>>>(ids, w, k, table, n_dies, lists);
 }
 
 struct Parts { const float* p[kMoeMaxDies + 1]; };

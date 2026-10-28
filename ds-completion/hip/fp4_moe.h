@@ -38,6 +38,19 @@ void fp4_unpack(const uint8_t* blocks, size_t n_blocks, uint8_t* codes, uint8_t*
 // for a pool). With `count` (device int, 0..k) only the first *count experts are used, and k
 // is the maximum; count 0 gives y = 0. scratch: k * (3 * F + 2 * F / 32 + E) floats +
 // (E + k * F) bytes, from fp4_moe_scratch_bytes.
-size_t fp4_moe_scratch_bytes(int E, int F, int k);
+size_t fp4_moe_scratch_bytes(int E, int F, int k, int M = 1);
 void fp4_moe(const GpuExperts& ex, const float* x, const int* ids, const float* w, int k, float limit, float* y,
              void* scratch, hipStream_t s, const int* count = nullptr);
+
+// Which experts each token of a chunk uses: token t reads ids/w (k entries) and count at
+// + t * stride elements; count may be null (then all k).
+struct ExpertSel {
+  const int* ids;
+  const float* w;
+  const int* count;
+  int stride;
+};
+// M tokens at once (x [M][E] -> y [M][E]): one launch per stage for all of them, every token
+// computed exactly as fp4_moe would compute it alone. scratch: fp4_moe_scratch_bytes(E, F, k, M).
+void fp4_moe_chunk(const GpuExperts& ex, const float* x, ExpertSel sel, int k, int M, float limit, float* y, void* scratch,
+                   hipStream_t s);

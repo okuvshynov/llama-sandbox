@@ -182,32 +182,38 @@ __device__ inline float row_dot(const uint8_t* __restrict__ wc, const uint8_t* _
   return acc;
 }
 
+// Token t of a chunk (blockIdx.z / .y below) uses sel.ids/w/count + t * sel.stride: one launch
+// for every token's experts, each token computed exactly as alone.
 template <int LPR>
-__global__ void __launch_bounds__(256) gate_up_kernel(GpuMatrix gate, GpuMatrix up, const int* __restrict__ ids,
-                                                      const int* __restrict__ count, const uint8_t* __restrict__ xq,
-                                                      const float* __restrict__ xs, float* __restrict__ gu) {
-  const int j = blockIdx.y >> 1;
+__global__ void __launch_bounds__(256) gate_up_kernel(GpuMatrix gate, GpuMatrix up, ExpertSel sel, int k,
+                                                      const uint8_t* __restrict__ xq, const float* __restrict__ xs,
+                                                      float* __restrict__ gu) {
+  const int j = blockIdx.y >> 1, t = blockIdx.z;
+  const int* count = sel.count ? sel.count + (size_t)t * sel.stride : nullptr;
   if (count && j >= *count) return;  // the whole block: no barriers below
   const GpuMatrix& m = (blockIdx.y & 1) ? up : gate;
-  const int N = m.N, nb = m.K / 32, lane = threadIdx.x & 63, l = lane % LPR;
+  const int N = m.N, nb = m.K / 32, lane = threadIdx.x & 63, l = lane % LPR, E = m.K;
   const int row = (blockIdx.x * (blockDim.x >> 6) + (threadIdx.x >> 6)) * (64 / LPR) + lane / LPR;
   const int r = row < N ? row : N - 1;
-  const int e = ids[j];
+  const int e = sel.ids[(size_t)t * sel.stride + j];
   const float v = row_dot<LPR>(m.codes + (size_t)e * m.codes_stride + (size_t)r * (m.K / 2),
-                               m.scales + (size_t)e * m.scales_stride + (size_t)r * nb, nb, xq, xs, l);
-  if (row < N && l == 0) gu[(size_t)blockIdx.y * N + row] = v;
+                               m.scales + (size_t)e * m.scales_stride + (size_t)r * nb, nb, xq + (size_t)t * E,
+                               xs + (size_t)t * (E / 32), l);
+  if (row < N && l == 0) gu[((size_t)t * 2 * k + blockIdx.y) * N + row] = v;
 }
 
 // act = w_j * silu(min(gate, lim)) * clamp(up, +-lim), then act_quant(32, ue8m0) into paired
 // order (as quant_paired_kernel); experts past the count write zeros (never read)
-__global__ void act_quant_kernel(const float* __restrict__ gu, const float* __restrict__ w, float lim, int F, int n,
-                                 const int* __restrict__ count, uint8_t* __restrict__ q, float* __restrict__ sc) {
+__global__ void act_quant_kernel(const float* __restrict__ gu, ExpertSel sel, int k, float lim, int F, int n,
+                                 uint8_t* __restrict__ q, float* __restrict__ sc) {
   const int i = blockIdx.x * blockDim.x + threadIdx.x;
-  const int j = i / F, f = i - j * F;
+  const int t = i / (k * F), i2 = i - t * k * F, j = i2 / F, f = i2 - j * F;
+  const int* count = sel.count ? sel.count + (size_t)t * sel.stride : nullptr;
   float v = 0.0f;
   if (i < n && (!count || j < *count)) {
-    const float g = fminf(gu[(size_t)(2 * j) * F + f], lim), u = fminf(fmaxf(gu[(size_t)(2 * j + 1) * F + f], -lim), lim);
-    v = w[j] * (g / (1.0f + expf(-g)) * u);  // the routing weight before w2, as the reference
+    const float* g2 = gu + (size_t)t * 2 * k * F;
+    const float g = fminf(g2[(size_t)(2 * j) * F + f], lim), u = fminf(fmaxf(g2[(size_t)(2 * j + 1) * F + f], -lim), lim);
+    v = sel.w[(size_t)t * sel.stride + j] * (g / (1.0f + expf(-g)) * u);  // the routing weight before w2, as the reference
   }
   float amax = fabsf(v);
 #pragma unroll
@@ -221,45 +227,52 @@ __global__ void act_quant_kernel(const float* __restrict__ gu, const float* __re
 }
 
 template <int LPR>
-__global__ void __launch_bounds__(256) down_sum_kernel(GpuMatrix down, const int* __restrict__ ids, int k,
-                                                       const int* __restrict__ count, const uint8_t* __restrict__ aq,
-                                                       const float* __restrict__ as, float* __restrict__ y) {
-  const int N = down.N, F = down.K, nb = F / 32, lane = threadIdx.x & 63, l = lane % LPR;
+__global__ void __launch_bounds__(256) down_sum_kernel(GpuMatrix down, ExpertSel sel, int k,
+                                                       const uint8_t* __restrict__ aq, const float* __restrict__ as,
+                                                       float* __restrict__ y) {
+  const int N = down.N, F = down.K, nb = F / 32, lane = threadIdx.x & 63, l = lane % LPR, t = blockIdx.y;
   const int row = (blockIdx.x * (blockDim.x >> 6) + (threadIdx.x >> 6)) * (64 / LPR) + lane / LPR;
   const int r = row < N ? row : N - 1;
-  const int n = count ? *count : k;
+  const int n = sel.count ? sel.count[(size_t)t * sel.stride] : k;
+  const uint8_t* aqt = aq + (size_t)t * k * F;
+  const float* ast = as + (size_t)t * k * nb;
   float v = 0.0f;
   for (int j = 0; j < n; j++) {  // expert order, as the CPU kernel
-    const int e = ids[j];
+    const int e = sel.ids[(size_t)t * sel.stride + j];
     v += row_dot<LPR>(down.codes + (size_t)e * down.codes_stride + (size_t)r * (F / 2),
-                      down.scales + (size_t)e * down.scales_stride + (size_t)r * nb, nb, aq + (size_t)j * F,
-                      as + (size_t)j * nb, l);
+                      down.scales + (size_t)e * down.scales_stride + (size_t)r * nb, nb, aqt + (size_t)j * F,
+                      ast + (size_t)j * nb, l);
   }
-  if (row < N && l == 0) y[row] = v;
+  if (row < N && l == 0) y[(size_t)t * N + row] = v;
 }
 
 // lanes per row, from a sweep of 8/16/32/64 x 8/16/32/64 (bench-expert-pool, sclk 2): gate/up
 // 32, down 16 are best for 1-3 experts (72/109/150 us) and within 3% of the best for 6
 constexpr int kLprGateUp = 32, kLprDown = 16;
 
-size_t fp4_moe_scratch_bytes(int E, int F, int k) {
-  return (size_t)E + (size_t)E / 32 * 4 + (size_t)k * F * 4 * 2 + (size_t)k * F + (size_t)k * F / 32 * 4 + 256 * 5;
+size_t fp4_moe_scratch_bytes(int E, int F, int k, int M) {
+  return (size_t)M * ((size_t)E + (size_t)E / 32 * 4 + (size_t)k * F * 4 * 2 + (size_t)k * F + (size_t)k * F / 32 * 4) + 256 * 5;
+}
+
+void fp4_moe_chunk(const GpuExperts& ex, const float* x, ExpertSel sel, int k, int M, float limit, float* y, void* scratch,
+                   hipStream_t s) {
+  const int E = ex.gate.K, F = ex.gate.N;
+  char* p = (char*)scratch;
+  auto take = [&](size_t bytes) { char* r = p; p += (bytes + 255) / 256 * 256; return r; };
+  uint8_t* xq = (uint8_t*)take((size_t)M * E);
+  float* xs = (float*)take((size_t)M * E / 32 * 4);
+  float* gu = (float*)take((size_t)M * k * F * 4 * 2);
+  uint8_t* aq = (uint8_t*)take((size_t)M * k * F);
+  float* asc = (float*)take((size_t)M * k * F / 32 * 4);
+  quant_paired_kernel<<<cdiv(M * E, 256), 256, 0, s>>>(x, xq, xs, M * E);  // per 32-block: rows never mix
+  // grids sized for k (the counts, if any, are only known on the device)
+  constexpr int GU = kLprGateUp, DN = kLprDown;
+  gate_up_kernel<GU><<<dim3(cdiv(F, 4 * 64 / GU), 2 * k, M), 256, 0, s>>>(ex.gate, ex.up, sel, k, xq, xs, gu);
+  act_quant_kernel<<<cdiv(M * k * F, 256), 256, 0, s>>>(gu, sel, k, limit, F, M * k * F, aq, asc);
+  down_sum_kernel<DN><<<dim3(cdiv(E, 4 * 64 / DN), M), 256, 0, s>>>(ex.down, sel, k, aq, asc, y);
 }
 
 void fp4_moe(const GpuExperts& ex, const float* x, const int* ids, const float* w, int k, float limit, float* y,
              void* scratch, hipStream_t s, const int* count) {
-  const int E = ex.gate.K, F = ex.gate.N;
-  char* p = (char*)scratch;
-  auto take = [&](size_t bytes) { char* r = p; p += (bytes + 255) / 256 * 256; return r; };
-  uint8_t* xq = (uint8_t*)take(E);
-  float* xs = (float*)take(E / 32 * 4);
-  float* gu = (float*)take((size_t)k * F * 4 * 2);
-  uint8_t* aq = (uint8_t*)take((size_t)k * F);
-  float* asc = (float*)take((size_t)k * F / 32 * 4);
-  quant_paired_kernel<<<cdiv(E, 256), 256, 0, s>>>(x, xq, xs, E);
-  // grids sized for k (the count, if any, is only known on the device)
-  constexpr int GU = kLprGateUp, DN = kLprDown;
-  gate_up_kernel<GU><<<dim3(cdiv(F, 4 * 64 / GU), 2 * k), 256, 0, s>>>(ex.gate, ex.up, ids, count, xq, xs, gu);
-  act_quant_kernel<<<cdiv(k * F, 256), 256, 0, s>>>(gu, w, limit, F, k * F, count, aq, asc);
-  down_sum_kernel<DN><<<cdiv(E, 4 * 64 / DN), 256, 0, s>>>(ex.down, ids, k, count, aq, asc, y);
+  fp4_moe_chunk(ex, x, ExpertSel{ids, w, count, 0}, k, 1, limit, y, scratch, s);
 }

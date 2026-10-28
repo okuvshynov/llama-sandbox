@@ -10,3 +10,7 @@ code-rust  n=2: 15.62 t/s  output identical  (105 verify steps, 1.87 drafts acce
 code-rust  n=3: 15.56 t/s  output identical  (83 verify steps, 2.61 drafts accepted per step, 3.61 tokens per step)
 code-rust  n=4: 14.88 t/s  output identical  (71 verify steps, 3.23 drafts accepted per step, 4.23 tokens per step)
 code-rust  n=5: 14.71 t/s  output identical  (61 verify steps, 3.92 drafts accepted per step, 4.92 tokens per step)
+# after the batched expert block (phase 2b, step 1), 300 tokens, study30, sclk 2; output identical in every run
+concurrency  n=1: 16.41  n=2: 16.75  n=3: 15.33  n=4: 13.77  n=5: 12.05 t/s   (plain, no draft loaded: 19.91)
+code-rust    n=1: 15.68  n=2: 17.72  n=3: 18.01  n=4: 17.46  n=5: 17.46 t/s   (plain, no draft loaded: 17.66)
+# verify step of 6 tokens (chat, median): 207 ms (was 267): cpu experts 70, hc 25, attn.core 20, attn.out 20, shared 16, router 11, head 10

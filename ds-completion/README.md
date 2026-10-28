@@ -1049,3 +1049,35 @@ model, keeps the matching prefix plus the main model's own next token, and commi
   plus the rejected ones plus the 26 ms draft. (The timings in the results file are not a fair
   comparison: the plain runs had the draft loaded in shadow mode, drafting after every token.)
   Phase 2 batches the chunk.
+
+## Step 21: batched verification phase 2 - chunk forward, batched expert block
+
+- **Chunk forward** (`Runtime::forward_chunk`, used by `verify`): per-token buffers hold up to 8
+  tokens. Attention is split into batched projections (one fp8 weight read for all tokens), a
+  per-token core in position order (window K/V, compressor, indexer, attention: each token sees
+  exactly the state it would alone) and batched output projections. The head runs through a new
+  multi-token bf16 GEMV. `decode()` is the same code with one token.
+- **Batched expert block:** router (multi-token f32 GEMV), one dispatch for every token's
+  experts, one staging copy, one GPU launch per die over (token, expert) pairs
+  (`fp4_moe_chunk`), the shared expert as multi-token fp8 GEMVs, one host wait per layer for the
+  CPU misses (still one CPU call per token).
+- **Bit-identity, tested per kernel:** `bench-kernels --bitwise` (multi-token f32/bf16 GEMVs:
+  head, hc_fn, router, idx_proj, M = 2..8), `bench-expert-pool` (a 6-token chunk with 0..6
+  experts per token vs one call per token). Single-token path unchanged (per-layer gate with and
+  without placement, end-to-end logits bit-identical). `--spec` output byte-identical to plain
+  greedy on the 4 prompts and in every draft-length run.
+- **Speed** (`results/spec-draft-length.txt`, 300 tokens, study30, sclk 2; `--spec-n` drafts
+  verified per step):
+
+| | plain (no draft loaded) | n=1 | n=2 | n=3 | n=4 | n=5 |
+|---|---|---|---|---|---|---|
+| chat (concurrency) | **19.9** | 16.4 | 16.8 | 15.3 | 13.8 | 12.1 |
+| code (code-rust) | 17.7 | 15.7 | 17.7 | **18.0** | 17.5 | 17.5 |
+
+  Still not a win: a 6-token verify step costs 207 ms (was 267 before the expert block was
+  batched): CPU misses 70 ms (~45 per token at study30), hyper-connection kernels 25 (still per
+  token), attention core 20 (per token by design), attention output 20 and shared expert 16
+  (fp8 at 6 tokens costs ~3x one token: activation decoding per row dominates), router 11,
+  head 10, the rest ~26; plus the 26 ms draft.
+- Also fixed on the way: an intermittent GPU memory fault at startup came from uploading experts
+  straight from the mmap; uploads now go through pinned buffers (4x faster, step 20's commit).
