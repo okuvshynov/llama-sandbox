@@ -17,6 +17,11 @@ forward per decoded token (greedy). Every forward records, per layer:
     h_out, pre_out      block output
 plus the step's tokens, start_pos and final logits [vocab] (last position).
 
+--dspark DIR: also the DSpark draft head (model.py's forward_spec, unmodified) after every forward,
+with its weights from the DSpark GGUF in DIR. The prefill forward seeds its caches; every decode
+step records the draft: "draft_ids" [6] (the anchor = this step's token, then 5 drafts),
+"draft_logits" [5, vocab] (Markov bias included) and "draft_conf" [5].
+
 What is swapped out under model.py, and why:
   - kernel.py (tilelang, CUDA only) -> kernel_cpu.py, same semantics in plain torch.
   - Weights come from the GGUF (bit-exact with the 1017 checkpoint, see check_weights.py).
@@ -125,8 +130,15 @@ GLOBAL = {"embed.weight": "token_embd.weight", "head.weight": "output.weight", "
 REV = {v: k for k, v in LAYER_MAP.items()}  # HF suffix (or linear prefix) -> GGUF suffix
 
 
-def load_dense(model: ref.Transformer, G: GGUF):
-    """Fill every non-expert, non-engram-table parameter from the GGUF, exactly."""
+# DSpark head (mtp.*) tensors outside the per-layer map, in the DSpark GGUF
+DSPARK_GLOBAL = {"main_proj": "fc.weight", "main_norm.weight": "enc.output_norm.weight", "norm.weight": "output_norm.weight",
+                 "markov_head.embed.weight": "markov_w1.weight", "markov_head.head.weight": "markov_w2.weight",
+                 "confidence_head.proj.weight": "conf_proj.weight"}
+
+
+def load_dense(model: ref.Transformer, G: GGUF, Gd: GGUF | None = None):
+    """Fill every non-expert, non-engram-table parameter from the GGUF, exactly (mtp.* = the DSpark
+    head, from Gd)."""
     t0 = time.time()
     n = 0
     params = dict(model.named_parameters())
@@ -135,6 +147,16 @@ def load_dense(model: ref.Transformer, G: GGUF):
             continue
         if name in GLOBAL:
             src = G.tensor(GLOBAL[name])
+        elif name.startswith("mtp."):
+            assert Gd is not None, f"{name}: no DSpark GGUF"
+            _, L, suffix = name.split(".", 2)
+            prefix = suffix.removesuffix(".weight")
+            if suffix in DSPARK_GLOBAL or prefix in DSPARK_GLOBAL:
+                src = Gd.tensor(DSPARK_GLOBAL.get(suffix) or DSPARK_GLOBAL[prefix])
+            else:
+                g = REV.get(prefix) or REV.get(suffix)
+                assert g is not None, f"no DSpark GGUF tensor for {name}"
+                src = Gd.tensor(f"blk.{L}.{g}")
         else:
             _, L, suffix = name.split(".", 2)
             if suffix == "engram.q_weight":  # the GGUF stores q_weight * k_weight
@@ -163,16 +185,18 @@ def load_dense(model: ref.Transformer, G: GGUF):
     print(f"# loaded {n} dense tensors from the GGUF in {time.time() - t0:.0f}s")
 
 
-def install_lazy_experts(model: ref.Transformer, G: GGUF):
-    """MoE.forward: materialize the routed experts it is about to use, run, drop them again."""
+def install_lazy_experts(model: ref.Transformer, G: GGUF, Gd: GGUF | None = None, n_layers: int = 40):
+    """MoE.forward: materialize the routed experts it is about to use, run, drop them again
+    (layers from n_layers on are the DSpark head's, in Gd)."""
     def forward(self, x, image_mask=None):
         _, indices = self.gate(x.view(-1, self.dim), None)
         used = sorted(set(indices.flatten().tolist()))
         L = self.layer_id
+        src, Ls = (G, L) if L < n_layers else (Gd, L - n_layers)
         for e in used:
             ex = self.experts[e]
             for w, g in (("w1", "ffn_gate_exps"), ("w2", "ffn_down_exps"), ("w3", "ffn_up_exps")):
-                packed, scale = mxfp4_to_ref(G, f"blk.{L}.{g}.weight", e)
+                packed, scale = mxfp4_to_ref(src, f"blk.{Ls}.{g}.weight", e)
                 lin = getattr(ex, w)
                 lin.weight = nn.Parameter(packed, requires_grad=False)
                 lin.scale = nn.Parameter(scale, requires_grad=False)
@@ -273,6 +297,7 @@ def main():
                     help="variant: activations in fp32 instead of the reference's bf16 (bf16 weights widened)")
     ap.add_argument("--no-quant", action="store_true",
                     help="variant: no fp8/fp4 fake quantization of activations, KV and indexer")
+    ap.add_argument("--dspark", help="directory of the DSpark draft GGUF: also run and record the draft head")
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
 
@@ -309,7 +334,8 @@ def main():
     args.max_batch_size, args.max_seq_len = 1, a.max_seq_len
     args.temperature = 0.0  # greedy
     args.vision_n_layers = 0  # text only
-    args.dspark_block_size = 0  # no draft head
+    if not a.dspark:
+        args.dspark_block_size = 0  # no draft head
     assert len(prompt_ids) + a.n_decode <= args.max_seq_len
 
     G = GGUF()
@@ -328,12 +354,13 @@ def main():
         model.layers[L].engram.embed = GGUFEngramEmbedding(G, base, rows, args.engram_head_dim)
         base += rows
     print(f"# built the reference Transformer in {time.time() - t0:.0f}s")
-    load_dense(model, G)
+    Gd = GGUF(Path(a.dspark)) if a.dspark else None
+    load_dense(model, G, Gd)
     if a.fp32:  # the few bf16 parameters (exact in fp32) would otherwise meet fp32 activations
         for p in model.parameters():
             if p.dtype == torch.bfloat16:
                 p.data = p.data.float()
-    install_lazy_experts(model, G)
+    install_lazy_experts(model, G, Gd, args.n_layers)
     rec = Recorder(model, a.keep_last)
 
     # the generate() loop of the reference, batch 1, greedy, recording every forward
@@ -345,10 +372,16 @@ def main():
         inp = torch.tensor([tokens[prev:cur]], dtype=torch.long)
         t1 = time.time()
         with torch.inference_mode():
-            out_ids, logits, _ = model.forward(inp, prev)
+            out_ids, logits, main_hidden = model.forward(inp, prev)
+            spec = model.forward_spec(out_ids, main_hidden, prev) if a.dspark else None
         nxt = int(out_ids[0])
         steps.append({"start_pos": prev, "tokens": tokens[prev:cur], "logits": logits[0].float().clone(),
                       "next": nxt, "layers": rec.take()})
+        if spec is not None:
+            draft_ids, draft_logits, conf = spec
+            steps[-1].update({"draft_ids": draft_ids[0].tolist(), "draft_logits": draft_logits[0].float().clone(),
+                              "draft_conf": conf[0].float().tolist()})
+            print(f"  draft: {draft_ids[0].tolist()}  conf {[round(c, 3) for c in conf[0].float().tolist()]}")
         top = logits[0].float().topk(5)
         print(f"step {step}: pos {prev}..{cur - 1} ({cur - prev} tok) -> {nxt} {tok.decode([nxt])!r}  "
               f"top5 {top.indices.tolist()}  {time.time() - t1:.0f}s")

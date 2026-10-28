@@ -23,29 +23,6 @@
 #include <cstring>
 #include <omp.h>
 
-// e4m3fn byte for a value that is exactly representable (asserted by the round trip)
-static uint8_t e4m3_encode(float v) {
-  uint8_t s = std::signbit(v) ? 0x80 : 0;
-  float a = fabsf(v);
-  if (a == 0.0f) return s;
-  int e;
-  float m = frexpf(a, &e);  // a = m * 2^e, m in [0.5, 1)
-  int E = e - 1 + 7;        // biased exponent for 1.f * 2^(e-1)
-  if (E <= 0) {             // subnormal: a = mant * 2^-9
-    int mant = (int)lrintf(a * 512.0f);
-    return s | (uint8_t)mant;
-  }
-  int mant = (int)lrintf((m * 2.0f - 1.0f) * 8.0f);
-  return s | (uint8_t)(E << 3) | (uint8_t)mant;
-}
-
-static float e4m3_decode(uint8_t c) {
-  const float sign = (c & 0x80) ? -1.0f : 1.0f;
-  const int E = (c >> 3) & 0xF, M = c & 7;
-  if (E == 0) return sign * ldexpf((float)M, -9);
-  return sign * ldexpf(1.0f + M / 8.0f, E - 7);
-}
-
 static std::vector<int> parse_list(const char* s) {
   std::vector<int> v;
   for (const char* p = s; *p;) {
@@ -69,12 +46,7 @@ int main(int argc, char** argv) {
     else { fprintf(stderr, "usage: fp8pack -m <model.gguf> -o <out.gguf> [--layers 0-39]\n"); return 2; }
   }
   if (in.empty() || out.empty()) { fprintf(stderr, "usage: fp8pack -m <model.gguf> -o <out.gguf>\n"); return 2; }
-  // the e4m3 codec above must agree with the fake-quant rounding on every code
-  for (int c = 0; c < 256; c++) {
-    if ((c & 0x7F) == 0x7F) continue;  // NaN codes
-    const float v = e4m3_decode((uint8_t)c);
-    if (fq_e4m3_round(v) != v || (v != 0 && e4m3_encode(v) != c)) { fprintf(stderr, "codec mismatch at %d\n", c); return 1; }
-  }
+  if (!fp8_codec_selftest()) { fprintf(stderr, "e4m3 codec does not match the fake-quant rounding\n"); return 1; }
 
   Model m;
   m.load(in, layers);
@@ -105,35 +77,7 @@ int main(int argc, char** argv) {
       ggml_tensor* s = ggml_new_tensor_2d(ctx, GGML_TYPE_I8, K / 32, N / 32);
       ggml_set_name(q, name.c_str());
       ggml_set_name(s, (name + ".scale").c_str());
-      const ggml_bf16_t* w = (const ggml_bf16_t*)t->data;
-      uint8_t* qd = (uint8_t*)q->data;
-      uint8_t* sd = (uint8_t*)s->data;
-      long bad = 0;
-#pragma omp parallel for reduction(+ : bad) schedule(dynamic)
-      for (int64_t bn = 0; bn < N / 32; bn++) {
-        for (int64_t bk = 0; bk < K / 32; bk++) {
-          float amax = 0;
-          for (int r = 0; r < 32; r++)
-            for (int c = 0; c < 32; c++) amax = fmaxf(amax, fabsf(ggml_bf16_to_fp32(w[(bn * 32 + r) * K + bk * 32 + c])));
-          int e = 0;  // scale exponent: 2^e
-          if (amax > 0) {
-            int ex;
-            const float mm = frexpf(amax / 448.0f, &ex);
-            e = mm == 0.5f ? ex - 1 : ex;  // ceil(log2)
-          }
-          const float sc = ldexpf(1.0f, e);
-          sd[bn * (K / 32) + bk] = (uint8_t)(e + 127);
-          for (int r = 0; r < 32; r++)
-            for (int c = 0; c < 32; c++) {
-              const int64_t i = (bn * 32 + r) * K + bk * 32 + c;
-              const float v = ggml_bf16_to_fp32(w[i]);
-              const float x = v / sc;
-              const uint8_t code = e4m3_encode(fq_e4m3_round(x));
-              qd[i] = code;
-              if (e4m3_decode(code) * sc != v) bad++;
-            }
-        }
-      }
+      const long bad = (long)fp8_repack_bf16((const uint16_t*)t->data, N, K, (uint8_t*)q->data, (uint8_t*)s->data);
       if (bad) { fprintf(stderr, "%s: %ld values not exact in fp8 x 2^k blocks\n", name.c_str(), bad); return 1; }
       gguf_add_tensor(o, q);
       gguf_add_tensor(o, s);

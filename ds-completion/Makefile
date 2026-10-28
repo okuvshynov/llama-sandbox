@@ -27,7 +27,8 @@ CORE_H = src/model.h src/forward.h src/fakequant.h src/cpu_moe.h
 # hipcc into objects that the g++ link picks up
 ROCM = /opt/rocm-6.3.4
 ifeq ($(HIP),1)
-RT_OBJ   = $(BIN)/obj/rt.o $(BIN)/obj/kernels.o $(BIN)/obj/fp8_gemv.o $(BIN)/obj/fp4_moe.o $(BIN)/obj/expert_pool.o
+RT_OBJ   = $(BIN)/obj/rt.o $(BIN)/obj/kernels.o $(BIN)/obj/fp8_gemv.o $(BIN)/obj/fp4_moe.o $(BIN)/obj/expert_pool.o \
+           $(BIN)/obj/dspark.o
 RT_FLAGS = -DDS_RUNTIME -D__HIP_PLATFORM_AMD__ -Ihip -I$(ROCM)/include
 RT_LIBS  = $(RT_OBJ) -L$(ROCM)/lib -Wl,-rpath,$(ROCM)/lib -lamdhip64
 endif
@@ -73,7 +74,11 @@ $(BIN)/obj/%.o: hip/%.hip hip/kernels.h hip/fp8_gemv.h hip/fp4_moe.h hip/expert_
 	@mkdir -p $(BIN)/obj
 	$(HIPCC) $(HIPFLAGS) -c -o $@ $<
 
-$(BIN)/obj/rt.o: hip/rt.cpp hip/rt.h hip/kernels.h hip/fp8_gemv.h hip/fp4_moe.h hip/expert_pool.h $(CORE_H)
+$(BIN)/obj/rt.o: hip/rt.cpp hip/rt.h hip/dspark.h hip/kernels.h hip/fp8_gemv.h hip/fp4_moe.h hip/expert_pool.h $(CORE_H)
+	@mkdir -p $(BIN)/obj
+	$(HIPCC) $(HIPFLAGS) -c -o $@ $<
+
+$(BIN)/obj/dspark.o: hip/dspark.cpp hip/rt.h hip/dspark.h hip/kernels.h hip/fp8_gemv.h hip/fp4_moe.h hip/expert_pool.h $(CORE_H)
 	@mkdir -p $(BIN)/obj
 	$(HIPCC) $(HIPFLAGS) -c -o $@ $<
 

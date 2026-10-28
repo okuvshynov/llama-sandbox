@@ -14,6 +14,7 @@
 #pragma once
 
 #include "forward.h"  // Taps, engram_rows
+#include "dspark.h"
 #include "expert_pool.h"
 #include "fp4_moe.h"
 #include "kernels.h"
@@ -37,6 +38,8 @@ struct RtOptions {
   std::string placement;
   std::vector<int> moe_dies = {0, 1, 2, 3};
   double reserve_gb = 0.75;
+  // the DSpark draft head's GGUF (dspark.h); empty = none
+  std::string dspark;
 };
 
 class Runtime {
@@ -59,6 +62,16 @@ class Runtime {
   void end_step();
   int n_past() const { return n_past_; }
 
+  // DSpark draft (RtOptions::dspark): after a decode step produced `anchor` (the next token),
+  // the draft's block_size guesses for the tokens after it. Does not change the sequence state.
+  bool has_draft() const { return dspark != nullptr; }
+  DraftResult draft(int32_t anchor, bool keep_logits = false);
+  void draft_log_hidden(const std::string& path) {
+    if (!dspark) return;
+    dspark->hidden_log = fopen(path.c_str(), "wb");
+    dspark->debug_log = fopen((path + ".debug").c_str(), "wb");
+  }
+
   // time spent per decode step (host wall clock), split at the CPU-expert waits
   struct Times { double total_ms = 0, cpu_moe_ms = 0, wait_ms = 0; int gpu_experts = 0, cpu_experts = 0; } last;
   long total_gpu_experts = 0, total_cpu_experts = 0;  // over the run (hit rate)
@@ -72,6 +85,8 @@ class Runtime {
   std::map<std::string, double> last_groups;
 
  private:
+  friend class DSpark;
+  std::unique_ptr<DSpark> dspark;
   struct Fp8W { uint8_t* q = nullptr; uint8_t* s = nullptr; int N = 0, K = 0; };
   struct LayerW {
     Fp8W q_a, q_b, kv, out_a, out_b, idx_q_b, gate_sh, up_sh, down_sh, engram_kv;

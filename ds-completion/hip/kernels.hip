@@ -1,5 +1,8 @@
 #include "kernels.h"
 
+#include <stdexcept>
+#include <string>
+
 #include <hip/hip_fp16.h>
 
 #include <cfloat>
@@ -561,9 +564,10 @@ __global__ void router_kernel(const float* logits, const float* bias, int n, boo
 void k_router(const float* logits, const float* bias, int n_expert, int k, bool norm, float route_scale, int* ids,
               float* w, hipStream_t s) {
   switch (k) {
+    case 3: router_kernel<3><<<1, 64, 0, s>>>(logits, bias, n_expert, norm, route_scale, ids, w); break;  // DSpark draft
     case 6: router_kernel<6><<<1, 64, 0, s>>>(logits, bias, n_expert, norm, route_scale, ids, w); break;
     case 8: router_kernel<8><<<1, 64, 0, s>>>(logits, bias, n_expert, norm, route_scale, ids, w); break;
-    default: router_kernel<1><<<1, 64, 0, s>>>(logits, bias, n_expert, norm, route_scale, ids, w); break;  // not used
+    default: throw std::runtime_error("k_router: no instance for k = " + std::to_string(k));
   }
 }
 

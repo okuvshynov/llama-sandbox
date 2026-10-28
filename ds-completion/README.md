@@ -979,3 +979,37 @@ use `-t 16`.
 
 Where this leaves the placement work (16 threads): no GPU experts 12.0-12.5 t/s; the study30
 placement 17.7-21.7; perfect knowledge (oracle) ~25 t/s.
+
+## Step 19: DSpark draft head, shadow mode
+
+The 1017 DSpark draft (`~/llms/dspark/dspark-DeepSeek-V4.1-Flash-1017-BF16.gguf`, arch `dflash`,
+8.5 GB): 3 layers (window-only attention, 128 experts top-3), `fc` from the main model's stream
+at the inputs of layers 37-39, a rank-256 Markov head and a confidence head; it shares the main
+model's embedding and output head. One pass drafts a block of 5 tokens: [last token, 4 noise
+tokens] attending to a 128-slot window of main positions and to the block itself (both ways).
+The official `model.py` has its forward pass (`forward_spec`) but no speculative loop.
+
+- **Weights:** every dense draft linear (and `fc`) is an exact fp8 expansion (100% of 32x32
+  blocks), so it runs through our exact fp8 GEMV after re-blocking at load
+  (`fp8_repack_bf16`, now shared with `fp8pack`, whose output is unchanged). The Markov tables are
+  true bf16.
+- **Runtime** (`hip/dspark.{h,cpp}`, `--dspark FILE`): the main forward hands over its stream at
+  layers 37-39 (mean over the hc copies); every token seeds the draft's windows; after each
+  generated token `draft()` returns 5 guesses. Draft experts (7.2 GB) live on GPU 0.
+- **Gate** (`ds_ref.py --dspark` runs the official draft; `ref/compare_dspark.py`,
+  `ref/dspark_check.py`): fed our main model's hidden states, the official draft and ours agree
+  to ~8e-8 per position except where an fp8 rounding step flips at a near tie (one position in
+  the first draft), which then spreads through the block attention. Against the reference run,
+  the main model's own end-to-end differences at layers 37-39 add more; drafts agree at 5 of 12
+  steps on the hello prompt.
+- **Shadow mode** (drafts measured against what the main model then generates, nothing skipped;
+  256 tokens, `results/dspark-shadow.txt`):
+
+| prompt | accepted prefix (of 5) | tokens per main step if verified | per position correct | fork (llama.cpp) |
+|---|---|---|---|---|
+| concurrency (chat) | 1.95 | **2.95** | 77 / 55 / 39 / 27 / 24% | 2.58 |
+| code-rust | 4.10 | **5.10** (all 5 accepted at 171 of 251 steps) | 96 / 90 / 86 / 79 / 75% | 3.60 |
+
+- **Cost:** 26 ms per draft as written (one token at a time: 5 reads of the 1.3 GB output head,
+  the Markov head with a host round trip per position). Reading the head once for all 5
+  positions and doing the Markov step on the GPU should bring it to ~5-7 ms.

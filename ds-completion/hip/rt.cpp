@@ -246,7 +246,13 @@ Runtime::Runtime(const Model& model, RtOptions options, const std::string& fp8_p
   if (opt.max_ctx > kTopkMaxN) throw std::runtime_error("runtime: --max-ctx above the top-k kernel's limit");
   CHECK(hipEventCreateWithFlags(&ev_staged, hipEventDisableTiming));
 
+  if (!opt.dspark.empty()) dspark.reset(new DSpark(*this, opt.dspark));  // before the pools take the rest
   setup_experts();
+}
+
+DraftResult Runtime::draft(int32_t anchor, bool keep_logits) {
+  if (!dspark) throw std::runtime_error("no DSpark draft loaded");
+  return dspark->draft(anchor, n_past_ - 1, keep_logits);
 }
 
 // The placement's top pairs into the dies' free memory (after everything else is allocated),
@@ -322,6 +328,7 @@ void Runtime::setup_experts() {
 
 Runtime::~Runtime() {
   (void)hipStreamSynchronize(s);
+  dspark.reset();
   cpu_moe.reset();
   for (Die& d : dies) {
     (void)hipSetDevice(d.dev);
@@ -607,6 +614,10 @@ void Runtime::block(int L, Taps* taps) {
   mark("engram");
   if (m.layers[L].kind.engram >= 0) engram(L);
   tap(taps, "h_in", h, {E, HC, 1});
+  if (dspark) {  // the draft reads this layer's input stream, averaged over the hc copies
+    const int t = dspark->target_index(L);
+    if (t >= 0) k_hc_pre(h, dspark->quarter, E, dspark->main_hidden + (size_t)t * E, s);
+  }
   mark("hc");
   // each sublayer's mixes give the next sublayer's input mix (see Engine::block)
   k_gemv_f32(w.hc_attn_fn, (2 + HC) * HC, E * HC, h, mixes, partial, s);
@@ -726,6 +737,7 @@ std::vector<float> Runtime::decode(int32_t tok, bool want_logits) {
   CHECK(hipMemcpyAsync(pre, one_hot.data(), HC * 4, hipMemcpyHostToDevice, s));
   k_repeat(x, E, HC, h, s);
   for (int L = 0; L < hp.n_layer; L++) block(L, nullptr);
+  if (dspark) dspark->seed(pos);  // this position's K/V into the draft's window rings
   if (!want_logits) {
     end_step();
     last.total_ms = ms_since(t0);

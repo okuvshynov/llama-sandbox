@@ -1,0 +1,16 @@
+== concurrency
+# dspark: 3 layers, block 5, 128 experts top-3, targets 37 38 39; 7.7 GB on GPU 0
+# dspark shadow: 251 drafts of 5; accepted prefix mean 1.95 -> 2.95 tokens per main step; 26.1 ms per draft
+#   accepted 0..5: 57 63 51 31 14 35
+#   per position correct: 77% 55% 39% 27% 24%
+# routed experts: 78.3% on GPUs (50164 of 64080)
+# prompt: 12 tokens in 0.75 s = 15.92 t/s; generation: 256 tokens in 21.00 s = 12.19 t/s
+== code-rust
+# dspark: 3 layers, block 5, 128 experts top-3, targets 37 38 39; 7.7 GB on GPU 0
+== code-rust
+# dspark: 3 layers, block 5, 128 experts top-3, targets 37 38 39; 7.7 GB on GPU 0
+# dspark shadow: 251 drafts of 5; accepted prefix mean 4.10 -> 5.10 tokens per main step; 26.2 ms per draft
+#   accepted 0..5: 11 17 15 20 17 171
+#   per position correct: 96% 90% 86% 79% 75%
+# routed experts: 57.8% on GPUs (39289 of 67920)
+# prompt: 28 tokens in 1.54 s = 18.14 t/s; generation: 256 tokens in 22.30 s = 11.48 t/s

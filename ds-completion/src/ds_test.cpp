@@ -122,6 +122,7 @@ int main(int argc, char** argv) {
   [[maybe_unused]] int gpu = 0;
   std::string placement;
   std::vector<int> moe_dies = {0, 1, 2, 3};
+  [[maybe_unused]] std::string dspark_path, dspark_out;
   for (int i = 1; i < argc; i++) {
     std::string a = argv[i];
     auto next = [&] { if (i + 1 >= argc) { fprintf(stderr, "missing value for %s\n", a.c_str()); exit(2); } return argv[++i]; };
@@ -131,6 +132,8 @@ int main(int argc, char** argv) {
     else if (a == "--no-quant") opt.exact_quant = false;
     else if (a == "-t") opt.n_threads = atoi(next());
     else if (a == "--gpu") gpu = atoi(next());
+    else if (a == "--dspark") dspark_path = next();
+    else if (a == "--dspark-out") dspark_out = next();  // with --e2e: every step's draft, for ref/compare_dspark.py  // runtime: the DSpark draft GGUF (shadow mode: drafts measured, not used)
     else if (a == "--placement") placement = next();  // runtime: routed experts on GPUs (expert_pool.h)
     else if (a == "--moe-dies") {
       moe_dies.clear();
@@ -160,7 +163,14 @@ int main(int argc, char** argv) {
   std::unique_ptr<Runtime> rt;
   if (!rt_path.empty()) {
     if (!opt.exact_quant) { fprintf(stderr, "--no-quant is CPU only\n"); return 2; }
-    rt.reset(new Runtime(m, RtOptions{gpu, opt.n_threads, opt.max_ctx, placement, moe_dies}, rt_path));
+    RtOptions ro;
+    ro.gpu = gpu;
+    ro.n_threads = opt.n_threads;
+    ro.max_ctx = opt.max_ctx;
+    ro.placement = placement;
+    ro.moe_dies = moe_dies;
+    ro.dspark = dspark_path;
+    rt.reset(new Runtime(m, ro, rt_path));
   }
 #else
   if (!rt_path.empty()) { fprintf(stderr, "--runtime needs the bin-hip build\n"); return 2; }
@@ -170,6 +180,10 @@ int main(int argc, char** argv) {
 
   if (!e2e.empty()) {
     FILE* f = fopen(e2e.c_str(), "wb");
+    FILE* df = dspark_out.empty() ? nullptr : fopen(dspark_out.c_str(), "wb");
+#ifdef DS_RUNTIME
+    if (rt && df) rt->draft_log_hidden(dspark_out + ".hidden");
+#endif
     for (int s = 0; s < G.n_steps; s++) {
       const GTensor* tk = G.get(s, -1, "tokens");
       std::vector<int32_t> toks(tk->i(), tk->i() + tk->numel());
@@ -186,8 +200,24 @@ int main(int argc, char** argv) {
       const int ref_best = (int)(std::max_element(rl->f(), rl->f() + rl->numel()) - rl->f());
       printf("step %2d: %3zu tokens -> %6d (ref %6d)%s  %.2f s\n", s, toks.size(), best, ref_best,
              best == ref_best ? "" : "  <- differs", dt);
+#ifdef DS_RUNTIME
+      // the DSpark draft after every decode step, anchored on the reference's next token (as
+      // ds_ref.py --dspark does): per step ids [block + 1] i32, conf [block] f32, logits [block][vocab] f32
+      if (rt && rt->has_draft() && s > 0 && df) {
+        const GTensor* nt = s + 1 < G.n_steps ? G.get(s + 1, -1, "tokens") : nullptr;
+        const int32_t anchor = nt ? nt->i()[0] : ref_best;
+        DraftResult d = rt->draft(anchor, true);
+        fwrite(d.ids.data(), 4, d.ids.size(), df);
+        fwrite(d.conf.data(), 4, d.conf.size(), df);
+        fwrite(d.logits.data(), 4, d.logits.size(), df);
+        printf("  draft: [");
+        for (size_t i = 0; i < d.ids.size(); i++) printf("%s%d", i ? ", " : "", d.ids[i]);
+        printf("]\n");
+      }
+#endif
     }
     fclose(f);
+    if (df) fclose(df);
     return 0;
   }
 

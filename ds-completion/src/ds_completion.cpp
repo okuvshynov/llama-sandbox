@@ -58,6 +58,7 @@ int main(int argc, char** argv) {
   std::string route_log;
   std::string placement;
   std::vector<int> moe_dies = {0, 1, 2, 3};
+  [[maybe_unused]] std::string dspark_path;
   for (int i = 1; i < argc; i++) {
     std::string a = argv[i];
     auto next = [&] { if (i + 1 >= argc) { fprintf(stderr, "missing value for %s\n", a.c_str()); exit(2); } return argv[++i]; };
@@ -68,6 +69,7 @@ int main(int argc, char** argv) {
     else if (a == "-n") n_predict = atoi(next());
     else if (a == "-t") opt.n_threads = atoi(next());
     else if (a == "--gpu") gpu = atoi(next());
+    else if (a == "--dspark") dspark_path = next();  // runtime: the DSpark draft GGUF (shadow mode: drafts measured, not used)
     else if (a == "--placement") placement = next();  // runtime: routed experts on GPUs (expert_pool.h)
     else if (a == "--moe-dies") {
       moe_dies.clear();
@@ -130,7 +132,14 @@ int main(int argc, char** argv) {
   std::unique_ptr<Runtime> rt;
   if (!rt_path.empty()) {
     if (!opt.exact_quant) { fprintf(stderr, "--no-quant is CPU only\n"); return 2; }
-    rt.reset(new Runtime(m, RtOptions{gpu, opt.n_threads, opt.max_ctx, placement, moe_dies}, rt_path));
+    RtOptions ro;
+    ro.gpu = gpu;
+    ro.n_threads = opt.n_threads;
+    ro.max_ctx = opt.max_ctx;
+    ro.placement = placement;
+    ro.moe_dies = moe_dies;
+    ro.dspark = dspark_path;
+    rt.reset(new Runtime(m, ro, rt_path));
     rt->profile = profile;
     if (!route_log.empty()) rt->log_routing(route_log);
   }
@@ -153,14 +162,28 @@ int main(int argc, char** argv) {
   int n_gen = 0;
   auto t2 = Clock::now();
   std::string out;
+  // shadow mode (--dspark): after every generated token, the draft's guesses for the tokens after
+  // it; compared with what the main model then generates (nothing is skipped or verified)
+  std::vector<int32_t> gen;
+  std::vector<std::vector<int32_t>> drafts;
+  std::vector<std::vector<float>> confs;
+  [[maybe_unused]] double draft_ms = 0;
   for (; n_gen < n_predict; n_gen++) {
     const int32_t next = (int32_t)(std::max_element(logits.begin(), logits.end()) - logits.begin());
+    gen.push_back(next);
     if (next == eos) break;
     std::string p = piece(vocab, next);
     fwrite(p.data(), 1, p.size(), stdout);
     fflush(stdout);
     if (n_gen + 1 == n_predict) { n_gen++; break; }
 #ifdef DS_RUNTIME
+    if (rt && rt->has_draft()) {
+      auto td = Clock::now();
+      DraftResult d = rt->draft(next);
+      draft_ms += std::chrono::duration<double, std::milli>(Clock::now() - td).count();
+      drafts.emplace_back(d.ids.begin() + 1, d.ids.end());
+      confs.push_back(d.conf);
+    }
     if (rt) {
       logits = rt->decode(next);
       if (profile) {
@@ -177,6 +200,31 @@ int main(int argc, char** argv) {
   printf("\n");
   fflush(stdout);
 #ifdef DS_RUNTIME
+  if (!drafts.empty()) {
+    // draft g (anchor = gen[g]) guesses gen[g + 1 ..]; its accepted length = the matching prefix
+    const int B = (int)drafts[0].size();
+    std::vector<int> hist(B + 1, 0);
+    long n = 0, acc_sum = 0;
+    std::vector<long> pos_ok(B, 0), pos_n(B, 0);
+    for (size_t g = 0; g < drafts.size(); g++) {
+      if (g + B >= gen.size()) break;  // only drafts whose whole block can be checked
+      int a = 0;
+      while (a < B && drafts[g][a] == gen[g + 1 + a]) a++;
+      hist[a]++;
+      acc_sum += a;
+      n++;
+      for (int k = 0; k < B; k++) { pos_n[k]++; pos_ok[k] += drafts[g][k] == gen[g + 1 + k]; }
+    }
+    if (n > 0) {
+      fprintf(stderr, "# dspark shadow: %ld drafts of %d; accepted prefix mean %.2f -> %.2f tokens per main step; %.1f ms per draft\n",
+              n, B, (double)acc_sum / n, 1.0 + (double)acc_sum / n, draft_ms / drafts.size());
+      fprintf(stderr, "#   accepted 0..%d:", B);
+      for (int a = 0; a <= B; a++) fprintf(stderr, " %d", hist[a]);
+      fprintf(stderr, "\n#   per position correct:");
+      for (int k = 0; k < B; k++) fprintf(stderr, " %.0f%%", 100.0 * pos_ok[k] / pos_n[k]);
+      fprintf(stderr, "\n");
+    }
+  }
   if (rt && rt->total_gpu_experts + rt->total_cpu_experts > 0)
     fprintf(stderr, "# routed experts: %.1f%% on GPUs (%ld of %ld)\n",
             100.0 * rt->total_gpu_experts / (rt->total_gpu_experts + rt->total_cpu_experts), rt->total_gpu_experts,

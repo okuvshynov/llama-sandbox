@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cfenv>
 #include <cmath>
+#include <cstring>
 
 // Rounding to a value grid with spacing q: nearbyintf uses the current mode, which is
 // round-to-nearest-even unless someone changed it - the same tie rule as the hardware casts.
@@ -84,4 +85,72 @@ void fq_fp8_host(const float* x, float* y, int64_t n) {
     const float s = pow2_ceil(std::max(amax, 1e-4f) * (1.0f / 448.0f));
     for (int j = 0; j < 32; j++) yb[j] = fq_e4m3_round(std::clamp(xb[j] / s, -448.0f, 448.0f)) * s;
   }
+}
+
+// e4m3fn byte for a value that is exactly representable (asserted by the caller's round trip)
+static uint8_t e4m3_encode(float v) {
+  uint8_t s = std::signbit(v) ? 0x80 : 0;
+  float a = fabsf(v);
+  if (a == 0.0f) return s;
+  int e;
+  float m = frexpf(a, &e);  // a = m * 2^e, m in [0.5, 1)
+  int E = e - 1 + 7;        // biased exponent for 1.f * 2^(e-1)
+  if (E <= 0) {             // subnormal: a = mant * 2^-9
+    int mant = (int)lrintf(a * 512.0f);
+    return s | (uint8_t)mant;
+  }
+  int mant = (int)lrintf((m * 2.0f - 1.0f) * 8.0f);
+  return s | (uint8_t)(E << 3) | (uint8_t)mant;
+}
+
+static float e4m3_decode(uint8_t c) {
+  const float sign = (c & 0x80) ? -1.0f : 1.0f;
+  const int E = (c >> 3) & 0xF, M = c & 7;
+  if (E == 0) return sign * ldexpf((float)M, -9);
+  return sign * ldexpf(1.0f + M / 8.0f, E - 7);
+}
+
+static float bf16_value(uint16_t b) {
+  const uint32_t u = (uint32_t)b << 16;
+  float f;
+  memcpy(&f, &u, 4);
+  return f;
+}
+
+int64_t fp8_repack_bf16(const uint16_t* w, int64_t N, int64_t K, uint8_t* codes, uint8_t* scales) {
+  int64_t bad = 0;
+#pragma omp parallel for reduction(+ : bad) schedule(dynamic)
+  for (int64_t bn = 0; bn < N / 32; bn++) {
+    for (int64_t bk = 0; bk < K / 32; bk++) {
+      float amax = 0;
+      for (int r = 0; r < 32; r++)
+        for (int c = 0; c < 32; c++) amax = fmaxf(amax, fabsf(bf16_value(w[(bn * 32 + r) * K + bk * 32 + c])));
+      int e = 0;  // scale exponent: 2^e
+      if (amax > 0) {
+        int ex;
+        const float mm = frexpf(amax / 448.0f, &ex);
+        e = mm == 0.5f ? ex - 1 : ex;  // ceil(log2)
+      }
+      const float sc = ldexpf(1.0f, e);
+      scales[bn * (K / 32) + bk] = (uint8_t)(e + 127);
+      for (int r = 0; r < 32; r++)
+        for (int c = 0; c < 32; c++) {
+          const int64_t i = (bn * 32 + r) * K + bk * 32 + c;
+          const float v = bf16_value(w[i]);
+          const uint8_t code = e4m3_encode(fq_e4m3_round(v / sc));
+          codes[i] = code;
+          if (e4m3_decode(code) * sc != v) bad++;
+        }
+    }
+  }
+  return bad;
+}
+
+bool fp8_codec_selftest() {
+  for (int c = 0; c < 256; c++) {
+    if ((c & 0x7F) == 0x7F) continue;  // NaN codes
+    const float v = e4m3_decode((uint8_t)c);
+    if (fq_e4m3_round(v) != v || (v != 0 && e4m3_encode(v) != c)) return false;
+  }
+  return true;
 }
