@@ -24,3 +24,12 @@ zh-essay       16.62   14.25  12.64  10.63   9.12   7.70
 # * plain without the draft loaded (die 0 then holds a few more experts)
 # draft GPU time per call (ms): head 4.34, ffn.routed 2.42, markov 1.29, attn.out 1.29, hc 1.07, attn.core 0.90,
 #   attn.proj 0.85, ffn.shared 0.81, copy 0.27, embed 0.19 (DS_DRAFT_PROFILE=1)
+# after batching the hyper-connection kernels (one launch per chunk); draft 12.3 ms; output identical in every run
+#              plain*  n=1    n=2    n=3    n=4    n=5   t/s
+concurrency    20.51   20.19  20.41  19.81  17.33  15.78
+code-rust      17.24   17.83  19.69  19.58  20.23  19.38
+math-proof     20.95   21.10  21.97  21.51  19.89  18.39
+zh-essay       17.32   15.13  13.45  11.40   9.77   8.29
+# * plain without the draft loaded, same build
+# verify step of 6 tokens (chat, median): 181 ms (was 207): cpu experts 68, attn.core 20, attn.out 20, shared 16,
+#   router 10.5, attn.q 9.6, hc 6.2 (was 25), indexer 5.7, compressor 5.6, head 4.9 (was 9.8), rest ~13

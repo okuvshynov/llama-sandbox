@@ -280,7 +280,6 @@ DraftResult DSpark::draft(int32_t anchor, int pos, bool keep_logits) {
   auto g8 = [&](const Fp8& w, Runtime::Codes c, float* out, int rpg, int M) {
     rt.gemv8(Runtime::Fp8W{w.q, w.s, w.N, w.K}, c, out, rpg, M);
   };
-  auto hj = [&](int j) { return hblk + (size_t)j * HC * E; };
   // DS_DRAFT_PROFILE=1: GPU time per part of the draft, summed over the run, printed at exit
   static const bool prof = getenv("DS_DRAFT_PROFILE") != nullptr;
   static std::map<std::string, double> prof_ms;
@@ -312,7 +311,7 @@ DraftResult DSpark::draft(int32_t anchor, int pos, bool keep_logits) {
     CHECK(hipMemcpyAsync(xa, emb.data(), emb.size() * 4, hipMemcpyHostToDevice, s));
     CHECK(hipMemcpyAsync(pre, one_hot.data(), one_hot.size() * 4, hipMemcpyHostToDevice, s));
     CHECK(hipMemcpyAsync(d_ids, ids.data(), 4, hipMemcpyHostToDevice, s));  // the anchor; the rest are drafted
-    for (int j = 0; j < B; j++) k_repeat(xa + (size_t)j * E, E, HC, hj(j), s);
+    for (int j = 0; j < B; j++) k_repeat(xa + (size_t)j * E, E, HC, hblk + (size_t)j * HC * E, s);
   }
   std::vector<float> dbg;  // debug_log: [layer][attn_in, attn_out, ffn_in, ffn_out][block][E]
   auto keep = [&](size_t l, int what, const float* d) {
@@ -327,11 +326,8 @@ DraftResult DSpark::draft(int32_t anchor, int pos, bool keep_logits) {
     mark("hc");
     // attention: mixes, then q and K/V for every block position (it attends to itself both ways)
     k_gemv_f32_m(w.hc_attn_fn, MIX, E * HC, hblk, B, mixes, rt.partial, s);
-    for (int j = 0; j < B; j++) {
-      k_hc_split(hj(j), E * HC, mixes + j * MIX, w.hc_attn_scale, w.hc_attn_base, eps, hp.hc_eps, hp.hc_iters, a_pre + j * HC,
-                 a_post + j * HC, a_comb + j * HC * HC, s);
-      k_hc_pre_norm(hj(j), pre + j * HC, w.attn_norm, E, eps, xa + (size_t)j * E, s);
-    }
+    k_hc_split(hblk, E * HC, mixes, w.hc_attn_scale, w.hc_attn_base, eps, hp.hc_eps, hp.hc_iters, a_pre, a_post, a_comb, s, B);
+    k_hc_pre_norm(hblk, pre, w.attn_norm, E, eps, xa, s, B);
     keep(l, 0, xa);
     mark("attn.proj");
     rt.quant(xa, E, rt.A, B);
@@ -359,16 +355,14 @@ DraftResult DSpark::draft(int32_t anchor, int pos, bool keep_logits) {
     rt.quant(oa, hp.o_groups * hp.o_lora, rt.B, B);
     g8(w.out_b, rt.B, y, 0, B);
     keep(l, 1, y);
-    for (int j = 0; j < B; j++) k_hc_post(y + (size_t)j * E, hj(j), a_post + j * HC, a_comb + j * HC * HC, E, h2 + (size_t)j * HC * E, s);
+    k_hc_post(y, hblk, a_post, a_comb, E, h2, s, B);
     std::swap(hblk, h2);
     // FFN: routed (3 of 128, on this die) + shared, every block position at once
     mark("hc");
     k_gemv_f32_m(w.hc_ffn_fn, MIX, E * HC, hblk, B, mixes, rt.partial, s);
-    for (int j = 0; j < B; j++) {
-      k_hc_split(hj(j), E * HC, mixes + j * MIX, w.hc_ffn_scale, w.hc_ffn_base, eps, hp.hc_eps, hp.hc_iters, pre + j * HC,
-                 f_post + j * HC, f_comb + j * HC * HC, s);  // pre <- ffn_pre: the next layer's attention mix
-      k_hc_pre_norm(hj(j), a_pre + j * HC, w.ffn_norm, E, eps, xa + (size_t)j * E, s);
-    }
+    // pre <- ffn_pre: the next layer's attention mix
+    k_hc_split(hblk, E * HC, mixes, w.hc_ffn_scale, w.hc_ffn_base, eps, hp.hc_eps, hp.hc_iters, pre, f_post, f_comb, s, B);
+    k_hc_pre_norm(hblk, a_pre, w.ffn_norm, E, eps, xa, s, B);
     keep(l, 2, xa);
     mark("ffn.routed");
     k_gemv_f32_m(w.gate_inp, n_expert, E, xa, B, rlog, rt.partial, s);
@@ -387,7 +381,7 @@ DraftResult DSpark::draft(int32_t anchor, int pos, bool keep_logits) {
       k_add_parts(ysh + (size_t)j * E, parts, 1, y + (size_t)j * E, E, s);
     }
     keep(l, 3, y);
-    for (int j = 0; j < B; j++) k_hc_post(y + (size_t)j * E, hj(j), f_post + j * HC, f_comb + j * HC * HC, E, h2 + (size_t)j * HC * E, s);
+    k_hc_post(y, hblk, f_post, f_comb, E, h2, s, B);
     std::swap(hblk, h2);
   }
   if (debug_log) {
@@ -397,7 +391,7 @@ DraftResult DSpark::draft(int32_t anchor, int pos, bool keep_logits) {
   }
   mark("head");
   // head: collapse, the draft's norm, the main model's head (one read for the whole block)
-  for (int j = 0; j < B; j++) k_hc_pre(hj(j), pre + j * HC, E, xfin + (size_t)j * E, s);
+  k_hc_pre(hblk, pre, E, xfin, s, B);
   k_rms_norm(xfin, out_norm, xn, E, B, eps, s);
   k_gemv_bf16_m(rt.out_w, (int)V, E, xn, B, logits, rt.partial, s);
   // Markov head, left to right on the GPU: bias from the previous token's rank-256 embedding,

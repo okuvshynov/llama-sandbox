@@ -1113,3 +1113,27 @@ model, keeps the matching prefix plus the main model's own next token, and commi
   Roughly break-even: code +6%, math +1%, chat -8%, zh -14%. The verify step (~200 ms for 6
   tokens vs ~48 ms per plain token) still costs too much per extra token; next are the verify
   side's per-token kernels (hyper-connections, fp8 activation decoding) and CPU misses.
+
+## Step 23: batched hyper-connection kernels
+
+- `k_hc_split`, `k_hc_pre_norm`, `k_hc_pre`, `k_hc_post` take a token count: one block (row) per
+  token doing exactly the single-token computation, so the bits cannot change; the mixes use the
+  multi-token f32 GEMV (already bitwise-tested). Used by the chunk forward, decode (M = 1) and the
+  draft.
+- Gates: per-layer rows identical (with and without placement), end-to-end logits identical,
+  drafts byte-identical, `--spec` identical to plain greedy on 4 prompts x 5 draft lengths.
+- Verify step of 6 tokens 207 -> **181 ms** (hc 25 -> 6 ms; the head 9.8 -> 4.9 ms from step
+  22's GEMV); draft 12.3 ms.
+- Speed (`results/spec-draft-length.txt`; plain = no draft loaded, same build):
+
+| | plain | n=1 | n=2 | n=3 | n=4 | n=5 |
+|---|---|---|---|---|---|---|
+| chat (concurrency) | **20.5** | 20.2 | 20.4 | 19.8 | 17.3 | 15.8 |
+| code (code-rust) | 17.2 | 17.8 | 19.7 | 19.6 | **20.2** | 19.4 |
+| math (think) | 21.0 | 21.1 | **22.0** | 21.5 | 19.9 | 18.4 |
+| zh essay | **17.3** | 15.1 | 13.5 | 11.4 | 9.8 | 8.3 |
+
+  First clear wins: code +17%, math +5%; chat even; zh -13% (acceptance there is ~1.2 drafts per
+  step). What's left in the verify step: CPU misses 68 ms (they grow with the tokens verified),
+  fp8 at 6 tokens (attn.out 20 + shared 16 + q 10: activation decoding per row), attention core
+  20 (per token by design), router 10.5.

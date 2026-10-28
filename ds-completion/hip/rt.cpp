@@ -307,7 +307,7 @@ std::vector<int32_t> Runtime::forward_chunk(const std::vector<int32_t>& toks) {
   for (int t = 0; t < M; t++) k_repeat(x + (size_t)t * E, E, HC, h + (size_t)t * E * HC, s);
   for (int L = 0; L < hp.n_layer; L++) block(L, nullptr, M);
   mark("head");
-  for (int t = 0; t < M; t++) k_hc_pre(h + (size_t)t * E * HC, pre + t * HC, E, x + (size_t)t * E, s);
+  k_hc_pre(h, pre, E, x, s, M);
   k_rms_norm(x, out_norm, x, E, M, hp.rms_eps, s);
   k_gemv_bf16_m(out_w, (int)V, E, x, M, logits_d, partial, s);
   std::vector<float> lg((size_t)M * V);
@@ -774,7 +774,6 @@ void Runtime::block(int L, Taps* taps, int M) {
   const int E = hp.n_embd, HC = hp.hc_mult, MIX = (2 + HC) * HC;
   const float eps = hp.rms_eps;
   auto ht = [&](int t) { return h + (size_t)t * E * HC; };
-  auto h2t = [&](int t) { return h2 + (size_t)t * E * HC; };
   mark("engram");
   if (m.layers[L].kind.engram >= 0) engram(L, M);
   tap(taps, "h_in", h, {E, HC, 1});
@@ -787,29 +786,23 @@ void Runtime::block(int L, Taps* taps, int M) {
   }
   mark("hc");
   // each sublayer's mixes give the next sublayer's input mix (see Engine::block)
-  for (int t = 0; t < M; t++) {
-    k_gemv_f32(w.hc_attn_fn, MIX, E * HC, ht(t), mixes + t * MIX, partial, s);
-    k_hc_split(ht(t), E * HC, mixes + t * MIX, w.hc_attn_scale, w.hc_attn_base, eps, hp.hc_eps, hp.hc_iters, a_pre + t * HC,
-               a_post + t * HC, a_comb + t * HC * HC, s);
-    k_hc_pre_norm(ht(t), pre + t * HC, w.attn_norm, E, eps, x + (size_t)t * E, s);
-  }
+  k_gemv_f32_m(w.hc_attn_fn, MIX, E * HC, h, M, mixes, partial, s);
+  k_hc_split(h, E * HC, mixes, w.hc_attn_scale, w.hc_attn_base, eps, hp.hc_eps, hp.hc_iters, a_pre, a_post, a_comb, s, M);
+  k_hc_pre_norm(h, pre, w.attn_norm, E, eps, x, s, M);
   tap(taps, "attn_in", x, {E, 1});
   attention(L, x, y, M);
   tap(taps, "attn_out", y, {E, 1});
   mark("hc");
-  for (int t = 0; t < M; t++) k_hc_post(y + (size_t)t * E, ht(t), a_post + t * HC, a_comb + t * HC * HC, E, h2t(t), s);
+  k_hc_post(y, h, a_post, a_comb, E, h2, s, M);
   std::swap(h, h2);
-  for (int t = 0; t < M; t++) {
-    k_gemv_f32(w.hc_ffn_fn, MIX, E * HC, ht(t), mixes + t * MIX, partial, s);
-    k_hc_split(ht(t), E * HC, mixes + t * MIX, w.hc_ffn_scale, w.hc_ffn_base, eps, hp.hc_eps, hp.hc_iters, f_pre + t * HC,
-               f_post + t * HC, f_comb + t * HC * HC, s);
-  }
-  for (int t = 0; t < M; t++) k_hc_pre_norm(ht(t), a_pre + t * HC, w.ffn_norm, E, eps, d_moe.x + (size_t)t * E, s);
+  k_gemv_f32_m(w.hc_ffn_fn, MIX, E * HC, h, M, mixes, partial, s);
+  k_hc_split(h, E * HC, mixes, w.hc_ffn_scale, w.hc_ffn_base, eps, hp.hc_eps, hp.hc_iters, f_pre, f_post, f_comb, s, M);
+  k_hc_pre_norm(h, a_pre, w.ffn_norm, E, eps, d_moe.x, s, M);
   tap(taps, "ffn_in", d_moe.x, {E, 1});
   moe(L, y, M, taps);
   tap(taps, "ffn_out", y, {E, 1});
   mark("hc");
-  for (int t = 0; t < M; t++) k_hc_post(y + (size_t)t * E, ht(t), f_post + t * HC, f_comb + t * HC * HC, E, h2t(t), s);
+  k_hc_post(y, h, f_post, f_comb, E, h2, s, M);
   std::swap(h, h2);
   CHECK(hipMemcpyAsync(pre, f_pre, (size_t)M * HC * 4, hipMemcpyDeviceToDevice, s));
   tap(taps, "h_out", h, {E, HC, 1});

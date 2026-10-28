@@ -37,16 +37,22 @@ void k_rope(float* x, int n_heads, int head_dim, int rope_dim, const float* freq
 
 // ---- hyper-connections (Block.hc_mixes / hc_pre / hc_post, hc_split_sinkhorn) ----
 
+// All of them take M tokens, one block (row) per token, each exactly the single-token
+// computation; per token: h [hc][n] (n_flat = hc * n), mixes [(2 + hc) * hc], pre and post
+// [hc], comb [hc][hc], x [n].
+//
 // mixes[24] = hc_fn . h_flat (from k_gemv_f32, *not* yet scaled by the RMS statistic); this
 // computes rsqrt(mean(h_flat^2) + eps) from h, then pre [hc], post [hc], comb [hc][hc] (src, dst).
 void k_hc_split(const float* h, int n_flat, const float* mixes, const float* scale, const float* base, float norm_eps,
-                float hc_eps, int iters, float* pre, float* post, float* comb, hipStream_t s);
+                float hc_eps, int iters, float* pre, float* post, float* comb, hipStream_t s, int M = 1);
 // x = rms(sum_j pre[j] h[j]) * w   (h: [hc][n])
-void k_hc_pre_norm(const float* h, const float* pre, const float* w, int n, float eps, float* x, hipStream_t s);
-// x = sum_j pre[j] h[j] without the norm (the final head collapse uses k_rms_norm after)
-void k_hc_pre(const float* h, const float* pre, int n, float* x, hipStream_t s);
+void k_hc_pre_norm(const float* h, const float* pre, const float* w, int n, float eps, float* x, hipStream_t s, int M = 1);
+// x = sum_j pre[j] h[j] without the norm (the final head collapse uses k_rms_norm after);
+// pre_stride 0: every token uses the same pre
+void k_hc_pre(const float* h, const float* pre, int n, float* x, hipStream_t s, int M = 1, int pre_stride = 4);
 // h_out[k] = x * post[k] + sum_j comb[j][k] * h[j]
-void k_hc_post(const float* x, const float* h, const float* post, const float* comb, int n, float* h_out, hipStream_t s);
+void k_hc_post(const float* x, const float* h, const float* post, const float* comb, int n, float* h_out, hipStream_t s,
+               int M = 1);
 
 // ---- attention ----
 

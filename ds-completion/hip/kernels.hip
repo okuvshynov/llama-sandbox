@@ -293,6 +293,11 @@ void k_rope(float* x, int n_heads, int head_dim, int rope_dim, const float* freq
 __global__ void hc_split_kernel(const float* h, int n_flat, const float* mixes, const float* scale, const float* base,
                                 float norm_eps, float hc_eps, int iters, float* pre, float* post, float* comb) {
   constexpr int HC = 4;
+  h += (size_t)blockIdx.x * n_flat;  // token blockIdx.x
+  mixes += blockIdx.x * (2 + HC) * HC;
+  pre += blockIdx.x * HC;
+  post += blockIdx.x * HC;
+  comb += blockIdx.x * HC * HC;
   float ss = 0;
   for (int i = threadIdx.x; i < n_flat; i += blockDim.x) ss += h[i] * h[i];
   const float r = rsqrtf(block_sum(ss) / n_flat + norm_eps);
@@ -317,12 +322,16 @@ __global__ void hc_split_kernel(const float* h, int n_flat, const float* mixes, 
 }
 
 void k_hc_split(const float* h, int n_flat, const float* mixes, const float* scale, const float* base, float norm_eps,
-                float hc_eps, int iters, float* pre, float* post, float* comb, hipStream_t s) {
-  hc_split_kernel<<<1, 1024, 0, s>>>(h, n_flat, mixes, scale, base, norm_eps, hc_eps, iters, pre, post, comb);
+                float hc_eps, int iters, float* pre, float* post, float* comb, hipStream_t s, int M) {
+  hc_split_kernel<<<M, 1024, 0, s>>>(h, n_flat, mixes, scale, base, norm_eps, hc_eps, iters, pre, post, comb);
 }
 
-__global__ void hc_pre_kernel(const float* h, const float* pre, const float* w, int n, float eps, float* x, bool norm) {
+__global__ void hc_pre_kernel(const float* h, const float* pre, int pre_stride, const float* w, int n, float eps, float* x,
+                              bool norm) {
   __shared__ float buf[8192];
+  h += (size_t)blockIdx.x * 4 * n;  // token blockIdx.x
+  pre += blockIdx.x * pre_stride;
+  x += (size_t)blockIdx.x * n;
   float ss = 0;
   for (int i = threadIdx.x; i < n; i += blockDim.x) {
     float v = 0;
@@ -334,16 +343,21 @@ __global__ void hc_pre_kernel(const float* h, const float* pre, const float* w, 
   for (int i = threadIdx.x; i < n; i += blockDim.x) x[i] = buf[i] * r * (w ? w[i] : 1.0f);
 }
 
-void k_hc_pre_norm(const float* h, const float* pre, const float* w, int n, float eps, float* x, hipStream_t s) {
-  hc_pre_kernel<<<1, 1024, 0, s>>>(h, pre, w, n, eps, x, true);
+void k_hc_pre_norm(const float* h, const float* pre, const float* w, int n, float eps, float* x, hipStream_t s, int M) {
+  hc_pre_kernel<<<M, 1024, 0, s>>>(h, pre, 4, w, n, eps, x, true);
 }
-void k_hc_pre(const float* h, const float* pre, int n, float* x, hipStream_t s) {
-  hc_pre_kernel<<<1, 1024, 0, s>>>(h, pre, nullptr, n, 0.0f, x, false);
+void k_hc_pre(const float* h, const float* pre, int n, float* x, hipStream_t s, int M, int pre_stride) {
+  hc_pre_kernel<<<M, 1024, 0, s>>>(h, pre, pre_stride, nullptr, n, 0.0f, x, false);
 }
 
 __global__ void hc_post_kernel(const float* x, const float* h, const float* post, const float* comb, int n, float* out) {
-  const int i = blockIdx.x * blockDim.x + threadIdx.x;
+  const int i = blockIdx.x * blockDim.x + threadIdx.x, t = blockIdx.y;  // element, token
   if (i >= n) return;
+  x += (size_t)t * n;
+  h += (size_t)t * 4 * n;
+  post += t * 4;
+  comb += t * 16;
+  out += (size_t)t * 4 * n;
   for (int k = 0; k < 4; k++) {
     float v = x[i] * post[k];
     for (int j = 0; j < 4; j++) v += comb[j * 4 + k] * h[(size_t)j * n + i];
@@ -351,8 +365,9 @@ __global__ void hc_post_kernel(const float* x, const float* h, const float* post
   }
 }
 
-void k_hc_post(const float* x, const float* h, const float* post, const float* comb, int n, float* h_out, hipStream_t s) {
-  hc_post_kernel<<<cdiv(n, 256), 256, 0, s>>>(x, h, post, comb, n, h_out);
+void k_hc_post(const float* x, const float* h, const float* post, const float* comb, int n, float* h_out, hipStream_t s,
+               int M) {
+  hc_post_kernel<<<dim3(cdiv(n, 256), M), 256, 0, s>>>(x, h, post, comb, n, h_out);
 }
 
 // ================================================================== attention
