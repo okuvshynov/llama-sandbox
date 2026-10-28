@@ -13,6 +13,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <map>
 #include <cmath>
 #include <cstring>
 #include <stdexcept>
@@ -179,43 +180,45 @@ DSpark::DSpark(Runtime& r, const std::string& path) : rt(r) {
   }
   main_x = dz(E);
   hblk = dz((size_t)B * HC * E);
-  h2 = dz((size_t)HC * E);
+  h2 = dz((size_t)B * HC * E);
   pre = dz((size_t)B * HC);
   a_pre = dz((size_t)B * HC);
   a_post = dz((size_t)B * HC);
   a_comb = dz((size_t)B * HC * HC);
-  f_post = dz(HC);
-  f_comb = dz(HC * HC);
-  mixes = dz((2 + HC) * HC);
+  f_post = dz((size_t)B * HC);
+  f_comb = dz((size_t)B * HC * HC);
+  mixes = dz((size_t)B * (2 + HC) * HC);
   xa = dz((size_t)B * E);
-  t1 = dz(hp.q_lora);
-  qr = dz(hp.q_lora);
+  t1 = dz((size_t)B * hp.q_lora);
+  qr = dz((size_t)B * hp.q_lora);
   qblk = dz((size_t)B * NH * HD);
-  kvv = dz(HD);
+  kvv = dz((size_t)B * HD);
   kvblk = dz((size_t)B * HD);
-  o = dz(NH * HD);
-  oa = dz(hp.o_groups * hp.o_lora);
-  y = dz(E);
-  ysh = dz(E);
-  yr = dz(E);
-  gate = dz(F);
-  up = dz(F);
-  act = dz(F);
-  rlog = dz(n_expert);
-  rw = dz(8);
+  o = dz((size_t)B * NH * HD);
+  oa = dz((size_t)B * hp.o_groups * hp.o_lora);
+  y = dz((size_t)B * E);
+  ysh = dz((size_t)B * E);
+  yr = dz((size_t)B * E);
+  gate = dz((size_t)B * F);
+  up = dz((size_t)B * F);
+  act = dz((size_t)B * F);
+  rlog = dz((size_t)B * n_expert);
+  rw = dz((size_t)B * 8);
   xfin = dz((size_t)B * E);
-  xn = dz(E);
+  xn = dz((size_t)B * E);
   logits = dz((size_t)B * V);
   mbias = dz(V);
-  memb = dz(rank);
-  rids = (int*)dz(8);
+  memb = dz((size_t)B * rank);
+  rids = (int*)dz((size_t)B * 8);
+  d_ids = (int*)dz(B + 1);
+  markov_w1_dev = (const uint16_t*)upload(markov_w1.data(), markov_w1.size() * 2);
   {
     std::vector<int> v(B);
     for (int i = 0; i < B; i++) v[i] = i;
     iota5 = (int*)upload(v.data(), B * 4);
   }
   for (int i = 0; i < n_layer; i++) rings.push_back(dz((size_t)hp.window * HD));
-  CHECK(hipMalloc(&moe_scratch, fp4_moe_scratch_bytes(E, F, n_used)));
+  CHECK(hipMalloc(&moe_scratch, fp4_moe_scratch_bytes(E, F, n_used, B)));
   owned.push_back(moe_scratch);
   fprintf(stderr, "# dspark: %d layers, block %d, %d experts top-%d, targets", n_layer, block_size, n_expert, n_used);
   for (int t : target_layers) fprintf(stderr, " %d", t);
@@ -261,134 +264,183 @@ void DSpark::seed(int pos, const float* hidden) {
   }
 }
 
+// The block's positions go through each layer together: projections, mixes, experts and the
+// head as multi-token calls (one weight read; every kernel bit-identical per row to its
+// single-row form, so the drafts are the same as one position at a time). Attention per
+// position, after every position's K/V is written. The Markov step runs on the GPU (row gather,
+// bias GEMV, argmax), left to right; one host sync at the end.
 DraftResult DSpark::draft(int32_t anchor, int pos, bool keep_logits) {
   const Hparams& hp = rt.hp;
   const int E = hp.n_embd, HC = hp.hc_mult, HD = hp.head_dim, NH = hp.n_head, RD = hp.rope_dim, F = hp.n_ff_exp;
-  const int B = block_size;
+  const int B = block_size, MIX = (2 + HC) * HC;
   const int64_t V = hp.n_vocab;
   const float eps = hp.rms_eps;
   hipStream_t s = rt.s;
   const float* freqs = rt.freqs_buf;  // window-only layers: rope_base, no YaRN
-  auto g8 = [&](const Fp8& w, Runtime::Codes c, float* out, int rpg = 0) {
-    rt.gemv8(Runtime::Fp8W{w.q, w.s, w.N, w.K}, c, out, rpg);
+  auto g8 = [&](const Fp8& w, Runtime::Codes c, float* out, int rpg, int M) {
+    rt.gemv8(Runtime::Fp8W{w.q, w.s, w.N, w.K}, c, out, rpg, M);
   };
-
+  auto hj = [&](int j) { return hblk + (size_t)j * HC * E; };
+  // DS_DRAFT_PROFILE=1: GPU time per part of the draft, summed over the run, printed at exit
+  static const bool prof = getenv("DS_DRAFT_PROFILE") != nullptr;
+  static std::map<std::string, double> prof_ms;
+  static int prof_n = 0;
+  static std::vector<std::pair<std::string, hipEvent_t>> ev;
+  size_t ev_i = 0;
+  auto mark = [&](const char* name) {
+    if (!prof) return;
+    if (ev_i == ev.size()) {
+      hipEvent_t e;
+      CHECK(hipEventCreate(&e));
+      ev.emplace_back(name, e);
+    }
+    ev[ev_i].first = name;
+    CHECK(hipEventRecord(ev[ev_i].second, s));
+    ev_i++;
+  };
+  mark("embed");
   // the block's input: [anchor, noise, ...] embedded, hc copies, identity pre-mix
   {
     std::vector<float> emb((size_t)B * E), one_hot((size_t)B * HC, 0.0f);
+    std::vector<int32_t> ids(B + 1, noise_id);
+    ids[0] = anchor;
     for (int j = 0; j < B; j++) {
-      const int32_t id = j == 0 ? anchor : noise_id;
-      const ggml_bf16_t* row = (const ggml_bf16_t*)((const char*)rt.m.tok_embd->data + (size_t)id * rt.m.tok_embd->nb[1]);
+      const ggml_bf16_t* row = (const ggml_bf16_t*)((const char*)rt.m.tok_embd->data + (size_t)ids[j] * rt.m.tok_embd->nb[1]);
       for (int i = 0; i < E; i++) emb[(size_t)j * E + i] = ggml_bf16_to_fp32(row[i]);
       one_hot[(size_t)j * HC] = 1.0f;
     }
     CHECK(hipMemcpyAsync(xa, emb.data(), emb.size() * 4, hipMemcpyHostToDevice, s));
     CHECK(hipMemcpyAsync(pre, one_hot.data(), one_hot.size() * 4, hipMemcpyHostToDevice, s));
-    for (int j = 0; j < B; j++) k_repeat(xa + (size_t)j * E, E, HC, hblk + (size_t)j * HC * E, s);
+    CHECK(hipMemcpyAsync(d_ids, ids.data(), 4, hipMemcpyHostToDevice, s));  // the anchor; the rest are drafted
+    for (int j = 0; j < B; j++) k_repeat(xa + (size_t)j * E, E, HC, hj(j), s);
   }
-  auto hj = [&](int j) { return hblk + (size_t)j * HC * E; };
   std::vector<float> dbg;  // debug_log: [layer][attn_in, attn_out, ffn_in, ffn_out][block][E]
-  auto keep = [&](size_t l, int what, int j, const float* d) {
+  auto keep = [&](size_t l, int what, const float* d) {
     if (!debug_log) return;
     dbg.resize(L.size() * 4 * B * E);
-    CHECK(hipMemcpyAsync(dbg.data() + ((l * 4 + what) * B + j) * E, d, E * 4, hipMemcpyDeviceToHost, s));
+    CHECK(hipMemcpyAsync(dbg.data() + (l * 4 + what) * B * E, d, (size_t)B * E * 4, hipMemcpyDeviceToHost, s));
     CHECK(hipStreamSynchronize(s));
   };
 
   for (size_t l = 0; l < L.size(); l++) {
     const LayerW& w = L[l];
-    // attention: q and K/V for every block position first (the block attends to itself both ways)
+    mark("hc");
+    // attention: mixes, then q and K/V for every block position (it attends to itself both ways)
+    k_gemv_f32_m(w.hc_attn_fn, MIX, E * HC, hblk, B, mixes, rt.partial, s);
     for (int j = 0; j < B; j++) {
-      const int pj = pos + 1 + j;
-      k_gemv_f32(w.hc_attn_fn, (2 + HC) * HC, E * HC, hj(j), mixes, rt.partial, s);
-      k_hc_split(hj(j), E * HC, mixes, w.hc_attn_scale, w.hc_attn_base, eps, hp.hc_eps, hp.hc_iters, a_pre + j * HC,
+      k_hc_split(hj(j), E * HC, mixes + j * MIX, w.hc_attn_scale, w.hc_attn_base, eps, hp.hc_eps, hp.hc_iters, a_pre + j * HC,
                  a_post + j * HC, a_comb + j * HC * HC, s);
-      float* x = xa + (size_t)j * E;
-      k_hc_pre_norm(hj(j), pre + j * HC, w.attn_norm, E, eps, x, s);
-      keep(l, 0, j, x);
-      rt.quant(x, E, rt.A);
-      g8(w.q_a, rt.A, t1);
-      k_rms_norm(t1, w.q_a_norm, qr, hp.q_lora, 1, eps, s);
-      rt.quant(qr, hp.q_lora, rt.B);
-      float* qj = qblk + (size_t)j * NH * HD;
-      g8(w.q_b, rt.B, qj);
-      k_rope(qj, NH, HD, RD, freqs, pj, false, s);
-      g8(w.kv, rt.A, kvv);
-      k_kv_finish(kvv, w.kv_norm, HD, RD, freqs, pj, eps, kvblk + (size_t)j * HD, s);
+      k_hc_pre_norm(hj(j), pre + j * HC, w.attn_norm, E, eps, xa + (size_t)j * E, s);
     }
+    keep(l, 0, xa);
+    mark("attn.proj");
+    rt.quant(xa, E, rt.A, B);
+    g8(w.q_a, rt.A, t1, 0, B);
+    k_rms_norm(t1, w.q_a_norm, qr, hp.q_lora, B, eps, s);
+    rt.quant(qr, hp.q_lora, rt.B, B);
+    g8(w.q_b, rt.B, qblk, 0, B);
+    g8(w.kv, rt.A, kvv, 0, B);
     for (int j = 0; j < B; j++) {
       const int pj = pos + 1 + j;
-      // window ring (main positions <= pos) + all block positions
-      k_attn_decode(qblk + (size_t)j * NH * HD, NH, HD, rings[l], hp.window, pos, kvblk, iota5, B, w.sinks,
-                    1.0f / sqrtf((float)HD), o, rt.att_scratch, s);
-      k_rope(o, NH, HD, RD, freqs, pj, true, s);
-      rt.quant(o, NH * HD, rt.B);
-      g8(w.out_a, rt.B, oa, hp.o_lora);
-      rt.quant(oa, hp.o_groups * hp.o_lora, rt.B);
-      g8(w.out_b, rt.B, y);
-      keep(l, 1, j, y);
-      k_hc_post(y, hj(j), a_post + j * HC, a_comb + j * HC * HC, E, h2, s);
-      CHECK(hipMemcpyAsync(hj(j), h2, (size_t)HC * E * 4, hipMemcpyDeviceToDevice, s));
+      k_rope(qblk + (size_t)j * NH * HD, NH, HD, RD, freqs, pj, false, s);
+      k_kv_finish(kvv + (size_t)j * HD, w.kv_norm, HD, RD, freqs, pj, eps, kvblk + (size_t)j * HD, s);
     }
-    // FFN, per block position: routed (3 of 128, on this die) + shared
+    mark("attn.core");
     for (int j = 0; j < B; j++) {
-      k_gemv_f32(w.hc_ffn_fn, (2 + HC) * HC, E * HC, hj(j), mixes, rt.partial, s);
-      k_hc_split(hj(j), E * HC, mixes, w.hc_ffn_scale, w.hc_ffn_base, eps, hp.hc_eps, hp.hc_iters, pre + j * HC, f_post,
-                 f_comb, s);  // pre <- ffn_pre: the next layer's attention mix
-      float* x = xa + (size_t)j * E;
-      k_hc_pre_norm(hj(j), a_pre + j * HC, w.ffn_norm, E, eps, x, s);
-      keep(l, 2, j, x);
-      k_gemv_f32(w.gate_inp, n_expert, E, x, rlog, rt.partial, s);
-      k_router(rlog, w.gate_bias, n_expert, n_used, route_norm, route_scale, rids, rw, s);
-      fp4_moe(w.ex, x, rids, rw, n_used, w.clamp, yr, moe_scratch, s);
-      rt.quant(x, E, rt.A);
-      g8(w.gate_sh, rt.A, gate);
-      g8(w.up_sh, rt.A, up);
-      k_swiglu(gate, up, w.clamp_sh, F, act, s);
-      rt.quant(act, F, rt.B);
-      g8(w.down_sh, rt.B, ysh);
-      const float* parts[1] = {yr};
-      k_add_parts(ysh, parts, 1, y, E, s);
-      keep(l, 3, j, y);
-      k_hc_post(y, hj(j), f_post, f_comb, E, h2, s);
-      CHECK(hipMemcpyAsync(hj(j), h2, (size_t)HC * E * 4, hipMemcpyDeviceToDevice, s));
+      // window ring (main positions <= pos) + all block positions
+      float* oj = o + (size_t)j * NH * HD;
+      k_attn_decode(qblk + (size_t)j * NH * HD, NH, HD, rings[l], hp.window, pos, kvblk, iota5, B, w.sinks,
+                    1.0f / sqrtf((float)HD), oj, rt.att_scratch, s);
+      k_rope(oj, NH, HD, RD, freqs, pos + 1 + j, true, s);
     }
+    mark("attn.out");
+    rt.quant(o, NH * HD, rt.B, B);
+    g8(w.out_a, rt.B, oa, hp.o_lora, B);
+    rt.quant(oa, hp.o_groups * hp.o_lora, rt.B, B);
+    g8(w.out_b, rt.B, y, 0, B);
+    keep(l, 1, y);
+    for (int j = 0; j < B; j++) k_hc_post(y + (size_t)j * E, hj(j), a_post + j * HC, a_comb + j * HC * HC, E, h2 + (size_t)j * HC * E, s);
+    std::swap(hblk, h2);
+    // FFN: routed (3 of 128, on this die) + shared, every block position at once
+    mark("hc");
+    k_gemv_f32_m(w.hc_ffn_fn, MIX, E * HC, hblk, B, mixes, rt.partial, s);
+    for (int j = 0; j < B; j++) {
+      k_hc_split(hj(j), E * HC, mixes + j * MIX, w.hc_ffn_scale, w.hc_ffn_base, eps, hp.hc_eps, hp.hc_iters, pre + j * HC,
+                 f_post + j * HC, f_comb + j * HC * HC, s);  // pre <- ffn_pre: the next layer's attention mix
+      k_hc_pre_norm(hj(j), a_pre + j * HC, w.ffn_norm, E, eps, xa + (size_t)j * E, s);
+    }
+    keep(l, 2, xa);
+    mark("ffn.routed");
+    k_gemv_f32_m(w.gate_inp, n_expert, E, xa, B, rlog, rt.partial, s);
+    for (int j = 0; j < B; j++)
+      k_router(rlog + (size_t)j * n_expert, w.gate_bias, n_expert, n_used, route_norm, route_scale, rids + j * 8, rw + j * 8, s);
+    fp4_moe_chunk(w.ex, xa, ExpertSel{rids, rw, nullptr, 8}, n_used, B, w.clamp, yr, moe_scratch, s);
+    mark("ffn.shared");
+    rt.quant(xa, E, rt.A, B);
+    g8(w.gate_sh, rt.A, gate, 0, B);
+    g8(w.up_sh, rt.A, up, 0, B);
+    k_swiglu(gate, up, w.clamp_sh, B * F, act, s);
+    rt.quant(act, F, rt.B, B);
+    g8(w.down_sh, rt.B, ysh, 0, B);
+    for (int j = 0; j < B; j++) {
+      const float* parts[1] = {yr + (size_t)j * E};
+      k_add_parts(ysh + (size_t)j * E, parts, 1, y + (size_t)j * E, E, s);
+    }
+    keep(l, 3, y);
+    for (int j = 0; j < B; j++) k_hc_post(y + (size_t)j * E, hj(j), f_post + j * HC, f_comb + j * HC * HC, E, h2 + (size_t)j * HC * E, s);
+    std::swap(hblk, h2);
   }
   if (debug_log) {
     fwrite(dbg.data(), 4, dbg.size(), debug_log);
     fclose(debug_log);
     debug_log = nullptr;
   }
-  // head: collapse, the draft's norm, the main model's head
-  for (int j = 0; j < B; j++) {
-    k_hc_pre(hj(j), pre + j * HC, E, xfin + (size_t)j * E, s);
-    k_rms_norm(xfin + (size_t)j * E, out_norm, xn, E, 1, eps, s);
-    k_gemv_bf16(rt.out_w, (int)V, E, xn, logits + (size_t)j * V, rt.partial, s);
-  }
-  std::vector<float> xf((size_t)B * E);
-  CHECK(hipMemcpyAsync(xf.data(), xfin, xf.size() * 4, hipMemcpyDeviceToHost, s));
-
-  // Markov head, left to right: bias from the previous token's rank-256 embedding, then greedy
-  DraftResult r;
-  r.ids.assign(B + 1, 0);
-  r.ids[0] = anchor;
-  r.conf.resize(B);
-  if (keep_logits) r.logits.resize((size_t)B * V);
-  std::vector<float> lg(V), emb(rank);
+  mark("head");
+  // head: collapse, the draft's norm, the main model's head (one read for the whole block)
+  for (int j = 0; j < B; j++) k_hc_pre(hj(j), pre + j * HC, E, xfin + (size_t)j * E, s);
+  k_rms_norm(xfin, out_norm, xn, E, B, eps, s);
+  k_gemv_bf16_m(rt.out_w, (int)V, E, xn, B, logits, rt.partial, s);
+  // Markov head, left to right on the GPU: bias from the previous token's rank-256 embedding,
+  // then greedy
+  mark("markov");
   for (int i = 0; i < B; i++) {
-    const uint16_t* row = markov_w1.data() + (size_t)r.ids[i] * rank;
-    for (int k = 0; k < rank; k++) emb[k] = bf16f(row[k]);
-    CHECK(hipMemcpyAsync(memb, emb.data(), rank * 4, hipMemcpyHostToDevice, s));
-    k_gemv_bf16(markov_w2, (int)V, rank, memb, mbias, rt.partial, s);
+    float* lg = logits + (size_t)i * V;
+    k_gather_bf16_row(markov_w1_dev, d_ids + i, rank, memb + (size_t)i * rank, s);
+    k_gemv_bf16(markov_w2, (int)V, rank, memb + (size_t)i * rank, mbias, rt.partial, s);
     const float* parts[1] = {mbias};
-    k_add_parts(logits + (size_t)i * V, parts, 1, logits + (size_t)i * V, (int)V, s);
-    CHECK(hipMemcpyAsync(lg.data(), logits + (size_t)i * V, V * 4, hipMemcpyDeviceToHost, s));
-    CHECK(hipStreamSynchronize(s));
-    r.ids[i + 1] = (int32_t)(std::max_element(lg.begin(), lg.end()) - lg.begin());  // first max, as argmax
-    if (keep_logits) std::copy(lg.begin(), lg.end(), r.logits.begin() + (size_t)i * V);
+    k_add_parts(lg, parts, 1, lg, (int)V, s);
+    k_argmax(lg, (int)V, d_ids + i + 1, s);
+  }
+  mark("copy");
+  DraftResult r;
+  r.ids.resize(B + 1);
+  std::vector<float> xf((size_t)B * E), emb((size_t)B * rank);
+  CHECK(hipMemcpyAsync(r.ids.data(), d_ids, (B + 1) * 4, hipMemcpyDeviceToHost, s));
+  CHECK(hipMemcpyAsync(xf.data(), xfin, xf.size() * 4, hipMemcpyDeviceToHost, s));
+  CHECK(hipMemcpyAsync(emb.data(), memb, emb.size() * 4, hipMemcpyDeviceToHost, s));
+  if (keep_logits) {
+    r.logits.resize((size_t)B * V);
+    CHECK(hipMemcpyAsync(r.logits.data(), logits, r.logits.size() * 4, hipMemcpyDeviceToHost, s));
+  }
+  mark("end");
+  CHECK(hipStreamSynchronize(s));
+  if (prof) {
+    for (size_t i = 0; i + 1 < ev_i; i++) {
+      float ms;
+      CHECK(hipEventElapsedTime(&ms, ev[i].second, ev[i + 1].second));
+      prof_ms[ev[i].first] += ms;
+    }
+    if (++prof_n % 20 == 0) {
+      fprintf(stderr, "\n# draft GPU time per call (%d calls):", prof_n);
+      for (auto& [k, v] : prof_ms) fprintf(stderr, " %s %.2f", k.c_str(), v / prof_n);
+      fprintf(stderr, "\n");
+    }
+  }
+  r.conf.resize(B);
+  for (int i = 0; i < B; i++) {
     float c = 0.0f;
     for (int k = 0; k < E; k++) c += conf_proj[k] * xf[(size_t)i * E + k];
-    for (int k = 0; k < rank; k++) c += conf_proj[E + k] * emb[k];
+    for (int k = 0; k < rank; k++) c += conf_proj[E + k] * emb[(size_t)i * rank + k];
     r.conf[i] = c;
   }
   return r;

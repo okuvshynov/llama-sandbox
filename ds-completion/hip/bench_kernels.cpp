@@ -69,7 +69,19 @@ static int bitwise_tests(hipStream_t s) {
         CHECK(hipStreamSynchronize(s));
         diff += memcmp(h1.data(), hM.data() + (size_t)m * c.N, c.N * 4) != 0;
       }
-      printf("%-28s M=%d: %s\n", c.name, M, diff ? "DIFFERS from single-input" : "bit-identical");
+      hipEvent_t a0, a1;
+      CHECK(hipEventCreate(&a0));
+      CHECK(hipEventCreate(&a1));
+      CHECK(hipEventRecord(a0, s));
+      for (int r = 0; r < 20; r++) {
+        if (c.bf16) k_gemv_bf16_m((const uint16_t*)w, c.N, c.K, x, M, yM, part, s);
+        else k_gemv_f32_m((const float*)w, c.N, c.K, x, M, yM, part, s);
+      }
+      CHECK(hipEventRecord(a1, s));
+      CHECK(hipEventSynchronize(a1));
+      float ms;
+      CHECK(hipEventElapsedTime(&ms, a0, a1));
+      printf("%-28s M=%d: %s  %.0f us\n", c.name, M, diff ? "DIFFERS from single-input" : "bit-identical", ms * 1000 / 20);
       bad += diff != 0;
     }
     for (void* p : {w, (void*)x, (void*)y1, (void*)yM, (void*)part}) CHECK(hipFree(p));

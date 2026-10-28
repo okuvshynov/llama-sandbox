@@ -14,3 +14,13 @@ code-rust  n=5: 14.71 t/s  output identical  (61 verify steps, 3.92 drafts accep
 concurrency  n=1: 16.41  n=2: 16.75  n=3: 15.33  n=4: 13.77  n=5: 12.05 t/s   (plain, no draft loaded: 19.91)
 code-rust    n=1: 15.68  n=2: 17.72  n=3: 18.01  n=4: 17.46  n=5: 17.46 t/s   (plain, no draft loaded: 17.66)
 # verify step of 6 tokens (chat, median): 207 ms (was 267): cpu experts 70, hc 25, attn.core 20, attn.out 20, shared 16, router 11, head 10
+# after the faster draft (phase 3: block positions batched, Markov + argmax on the GPU, head GEMV
+# reusing activations over rows); draft 26 -> 13.1 ms; output identical to plain greedy (same binary) in every run
+#              plain*  n=1    n=2    n=3    n=4    n=5   t/s
+concurrency    20.79   19.23  18.84  18.17  15.74  14.16
+code-rust      17.62   17.39  18.65  18.35  18.72  17.92
+math-proof     20.35   19.91  20.49  19.67  18.16  16.83
+zh-essay       16.62   14.25  12.64  10.63   9.12   7.70
+# * plain without the draft loaded (die 0 then holds a few more experts)
+# draft GPU time per call (ms): head 4.34, ffn.routed 2.42, markov 1.29, attn.out 1.29, hc 1.07, attn.core 0.90,
+#   attn.proj 0.85, ffn.shared 0.81, copy 0.27, embed 0.19 (DS_DRAFT_PROFILE=1)

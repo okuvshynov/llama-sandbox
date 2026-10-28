@@ -79,7 +79,8 @@ class DSpark {
   float *main_x, *hblk, *h2, *pre, *a_pre, *a_post, *a_comb, *f_post, *f_comb, *mixes;
   float *xa, *t1, *qr, *qblk, *kvv, *kvblk, *o, *oa, *y, *ysh, *yr, *gate, *up, *act, *rlog, *rw, *xfin, *xn;
   float *logits, *mbias, *memb;
-  int *rids, *iota5;
+  int *rids, *iota5, *d_ids;  // d_ids: the block's ids on the device [block + 1]
+  const uint16_t* markov_w1_dev = nullptr;  // device copy of the Markov embedding
   std::vector<float*> rings;  // [layer] window ring [window][head_dim]
   void* moe_scratch = nullptr;
 

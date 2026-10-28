@@ -121,24 +121,41 @@ void k_fq4(float* x, int n, bool e4m3_scale_16, hipStream_t s) {
 // ================================================================== matrix-vector
 
 // one wave per (row, K chunk); partial[split][row], then a reduction over the splits
-template <typename T>
-__device__ inline float load_dot(const T* w, const float* x, int k);
+// One load step of a GEMV lane: the activations (XV, loaded once and reusable for several rows)
+// against one row's weights. load_dot = dotw(load_x): every GEMV uses the same expression, so the
+// single- and multi-row kernels round identically.
+template <typename T> struct XV;
+template <> struct XV<float> { float4 a; };
+template <> struct XV<uint16_t> { float4 a, b; };
 
+template <typename T>
+__device__ inline XV<T> load_x(const float* x, int k);
 template <>
-__device__ inline float load_dot<float>(const float* w, const float* x, int k) {
-  const float4 a = *(const float4*)(w + k), b = *(const float4*)(x + k);
-  return a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w;
+__device__ inline XV<float> load_x<float>(const float* x, int k) { return {*(const float4*)(x + k)}; }
+template <>
+__device__ inline XV<uint16_t> load_x<uint16_t>(const float* x, int k) {
+  return {*(const float4*)(x + k), *(const float4*)(x + k + 4)};
 }
 
+template <typename T>
+__device__ inline float dotw(const T* w, int k, const XV<T>& x);
 template <>
-__device__ inline float load_dot<uint16_t>(const uint16_t* w, const float* x, int k) {  // 8 bf16
+__device__ inline float dotw<float>(const float* w, int k, const XV<float>& x) {
+  const float4 a = *(const float4*)(w + k), b = x.a;
+  return a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w;
+}
+template <>
+__device__ inline float dotw<uint16_t>(const uint16_t* w, int k, const XV<uint16_t>& x) {  // 8 bf16
   const uint4 a = *(const uint4*)(w + k);
-  const float4 b0 = *(const float4*)(x + k), b1 = *(const float4*)(x + k + 4);
+  const float4 b0 = x.a, b1 = x.b;
   auto lo = [](uint32_t v) { return __uint_as_float(v << 16); };
   auto hi = [](uint32_t v) { return __uint_as_float(v & 0xFFFF0000u); };
   return lo(a.x) * b0.x + hi(a.x) * b0.y + lo(a.y) * b0.z + hi(a.y) * b0.w + lo(a.z) * b1.x + hi(a.z) * b1.y +
          lo(a.w) * b1.z + hi(a.w) * b1.w;
 }
+
+template <typename T>
+__device__ inline float load_dot(const T* w, const float* x, int k) { return dotw<T>(w, k, load_x<T>(x, k)); }
 
 template <typename T, int VEC>
 __global__ void gemv_partial_kernel(const T* W, int N, int K, int chunk, const float* x, float* partial) {
@@ -171,24 +188,37 @@ static void gemv(const T* W, int N, int K, const float* x, float* y, float* part
   split_sum_kernel<<<cdiv(N, 256), 256, 0, s>>>(partial, N, splits, y);
 }
 
-// M inputs: the same rows, splits and lane order as gemv_partial_kernel, one accumulator per input
-template <typename T, int VEC, int M>
+// M inputs: the same splits and lane order as gemv_partial_kernel, one accumulator per input
+// and row. A wave takes R rows and loads each input's activations once per step for all of them
+// (without that, the activation loads, not the weights, bound a long matrix like the head).
+template <typename T, int VEC, int M, int R>
 __global__ void gemv_partial_m_kernel(const T* W, int N, int K, int chunk, const float* x, float* partial) {
-  const int row = blockIdx.x * 4 + (threadIdx.x >> 6), lane = threadIdx.x & 63;
-  if (row >= N) return;
+  const int row0 = (blockIdx.x * 4 + (threadIdx.x >> 6)) * R, lane = threadIdx.x & 63;
+  if (row0 >= N) return;
   const int k0 = blockIdx.y * chunk, k1 = min(K, k0 + chunk);
-  const T* wr = W + (size_t)row * K;
-  float acc[M];
+  float acc[R][M];
 #pragma unroll
-  for (int m = 0; m < M; m++) acc[m] = 0;
-  for (int k = k0 + lane * VEC; k < k1; k += 64 * VEC)
+  for (int r = 0; r < R; r++)
 #pragma unroll
-    for (int m = 0; m < M; m++) acc[m] += load_dot<T>(wr, x + (size_t)m * K, k);
+    for (int m = 0; m < M; m++) acc[r][m] = 0;
+  for (int k = k0 + lane * VEC; k < k1; k += 64 * VEC) {
+    XV<T> xv[M];
 #pragma unroll
-  for (int m = 0; m < M; m++) {
-    const float v = warp_sum(acc[m]);
-    if (lane == 0) partial[((size_t)m * gridDim.y + blockIdx.y) * N + row] = v;
+    for (int m = 0; m < M; m++) xv[m] = load_x<T>(x + (size_t)m * K, k);
+#pragma unroll
+    for (int r = 0; r < R; r++) {
+      const T* wr = W + (size_t)min(row0 + r, N - 1) * K;  // rows past N redo the last one, unwritten
+#pragma unroll
+      for (int m = 0; m < M; m++) acc[r][m] += dotw<T>(wr, k, xv[m]);
+    }
   }
+#pragma unroll
+  for (int r = 0; r < R; r++)
+#pragma unroll
+    for (int m = 0; m < M; m++) {
+      const float v = warp_sum(acc[r][m]);
+      if (lane == 0 && row0 + r < N) partial[((size_t)m * gridDim.y + blockIdx.y) * N + row0 + r] = v;
+    }
 }
 
 __global__ void split_sum_m_kernel(const float* partial, int N, int splits, float* y) {
@@ -205,9 +235,16 @@ static void gemv_m(const T* W, int N, int K, const float* x, int M, float* y, fl
   while (splits < kSplitMax && (int64_t)N * splits < 2048 && K / (splits * 2) >= 64 * VEC * 2) splits *= 2;
   const int step = 64 * VEC, chunk = cdiv(cdiv(K, splits), step) * step;
   splits = cdiv(K, chunk);
-  const dim3 grid(cdiv(N, 4), splits);
-  switch (M) {
-#define CASE(mm) case mm: gemv_partial_m_kernel<T, VEC, mm><<<grid, 256, 0, s>>>(W, N, K, chunk, x, partial); break;
+  // several rows per wave only when the rows alone fill the GPU many times over (the head)
+  // several rows per wave only when the rows alone fill the GPU many times over (the head);
+  // measured on the head (bench-kernels --bitwise): 4 rows best up to 3 inputs, 2 above
+  const int R = N < 16384 ? 1 : M <= 3 ? 4 : 2;
+  const dim3 grid(cdiv(N, 4 * R), splits);
+  switch (M * 8 + R) {
+#define CASE(mm)                                                                                                \
+  case mm * 8 + 1: gemv_partial_m_kernel<T, VEC, mm, 1><<<grid, 256, 0, s>>>(W, N, K, chunk, x, partial); break; \
+  case mm * 8 + 2: gemv_partial_m_kernel<T, VEC, mm, 2><<<grid, 256, 0, s>>>(W, N, K, chunk, x, partial); break; \
+  case mm * 8 + 4: gemv_partial_m_kernel<T, VEC, mm, 4><<<grid, 256, 0, s>>>(W, N, K, chunk, x, partial); break;
     CASE(1) CASE(2) CASE(3) CASE(4) CASE(5) CASE(6) CASE(7) CASE(8)
 #undef CASE
     default: throw std::runtime_error("gemv_m: M = " + std::to_string(M));
@@ -707,4 +744,37 @@ __global__ void repeat_kernel(const float* x, int n, int copies, float* y) {
 }
 void k_repeat(const float* x, int n, int copies, float* y, hipStream_t s) {
   repeat_kernel<<<cdiv(n, 256), 256, 0, s>>>(x, n, copies, y);
+}
+
+// ---- argmax (one block): lowest index among the maxima
+__global__ void argmax_kernel(const float* x, int n, int* out) {
+  __shared__ float bv[1024];
+  __shared__ int bi[1024];
+  float v = -INFINITY;
+  int idx = n;
+  for (int i = threadIdx.x; i < n; i += blockDim.x)
+    if (x[i] > v) { v = x[i]; idx = i; }  // strided scan: the first max of this thread's elements
+  bv[threadIdx.x] = v;
+  bi[threadIdx.x] = idx;
+  __syncthreads();
+  for (int o = blockDim.x / 2; o > 0; o >>= 1) {
+    if (threadIdx.x < o) {
+      const float ov = bv[threadIdx.x + o];
+      const int oi = bi[threadIdx.x + o];
+      if (ov > bv[threadIdx.x] || (ov == bv[threadIdx.x] && oi < bi[threadIdx.x])) { bv[threadIdx.x] = ov; bi[threadIdx.x] = oi; }
+    }
+    __syncthreads();
+  }
+  if (threadIdx.x == 0) *out = bi[0];
+}
+
+void k_argmax(const float* x, int n, int* out, hipStream_t s) { argmax_kernel<<<1, 1024, 0, s>>>(x, n, out); }
+
+__global__ void gather_bf16_row_kernel(const uint16_t* table, const int* row, int dim, float* y) {
+  const int k = blockIdx.x * blockDim.x + threadIdx.x;
+  if (k < dim) y[k] = __uint_as_float((uint32_t)table[(size_t)*row * dim + k] << 16);
+}
+
+void k_gather_bf16_row(const uint16_t* table, const int* row, int dim, float* y, hipStream_t s) {
+  gather_bf16_row_kernel<<<cdiv(dim, 256), 256, 0, s>>>(table, row, dim, y);
 }

@@ -109,3 +109,8 @@ void k_moe_dispatch(const int* ids, const float* w, int k, const int* table, int
 void k_add_parts(const float* a, const float* const* parts, int n, float* y, int len, hipStream_t s);
 // y[j][i] = x[i] for j < copies (the embedding into hc copies)
 void k_repeat(const float* x, int n, int copies, float* y, hipStream_t s);
+
+// *out = the index of the largest x[i] (the lowest such index on ties, as std::max_element)
+void k_argmax(const float* x, int n, int* out, hipStream_t s);
+// y[k] = bf16 table[*row][k] as f32, k < dim (a row picked by a device-side index)
+void k_gather_bf16_row(const uint16_t* table, const int* row, int dim, float* y, hipStream_t s);

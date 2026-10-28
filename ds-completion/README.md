@@ -1081,3 +1081,35 @@ model, keeps the matching prefix plus the main model's own next token, and commi
   head 10, the rest ~26; plus the 26 ms draft.
 - Also fixed on the way: an intermittent GPU memory fault at startup came from uploading experts
   straight from the mmap; uploads now go through pinned buffers (4x faster, step 20's commit).
+
+## Step 22: faster draft (phase 3)
+
+- The draft's 5 block positions go through each layer together: multi-token fp8 projections,
+  mixes, router, `fp4_moe_chunk` for the routed experts, shared expert and head (one weight read
+  per block instead of 5). Attention stays per position after every position's K/V is written.
+- The Markov head runs on the GPU, left to right: row gather of the previous token's rank-256
+  embedding, bias GEMV, add, argmax (`k_gather_bf16_row`, `k_argmax`: lowest index on ties, as
+  the host's `max_element`); one host sync per draft.
+- Multi-token GEMV for long matrices (the head, N >= 16384): a wave takes 4 rows (up to 3
+  inputs) or 2 rows (more) and loads each input's activations once for all of them. Same
+  expression per element (`load_x` + `dotw`), so still bit-identical to the single-input GEMV
+  (`bench-kernels --bitwise`); the head for 5 positions 9.8 -> 4.3 ms, for a 6-token verify
+  ~4.8 ms.
+- Draft 26 -> **13.1 ms**; its outputs (ids, confidences, logits) byte-identical to the previous
+  version on the reference sequence. `DS_DRAFT_PROFILE=1` prints its GPU time per part.
+- The draft now takes ~70 MB more on die 0 (4 fewer expert slots), which moves a few experts to
+  the CPU and so changes the plain output bits, like any placement change; the gate compares
+  `--spec` with plain greedy from the same binary and configuration (identical on 4 prompts x 5
+  draft lengths).
+- Speed (`results/spec-draft-length.txt`; plain = no draft loaded):
+
+| | plain | n=1 | n=2 | n=3 | n=4 | n=5 |
+|---|---|---|---|---|---|---|
+| chat (concurrency) | **20.8** | 19.2 | 18.8 | 18.2 | 15.7 | 14.2 |
+| code (code-rust) | 17.6 | 17.4 | 18.7 | 18.4 | **18.7** | 17.9 |
+| math (think) | 20.4 | 19.9 | **20.5** | 19.7 | 18.2 | 16.8 |
+| zh essay | **16.6** | 14.3 | 12.6 | 10.6 | 9.1 | 7.7 |
+
+  Roughly break-even: code +6%, math +1%, chat -8%, zh -14%. The verify step (~200 ms for 6
+  tokens vs ~48 ms per plain token) still costs too much per extra token; next are the verify
+  side's per-token kernels (hyper-connections, fp8 activation decoding) and CPU misses.
