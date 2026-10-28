@@ -117,7 +117,11 @@ Phases:
 
 0. **Precondition:** batched kernels must give each token the same bits as single-token runs
    (fp8 GEMV: lanes per row do not depend on M; rows per wave change at M >= 4). Gate: M = 1
-   vs M = 6 outputs bitwise equal, for every batched kernel.
+   vs M = 6 outputs bitwise equal, for every batched kernel. Done for the fp8 GEMV: all 9 dense
+   shapes x M = 2..8 bit-identical to single-token calls, including the switch to 4 rows per
+   wave at M >= 4 (`bench-fp8 --bitwise`, `results/fp8-batch-bitwise.txt`; a control checks
+   the test can see a difference). The kernels still to be batched (bf16 head, f32 GEMVs,
+   hc/norm/rope rows, fp4 expert pairs) get the same test when written in phase 2.
 1. **Verify loop, no batching:** the chunk's tokens through today's single-token path one by
    one; rollback by saving/restoring window slots; accept logic; draft re-anchoring. Gate:
    speculative = plain greedy output, several prompts, 256+ tokens, past the 128-token window

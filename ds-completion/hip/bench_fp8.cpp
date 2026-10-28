@@ -7,6 +7,8 @@
 //   - y must match a double-precision host result of the same fp8 x fp8 math (expect ~1e-7: only
 //     the order of fp32 additions differs);
 //   - time per call (events, back to back) and weight GB/s against the ~880 GB/s HBM ceiling.
+// --bitwise: instead, for M = 2..8, every token's result of one M-token call must equal a
+// single-token call on that token bit for bit (batched verification relies on it).
 
 #include "fp8_gemv.h"
 #include "fakequant.h"
@@ -40,7 +42,7 @@ int main(int argc, char** argv) {
   setvbuf(stdout, nullptr, _IOLBF, 0);
   if (argc < 2) { fprintf(stderr, "usage: bench-fp8 <dense-fp8.gguf> [--dev D] [--layer L] [--ms 1,2,4,8] [--reps N]\n"); return 2; }
   int dev = 0, layer = 2, reps = 200;
-  bool sweep = false;
+  bool sweep = false, bitwise = false;
   std::vector<int> ms = {1, 2, 4, 8};
   for (int i = 2; i < argc; i++) {
     std::string a = argv[i];
@@ -48,6 +50,7 @@ int main(int argc, char** argv) {
     else if (a == "--layer") layer = atoi(argv[++i]);
     else if (a == "--reps") reps = atoi(argv[++i]);
     else if (a == "--sweep") sweep = true;
+    else if (a == "--bitwise") bitwise = true;
     else if (a == "--ms") { ms.clear(); for (char* p = argv[++i]; *p;) { ms.push_back((int)strtol(p, &p, 10)); if (*p == ',') p++; } }
   }
   CHECK(hipSetDevice(dev));
@@ -121,6 +124,34 @@ int main(int argc, char** argv) {
       for (size_t i = 0; i < hs.size(); i++) qbad += gs[i] != hs[i];
 
       Fp8Act act = {dxq, dxs};
+      if (bitwise) {
+        // every token of the M-token call against a one-token call on that token alone
+        float* dy1;
+        CHECK(hipMalloc(&dy1, (size_t)N * 4));
+        fp8_gemv(dw, ds, N, K, rpg, act, M, dy, st);
+        std::vector<float> yM((size_t)M * N), y1(N);
+        CHECK(hipMemcpyAsync(yM.data(), dy, yM.size() * 4, hipMemcpyDeviceToHost, st));
+        long diff = 0;
+        for (int m = 0; m < M; m++) {
+          Fp8Act a1 = {dxq + (size_t)m * Kt, dxs + (size_t)m * Kt / 32};
+          fp8_gemv(dw, ds, N, K, rpg, a1, 1, dy1, st);
+          CHECK(hipMemcpyAsync(y1.data(), dy1, N * 4, hipMemcpyDeviceToHost, st));
+          CHECK(hipStreamSynchronize(st));
+          diff += memcmp(y1.data(), yM.data() + (size_t)m * N, N * 4) ? 1 : 0;
+          if (m == 0 && M > 1) {  // control: token 1's own result must differ from token 0's
+            std::vector<float> yo(N);
+            Fp8Act ao = {dxq + (size_t)Kt, dxs + (size_t)Kt / 32};
+            fp8_gemv(dw, ds, N, K, rpg, ao, 1, dy1, st);
+            CHECK(hipMemcpyAsync(yo.data(), dy1, N * 4, hipMemcpyDeviceToHost, st));
+            CHECK(hipStreamSynchronize(st));
+            if (!memcmp(yo.data(), yM.data(), N * 4)) { printf("control failed: tokens 0 and 1 give the same bits\n"); return 1; }
+          }
+        }
+        printf("%-18s %6d %6d %3d %s\n", sh.name, K, N, M, diff ? "DIFFERS from M = 1" : "bit-identical to M = 1");
+        CHECK(hipFree(dy1));
+        CHECK(hipFree(dx)); CHECK(hipFree(dxq)); CHECK(hipFree(dxs)); CHECK(hipFree(dy));
+        continue;
+      }
       fp8_gemv(dw, ds, N, K, rpg, act, M, dy, st);
       std::vector<float> y((size_t)M * N);
       CHECK(hipMemcpyAsync(y.data(), dy, y.size() * 4, hipMemcpyDeviceToHost, st));
