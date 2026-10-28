@@ -137,7 +137,9 @@ Phases:
 3. **Faster draft:** the head read once for 5 positions, Markov step and argmax on the GPU.
    26 -> ~6 ms.
 4. **Draft length from the confidence head:** verify fewer tokens when unsure (output stays
-   greedy).
+   greedy). **Done** (README step 25): sigmoid(conf) is calibrated as is; per step the n with
+   the most expected tokens per ms (running cost averages), plus a backoff that skips the
+   draft after n = 0. Chat +9%, code +25%, math +14% vs plain; zh -4%.
 5. **Measure and document:** held-out prompts, study30 and oracle placements, profiles.
 
 Expected per verify step (6 tokens, sclk 2, after phases 2-3): fp8 GEMVs ~31 ms, head + small

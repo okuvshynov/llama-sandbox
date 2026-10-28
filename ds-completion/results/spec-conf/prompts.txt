@@ -1,0 +1,6 @@
+french-rev|chat|Summarize the main causes of the French Revolution.
+py-intervals|chat|Write a Python function that merges overlapping intervals, with tests, and explain its complexity.
+cubic|think|Find all real solutions of x^3 - 6x^2 + 11x - 6 = 0 and verify them.
+zh-quantum|chat|请用通俗的语言解释量子计算的基本原理。
+translate|chat|Translate into German: The committee will meet next Tuesday to review the budget proposal and decide on the new hiring plan.
+story|chat|Write a short story about a lighthouse keeper who finds a message in a bottle.

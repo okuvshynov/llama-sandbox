@@ -21,6 +21,7 @@
 #endif
 
 #include <algorithm>
+#include <cmath>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -61,6 +62,7 @@ int main(int argc, char** argv) {
   [[maybe_unused]] std::string dspark_path;
   bool spec = false;
   [[maybe_unused]] int spec_n = 0;
+  [[maybe_unused]] std::string spec_log_path;
   for (int i = 1; i < argc; i++) {
     std::string a = argv[i];
     auto next = [&] { if (i + 1 >= argc) { fprintf(stderr, "missing value for %s\n", a.c_str()); exit(2); } return argv[++i]; };
@@ -73,7 +75,8 @@ int main(int argc, char** argv) {
     else if (a == "--gpu") gpu = atoi(next());
     else if (a == "--dspark") dspark_path = next();
     else if (a == "--spec") spec = true;
-    else if (a == "--spec-n") spec_n = atoi(next());  // drafts verified per step (default: all the draft makes)  // with --rt and --dspark: speculative decoding (greedy, same output)  // runtime: the DSpark draft GGUF (shadow mode: drafts measured, not used)
+    else if (a == "--spec-log") spec_log_path = next();  // per verify step: n k verify_ms draft_ms conf[0..]
+    else if (a == "--spec-n") spec_n = atoi(next());  // fixed drafts verified per step (default: chosen per step)  // drafts verified per step (default: all the draft makes)  // with --rt and --dspark: speculative decoding (greedy, same output)  // runtime: the DSpark draft GGUF (shadow mode: drafts measured, not used)
     else if (a == "--placement") placement = next();  // runtime: routed experts on GPUs (expert_pool.h)
     else if (a == "--moe-dies") {
       moe_dies.clear();
@@ -189,22 +192,77 @@ int main(int argc, char** argv) {
       n_gen++;
       return n_gen < n_predict;
     };
+    FILE* spec_log = spec_log_path.empty() ? nullptr : fopen(spec_log_path.c_str(), "w");
+    if (spec_log) fprintf(spec_log, "# n_verified accepted verify_ms draft_ms conf[0..block)\n");
+    // Draft length per step (unless --spec-n): the confidence head's sigmoid is the chance a draft
+    // is accepted given the earlier ones were (calibrated: scripts/spec_conf.py, README step 25);
+    // verify the n in 0..5 with the most expected tokens per ms, (1 + p0 + p0 p1 + ...) /
+    // (draft + verify(n)). Costs: running averages from this run, starting from
+    // 52 + 28 n ms (sclk 2, study30); n = 0 is a plain step.
+    std::vector<double> verify_cost(rt->draft_block() + 1);
+    for (size_t n = 0; n < verify_cost.size(); n++) verify_cost[n] = 52.0 + 28.0 * n;
+    double draft_cost = 12.0;
+    std::vector<long> n_hist(verify_cost.size(), 0);
+    auto choose_n = [&](const std::vector<float>& conf) {
+      int best_n = 0;
+      double best = -1, run = 1, expect = 1;
+      for (int n = 0; n < (int)verify_cost.size(); n++) {
+        if (n > 0) {
+          run *= 1.0 / (1.0 + std::exp(-(double)conf[n - 1]));
+          expect += run;
+        }
+        const double rate = expect / (draft_cost + verify_cost[n]);
+        if (rate > best) { best = rate; best_n = n; }
+      }
+      return best_n;
+    };
+    // Backoff: after a step that chose n = 0, the next 1, 2, 4, .. (at most 8) steps are plain,
+    // without drafting at all (the 12 ms draft would likely be wasted again); any step that
+    // verifies a draft resets it. The draft's window is fed by every committed position either
+    // way.
+    int backoff = 0, skip = 0;
+    long plain_steps = 0;
     if (emit(anchor)) {
       for (;;) {
-        auto td = Clock::now();
-        const DraftResult d = rt->draft(anchor);
-        draft_ms += std::chrono::duration<double, std::milli>(Clock::now() - td).count();
+        DraftResult d;
+        double dms = 0;
+        int n_verify = 0;
+        if (skip > 0) {
+          skip--;
+          plain_steps++;
+          d.ids = {anchor};
+        } else {
+          auto td = Clock::now();
+          d = rt->draft(anchor);
+          dms = std::chrono::duration<double, std::milli>(Clock::now() - td).count();
+          draft_ms += dms;
+          draft_cost += 0.1 * (dms - draft_cost);
+          n_verify = spec_n > 0 ? spec_n : choose_n(d.conf);
+          if (spec_n == 0) {
+            backoff = n_verify == 0 ? std::min(backoff == 0 ? 1 : 2 * backoff, 8) : 0;
+            skip = backoff;
+          }
+        }
         std::vector<int32_t> chunk(d.ids.begin(), d.ids.end());  // [anchor, drafts]
-        if (spec_n > 0 && (int)chunk.size() > spec_n + 1) chunk.resize(spec_n + 1);  // verify only the first spec_n drafts
+        if ((int)chunk.size() > n_verify + 1) chunk.resize(n_verify + 1);  // verify only the first n drafts
         const int room = opt.max_ctx - rt->n_past();
         if ((int)chunk.size() > room) chunk.resize(std::max(room, 1));
+        auto tv = Clock::now();
         const std::vector<int32_t> next = rt->verify(chunk);
+        const double vms = std::chrono::duration<double, std::milli>(Clock::now() - tv).count();
         int k = 0;
         while (k + 1 < (int)chunk.size() && chunk[k + 1] == next[k]) k++;
+        verify_cost[chunk.size() - 1] += 0.1 * (vms - verify_cost[chunk.size() - 1]);
+        n_hist[chunk.size() - 1]++;
         if (profile) {
           fprintf(stderr, "\n# verify %d tokens: %.1f ms (cpu experts %.1f; experts gpu %d cpu %d); GPU timeline:", (int)chunk.size(),
                   rt->last.total_ms, rt->last.cpu_moe_ms, rt->last.gpu_experts, rt->last.cpu_experts);
           for (auto& [g, ms] : rt->last_groups) fprintf(stderr, " %s %.1f", g.c_str(), ms);
+        }
+        if (spec_log && !d.conf.empty()) {
+          fprintf(spec_log, "%d %d %.2f %.2f", (int)chunk.size() - 1, k, vms, dms);
+          for (float c : d.conf) fprintf(spec_log, " %.4f", c);
+          fprintf(spec_log, "\n");
         }
         rt->commit(k + 1);
         spec_steps++;
@@ -215,6 +273,10 @@ int main(int argc, char** argv) {
         anchor = next[k];
       }
     }
+    if (spec_log) fclose(spec_log);
+    fprintf(stderr, "\n# drafts verified per step:");
+    for (size_t n = 0; n < n_hist.size(); n++) fprintf(stderr, " %zu: %ld", n, n_hist[n]);
+    fprintf(stderr, " (of the 0s, %ld plain steps without a draft)", plain_steps);
   }
 #endif
   for (; !spec && n_gen < n_predict; n_gen++) {

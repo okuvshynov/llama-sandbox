@@ -1,0 +1,44 @@
+# python3 scripts/spec_conf.py --cal 'results/spec-conf/*-n5.log' --cost 'results/spec-conf/*-n[1-4].log'
+# calibration prompts: results/spec-conf/prompts.txt (300 tokens, study30, sclk 2; none of the 4 test prompts)
+# 517 verify steps (all 5 drafts verified) from 6 logs
+
+per position (reached only): n, observed acceptance, mean sigmoid(conf)
+  draft 0:  517  observed 0.714  predicted 0.713
+  draft 1:  369  observed 0.686  predicted 0.642
+  draft 2:  253  observed 0.688  predicted 0.640
+  draft 3:  174  observed 0.747  predicted 0.687
+  draft 4:  130  observed 0.769  predicted 0.694
+
+by sigmoid(conf) bin: n, observed acceptance
+  [0.0, 0.1):    6  observed 0.000
+  [0.1, 0.2):   84  observed 0.226
+  [0.2, 0.3):  118  observed 0.322
+  [0.3, 0.4):  131  observed 0.382
+  [0.4, 0.5):  115  observed 0.461
+  [0.5, 0.6):  126  observed 0.635
+  [0.6, 0.7):  116  observed 0.655
+  [0.7, 0.8):   95  observed 0.789
+  [0.8, 0.9):  138  observed 0.920
+  [0.9, 1.0):  514  observed 0.988
+
+AUC 0.875; log-loss raw sigmoid 0.390, refit sigmoid(1.067 conf + 0.249) 0.385
+
+verify ms by drafts verified: n=0: 48.0  n=1: 79.8  n=2: 107.2  n=3: 133.8  n=4: 152.5  n=5: 216.3; draft 11.7
+
+offline replay, t/s (all calibration steps):
+  fixed n=0: 16.75
+  fixed n=1: 18.74
+  fixed n=2: 18.53
+  fixed n=3: 17.45
+  fixed n=4: 17.00
+  fixed n=5: 13.09
+  rule, raw sigmoid: 22.47
+  rule, refit:       22.39
+
+per log: best fixed n vs rule (refit)
+  cubic-n5.log             best fixed n=4 26.95   rule 28.01
+  french-rev-n5.log        best fixed n=1 18.11   rule 20.14
+  py-intervals-n5.log      best fixed n=4 25.94   rule 27.60
+  story-n5.log             best fixed n=1 17.90   rule 19.42
+  translate-n5.log         best fixed n=4 22.54   rule 22.92
+  zh-quantum-n5.log        best fixed n=1 17.63   rule 19.42

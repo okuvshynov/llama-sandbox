@@ -1164,3 +1164,35 @@ model, keeps the matching prefix plus the main model's own next token, and commi
   Code +21%, math +6%, chat +2%, zh -10%. Over 64-lane rows (attn.out, shared expert, q_a)
   the multi-token fp8 is still ~2x one input; the CPU misses (68 ms of 171) are now the
   largest part of a verify step.
+
+## Step 25: draft length from the confidence head (phase 4)
+
+- **What the head says:** the draft's confidence head (one linear layer per position, unused in
+  the official code) is well calibrated as is: among drafts the verifier reached, sigmoid(conf)
+  predicts acceptance (draft 0: 0.71 predicted, 0.71 observed; 0.9-1.0 bin: 99% accepted,
+  0.1-0.2 bin: 23%); AUC 0.875; refitting the sigmoid gains almost nothing (log-loss 0.390 ->
+  0.385). Measured on 6 calibration prompts that are not among the 4 test prompts
+  (`results/spec-conf/`, `results/spec-conf-calibration.txt`, `scripts/spec_conf.py`).
+- **Rule** (`--spec` without `--spec-n`): with p_i = sigmoid(conf_i), verify the n in 0..5 with
+  the most expected tokens per ms, (1 + p0 + p0 p1 + ..) / (draft + verify(n)). Costs are
+  running averages from the run itself, starting at 52 + 28 n ms. No other parameters. n = 0
+  is a plain step. Offline replay of the calibration logs: 22.4 t/s vs 18.7 for the best
+  fixed n, and above each prompt's own best fixed n on all 6.
+- **Backoff:** after a step that chose n = 0, the next 1, 2, 4.. (at most 8) steps are plain and
+  skip the draft; a step that verifies a draft resets it.
+- `--spec-log FILE` writes per step: drafts verified, accepted, verify and draft ms,
+  confidences.
+- Gates: output identical to plain greedy on the 4 test prompts (and the calibration ones).
+
+| t/s | plain | best fixed n (step 24) | auto | auto + backoff |
+|---|---|---|---|---|
+| chat (concurrency) | 20.5 | 20.9 | 22.4 | **22.4** (+9%) |
+| code (code-rust) | 17.2 | 20.8 | 21.6 | **21.6** (+25%) |
+| math (think) | 21.0 | 22.2 | 23.9 | **24.0** (+14%) |
+| zh essay | **17.3** | 15.6 | 16.2 | 16.6 (-4%) |
+
+  The rule picks per prompt what a fixed n cannot: chat verifies 1 draft on most steps, code
+  spreads over 1-5, zh chooses n = 0 on most steps (117 of them plain, without a draft). zh
+  stays ~4% under plain: steps that verify 1 draft at ~40% acceptance break even, and a plain
+  step through verify() may cost more than decode(). Plain runs vary by up to ~7% between
+  runs, so differences under ~5% are noise.

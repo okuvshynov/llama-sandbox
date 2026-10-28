@@ -42,3 +42,14 @@ zh-essay       17.32   15.62  13.67  11.41  10.17   8.71
 # * plain without the draft loaded (step 23's numbers; the one-input fp8 path is unchanged)
 # verify step of 6 tokens (chat, median): 171 ms (was 181): cpu experts 68, attn.core 20, attn.out 14.6 (was 19.6),
 #   shared 14.1 (15.9), router 10.4, attn.q 6.5 (9.6), hc 6.2, indexer 5.7, compressor 5.6, head 4.8, rest ~13
+# phase 4: draft length per step from the confidence head (--spec without --spec-n), then with the backoff
+# (skip drafting for 1, 2, 4.. 8 steps after a step that chose n = 0); output identical in every run
+#              plain*  best fixed n (step 24)   auto (2 runs)     auto + backoff
+concurrency    20.51   20.94 (n=1)              22.48  22.32      22.37
+code-rust      17.24   20.81 (n=4)              21.54  21.67      21.60
+math-proof     20.95   22.19 (n=2)              23.87  23.94      23.95
+zh-essay       17.32   15.62 (n=1)              16.13  16.21      16.60
+# calibration prompts (rule tuned on none of them; only the cost prior came from their logs):
+# french-rev: plain 19.34 / 20.72 (two runs), auto 20.96, auto + backoff 20.48
+# zh-quantum: plain 16.25, auto 16.78, auto + backoff 16.87
+# run-to-run spread of plain runs is up to ~7% (french-rev); differences under ~5% are noise
