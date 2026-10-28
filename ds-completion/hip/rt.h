@@ -65,6 +65,17 @@ class Runtime {
   // DSpark draft (RtOptions::dspark): after a decode step produced `anchor` (the next token),
   // the draft's block_size guesses for the tokens after it. Does not change the sequence state.
   bool has_draft() const { return dspark != nullptr; }
+  int draft_block() const { return dspark ? dspark->block_size : 0; }
+
+  // Speculative verification (PLAN.md "batched verification"; phase 1: token by token through
+  // decode()). verify(chunk) runs the chunk at positions n_past()..; returns the greedy next
+  // token after each. commit(n_keep) then keeps the first n_keep and discards the rest: the
+  // window ring slots the discarded positions overwrote are restored, the sequence is truncated,
+  // and the draft is seeded with the kept positions only. The compressor state needs nothing:
+  // it is keyed by position and only read after the token completing it, which the real tokens
+  // rewrite.
+  std::vector<int32_t> verify(const std::vector<int32_t>& chunk);
+  void commit(int n_keep);
   DraftResult draft(int32_t anchor, bool keep_logits = false);
   void draft_log_hidden(const std::string& path) {
     if (!dspark) return;
@@ -165,6 +176,16 @@ class Runtime {
   int* d_route = nullptr;     // [n_layer][8] this step's expert ids (device), then the weights
   bool in_prefill = false;
   void write_route_record();
+
+  // verification (verify / commit)
+  bool verifying = false;
+  int verify_p0 = 0, verify_m = 0;
+  float* ring_backup = nullptr;  // [n_layer][kMaxChunk][head_dim]: the ring slots a chunk overwrites
+  // compressor partial groups (ratio > 1): a later rejected position can overwrite the slot of a
+  // kept one (same pos % ratio), so each chunk position's row is kept, and the state before the
+  // chunk; commit rebuilds every slot from the last kept position writing it
+  std::map<int, float*> cmp_rows;     // [L] [kMaxChunk][kv | score][head_dim]
+  std::map<int, float*> cmp_backup;   // [L] [kv | score][ratio][head_dim]
 
   int pos = 0;  // position of the current step
   int32_t token = 0;

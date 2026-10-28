@@ -59,6 +59,7 @@ int main(int argc, char** argv) {
   std::string placement;
   std::vector<int> moe_dies = {0, 1, 2, 3};
   [[maybe_unused]] std::string dspark_path;
+  bool spec = false;
   for (int i = 1; i < argc; i++) {
     std::string a = argv[i];
     auto next = [&] { if (i + 1 >= argc) { fprintf(stderr, "missing value for %s\n", a.c_str()); exit(2); } return argv[++i]; };
@@ -69,7 +70,8 @@ int main(int argc, char** argv) {
     else if (a == "-n") n_predict = atoi(next());
     else if (a == "-t") opt.n_threads = atoi(next());
     else if (a == "--gpu") gpu = atoi(next());
-    else if (a == "--dspark") dspark_path = next();  // runtime: the DSpark draft GGUF (shadow mode: drafts measured, not used)
+    else if (a == "--dspark") dspark_path = next();
+    else if (a == "--spec") spec = true;  // with --rt and --dspark: speculative decoding (greedy, same output)  // runtime: the DSpark draft GGUF (shadow mode: drafts measured, not used)
     else if (a == "--placement") placement = next();  // runtime: routed experts on GPUs (expert_pool.h)
     else if (a == "--moe-dies") {
       moe_dies.clear();
@@ -139,6 +141,7 @@ int main(int argc, char** argv) {
     ro.placement = placement;
     ro.moe_dies = moe_dies;
     ro.dspark = dspark_path;
+    if (spec && dspark_path.empty()) { fprintf(stderr, "--spec needs --dspark\n"); return 2; }
     rt.reset(new Runtime(m, ro, rt_path));
     rt->profile = profile;
     if (!route_log.empty()) rt->log_routing(route_log);
@@ -168,7 +171,45 @@ int main(int argc, char** argv) {
   std::vector<std::vector<int32_t>> drafts;
   std::vector<std::vector<float>> confs;
   [[maybe_unused]] double draft_ms = 0;
-  for (; n_gen < n_predict; n_gen++) {
+  [[maybe_unused]] long spec_steps = 0, spec_accepted = 0;
+#ifdef DS_RUNTIME
+  if (spec) {
+    // speculative decoding (greedy): draft from the anchor (the last emitted token, not yet run),
+    // verify [anchor, drafts], keep the matching prefix plus the main model's own next token;
+    // prints exactly what plain greedy decoding prints
+    int32_t anchor = (int32_t)(std::max_element(logits.begin(), logits.end()) - logits.begin());
+    auto emit = [&](int32_t t) {  // false: stop
+      if (t == eos || n_gen >= n_predict) return false;
+      std::string p = piece(vocab, t);
+      fwrite(p.data(), 1, p.size(), stdout);
+      fflush(stdout);
+      gen.push_back(t);
+      n_gen++;
+      return n_gen < n_predict;
+    };
+    if (emit(anchor)) {
+      for (;;) {
+        auto td = Clock::now();
+        const DraftResult d = rt->draft(anchor);
+        draft_ms += std::chrono::duration<double, std::milli>(Clock::now() - td).count();
+        std::vector<int32_t> chunk(d.ids.begin(), d.ids.end());  // [anchor, drafts]
+        const int room = opt.max_ctx - rt->n_past();
+        if ((int)chunk.size() > room) chunk.resize(std::max(room, 1));
+        const std::vector<int32_t> next = rt->verify(chunk);
+        int k = 0;
+        while (k + 1 < (int)chunk.size() && chunk[k + 1] == next[k]) k++;
+        rt->commit(k + 1);
+        spec_steps++;
+        spec_accepted += k;
+        bool go = true;
+        for (int i = 0; i <= k && go; i++) go = emit(next[i]);
+        if (!go) break;
+        anchor = next[k];
+      }
+    }
+  }
+#endif
+  for (; !spec && n_gen < n_predict; n_gen++) {
     const int32_t next = (int32_t)(std::max_element(logits.begin(), logits.end()) - logits.begin());
     gen.push_back(next);
     if (next == eos) break;
@@ -197,6 +238,9 @@ int main(int argc, char** argv) {
     logits = eng->forward({next});
   }
   const double t_tg = std::chrono::duration<double>(Clock::now() - t2).count();
+  if (spec_steps)
+    fprintf(stderr, "\n# speculative: %ld verify steps, %.2f drafts accepted per step, %.2f tokens per step; draft %.1f ms per step\n",
+            spec_steps, (double)spec_accepted / spec_steps, (double)n_gen / spec_steps, draft_ms / spec_steps);
   printf("\n");
   fflush(stdout);
 #ifdef DS_RUNTIME

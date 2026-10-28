@@ -250,6 +250,70 @@ Runtime::Runtime(const Model& model, RtOptions options, const std::string& fp8_p
   setup_experts();
 }
 
+std::vector<int32_t> Runtime::verify(const std::vector<int32_t>& chunk) {
+  const int M = (int)chunk.size(), HD = hp.head_dim, WIN = hp.window;
+  if (M < 1 || M > DSpark::kMaxChunk) throw std::runtime_error("verify: chunk of " + std::to_string(M));
+  if (!ring_backup) ring_backup = dalloc<float>((size_t)hp.n_layer * DSpark::kMaxChunk * HD);
+  verify_p0 = n_past_;
+  verify_m = M;
+  // the ring slots these positions will overwrite
+  for (int L = 0; L < hp.n_layer; L++)
+    if (S[L].win)
+      for (int i = 0; i < M; i++)
+        CHECK(hipMemcpyAsync(ring_backup + ((size_t)L * DSpark::kMaxChunk + i) * HD, S[L].win + (size_t)((verify_p0 + i) % WIN) * HD,
+                             HD * 4, hipMemcpyDeviceToDevice, s));
+  for (int L = 0; L < hp.n_layer; L++) {
+    if (!S[L].cmp_kv) continue;  // ratio > 1 KV sources: the partial group before the chunk
+    const int r = m.layers[L].kind.ratio;
+    if (!cmp_rows.count(L)) {
+      cmp_rows[L] = dalloc<float>((size_t)DSpark::kMaxChunk * 2 * HD);
+      cmp_backup[L] = dalloc<float>((size_t)2 * r * HD);
+    }
+    CHECK(hipMemcpyAsync(cmp_backup[L], S[L].cmp_kv, (size_t)r * HD * 4, hipMemcpyDeviceToDevice, s));
+    CHECK(hipMemcpyAsync(cmp_backup[L] + (size_t)r * HD, S[L].cmp_score, (size_t)r * HD * 4, hipMemcpyDeviceToDevice, s));
+  }
+  verifying = true;
+  std::vector<int32_t> next(M);
+  for (int i = 0; i < M; i++) {
+    const std::vector<float> lg = decode(chunk[i]);
+    next[i] = (int32_t)(std::max_element(lg.begin(), lg.end()) - lg.begin());
+  }
+  verifying = false;
+  return next;
+}
+
+void Runtime::commit(int n_keep) {
+  const int HD = hp.head_dim, WIN = hp.window, M = verify_m;
+  if (n_keep < 1 || n_keep > M || n_past_ != verify_p0 + M) throw std::runtime_error("commit without a matching verify");
+  for (int L = 0; L < hp.n_layer; L++)
+    if (S[L].win)
+      for (int i = n_keep; i < M; i++)
+        CHECK(hipMemcpyAsync(S[L].win + (size_t)((verify_p0 + i) % WIN) * HD, ring_backup + ((size_t)L * DSpark::kMaxChunk + i) * HD,
+                             HD * 4, hipMemcpyDeviceToDevice, s));
+  // compressor partial groups: each slot from the last kept position writing it, else as before
+  for (auto& [L, rows] : cmp_rows) {
+    const int r = m.layers[L].kind.ratio;
+    for (int slot = 0; slot < r; slot++) {
+      int last = -1;
+      for (int i = 0; i < n_keep; i++)
+        if ((verify_p0 + i) % r == slot) last = i;
+      const float* kv = last >= 0 ? rows + (size_t)last * 2 * HD : cmp_backup[L] + (size_t)slot * HD;
+      const float* sc = last >= 0 ? rows + (size_t)last * 2 * HD + HD : cmp_backup[L] + (size_t)(r + slot) * HD;
+      CHECK(hipMemcpyAsync(S[L].cmp_kv + (size_t)slot * HD, kv, HD * 4, hipMemcpyDeviceToDevice, s));
+      CHECK(hipMemcpyAsync(S[L].cmp_score + (size_t)slot * HD, sc, HD * 4, hipMemcpyDeviceToDevice, s));
+    }
+  }
+  n_past_ = verify_p0 + n_keep;
+  tokens_.resize(n_past_);
+  if (dspark) {
+    const size_t nh = dspark->target_layers.size() * hp.n_embd;
+    for (int i = 0; i < n_keep; i++) dspark->seed(verify_p0 + i, dspark->hid_chunk + (size_t)i * nh);
+    CHECK(hipMemcpyAsync(dspark->main_hidden, dspark->hid_chunk + (size_t)(n_keep - 1) * nh, nh * 4, hipMemcpyDeviceToDevice, s));
+  }
+  CHECK(hipStreamSynchronize(s));
+  verify_m = 0;
+}
+
 DraftResult Runtime::draft(int32_t anchor, bool keep_logits) {
   if (!dspark) throw std::runtime_error("no DSpark draft loaded");
   return dspark->draft(anchor, n_past_ - 1, keep_logits);
@@ -355,6 +419,9 @@ Runtime::~Runtime() {
     (void)hipEventDestroy(ev_local);
   }
   (void)hipEventDestroy(ev_staged);
+  if (ring_backup) (void)hipFree(ring_backup);
+  for (auto& [L, p] : cmp_rows) (void)hipFree(p);
+  for (auto& [L, p] : cmp_backup) (void)hipFree(p);
   if (route_log) fclose(route_log);
   if (d_route) (void)hipFree(d_route);
   for (void* p : owned) (void)hipFree(p);
@@ -462,6 +529,11 @@ void Runtime::attention(int L, const float* xin, float* out) {
         float* sc_state = S[L].cmp_score;
         CHECK(hipMemcpyAsync(kv_state + (size_t)(pos % r) * HD, cmp_kvn, HD * 4, hipMemcpyDeviceToDevice, s));
         CHECK(hipMemcpyAsync(sc_state + (size_t)(pos % r) * HD, cmp_sc, HD * 4, hipMemcpyDeviceToDevice, s));
+        if (verifying) {  // this chunk position's row, for commit
+          float* row = cmp_rows.at(L) + (size_t)(pos - verify_p0) * 2 * HD;
+          CHECK(hipMemcpyAsync(row, cmp_kvn, HD * 4, hipMemcpyDeviceToDevice, s));
+          CHECK(hipMemcpyAsync(row + HD, cmp_sc, HD * 4, hipMemcpyDeviceToDevice, s));
+        }
         if ((pos + 1) % r == 0) {
           k_compress_pool(kv_state, sc_state, r, HD, lat, s);
           latent = lat;
@@ -737,7 +809,10 @@ std::vector<float> Runtime::decode(int32_t tok, bool want_logits) {
   CHECK(hipMemcpyAsync(pre, one_hot.data(), HC * 4, hipMemcpyHostToDevice, s));
   k_repeat(x, E, HC, h, s);
   for (int L = 0; L < hp.n_layer; L++) block(L, nullptr);
-  if (dspark) dspark->seed(pos);  // this position's K/V into the draft's window rings
+  if (dspark && !verifying) dspark->seed(pos);  // this position's K/V into the draft's window rings
+  if (dspark && verifying)  // kept until commit: only accepted positions seed the draft
+    CHECK(hipMemcpyAsync(dspark->hid_chunk + (size_t)(pos - verify_p0) * dspark->target_layers.size() * hp.n_embd,
+                         dspark->main_hidden, dspark->target_layers.size() * hp.n_embd * 4, hipMemcpyDeviceToDevice, s));
   if (!want_logits) {
     end_step();
     last.total_ms = ms_since(t0);

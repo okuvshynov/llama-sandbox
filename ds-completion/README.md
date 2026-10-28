@@ -1013,3 +1013,39 @@ The official `model.py` has its forward pass (`forward_spec`) but no speculative
 - **Cost:** 26 ms per draft as written (one token at a time: 5 reads of the 1.3 GB output head,
   the Markov head with a host round trip per position). Reading the head once for all 5
   positions and doing the Markov step on the GPU should bring it to ~5-7 ms.
+
+## Step 20: speculative decoding loop (batched verification phase 1)
+
+`--spec` (with `--rt --dspark`): greedy speculative decoding. Each step drafts 5 tokens from
+the anchor (the last emitted token, not yet run), verifies [anchor, drafts] with the main
+model, keeps the matching prefix plus the main model's own next token, and commits.
+
+- `Runtime::verify(chunk)` runs the chunk through the single-token path (phase 1: no batching)
+  and returns the greedy next token after each position; `Runtime::commit(n_keep)` keeps the
+  first n_keep positions:
+  - **window rings:** the slots the chunk overwrote are saved before and restored for the
+    discarded positions;
+  - **compressor partial groups (ratio 2):** not self-healing as first assumed. A rejected
+    position can overwrite the slot of a kept one with the same pos % ratio, which the real
+    token completing that group would then pool. Each chunk position's row is kept, and commit
+    rebuilds every slot from the last kept position writing it (or the state before the chunk).
+    The compressed cache and index keys need nothing: they are keyed by group and rewritten by
+    the real token completing it before anything reads them;
+  - **sequence:** n_past and the token history (engram) truncated; the draft seeded with the
+    kept positions only.
+- **Gate: speculative output = plain greedy output, byte for byte**
+  (`results/spec-phase1.txt`, study30 placement, draft loaded in both runs so the expert
+  placement is the same):
+
+| prompt | tokens | output | tokens per verify step |
+|---|---|---|---|
+| concurrency (chat) | 300 | identical | 2.78 |
+| code-rust | 300 | identical | 4.92 |
+| math-proof (thinking) | 502 | identical | 3.80 |
+| zh-essay | 378 | identical | 2.17 |
+
+  The first version (without the compressor fix) diverged after ~50 and ~250 tokens.
+- No speedup yet by design: the chunk runs token by token, so a step costs the accepted tokens
+  plus the rejected ones plus the 26 ms draft. (The timings in the results file are not a fair
+  comparison: the plain runs had the draft loaded in shadow mode, drafting after every token.)
+  Phase 2 batches the chunk.

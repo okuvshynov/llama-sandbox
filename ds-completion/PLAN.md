@@ -125,7 +125,10 @@ Phases:
 1. **Verify loop, no batching:** the chunk's tokens through today's single-token path one by
    one; rollback by saving/restoring window slots; accept logic; draft re-anchoring. Gate:
    speculative = plain greedy output, several prompts, 256+ tokens, past the 128-token window
-   wrap. No speedup (6x the work); it validates the loop.
+   wrap. No speedup (6x the work); it validates the loop. **Done:** identical output on 4 prompts
+   (chat, code, math with thinking, Chinese; 300-600 tokens), after one fix: the compressor's
+   partial groups are not self-healing (a rejected position can overwrite the slot of a kept
+   one with the same pos % ratio), so commit rebuilds them (README step 20).
 2. **Batched forward (M <= 6):** GEMVs for all tokens in one weight read (fp8, bf16 head);
    small kernels with rows = M; attention per query with staged keys in the same key order
    as M = 1 (bit-identical); compressor/indexer in position order; experts as (token, expert)

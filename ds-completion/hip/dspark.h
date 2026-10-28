@@ -46,7 +46,10 @@ class DSpark {
   const float* quarter = nullptr;  // device [hc]: 1/hc each (the mean over the hc copies)
   int target_index(int L) const;   // its slot in main_hidden, or -1
 
-  void seed(int pos);
+  // the window K/V of main position pos from `hidden` (default: main_hidden, this step's)
+  void seed(int pos, const float* hidden = nullptr);
+  float* hid_chunk = nullptr;      // device [kMaxChunk][n_targets][n_embd]: a verify chunk's hiddens
+  static constexpr int kMaxChunk = 8;
   FILE* hidden_log = nullptr;
   FILE* debug_log = nullptr;   // debugging: the next draft's per-layer attn/ffn in/out [layer][4][block][n_embd], then closed  // debugging: every seeded position's main_hidden, f32 [n_targets][n_embd]
   DraftResult draft(int32_t anchor, int pos, bool keep_logits);

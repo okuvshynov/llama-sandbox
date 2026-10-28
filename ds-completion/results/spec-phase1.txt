@@ -1,0 +1,17 @@
+# phase 1 gate: --dspark --spec vs --dspark (plain greedy), study30 placement, sclk 2
+== concurrency: IDENTICAL output (1415 bytes)
+# speculative: 108 verify steps, 1.77 drafts accepted per step, 2.78 tokens per step; draft 26.1 ms per step
+  plain: generation: 300 tokens in 23.85 s = 12.58 t/s
+  spec:  generation: 300 tokens in 36.70 s = 8.17 t/s
+== code-rust: IDENTICAL output (1155 bytes)
+# speculative: 61 verify steps, 3.92 drafts accepted per step, 4.92 tokens per step; draft 26.1 ms per step
+  plain: generation: 300 tokens in 25.93 s = 11.57 t/s
+  spec:  generation: 300 tokens in 22.47 s = 13.35 t/s
+== math-proof: IDENTICAL output (1608 bytes)
+# speculative: 132 verify steps, 2.81 drafts accepted per step, 3.80 tokens per step; draft 26.1 ms per step
+  plain: generation: 502 tokens in 40.08 s = 12.53 t/s
+  spec:  generation: 502 tokens in 43.42 s = 11.56 t/s
+== zh-essay: IDENTICAL output (2055 bytes)
+# speculative: 174 verify steps, 1.18 drafts accepted per step, 2.17 tokens per step; draft 26.2 ms per step
+  plain: generation: 378 tokens in 34.73 s = 10.88 t/s
+  spec:  generation: 378 tokens in 70.60 s = 5.35 t/s

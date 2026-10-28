@@ -172,6 +172,7 @@ DSpark::DSpark(Runtime& r, const std::string& path) : rt(r) {
   auto dz = [&](size_t n) { return (float*)upload(nullptr, n * 4); };
   const int B = block_size;
   main_hidden = dz((size_t)n_t * E);
+  hid_chunk = dz((size_t)kMaxChunk * n_t * E);
   {
     std::vector<float> qv(HC, 1.0f / HC);
     quarter = (const float*)upload(qv.data(), HC * 4);
@@ -238,18 +239,19 @@ int DSpark::target_index(int Lm) const {
 }
 
 // main_x from this main position's target hiddens, then each draft layer's window K/V for it
-void DSpark::seed(int pos) {
+void DSpark::seed(int pos, const float* hidden) {
+  if (!hidden) hidden = main_hidden;
   const Hparams& hp = rt.hp;
   const int E = hp.n_embd, HD = hp.head_dim, RD = hp.rope_dim;
   hipStream_t s = rt.s;
   auto g8 = [&](const Fp8& w, Runtime::Codes c, float* out) { rt.gemv8(Runtime::Fp8W{w.q, w.s, w.N, w.K}, c, out); };
   if (hidden_log) {
     std::vector<float> v(target_layers.size() * E);
-    CHECK(hipMemcpyAsync(v.data(), main_hidden, v.size() * 4, hipMemcpyDeviceToHost, s));
+    CHECK(hipMemcpyAsync(v.data(), hidden, v.size() * 4, hipMemcpyDeviceToHost, s));
     CHECK(hipStreamSynchronize(s));
     fwrite(v.data(), 4, v.size(), hidden_log);
   }
-  rt.quant(main_hidden, (int)target_layers.size() * E, rt.A);
+  rt.quant(hidden, (int)target_layers.size() * E, rt.A);
   g8(fc, rt.A, main_x);
   k_rms_norm(main_x, enc_norm, main_x, E, 1, hp.rms_eps, s);
   rt.quant(main_x, E, rt.A);
