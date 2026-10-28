@@ -1,5 +1,7 @@
 #include "fp4_moe.h"
 
+#include "canon_math.h"
+
 #include <hip/hip_fp16.h>
 
 #include <algorithm>
@@ -270,6 +272,181 @@ void fp4_moe_chunk(const GpuExperts& ex, const float* x, ExpertSel sel, int k, i
   gate_up_kernel<GU><<<dim3(cdiv(F, 4 * 64 / GU), 2 * k, M), 256, 0, s>>>(ex.gate, ex.up, sel, k, xq, xs, gu);
   act_quant_kernel<<<cdiv(M * k * F, 256), 256, 0, s>>>(gu, sel, k, limit, F, M * k * F, aq, asc);
   down_sum_kernel<DN><<<dim3(cdiv(E, 4 * 64 / DN), M), 256, 0, s>>>(ex.down, sel, k, aq, asc, y);
+}
+
+// ------------------------------------------------------------------ placement-invariant (canon)
+//
+// canon_dot.h's specification: exact integer block sums (v_dot4_i32_i8: weights 2 w as signed
+// bytes, activations as three signed 7-bit digits of 2^9 x), float(S) times the block's scale,
+// 16 lanes per row (lane l: blocks l, l + 16, ...), then xor shuffles 8, 4, 2, 1. __fmul_rn /
+// __fadd_rn keep the compiler from fusing what the CPU computes as a multiply and an add.
+
+// act_quant per 32-block, then 2^9 x split into digits (natural element order) and c = s 2^-10
+__global__ void canon_quant_kernel(const float* x, int8_t* d0, int8_t* d1, int8_t* d2, float* c, int n) {
+  const int i = blockIdx.x * blockDim.x + threadIdx.x;
+  const float v = i < n ? x[i] : 0.0f;
+  float amax = fabsf(v);
+#pragma unroll
+  for (int o = 16; o > 0; o >>= 1) amax = fmaxf(amax, __shfl_xor(amax, o, 32));
+  const float sc = pow2_ceil(fmaxf(amax, 1e-4f) * (1.0f / 448.0f));
+  if (i < n) {
+    const int x9 = (int)(e4m3_round(fminf(fmaxf(v / sc, -448.0f), 448.0f)) * 512.0f);
+    const int m = abs(x9), sg = x9 < 0 ? -1 : 1;
+    d0[i] = (int8_t)(sg * (m & 127));
+    d1[i] = (int8_t)(sg * ((m >> 7) & 127));
+    d2[i] = (int8_t)(sg * (m >> 14));
+    if ((i & 31) == 0) c[i / 32] = sc * 0x1p-10f;
+  }
+}
+
+// 4 e2m1 codes (one per byte, low nibble) -> 4 signed bytes 2 w
+__device__ inline int canon_w4(uint32_t n) {
+  const uint32_t sel = n & 0x07070707u;
+  const uint32_t pos = __builtin_amdgcn_perm(0x0C080604u, 0x03020100u, sel);  // 0 1 2 3 4 6 8 12
+  const uint32_t neg = __builtin_amdgcn_perm(0xF4F8FAFCu, 0xFDFEFF00u, sel);  // their negatives
+  const uint32_t m = ((n >> 3) & 0x01010101u) * 0xFFu;
+  return (int)((neg & m) | (pos & ~m));
+}
+
+// one block's 32 activations as digits: [digit][low 16 / high 16 elements][4 x 4 bytes]
+struct CanonX { int v[3][2][4]; };
+__device__ inline CanonX canon_load(const int8_t* d0, const int8_t* d1, const int8_t* d2) {
+  CanonX x;
+  const int8_t* d[3] = {d0, d1, d2};
+#pragma unroll
+  for (int k = 0; k < 3; k++)
+#pragma unroll
+    for (int h = 0; h < 2; h++) {
+      const int4 t = *(const int4*)(d[k] + 16 * h);
+      x.v[k][h][0] = t.x; x.v[k][h][1] = t.y; x.v[k][h][2] = t.z; x.v[k][h][3] = t.w;
+    }
+  return x;
+}
+
+// one block's exact sum: 16 code bytes against the digits of its 32 activations
+__device__ inline int canon_block(uint4 w, const CanonX& x) {
+  const uint32_t wv[4] = {w.x, w.y, w.z, w.w};
+  const int* a0 = x.v[0][0]; const int* b0 = x.v[0][1];
+  const int* a1 = x.v[1][0]; const int* b1 = x.v[1][1];
+  const int* a2 = x.v[2][0]; const int* b2 = x.v[2][1];
+  int P0 = 0, P1 = 0, P2 = 0;
+#pragma unroll
+  for (int g = 0; g < 4; g++) {
+    const int wl = canon_w4(wv[g] & 0x0F0F0F0Fu), wh = canon_w4((wv[g] >> 4) & 0x0F0F0F0Fu);
+    P0 = __builtin_amdgcn_sdot4(wl, a0[g], P0, false);
+    P0 = __builtin_amdgcn_sdot4(wh, b0[g], P0, false);
+    P1 = __builtin_amdgcn_sdot4(wl, a1[g], P1, false);
+    P1 = __builtin_amdgcn_sdot4(wh, b1[g], P1, false);
+    P2 = __builtin_amdgcn_sdot4(wl, a2[g], P2, false);
+    P2 = __builtin_amdgcn_sdot4(wh, b2[g], P2, false);
+  }
+  return P0 + (P1 << 7) + (P2 << 14);
+}
+
+// R consecutive rows (codes stride K/2, scales stride nb), lane l (of 16 per row): blocks l,
+// l + 16, ...; then the xor tree. The R rows share each activation load; every row's
+// arithmetic is the one-row specification.
+template <int R>
+__device__ inline void canon_rows(const uint8_t* __restrict__ wc, const uint8_t* __restrict__ ws, int nb,
+                                  const int8_t* d0, const int8_t* d1, const int8_t* d2, const float* c, int l,
+                                  float* out) {
+  float acc[R];
+#pragma unroll
+  for (int i = 0; i < R; i++) acc[i] = 0.0f;
+  for (int b = l; b < nb; b += 16) {
+    const CanonX x = canon_load(d0 + b * 32, d1 + b * 32, d2 + b * 32);
+#pragma unroll
+    for (int i = 0; i < R; i++) {
+      const int S = canon_block(*(const uint4*)(wc + (size_t)i * nb * 16 + (size_t)b * 16), x);
+      const float scale = __fmul_rn(__uint_as_float((uint32_t)ws[(size_t)i * nb + b] << 23), c[b]);
+      acc[i] = __fadd_rn(acc[i], __fmul_rn((float)S, scale));
+    }
+  }
+#pragma unroll
+  for (int i = 0; i < R; i++) {
+#pragma unroll
+    for (int o = 8; o > 0; o >>= 1) acc[i] = __fadd_rn(acc[i], __shfl_xor(acc[i], o, 16));
+    out[i] = acc[i];
+  }
+}
+constexpr int kCanonR = 2;  // rows per lane group
+
+struct CanonActDev { int8_t *d0, *d1, *d2; float* c; };
+
+__global__ void __launch_bounds__(256) canon_gate_up_kernel(GpuMatrix gate, GpuMatrix up, const int* ids, CanonActDev x,
+                                                            float* __restrict__ gu) {
+  const int j = blockIdx.y >> 1;
+  const GpuMatrix& m = (blockIdx.y & 1) ? up : gate;
+  const int N = m.N, nb = m.K / 32, lane = threadIdx.x & 63, l = lane % 16;
+  const int row = ((blockIdx.x * 4 + (threadIdx.x >> 6)) * 4 + lane / 16) * kCanonR;  // N % kCanonR == 0
+  const int r = row < N ? row : N - kCanonR;
+  const int e = ids[j];
+  float v[kCanonR];
+  canon_rows<kCanonR>(m.codes + (size_t)e * m.codes_stride + (size_t)r * (m.K / 2),
+                      m.scales + (size_t)e * m.scales_stride + (size_t)r * nb, nb, x.d0, x.d1, x.d2, x.c, l, v);
+  if (row < N && l == 0)
+    for (int i = 0; i < kCanonR; i++) gu[(size_t)blockIdx.y * N + row + i] = v[i];
+}
+
+// w_j * silu(min(gate, lim)) * clamp(up, +-lim) (canon_math.h), then act_quant into digits
+__global__ void canon_act_kernel(const float* __restrict__ gu, const float* __restrict__ w, float lim, int F, int n,
+                                 CanonActDev a) {
+  const int i = blockIdx.x * blockDim.x + threadIdx.x;
+  const int j = i / F, f = i - j * F;
+  float v = 0.0f;
+  if (i < n) {
+    const float g = fminf(gu[(size_t)(2 * j) * F + f], lim), u = fminf(fmaxf(gu[(size_t)(2 * j + 1) * F + f], -lim), lim);
+    v = __fmul_rn(w[j], __fmul_rn(canon_silu(g), u));
+  }
+  float amax = fabsf(v);
+#pragma unroll
+  for (int o = 16; o > 0; o >>= 1) amax = fmaxf(amax, __shfl_xor(amax, o, 32));
+  const float sc = pow2_ceil(fmaxf(amax, 1e-4f) * (1.0f / 448.0f));
+  if (i < n) {
+    const int x9 = (int)(e4m3_round(fminf(fmaxf(v / sc, -448.0f), 448.0f)) * 512.0f);
+    const int m = abs(x9), sg = x9 < 0 ? -1 : 1;
+    a.d0[i] = (int8_t)(sg * (m & 127));
+    a.d1[i] = (int8_t)(sg * ((m >> 7) & 127));
+    a.d2[i] = (int8_t)(sg * (m >> 14));
+    if ((i & 31) == 0) a.c[i / 32] = sc * 0x1p-10f;
+  }
+}
+
+__global__ void __launch_bounds__(256) canon_down_kernel(GpuMatrix down, const int* ids, int k, CanonActDev a,
+                                                         float* __restrict__ y) {
+  const int N = down.N, F = down.K, nb = F / 32, lane = threadIdx.x & 63, l = lane % 16;
+  const int row = ((blockIdx.x * 4 + (threadIdx.x >> 6)) * 4 + lane / 16) * kCanonR;
+  const int r = row < N ? row : N - kCanonR;
+  float v[kCanonR] = {};
+  for (int j = 0; j < k; j++) {  // expert order, as the CPU
+    const int e = ids[j];
+    float t[kCanonR];
+    canon_rows<kCanonR>(down.codes + (size_t)e * down.codes_stride + (size_t)r * (F / 2),
+                        down.scales + (size_t)e * down.scales_stride + (size_t)r * nb, nb, a.d0 + (size_t)j * F,
+                        a.d1 + (size_t)j * F, a.d2 + (size_t)j * F, a.c + (size_t)j * nb, l, t);
+    for (int i = 0; i < kCanonR; i++) v[i] = __fadd_rn(v[i], t[i]);
+  }
+  if (row < N && l == 0)
+    for (int i = 0; i < kCanonR; i++) y[row + i] = v[i];
+}
+
+size_t fp4_moe_canon_scratch_bytes(int E, int F, int k) {
+  return (size_t)E * 3 + (size_t)E / 32 * 4 + (size_t)k * F * 4 * 2 + (size_t)k * F * 3 + (size_t)k * F / 32 * 4 + 256 * 10;
+}
+
+void fp4_moe_canon(const GpuExperts& ex, const float* x, const int* ids, const float* w, int k, float limit, float* y,
+                   void* scratch, hipStream_t s) {
+  const int E = ex.gate.K, F = ex.gate.N;
+  char* p = (char*)scratch;
+  auto take = [&](size_t bytes) { char* r = p; p += (bytes + 255) / 256 * 256; return r; };
+  CanonActDev xa = {(int8_t*)take(E), (int8_t*)take(E), (int8_t*)take(E), (float*)take((size_t)E / 32 * 4)};
+  float* gu = (float*)take((size_t)k * F * 4 * 2);
+  CanonActDev aa = {(int8_t*)take((size_t)k * F), (int8_t*)take((size_t)k * F), (int8_t*)take((size_t)k * F),
+                    (float*)take((size_t)k * F / 32 * 4)};
+  canon_quant_kernel<<<cdiv(E, 256), 256, 0, s>>>(x, xa.d0, xa.d1, xa.d2, xa.c, E);
+  canon_gate_up_kernel<<<dim3(cdiv(F, 16 * kCanonR), 2 * k), 256, 0, s>>>(ex.gate, ex.up, ids, xa, gu);
+  canon_act_kernel<<<cdiv(k * F, 256), 256, 0, s>>>(gu, w, limit, F, k * F, aa);
+  canon_down_kernel<<<cdiv(E, 16 * kCanonR), 256, 0, s>>>(ex.down, ids, k, aa, y);
 }
 
 void fp4_moe(const GpuExperts& ex, const float* x, const int* ids, const float* w, int k, float limit, float* y,

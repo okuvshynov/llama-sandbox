@@ -20,8 +20,8 @@ CXXFLAGS = -std=c++17 -O2 -g -march=native -fopenmp -Wall -Wextra -Wno-unused-pa
            -I$(FORK)/ggml/include -I$(FORK)/include -Isrc
 LDLIBS   = $(GGML_LIBS) -fopenmp -lpthread -ldl
 
-CORE   = src/model.cpp src/forward.cpp src/fakequant.cpp src/cpu_moe.cpp
-CORE_H = src/model.h src/forward.h src/fakequant.h src/cpu_moe.h
+CORE   = src/model.cpp src/forward.cpp src/fakequant.cpp src/cpu_moe.cpp src/canon_dot.cpp
+CORE_H = src/model.h src/forward.h src/fakequant.h src/cpu_moe.h src/canon_dot.h
 
 # HIP builds: ds-completion and ds-test also carry the own decode runtime (hip/), compiled by
 # hipcc into objects that the g++ link picks up
@@ -62,12 +62,12 @@ $(BIN)/bench-kernels: hip/bench_kernels.cpp hip/kernels.hip hip/fp8_gemv.hip hip
 
 $(BIN)/bench-fp4-moe: hip/bench_fp4_moe.cpp $(BIN)/obj/fp4_moe.o src/model.cpp src/cpu_moe.cpp src/fakequant.cpp $(CORE_H)
 	@mkdir -p $(BIN)
-	$(CXX) $(CXXFLAGS) $(RT_FLAGS) -O3 -o $@ hip/bench_fp4_moe.cpp src/model.cpp src/cpu_moe.cpp src/fakequant.cpp \
+	$(CXX) $(CXXFLAGS) $(RT_FLAGS) -O3 -o $@ hip/bench_fp4_moe.cpp src/model.cpp src/cpu_moe.cpp src/canon_dot.cpp src/fakequant.cpp \
 	    $(BIN)/obj/fp4_moe.o -L$(ROCM)/lib -Wl,-rpath,$(ROCM)/lib -lamdhip64 $(LDLIBS)
 
 $(BIN)/bench-expert-pool: hip/bench_expert_pool.cpp $(BIN)/obj/fp4_moe.o $(BIN)/obj/expert_pool.o src/model.cpp src/cpu_moe.cpp src/fakequant.cpp $(CORE_H)
 	@mkdir -p $(BIN)
-	$(CXX) $(CXXFLAGS) $(RT_FLAGS) -O3 -o $@ hip/bench_expert_pool.cpp src/model.cpp src/cpu_moe.cpp src/fakequant.cpp \
+	$(CXX) $(CXXFLAGS) $(RT_FLAGS) -O3 -o $@ hip/bench_expert_pool.cpp src/model.cpp src/cpu_moe.cpp src/canon_dot.cpp src/fakequant.cpp \
 	    $(BIN)/obj/fp4_moe.o $(BIN)/obj/expert_pool.o -L$(ROCM)/lib -Wl,-rpath,$(ROCM)/lib -lamdhip64 $(LDLIBS)
 
 $(BIN)/obj/%.o: hip/%.hip hip/kernels.h hip/fp8_gemv.h hip/fp4_moe.h hip/expert_pool.h

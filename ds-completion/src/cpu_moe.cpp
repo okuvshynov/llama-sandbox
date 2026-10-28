@@ -1,5 +1,6 @@
 #include "cpu_moe.h"
 
+#include "canon_math.h"
 #include "fakequant.h"
 
 #include <immintrin.h>
@@ -93,6 +94,45 @@ CpuMoeKernel::CpuMoeKernel(int n_embd, int n_ff, int k_max, int nt) : E(n_embd),
   act_q.resize((size_t)k_max * F);
   act_l.resize((size_t)k_max * F);
   down_out.resize((size_t)k_max * E);
+  act_c.resize(k_max);
+}
+
+void CpuMoeKernel::forward_canon(const CpuExperts& L, const float* x, const int* ids, const float* w, int k, float* y) {
+  constexpr int CH = 32;  // rows per task
+  canon_act(x, E, x_c);
+  const size_t gu_row = L.gate->nb[1], d_row = L.down->nb[1];
+  const int gu_tasks = k * 2 * (F / CH), d_tasks = k * (E / CH);
+#pragma omp parallel num_threads(n_threads)
+  {
+#pragma omp for schedule(static)
+    for (int t = 0; t < gu_tasks; t++) {
+      const int per = F / CH, j = t / (2 * per), m = (t / per) % 2, c = t % per;
+      const ggml_tensor* W = m ? L.up : L.gate;
+      float* out = (m ? up_out.data() : gate_out.data()) + (size_t)j * F;
+      canon_dot_rows(expert_base(W, ids[j]), gu_row, x_c, c * CH, (c + 1) * CH, out);
+    }
+#pragma omp for schedule(static)
+    for (int j = 0; j < k; j++) {
+      float* a = act_q.data() + (size_t)j * F;
+      for (int i = 0; i < F; i++) {
+        const float g = std::min(gate_out[(size_t)j * F + i], L.limit);
+        const float u = std::clamp(up_out[(size_t)j * F + i], -L.limit, L.limit);
+        a[i] = w[j] * (canon_silu(g) * u);
+      }
+      canon_act(a, F, act_c[j]);
+    }
+#pragma omp for schedule(static)
+    for (int t = 0; t < d_tasks; t++) {
+      const int per = E / CH, j = t / per, c = t % per;
+      canon_dot_rows(expert_base(L.down, ids[j]), d_row, act_c[j], c * CH, (c + 1) * CH, down_out.data() + (size_t)j * E);
+    }
+#pragma omp for schedule(static)
+    for (int i = 0; i < E; i++) {
+      float v = 0.0f;
+      for (int j = 0; j < k; j++) v += down_out[(size_t)j * E + i];
+      y[i] = v;
+    }
+  }
 }
 
 void CpuMoeKernel::forward(const CpuExperts& L, const float* x, const int* ids, const float* w, int k, float* y) {

@@ -1264,3 +1264,42 @@ Means over the 8 prompts (`results/spec-sclk/summary.txt`):
   placement's 121 ms at level 2), where the clock should be worth ~20-25%.
 - Run-to-run noise: plain at level 2 measured 4-10% faster here than in step 26's runs a few
   hours earlier; within one level, plain and `--spec` ran back to back.
+
+## Step 28: placement-invariant expert numerics (cache plan, phase 0): option A is feasible
+
+The question (PLAN.md "Adaptive expert cache"): can an expert give the same bits on the CPU and
+on a GPU, so that a cache whose contents depend on timing cannot change the output?
+
+- **The specification** (`src/canon_dot.h`): per 32-block the exact integer sum of (2 w)(2^9 x)
+  (weights as integers -12..12, activations as integers up to 2^18; |S| < 2^27), converted to
+  float once (round to nearest even) and scaled by a power of two; 16 accumulators per row
+  (accumulator l takes blocks l, l + 16, ...), then a fixed xor tree (8, 4, 2, 1). Exact block
+  sums are order-free, so each side uses its fastest integer instructions; only the conversion,
+  the accumulators and the tree are fixed. The block sum is correctly rounded: at least as
+  accurate as either kernel's fp32 chains.
+- **CPU** (`canon_dot_rows`): AVX-512 VNNI. Weights decoded to bytes 2 w + 12 by a table,
+  activations as three signed 7-bit digits, 3 vpdpbusd per pair of blocks, an integer
+  transpose-reduce over 16 blocks, then the 16 accumulators in one register; 4 rows at a time,
+  L2 prefetch. A scalar version of the specification (`canon_dot_ref`) is the reference.
+- **GPU** (`fp4_moe_canon`): v_dot4_i32_i8 on signed bytes (weights by two byte-permute tables),
+  16 lanes per row with the same tree, 2 rows per lane group; `__fmul_rn` / `__fadd_rn` where
+  hipcc would otherwise fuse a multiply-add the CPU does not.
+- **The activation** (`src/canon_math.h`): a shared `canon_expf` (Cephes, explicit fmaf) and
+  correctly rounded division on the GPU; the libraries' expf differ in the last bit.
+
+Results (`results/canon-phase0.txt`, sclk 2):
+
+| check | result |
+|---|---|
+| CPU vector dot vs scalar specification (gate, up, down rows; 3 layers) | 0 of 2,304 / 2,304 / 5,120 rows differ |
+| whole expert block, GPU vs CPU (quantization, gate/up, swiglu, quantization, down, sum; 3 cases) | **0 of 5,120 outputs differ** |
+| accuracy vs the double-precision reference | 5.5-6.6e-8, as the current kernel (5.6-6.6e-8) |
+| CPU speed (40 layers x 6 experts, 16 threads) | 71.0 vs 67.5 ms (+5%) |
+| GPU speed (6 experts, one layer) | 319 vs 283 us (+13%); 370 us (+31%) with 1 row per lane group |
+
+Decision: **A**, within the 15% bound on both sides. Still to do for the runtime (phase 3 of
+the plan, alongside the cache): per-expert outputs summed in router-rank order (today each die
+and the CPU pre-sum their own experts), the multi-token chunk version, the small-count GPU case
+(1-3 experts per die), the gather in `canon_dot_rows` that reads 3 bytes past a row's last
+block (harmless inside the file, to be bounded at the tensor's end), and further speed (shared
+memory for the activation digits on the GPU).

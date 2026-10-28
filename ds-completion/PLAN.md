@@ -233,7 +233,10 @@ Phases:
 
 0. **A or B, by measurement:** test whether v_dot2_f32_f16 rounds once or twice; prototype the
    CPU expert kernel in the GPU's order and measure it. Within ~15% of today's speed -> A,
-   else B.
+   else B. **Done: A** (README step 28). Instead of emulating the GPU's fp16 dots, both sides
+   compute exact integer block sums (VNNI / v_dot4_i32_i8) with one fixed conversion,
+   accumulator layout and tree (`src/canon_dot.h`), plus a shared expf (`src/canon_math.h`).
+   Whole expert block GPU = CPU bit for bit; CPU +5%, GPU +13%; accuracy unchanged.
 1. **Simulation with realistic constraints** (`route_stats.py`, CPU only): load latency, a
    per-step load budget, speculative verify chunks (up to 6 tokens' misses per layer,
    rejected drafts included). Output: hit rate and loads per step by budget, admission rule

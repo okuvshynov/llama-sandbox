@@ -145,10 +145,31 @@ int main(int argc, char** argv) {
     std::vector<float> w, x, y1(E), y2(E);
     pick(ids, w, x);
     const CpuExperts ex = {m.layers[L].gate_exps, m.layers[L].up_exps, m.layers[L].down_exps, hp.swiglu_clamp[L]};
+    std::vector<float> y3(E);
     kern.forward(ex, x.data(), ids.data(), w.data(), K, y1.data());
     gg[L]->run(cpu, x.data(), ids.data(), w.data(), y2.data());
+    kern.forward_canon(ex, x.data(), ids.data(), w.data(), K, y3.data());
     const auto r = reference(m.layers[L], x.data(), ids.data(), w.data(), K, E, F, hp.swiglu_clamp[L]);
-    printf("layer %2d: ours relerr %.2e   ggml (q8_0 activations) relerr %.2e\n", L, rel(y1, r), rel(y2, r));
+    printf("layer %2d: ours relerr %.2e   canonical %.2e   ggml (q8_0 activations) relerr %.2e\n", L, rel(y1, r),
+           rel(y3, r), rel(y2, r));
+    // the vector canonical dot against its scalar specification, every row of one expert's matrices
+    for (int mi = 0; mi < 3; mi++) {
+      const ggml_tensor* W = mi == 0 ? m.layers[L].gate_exps : mi == 1 ? m.layers[L].up_exps : m.layers[L].down_exps;
+      const int K_in = (int)W->ne[0], N = (int)W->ne[1];
+      std::vector<float> xin(K_in), yv(N);
+      for (auto& v : xin) v = nd(rng) * (mi == 2 ? 0.05f : 1.0f);
+      CanonAct ca;
+      canon_act(xin.data(), K_in, ca);
+      const uint8_t* base = (const uint8_t*)W->data + (size_t)ids[0] * W->nb[2];
+      canon_dot_rows(base, W->nb[1], ca, 0, N, yv.data());
+      long diff = 0;
+      for (int n = 0; n < N; n++) {
+        const float ref = canon_dot_ref(base + (size_t)n * W->nb[1], ca);
+        diff += memcmp(&ref, &yv[n], 4) != 0;
+      }
+      printf("  canonical dot, %s rows of expert %d: %ld of %d differ from the scalar specification\n",
+             mi == 0 ? "gate" : mi == 1 ? "up" : "down", ids[0], diff, N);
+    }
   }
 
   printf("# speed: one token = %d layers x %d experts (%.1f MB of weights)\n", hp.n_layer, K,
@@ -166,7 +187,8 @@ int main(int argc, char** argv) {
           const CpuExperts ex = {m.layers[L].gate_exps, m.layers[L].up_exps, m.layers[L].down_exps, hp.swiglu_clamp[L]};
           kern.forward(ex, x.data(), ids.data(), w.data(), K, y.data());
         } else if (impl == 1) {
-          gg[L]->run(cpu, x.data(), ids.data(), w.data(), y.data());
+          const CpuExperts ex = {m.layers[L].gate_exps, m.layers[L].up_exps, m.layers[L].down_exps, hp.swiglu_clamp[L]};
+          kern.forward_canon(ex, x.data(), ids.data(), w.data(), K, y.data());
         } else {
           const CpuExperts ex = {m.layers[L].gate_exps, m.layers[L].up_exps, m.layers[L].down_exps, hp.swiglu_clamp[L]};
           volatile uint64_t sink = kern.touch(ex, ids.data(), K);
@@ -175,7 +197,7 @@ int main(int argc, char** argv) {
         ms[impl] += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
       }
     }
-    printf("token %d: ours %.1f ms (%.0f GB/s)   ggml %.1f ms (%.0f GB/s)   read-only control %.1f ms (%.0f GB/s)\n", t,
+    printf("token %d: ours %.1f ms (%.0f GB/s)   canonical %.1f ms (%.0f GB/s)   read-only control %.1f ms (%.0f GB/s)\n", t,
            ms[0], bytes / ms[0] / 1e6, ms[1], bytes / ms[1] / 1e6, ms[2], bytes / ms[2] / 1e6);
   }
   return 0;

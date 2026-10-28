@@ -24,6 +24,8 @@ ggml_tensor* fq_fp4_e4(ggml_context* ctx, ggml_tensor* x);
 
 // host fake quantization of a plain array (no graph): act_quant(x, 32, ue8m0, inplace)
 void fq_fp8_host(const float* x, float* y, int64_t n);
+// one block of 32: q[j] = the e4m3 values, returns the scale (y = q * scale)
+float fq_fp8_split(const float* xb, float* q);
 
 // the scalar rules, exposed for the unit test
 float fq_e4m3_round(float v);  // nearest e4m3 (fn) value, ties to even, saturating at +-448

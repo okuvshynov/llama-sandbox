@@ -8,6 +8,7 @@
 // (ggml's CPU kernel instead re-quantizes the activations to int8, ~1e-2 off.)
 #pragma once
 
+#include "canon_dot.h"
 #include "ggml.h"
 
 #include <cstdint>
@@ -24,10 +25,15 @@ class CpuMoeKernel {
   CpuMoeKernel(int n_embd, int n_ff, int k_max, int n_threads);
   // x [n_embd] (f32, not yet quantized), ids/w [k] -> y [n_embd]
   void forward(const CpuExperts& L, const float* x, const int* ids, const float* w, int k, float* y);
+  // the same in the placement-invariant numerics (canon_dot.h; PLAN.md "Adaptive expert cache"
+  // phase 0): prototype
+  void forward_canon(const CpuExperts& L, const float* x, const int* ids, const float* w, int k, float* y);
   // control for the benchmark: the same tasks and rows, only reading the bytes
   uint64_t touch(const CpuExperts& L, const int* ids, int k);
 
  private:
   int E, F, n_threads;
   std::vector<float> xq, gate_out, up_out, act_q, act_l, down_out;  // scratch (act_l: lane order)
+  CanonAct x_c;
+  std::vector<CanonAct> act_c;
 };

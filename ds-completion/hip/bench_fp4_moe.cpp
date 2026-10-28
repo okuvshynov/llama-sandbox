@@ -53,6 +53,8 @@ int main(int argc, char** argv) {
   };
   void* scratch;
   CHECK(hipMalloc(&scratch, fp4_moe_scratch_bytes(E, F, K)));
+  void* cscratch;
+  CHECK(hipMalloc(&cscratch, fp4_moe_canon_scratch_bytes(E, F, K)));
   float *dx, *dy, *dw;
   int* dids;
   CHECK(hipMalloc(&dx, E * 4));
@@ -78,6 +80,19 @@ int main(int argc, char** argv) {
     double num = 0, den = 0;
     for (int i = 0; i < E; i++) { num += (double)(yg[i] - yc[i]) * (yg[i] - yc[i]); den += (double)yc[i] * yc[i]; }
     printf("case %d: GPU vs CPU kernel relerr %.2e\n", c, sqrt(num / den));
+    // placement-invariant numerics: the GPU must give the CPU's bits exactly
+    std::vector<float> ycc(E), ygc(E);
+    cpu.forward_canon(CpuExperts{l.gate_exps, l.up_exps, l.down_exps, hp.swiglu_clamp[layer]}, x.data(), ids.data(),
+                      w.data(), K, ycc.data());
+    fp4_moe_canon(gx, dx, dids, dw, K, hp.swiglu_clamp[layer], dy, cscratch, s);
+    CHECK(hipMemcpyAsync(ygc.data(), dy, E * 4, hipMemcpyDeviceToHost, s));
+    CHECK(hipStreamSynchronize(s));
+    int nd_ = 0;
+    for (int i = 0; i < E; i++) nd_ += memcmp(&ycc[i], &ygc[i], 4) != 0;
+    double n2 = 0;
+    for (int i = 0; i < E; i++) n2 += (double)(ycc[i] - yc[i]) * (ycc[i] - yc[i]);
+    printf("        canonical: GPU vs CPU %d of %d outputs differ; canonical vs current CPU relerr %.2e\n", nd_, E,
+           sqrt(n2 / den));
   }
 
   // speed: a fresh expert set per repetition (113 MB of weights each, no cache reuse)
@@ -98,6 +113,13 @@ int main(int argc, char** argv) {
   CHECK(hipEventElapsedTime(&ms, e0, e1));
   const double us = ms * 1000 / reps, bytes = 3.0 * ggml_nbytes(l.gate_exps) / X * K;
   printf("GPU %d: %.1f us per layer (6 experts, %.1f MB) = %.0f GB/s\n", dev, us, bytes / 1e6, bytes / (us * 1e-6) / 1e9);
+  CHECK(hipEventRecord(e0, s));
+  for (int r = 0; r < reps; r++) fp4_moe_canon(gx, dx, dids + r * K, dw + r * K, K, hp.swiglu_clamp[layer], dy, cscratch, s);
+  CHECK(hipEventRecord(e1, s));
+  CHECK(hipEventSynchronize(e1));
+  CHECK(hipEventElapsedTime(&ms, e0, e1));
+  const double usc = ms * 1000 / reps;
+  printf("GPU %d canonical: %.1f us per layer = %.0f GB/s (%+.0f%%)\n", dev, usc, bytes / (usc * 1e-6) / 1e9, (usc / us - 1) * 100);
   printf("for scale: the CPU kernel takes ~1650 us per layer (66 ms / 40)\n");
   fp4_free(gx.gate);
   fp4_free(gx.up);

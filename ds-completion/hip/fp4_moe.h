@@ -50,6 +50,12 @@ struct ExpertSel {
   const int* count;
   int stride;
 };
+// Placement-invariant numerics (canon_dot.h; PLAN.md "Adaptive expert cache" phase 0): the same
+// as fp4_moe, bit-identical to CpuMoeKernel::forward_canon. Prototype (one token).
+size_t fp4_moe_canon_scratch_bytes(int E, int F, int k);
+void fp4_moe_canon(const GpuExperts& ex, const float* x, const int* ids, const float* w, int k, float limit, float* y,
+                   void* scratch, hipStream_t s);
+
 // M tokens at once (x [M][E] -> y [M][E]): one launch per stage for all of them, every token
 // computed exactly as fp4_moe would compute it alone. scratch: fp4_moe_scratch_bytes(E, F, k, M).
 void fp4_moe_chunk(const GpuExperts& ex, const float* x, ExpertSel sel, int k, int M, float limit, float* y, void* scratch,

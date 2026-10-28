@@ -1,0 +1,42 @@
+# phase 0 of the adaptive expert cache (PLAN.md): placement-invariant expert numerics (src/canon_dot.h)
+# sclk 2, 16 CPU threads; 2026-10-28T17:14:20-04:00
+
+## CPU: bench-cpu-moe -t 16 --tokens 14 --check-layers 2,20,39 (columns: current kernel, canonical, read-only control)
+layer  2: ours relerr 6.60e-08   canonical 6.65e-08   ggml (q8_0 activations) relerr 2.06e-02
+  canonical dot, gate rows of expert 347: 0 of 2304 differ from the scalar specification
+  canonical dot, up rows of expert 347: 0 of 2304 differ from the scalar specification
+  canonical dot, down rows of expert 347: 0 of 5120 differ from the scalar specification
+layer 20: ours relerr 6.37e-08   canonical 6.44e-08   ggml (q8_0 activations) relerr 2.55e-02
+  canonical dot, gate rows of expert 259: 0 of 2304 differ from the scalar specification
+  canonical dot, up rows of expert 259: 0 of 2304 differ from the scalar specification
+  canonical dot, down rows of expert 259: 0 of 5120 differ from the scalar specification
+layer 39: ours relerr 5.60e-08   canonical 5.50e-08   ggml (q8_0 activations) relerr 2.18e-02
+  canonical dot, gate rows of expert 33: 0 of 2304 differ from the scalar specification
+  canonical dot, up rows of expert 33: 0 of 2304 differ from the scalar specification
+  canonical dot, down rows of expert 33: 0 of 5120 differ from the scalar specification
+token 0: ours 73.5 ms (61 GB/s)   canonical 72.3 ms (62 GB/s)   read-only control 50.1 ms (90 GB/s)
+token 1: ours 65.2 ms (69 GB/s)   canonical 73.5 ms (61 GB/s)   read-only control 48.7 ms (93 GB/s)
+token 2: ours 73.7 ms (61 GB/s)   canonical 78.8 ms (57 GB/s)   read-only control 52.9 ms (85 GB/s)
+token 3: ours 66.8 ms (68 GB/s)   canonical 71.0 ms (64 GB/s)   read-only control 48.8 ms (93 GB/s)
+token 4: ours 66.7 ms (68 GB/s)   canonical 68.8 ms (66 GB/s)   read-only control 51.5 ms (88 GB/s)
+token 5: ours 65.6 ms (69 GB/s)   canonical 70.1 ms (64 GB/s)   read-only control 49.6 ms (91 GB/s)
+token 6: ours 65.3 ms (69 GB/s)   canonical 69.4 ms (65 GB/s)   read-only control 48.8 ms (92 GB/s)
+token 7: ours 66.9 ms (67 GB/s)   canonical 69.5 ms (65 GB/s)   read-only control 48.7 ms (93 GB/s)
+token 8: ours 71.0 ms (64 GB/s)   canonical 79.4 ms (57 GB/s)   read-only control 51.7 ms (87 GB/s)
+token 9: ours 67.0 ms (67 GB/s)   canonical 68.6 ms (66 GB/s)   read-only control 50.6 ms (89 GB/s)
+token 10: ours 65.5 ms (69 GB/s)   canonical 70.1 ms (64 GB/s)   read-only control 49.2 ms (92 GB/s)
+token 11: ours 65.9 ms (68 GB/s)   canonical 70.2 ms (64 GB/s)   read-only control 49.2 ms (92 GB/s)
+token 12: ours 65.8 ms (69 GB/s)   canonical 69.2 ms (65 GB/s)   read-only control 48.8 ms (92 GB/s)
+token 13: ours 66.9 ms (67 GB/s)   canonical 68.3 ms (66 GB/s)   read-only control 49.4 ms (91 GB/s)
+# second run, mean over tokens 2..13: current 67.5 ms, canonical 71.0 ms (+5%)
+
+## GPU: bench-fp4-moe --layer 20 --reps 300 (canonical GPU vs canonical CPU, bitwise)
+# uploading layer 20's 384 experts (6.72 GiB) to GPU 0
+case 0: GPU vs CPU kernel relerr 3.63e-08
+        canonical: GPU vs CPU 0 of 5120 outputs differ; canonical vs current CPU relerr 3.63e-08
+case 1: GPU vs CPU kernel relerr 3.64e-08
+        canonical: GPU vs CPU 0 of 5120 outputs differ; canonical vs current CPU relerr 3.64e-08
+case 2: GPU vs CPU kernel relerr 2.74e-08
+        canonical: GPU vs CPU 0 of 5120 outputs differ; canonical vs current CPU relerr 2.74e-08
+GPU 0: 282.6 us per layer (6 experts, 112.8 MB) = 399 GB/s
+GPU 0 canonical: 318.9 us per layer = 354 GB/s (+13%)

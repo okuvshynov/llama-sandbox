@@ -76,14 +76,19 @@ ggml_tensor* fq_fp4_e4(ggml_context* ctx, ggml_tensor* x) {
   return ggml_map_custom1(ctx, x, fq_op<Kind::FP4_E4>, GGML_N_TASKS_MAX, nullptr);
 }
 
+float fq_fp8_split(const float* xb, float* q) {
+  float amax = 0.0f;
+  for (int j = 0; j < 32; j++) amax = std::max(amax, fabsf(xb[j]));
+  const float s = pow2_ceil(std::max(amax, 1e-4f) * (1.0f / 448.0f));
+  for (int j = 0; j < 32; j++) q[j] = fq_e4m3_round(std::clamp(xb[j] / s, -448.0f, 448.0f));
+  return s;
+}
+
 void fq_fp8_host(const float* x, float* y, int64_t n) {
   for (int64_t b = 0; b < n / 32; b++) {
-    const float* xb = x + b * 32;
-    float* yb = y + b * 32;
-    float amax = 0.0f;
-    for (int j = 0; j < 32; j++) amax = std::max(amax, fabsf(xb[j]));
-    const float s = pow2_ceil(std::max(amax, 1e-4f) * (1.0f / 448.0f));
-    for (int j = 0; j < 32; j++) yb[j] = fq_e4m3_round(std::clamp(xb[j] / s, -448.0f, 448.0f)) * s;
+    float q[32];
+    const float s = fq_fp8_split(x + b * 32, q);
+    for (int j = 0; j < 32; j++) y[b * 32 + j] = q[j] * s;
   }
 }
 
