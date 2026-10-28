@@ -38,6 +38,16 @@ bin-hip/ds-completion -m $M --rt ~/llms/ds-1017-fp8/dense-fp8.gguf \
 
 Without `--placement` every routed expert runs on the CPU (faster start, ~12 t/s).
 
+Faster still, with speculative decoding (same output, byte for byte; +22% on average, more on
+code and math, least on Chinese/Japanese):
+
+```bash
+bin-hip/ds-completion -m $M --rt ~/llms/ds-1017-fp8/dense-fp8.gguf \
+    --placement placements/study30.txt \
+    --dspark ~/llms/dspark/dspark-DeepSeek-V4.1-Flash-1017-BF16.gguf --spec \
+    -p "Write a haiku about memory bandwidth." --chat -n 64
+```
+
 Options:
 
 - `--chat`: one user turn, no thinking.
@@ -50,17 +60,23 @@ Options:
 - `--gpu D`: the die for the runtime (default 0).
 - `--placement FILE`: routed experts on GPUs, the file's top-ranked ones that fit (10-30 s upload).
 - `--moe-dies 0,1,2,3`: the dies that hold experts (default all four).
+- `--dspark FILE`: the DSpark draft GGUF (8.5 GB on GPU 0). Alone: shadow mode, drafts are
+  measured but not used.
+- `--spec`: speculative decoding (needs `--dspark`); the number of guesses verified per step
+  is chosen from the draft's confidence. `--spec-n N` fixes it; `--spec-log FILE` writes
+  per-step data.
 
 Without `--rt` (or with `bin/ds-completion`) everything runs on the CPU.
 
 With `--placement placements/study30.txt` the four GPUs hold the routed experts used most in
 the 30-prompt routing study (43% of all, 10-30 s upload); 17.7-21.7 t/s on the test prompts (README step 18).
 
-## Current results (2026-10-27)
+## Current results (2026-10-28)
 
 | mode | command | decode | KL vs reference*: median / mean without the near-tie step |
 |---|---|---|---|
-| **own runtime + experts placed on GPUs** | `bin-hip/ds-completion --rt ... --placement placements/study30.txt` | **17.7-21.7 t/s** (128 tokens) | same numerics: per-layer gate identical to below |
+| **+ speculative decoding** | `... --placement placements/study30.txt --dspark ... --spec` | **16-24 t/s** (300 tokens, held-out prompts; +22% geometric mean) | output byte-identical to the row below |
+| own runtime + experts placed on GPUs | `bin-hip/ds-completion --rt ... --placement placements/study30.txt` | 17.7-21.7 t/s (128 tokens) | same numerics: per-layer gate identical to below |
 | own runtime, dense on GPU 0 | `bin-hip/ds-completion --rt ...` | 12.0-12.5 t/s | 5.9e-6 / 4.8e-3 (earlier run 1.7e-5 / 6.3e-4) |
 | CPU only | `bin/ds-completion` | 3.5 t/s | 1.3e-5 / 3.9e-3 |
 | llama.cpp fork (llama-cli, CPU) | - | 3.5 t/s | 2.1e-5 / 1.3e-3 |

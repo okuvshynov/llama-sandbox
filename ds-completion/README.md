@@ -1196,3 +1196,44 @@ model, keeps the matching prefix plus the main model's own next token, and commi
   stays ~4% under plain: steps that verify 1 draft at ~40% acceptance break even, and a plain
   step through verify() may cost more than decode(). Plain runs vary by up to ~7% between
   runs, so differences under ~5% are noise.
+
+## Step 26: measurement on held-out prompts (phase 5)
+
+- **Cost model fix found here:** under the oracle placement the rule verified 1 draft on 158 of
+  162 steps (concurrency): the per-n running averages only updated the n that ran, and the
+  others kept the study30 prior. Now verify cost is a line a + b n, fitted by weighted least
+  squares to the run's steps (decay 0.97 per step) plus a weak prior (52 + 28 n, weight 3
+  steps), so every step updates every n. Fitted lines: study30 ~45-68 + 26-36 n ms, oracle
+  37.5 + 21.4 n (concurrency), 53.6 + 12.9 n (code). Oracle concurrency 27.0 -> 29.3 t/s; other
+  prompts unchanged within noise. All numbers below use it.
+- **Held-out prompts** (`results/spec-heldout/`: 8 prompts used by neither calibration nor the
+  earlier tests; study30, sclk 2; plain = no draft loaded). Output identical to plain greedy
+  (with the draft loaded, same placement) on all 8.
+
+| prompt | plain t/s | `--spec` t/s | | tokens per step |
+|---|---|---|---|---|
+| tcp-udp (explain) | 17.6 | 20.5 | +17% | 2.1 |
+| py-lru (code) | 17.2 | 21.2 | +23% | 2.9 |
+| cpp-matrix (code) | 16.8 | 22.4 | +33% | 4.0 |
+| sql-report (code) | 16.3 | 20.7 | +27% | 2.8 |
+| geometry (math, think) | 17.3 | 22.8 | +32% | 3.4 |
+| zh-travel (Chinese) | 15.0 | 16.1 | +7% | 2.0 |
+| ja-email (Japanese) | 14.9 | 16.2 | +9% | 2.1 |
+| summary-json | 17.8 | 23.6 | +33% | 3.9 |
+
+  Geometric mean +22%; slowest gain on Chinese/Japanese text (the draft guesses those worst).
+- **Test prompts** with the final rule: chat 22.7 (+11%), code 21.7 (+26%), math 24.4 (+16%),
+  zh essay 16.4 (-5%; plain runs vary by up to ~7%).
+- **With a good expert cache** (oracle placement: experts from the prompt's own routing):
+
+| prompt | plain t/s | `--spec` t/s | |
+|---|---|---|---|
+| concurrency | 24.6 | 29.3 | +19% |
+| code-rust | 23.9 | **40.8** | +71% |
+
+  Speculation and the expert cache multiply: misses grow with the tokens verified, so a better
+  cache makes longer drafts pay (code-rust verifies 5 drafts on 36 of 67 steps).
+- **Verify step of 6 tokens** (`results/spec-profiles.txt`): 171 ms with study30 (CPU misses
+  68, attention core 20, attention output 15, shared expert 14, router 10, q 7, hc 6,
+  indexer + compressor 11, head 5); 121 ms with the oracle placement (CPU misses 9, GPU
+  experts 9).

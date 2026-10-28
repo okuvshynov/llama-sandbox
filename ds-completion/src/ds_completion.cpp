@@ -197,10 +197,24 @@ int main(int argc, char** argv) {
     // Draft length per step (unless --spec-n): the confidence head's sigmoid is the chance a draft
     // is accepted given the earlier ones were (calibrated: scripts/spec_conf.py, README step 25);
     // verify the n in 0..5 with the most expected tokens per ms, (1 + p0 + p0 p1 + ...) /
-    // (draft + verify(n)). Costs: running averages from this run, starting from
-    // 52 + 28 n ms (sclk 2, study30); n = 0 is a plain step.
-    std::vector<double> verify_cost(rt->draft_block() + 1);
-    for (size_t n = 0; n < verify_cost.size(); n++) verify_cost[n] = 52.0 + 28.0 * n;
+    // (draft + verify(n)); n = 0 is a plain step. Verify cost: a line a + b n, fitted by weighted
+    // least squares to this run's steps (weights decay by 0.97 per step, ~30 steps) plus a weak
+    // fixed prior, 52 + 28 n ms (sclk 2, study30) at n = 0..5 with a total weight of 3 steps.
+    // A line, not one average per n: every step then updates the cost of every n, including
+    // those the rule has not tried lately (with a good expert cache the per-token cost is lower).
+    const int n_max = rt->draft_block();
+    struct Fit { double w = 0, n = 0, t = 0, nn = 0, nt = 0; } obs, prior;
+    for (int n = 0; n <= n_max; n++) {
+      const double w = 3.0 / (n_max + 1), t = 52.0 + 28.0 * n;
+      prior.w += w; prior.n += w * n; prior.t += w * t; prior.nn += w * n * n; prior.nt += w * n * t;
+    }
+    std::vector<double> verify_cost(n_max + 1);
+    auto refit = [&] {
+      const Fit f{obs.w + prior.w, obs.n + prior.n, obs.t + prior.t, obs.nn + prior.nn, obs.nt + prior.nt};
+      const double b = (f.w * f.nt - f.n * f.t) / (f.w * f.nn - f.n * f.n), a = (f.t - b * f.n) / f.w;
+      for (int n = 0; n <= n_max; n++) verify_cost[n] = a + b * n;
+    };
+    refit();
     double draft_cost = 12.0;
     std::vector<long> n_hist(verify_cost.size(), 0);
     auto choose_n = [&](const std::vector<float>& conf) {
@@ -252,7 +266,11 @@ int main(int argc, char** argv) {
         const double vms = std::chrono::duration<double, std::milli>(Clock::now() - tv).count();
         int k = 0;
         while (k + 1 < (int)chunk.size() && chunk[k + 1] == next[k]) k++;
-        verify_cost[chunk.size() - 1] += 0.1 * (vms - verify_cost[chunk.size() - 1]);
+        {
+          const double nv = chunk.size() - 1;
+          obs = {0.97 * obs.w + 1, 0.97 * obs.n + nv, 0.97 * obs.t + vms, 0.97 * obs.nn + nv * nv, 0.97 * obs.nt + nv * vms};
+          refit();
+        }
         n_hist[chunk.size() - 1]++;
         if (profile) {
           fprintf(stderr, "\n# verify %d tokens: %.1f ms (cpu experts %.1f; experts gpu %d cpu %d); GPU timeline:", (int)chunk.size(),
@@ -276,7 +294,8 @@ int main(int argc, char** argv) {
     if (spec_log) fclose(spec_log);
     fprintf(stderr, "\n# drafts verified per step:");
     for (size_t n = 0; n < n_hist.size(); n++) fprintf(stderr, " %zu: %ld", n, n_hist[n]);
-    fprintf(stderr, " (of the 0s, %ld plain steps without a draft)", plain_steps);
+    fprintf(stderr, " (of the 0s, %ld plain steps without a draft); verify cost fit %.1f + %.1f n ms", plain_steps,
+            verify_cost[0], verify_cost[1] - verify_cost[0]);
   }
 #endif
   for (; !spec && n_gen < n_predict; n_gen++) {

@@ -1,0 +1,8 @@
+tcp-udp|chat|300|What are the differences between TCP and UDP, and when would you choose each?
+py-lru|chat|300|Implement an LRU cache in Python with O(1) get and put, and add a few unit tests.
+cpp-matrix|chat|300|Write a C++ class for a dense matrix with addition, multiplication and transpose, using std::vector.
+sql-report|chat|300|Write a SQL query that returns, for each customer, their total order amount in 2024 and their rank among all customers, given tables customers(id, name) and orders(id, customer_id, amount, created_at).
+geometry|think|500|A triangle has sides 13, 14 and 15. Find its area, its inradius and its circumradius.
+zh-travel|chat|300|请为第一次去北京的游客写一份三天的旅行计划。
+ja-email|chat|300|取引先に会議の日程変更をお願いする丁寧なビジネスメールを書いてください。
+summary-json|chat|300|Summarize the following in JSON with keys "topic", "key_points" (a list) and "sentiment": The city council approved a new budget on Monday after a long debate. The plan increases funding for public transport by 15 percent and for libraries by 5 percent, while cutting the road maintenance budget. Several residents spoke in favor of the transport investment, but local business owners worried that fewer road repairs would hurt deliveries.

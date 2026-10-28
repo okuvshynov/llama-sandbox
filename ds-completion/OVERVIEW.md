@@ -1,4 +1,4 @@
-# ds-completion: overview (2026-10-27)
+# ds-completion: overview (2026-10-28)
 
 A ~20-minute read: what was built, how it works, what we measured, what we learned, and what
 is next. How to run it: [QUICKSTART.md](QUICKSTART.md). Every step and number in detail:
@@ -29,8 +29,11 @@ Decode speed (sclk level 2, 16 CPU threads, 128 generated tokens):
 | llama.cpp fork (llama-cli, CPU) | 3.5 t/s |
 | ours, CPU only | 3.5 t/s |
 | ours, own GPU runtime, routed experts on the CPU | ~12 t/s |
-| **ours, + most-used experts placed on the 4 GPUs (`--placement`)** | **17.7-21.7 t/s** |
-| upper bound: placement from the prompt's own routing (perfect knowledge) | ~25 t/s |
+| ours, + most-used experts placed on the 4 GPUs (`--placement`) | 17.7-21.7 t/s |
+| **ours, + speculative decoding with the model's DSpark draft (`--dspark ... --spec`)** | **16-24 t/s; +22% (geometric mean) on 8 held-out prompts, +7% to +33%** |
+| upper bound: placement from the prompt's own routing (perfect knowledge) | ~25 t/s plain; 29-41 t/s with `--spec` |
+
+(The speculative numbers are 300-token runs on held-out prompts; README step 26.)
 
 Prompt processing runs token by token through the runtime: ~10-16 t/s. Startup: ~15 s, plus
 10-30 s to upload experts with a placement.
@@ -43,6 +46,9 @@ Accuracy, against the official implementation run on the CPU in fp32:
 - **End to end:** the top token matches the reference at 16 of 17 steps (the miss is a near
   tie), the same for every mode, the llama.cpp fork included. Median KL ~1e-5.
 - **Deterministic:** repeated runs give bit-identical output.
+- **Speculative decoding changes nothing in the output:** it is byte-identical to plain greedy
+  decoding on every prompt tested (18 prompts; 4 of them at 5 fixed draft lengths too), because every batched kernel
+  gives each token the same bits as a one-token call.
 
 ## 3. How a token is computed
 
@@ -71,6 +77,14 @@ token -> embedding (host) -> 40 x [ engram (layers 1, 14) -> attention block -> 
   from there (cards are not peer-connected), GPU 0 runs its own list next to the shared expert,
   and the host runs only the CPU's misses. Nothing on the GPUs waits for the host.
 - **Prompt:** the same path, one token at a time.
+- **Speculative decoding** (`hip/dspark.cpp`, `Runtime::verify/commit`): the release's DSpark
+  draft (3 small layers reading the main model's layers 37-39, 8.5 GB on GPU 0) guesses the
+  next 5 tokens in ~12 ms. The main model then runs [last token, guesses] as one chunk:
+  projections, the head and the expert block read their weights once for all tokens; attention
+  runs per token in position order. The longest correct prefix plus the model's own next token
+  is kept, the rest rolled back (window slots, compressor state). How many guesses to verify is
+  chosen per step from the draft's confidence head, which turned out to be calibrated: the n
+  with the most expected tokens per ms, with verify costs fitted during the run.
 - **Reference path** (`src/forward.cpp`): the whole model as ggml CPU graphs, module by module like
   the official `model.py`. Slow (3.5 t/s), but it is the second implementation every runtime
   change is checked against.
@@ -86,6 +100,10 @@ token -> embedding (host) -> 40 x [ engram (layers 1, 14) -> attention block -> 
 - **Rule for every change:** placement-only or reordering changes must be bit-identical to the
   previous version; numerics changes must stay at the same error level against the reference.
   Every step in the README records its gate.
+- **Batched kernels** (speculative verification) have bitwise tests against one-token calls
+  (`bench-fp8 --bitwise`, `bench-kernels --bitwise`, `bench-expert-pool`), each with a control
+  that the test can see a difference; the end-to-end gate is speculative output = plain greedy
+  output, byte for byte.
 
 ## 5. What we learned (the surprises)
 
@@ -107,6 +125,14 @@ token -> embedding (host) -> 40 x [ engram (layers 1, 14) -> attention block -> 
 - **Cold starts:** the model is memory-mapped; after a reboot the first run reads experts from
   NVMe. Mapping the CPU experts at load (`MADV_POPULATE_READ`, 1.2 s) also removes ~4k page
   faults per first-used expert.
+- **The DSpark draft's confidence head is calibrated out of the box** (sigmoid(score) = the
+  observed acceptance rate), so choosing the draft length per step needs no tuning; the official
+  code computes it but never uses it.
+- **Batching does not make GEMVs free on gfx906:** at 6 tokens the exact fp8 GEMV first cost 3x
+  one token, bound by decoding the activations in every row (arithmetic), not by memory;
+  decoding each tile once into shared memory fixed half of it.
+- **A rare GPU memory fault** at startup came from copying experts straight out of the mmap;
+  staging through pinned memory removed it (and made uploads 4x faster).
 - **GPU clock** (sclk) matters for latency-bound kernels, little for bandwidth-bound ones:
   sclk 4-6 gives most of the speed at much less power than 8.
 
@@ -123,15 +149,29 @@ token -> embedding (host) -> 40 x [ engram (layers 1, 14) -> attention block -> 
 A floor of ~35 ms (~28 t/s) remains whatever the caching: the dense part, the shared expert, the
 router and the per-layer dispatch.
 
+With speculative decoding, a verify step of 6 tokens (`results/spec-profiles.txt`):
+
+| ms per verify step (6 tokens) | study30 placement | perfect placement |
+|---|---|---|
+| routed experts on the CPU (critical path) | 68 | 9 |
+| attention core (per token, in order) | 20 | 21 |
+| fp8 projections: attention q + output, shared expert | 35 | 37 |
+| router, hyper-connections, indexer, compressor, head, rest | ~48 | ~54 |
+| **step** | **171** | **121** |
+
+plus the draft, ~12 ms. One token alone costs ~50 ms, so 6 tokens verified cost ~3.4x one; the
+win depends on how many guesses are right (2 per step on chat, 4 on code).
+
 ## 7. What is next
 
 1. **Adaptive expert cache:** start from the study's placement and load missed experts into GPU
-   memory in the background (LRU). Simulated: ~95% hits with ~11 loads per token, ~23 t/s. Needs
-   pinned staging buffers first, since uploads run at ~4.6 GB/s today.
-2. **The ~35 ms floor:** a higher GPU clock (free, if the power is acceptable), fusing the router
+   memory in the background (LRU). Simulated: ~95% hits with ~11 loads per token, ~23 t/s
+   plain. With speculation it is worth more: CPU misses are 40% of a verify step, and a perfect
+   placement took code from 21.7 to 40.8 t/s. Pinned staging is in place (uploads 18.6 GB/s).
+2. **The rest of a verify step:** fp8 projections over 64-lane rows are still ~2x one token at
+   6 tokens; the router's 6 top-k launches; attention core per token.
+3. **The ~35 ms floor:** a higher GPU clock (free, if the power is acceptable), fusing the router
    and dispatch, fusing small kernels; tensor parallelism across dies last.
-3. **Speculative decoding** with the model's own draft heads (DSpark): ~1.3-1.5x; needs the full
-   1017 checkpoint download for the draft weights.
 
 Explored, not planned: a second machine (pipeline split; ~1-2 ms gain once the cache adapts),
 RDMA between machines, an MI210 for the dense part (~33 t/s estimated), and a hypothetical
@@ -161,8 +201,9 @@ V4.1-Pro (engram on SSD is easy; experts barely fit in two machines' RAM).
 | `hip/fp8_gemv.{h,hip}` | exact fp8 x fp8 GEMV |
 | `hip/fp4_moe.{h,hip}` | exact fp4 routed-expert kernel (4 launches) |
 | `hip/expert_pool.{h,hip}` | expert slots per die, placement reading and assignment |
+| `hip/dspark.{h,cpp}` | the DSpark draft (3 layers, Markov and confidence heads) |
 | `hip/bench_*.cpp`, `src/bench_*.cpp` | benchmarks of each kernel |
 | `ref/` | the Python reference, golden export, weight checks, logits comparison |
-| `scripts/` | routing study and analysis, clock sweep |
+| `scripts/` | routing study and analysis, clock sweep, DSpark confidence calibration (`spec_conf.py`) |
 | `placements/` | ranked expert placements (`study30.txt` is the default) |
 | `results/` | raw outputs of every measurement quoted in the README |

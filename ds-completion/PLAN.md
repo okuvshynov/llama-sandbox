@@ -36,7 +36,7 @@ Speed
 | 16 | Adaptive expert cache (A1 + A2) | next | start from the study30 set, load missed experts into HBM in the background (LRU): ~95% hits at 128 GB, est. ~23 t/s; needs pinned staging first (loads ~4.8 GB/s) |
 | 17 | Tensor parallelism, 2-way then 4-way (C1/C2) | planned | split the dense GEMVs over dies: ~-6..10 ms per step, matters once experts are mostly on GPUs |
 | 18 | Shared expert by TP, routed by EP (C4) | planned | the dense shared expert splits like any other GEMV under TP |
-| 19 | DSpark speculative decoding (E1) | in progress | shadow mode done: 2.95 / 5.10 tokens per main step (chat / code); batched verification next (plan below) |
+| 19 | DSpark speculative decoding (E1) | done | `--dspark ... --spec`, output identical to plain greedy; held-out prompts +7% to +33% (geometric mean +22%), oracle placement +19% / +71% (README steps 19-26) |
 | 20 | Batched prompt processing (F) | planned | read each weight once for many prompt tokens; matters for long prompts |
 | 21 | Dynamic expert cache (A2) | merged into 16 | item 13 showed recent usage beats fixed sets |
 | 22 | Faster GPU fp4 expert kernel | partly done | 287 -> 406 GB/s (item 8); the per-row fp8 activation decode is the next cost; matters little while it overlaps |
@@ -141,6 +141,9 @@ Phases:
    the most expected tokens per ms (running cost averages), plus a backoff that skips the
    draft after n = 0. Chat +9%, code +25%, math +14% vs plain; zh -4%.
 5. **Measure and document:** held-out prompts, study30 and oracle placements, profiles.
+   **Done** (README step 26): 8 held-out prompts +7% to +33% (geometric mean +22%), oracle
+   placement +19% / +71%; the cost model became a fitted line (it was stuck at n = 1 under the
+   oracle placement).
 
 Expected per verify step (6 tokens, sclk 2, after phases 2-3): fp8 GEMVs ~31 ms, head + small
 kernels ~18, attention ~18, GPU experts ~12, CPU misses ~40-60 (study30) or ~10 (good

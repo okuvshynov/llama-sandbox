@@ -1,0 +1,36 @@
+# verify step of 6 tokens (--spec-n 5 --profile), median per step; sclk 2, 16 threads
+# study30 placement, concurrency (chat), 128 tokens:
+# study30, concurrency: 50 steps; median 170.6 ms, host CPU expert time 79.2 ms, experts on GPU 1178.5 / CPU 261.5
+study30  ffn.wait_for_cpu_experts       68.0
+study30  attn.core                      20.0
+study30  attn.out                       14.6
+study30  ffn.shared                     14.1
+study30  ffn.router                     10.4
+study30  attn.q                          6.5
+study30  hc                              6.2
+study30  attn.indexer                    5.7
+study30  attn.compressor                 5.6
+study30  head                            4.8
+study30  ffn.wait_for_gpu_experts        3.1
+study30  ffn.dispatch                    2.5
+study30  ffn.add                         1.9
+study30  engram                          1.7
+study30  attn.kv                         1.6
+study30  engram.fetch                    1.5
+# oracle placement, code-rust: 42 steps; median 121.3 ms, host CPU expert time 18.1 ms, experts on GPU 1395.0 / CPU 45.0
+oracle placement attn.core                      20.6
+oracle placement ffn.shared                     16.2
+oracle placement attn.out                       14.5
+oracle placement ffn.router                     10.4
+oracle placement ffn.wait_for_cpu_experts        9.3
+oracle placement ffn.wait_for_gpu_experts        9.0
+oracle placement attn.q                          6.7
+oracle placement hc                              6.2
+oracle placement attn.indexer                    5.8
+oracle placement attn.compressor                 5.6
+oracle placement head                            4.9
+oracle placement ffn.dispatch                    2.5
+oracle placement ffn.add                         1.9
+oracle placement engram                          1.8
+oracle placement attn.kv                         1.7
+oracle placement engram.fetch                    1.5
