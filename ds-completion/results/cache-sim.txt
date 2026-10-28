@@ -1,0 +1,117 @@
+# time model, step = 39.0 + 15.0 (M - 1) + 10.5 draft (M > 1) + max(0, 0.2700 x missed slots - 6.5) ms; c, o fitted on 16 measured study30 runs: 4.8% rms
+# run                    measured t/s  model t/s
+#   spec  cpp-matrix        18.95      21.24
+#   spec  geometry          21.95      21.47
+#   spec  ja-email          15.37      14.57
+#   spec  py-lru            20.50      20.59
+#   spec  sql-report        19.12      19.11
+#   spec  summary-json      23.14      22.24
+#   spec  tcp-udp           18.75      20.88
+#   spec  zh-travel         14.46      15.14
+#   plain cpp-matrix        18.03      17.67
+#   plain geometry          18.12      19.14
+#   plain ja-email          15.64      14.84
+#   plain py-lru            18.53      18.04
+#   plain sql-report        17.52      17.55
+#   plain summary-json      18.53      18.65
+#   plain tcp-udp           19.26      19.58
+#   plain zh-travel         16.15      15.59
+
+# 6201 slots, latency 1 step unless noted; rate: loads per second (0 = static study30)
+
+## --spec, held-out prompts (8 logs, 5480 generated tokens in 2018 steps, 2.72 tokens per step), warm start study30
+policy                                   hit:commit fwd   CPU exp/tok  loads/tok GB/s   t/s:free charged
+# LRU (load on the first miss), loads from all forwarded tokens
+lru rate 0                                60.5%  60.4%    76.0    0.00  0.00   18.8  18.8
+lru rate 25                               65.0%  64.9%    67.1    1.21  0.45   19.9  19.8
+lru rate 50                               69.4%  69.3%    59.1    2.27  0.91   21.2  21.0
+lru rate 100                              77.6%  77.6%    44.6    4.06  1.84   24.2  23.5
+lru rate 200                              86.2%  86.2%    29.3    7.03  3.71   28.1  26.7
+lru rate 400                              92.0%  92.0%    18.1   11.16  6.61   31.5  28.8
+lru rate inf                              94.7%  94.7%    12.6   12.63  7.95   33.5  30.0
+# LRU, loads from committed tokens only
+lru rate 50 src=committed                 69.8%  69.8%    58.4    2.26  0.91   21.4  21.1
+lru rate 100 src=committed                78.0%  78.0%    43.9    4.03  1.85   24.3  23.7
+lru rate 200 src=committed                86.5%  86.4%    28.8    6.95  3.69   28.2  26.8
+lru rate inf src=committed                94.5%  94.4%    13.2   12.11  7.59   33.3  30.0
+# admission: k misses within W committed tokens
+admit k=2 W=64 rate 50                    76.9%  76.9%    47.1    2.06  0.92   23.9  23.6
+admit k=2 W=64 rate 100                   84.7%  84.6%    32.7    3.53  1.81   27.3  26.6
+admit k=2 W=64 rate 200                   90.3%  90.2%    22.0    5.20  2.98   30.5  29.3
+admit k=2 W=64 rate inf                   93.0%  92.9%    16.8    5.70  3.46   32.3  30.8
+admit k=2 W=256 rate 50                   75.4%  75.4%    49.5    2.10  0.92   23.3  23.0
+admit k=2 W=256 rate 100                  83.8%  83.8%    34.3    3.65  1.84   26.9  26.2
+admit k=2 W=256 rate 200                  90.0%  89.9%    22.5    5.77  3.28   30.3  28.9
+admit k=2 W=256 rate inf                  93.4%  93.4%    15.6    6.88  4.22   32.6  30.7
+admit k=3 W=256 rate 50                   78.6%  78.6%    44.8    2.01  0.93   24.6  24.3
+admit k=3 W=256 rate 100                  85.7%  85.7%    31.3    3.41  1.79   27.9  27.2
+admit k=3 W=256 rate 200                  90.9%  90.8%    21.1    4.69  2.72   30.9  29.7
+admit k=3 W=256 rate inf                  92.1%  92.0%    18.8    4.86  2.90   31.7  30.4
+admit k=4 W=1024 rate 50                  79.2%  79.2%    43.7    1.99  0.93   24.9  24.6
+admit k=4 W=1024 rate 100                 86.4%  86.3%    30.1    3.41  1.81   28.2  27.5
+admit k=4 W=1024 rate 200                 90.9%  90.8%    21.3    4.45  2.58   30.9  29.8
+admit k=4 W=1024 rate inf                 91.2%  91.1%    20.8    4.48  2.62   31.1  30.0
+# rebalance: every P tokens, the top of the last W tokens
+rebalance P=16 W=256 rate 50              83.3%  83.3%    37.3    1.86  0.93   26.7  26.4
+rebalance P=16 W=256 rate 100             87.5%  87.4%    28.3    3.43  1.86   28.9  28.1
+rebalance P=16 W=256 rate 200             90.6%  90.5%    21.7    5.75  3.31   30.7  29.3
+rebalance P=16 W=256 rate inf             92.4%  92.3%    17.6    6.84  4.10   31.9  30.1
+rebalance P=64 W=256 rate 50              81.3%  81.2%    40.8    1.81  0.88   25.7  25.4
+rebalance P=64 W=256 rate 100             85.2%  85.0%    32.6    3.36  1.74   27.6  26.9
+rebalance P=64 W=256 rate 200             88.0%  87.8%    26.5    5.66  3.09   29.1  27.8
+rebalance P=64 W=256 rate inf             90.2%  90.0%    21.8    7.04  4.02   30.4  28.7
+rebalance P=256 W=1024 rate 50            74.5%  74.4%    52.2    1.33  0.57   23.0  22.8
+rebalance P=256 W=1024 rate 100           77.5%  77.4%    46.0    2.47  1.12   24.1  23.7
+rebalance P=256 W=1024 rate 200           80.0%  79.9%    40.7    3.68  1.74   25.1  24.5
+rebalance P=256 W=1024 rate inf           82.7%  82.5%    35.1    4.63  2.28   26.2  25.4
+# load latency in steps (LRU)
+lru rate 100 latency 2                    77.4%  77.4%    44.9    4.07  1.84   24.1  23.5
+lru rate inf latency 2                    93.9%  93.9%    14.3   12.65  7.83   32.9  29.6
+lru rate 100 latency 4                    77.2%  77.2%    45.3    4.08  1.84   24.0  23.4
+lru rate inf latency 4                    93.0%  92.9%    16.2   12.68  7.69   32.3  29.1
+lru rate 100 latency 8                    76.7%  76.7%    46.2    4.10  1.84   23.8  23.2
+lru rate inf latency 8                    91.6%  91.5%    19.1   12.73  7.50   31.3  28.3
+
+## plain decoding, the same held-out texts (committed tokens), warm start study30
+policy                                   hit:commit fwd   CPU exp/tok  loads/tok GB/s   t/s:free charged
+lru rate 0                                60.5%  60.5%    94.8    0.00  0.00   17.2  17.2
+lru rate 25                               66.1%  66.1%    81.5    1.36  0.47   18.3  18.2
+lru rate 50                               71.1%  71.1%    69.4    2.56  0.94   19.5  19.3
+lru rate 100                              80.3%  80.3%    47.3    4.58  1.88   21.8  21.3
+lru rate 200                              88.6%  88.6%    27.3    8.13  3.65   23.9  22.7
+lru rate 400                              93.3%  93.3%    16.1   11.57  5.44   25.0  23.2
+lru rate inf                              94.9%  94.9%    12.2   12.17  5.82   25.5  23.5
+admit k=2 W=256 rate 50                   75.2%  75.2%    59.5    2.43  0.94   20.6  20.3
+admit k=2 W=256 rate 100                  84.8%  84.8%    36.5    4.24  1.83   23.0  22.4
+admit k=2 W=256 rate 200                  91.2%  91.2%    21.0    6.10  2.82   24.6  23.6
+admit k=3 W=256 rate 50                   78.6%  78.6%    51.4    2.33  0.94   21.4  21.2
+admit k=3 W=256 rate 100                  87.3%  87.3%    30.5    3.79  1.69   23.7  23.2
+admit k=3 W=256 rate 200                  91.5%  91.5%    20.3    4.59  2.15   24.9  24.1
+rebalance P=16 W=256 rate 50              84.3%  84.3%    37.6    2.16  0.94   23.1  22.8
+rebalance P=16 W=256 rate 100             88.4%  88.4%    27.8    4.08  1.84   24.1  23.5
+rebalance P=16 W=256 rate 200             91.0%  91.0%    21.6    6.27  2.90   24.6  23.6
+rebalance P=64 W=256 rate 50              82.2%  82.2%    42.6    2.12  0.90   22.5  22.2
+rebalance P=64 W=256 rate 100             86.1%  86.1%    33.3    4.01  1.76   23.4  22.8
+rebalance P=64 W=256 rate 200             88.5%  88.5%    27.6    6.14  2.75   23.9  23.0
+
+## plain decoding, study prompts (30 logs, 20919 generated tokens), warm start: the other 29 logs (leave-one-out)
+policy                                   hit:commit fwd   CPU exp/tok  loads/tok GB/s   t/s:free charged
+lru rate 0                                70.6%  70.6%    70.6    0.00  0.00   19.4  19.4
+lru rate 25                               75.4%  75.4%    59.1    1.21  0.47   20.6  20.5
+lru rate 50                               79.1%  79.1%    50.1    2.32  0.94   21.6  21.3
+lru rate 100                              85.4%  85.4%    35.1    4.32  1.88   23.2  22.6
+lru rate 200                              91.3%  91.3%    21.0    7.82  3.61   24.6  23.4
+lru rate 400                              94.5%  94.5%    13.3   10.71  5.09   25.3  23.6
+lru rate inf                              95.4%  95.4%    11.1   11.09  5.32   25.5  23.7
+admit k=2 W=256 rate 50                   82.8%  82.8%    41.4    2.22  0.94   22.5  22.2
+admit k=2 W=256 rate 100                  89.0%  89.0%    26.4    3.93  1.78   24.1  23.5
+admit k=2 W=256 rate 200                  93.1%  93.1%    16.5    5.35  2.52   25.1  24.2
+admit k=3 W=256 rate 50                   85.2%  85.2%    35.6    2.14  0.93   23.1  22.8
+admit k=3 W=256 rate 100                  90.5%  90.5%    22.7    3.31  1.53   24.5  24.0
+admit k=3 W=256 rate 200                  92.9%  92.9%    17.0    3.74  1.77   25.2  24.6
+rebalance P=16 W=256 rate 50              88.3%  88.3%    28.1    2.07  0.94   24.1  23.8
+rebalance P=16 W=256 rate 100             90.9%  90.9%    21.8    3.88  1.80   24.7  24.0
+rebalance P=16 W=256 rate 200             92.6%  92.6%    17.7    5.57  2.62   25.0  24.1
+rebalance P=64 W=256 rate 50              86.6%  86.6%    32.1    2.02  0.90   23.6  23.3
+rebalance P=64 W=256 rate 100             89.1%  89.1%    26.3    3.78  1.72   24.2  23.6
+rebalance P=64 W=256 rate 200             90.7%  90.7%    22.4    5.46  2.51   24.5  23.6

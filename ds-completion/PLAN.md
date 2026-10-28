@@ -237,11 +237,13 @@ Phases:
    compute exact integer block sums (VNNI / v_dot4_i32_i8) with one fixed conversion,
    accumulator layout and tree (`src/canon_dot.h`), plus a shared expf (`src/canon_math.h`).
    Whole expert block GPU = CPU bit for bit; CPU +5%, GPU +13%; accuracy unchanged.
-1. **Simulation with realistic constraints** (`route_stats.py`, CPU only): load latency, a
-   per-step load budget, speculative verify chunks (up to 6 tokens' misses per layer,
-   rejected drafts included). Output: hit rate and loads per step by budget, admission rule
-   and rebalance period (the aggressiveness knobs below); whether loads should come from all
-   misses or committed tokens only.
+1. **Simulation with realistic constraints** (`scripts/cache_sim.py`, CPU only): load latency, a
+   load rate, speculative verify chunks (rejected drafts included). **Done** (README step 29):
+   with a time model fitted on the measured runs (4.8% rms), held-out `--spec` goes from 18.8
+   (static) to ~26.7 t/s at 50 loads/s and ~28.9 at 100 (unlimited LRU: 33.5, ~8 GB/s).
+   Frequency (the most-used experts of the last 256 tokens replace the least-used residents,
+   every 16 tokens) beats LRU by 2.5-5.5 t/s at limited rates; rejected drafts do not pollute
+   (load from all forwarded tokens); latency of 1-8 steps costs little.
 2. **Load path, measured alone:** ~200-450 loads/s at 18.8 MB (11 per token at 20-40 t/s).
    mmap -> pinned memcpy costs ~2-3 ms CPU per expert, so 2-4 loader threads, then an async
    copy on a low-priority stream per die, then unpack. Also test registering the whole expert
@@ -265,7 +267,8 @@ the CPU miss kernel and the staging copies), a CPU miss costs ~0.27 ms per exper
 critical path, so a load pays only if the expert is used several times before eviction; too
 aggressive thrashes. Expected: diminishing returns, most of the gain from a small budget.
 Knobs:
-- **Load budget:** at most N experts (or MB/s) per step; 0 = today's static placement.
+- **Load budget:** at most N experts per second (phase 1: the main knob; per step would tie it
+  to the step length, ~3x longer with `--spec`); 0 = today's static placement.
 - **Admission rule:** load only after k misses in a recent window (frequency) instead of on the
   first miss (LRU); filters one-off experts, which matters under speculation (rejected drafts
   route to experts that may never be needed again).

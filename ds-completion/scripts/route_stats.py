@@ -33,17 +33,38 @@ BUDGETS_GB = [64, 128, 256]                  # total HBM (128 = this machine)
 STEP_GPU_MS, CPU_EXPERT_MS, GPU_EXPERT_MS = 35.0, 0.27, 0.065  # measured, sclk 2 (README 8, 12)
 
 
-def read_log(path):
+def read_log(path, committed_only=True):
+    """records of a routing log; version 2 also has the forward ("step") of every record, and logs
+    rejected drafts (a position logged again later was rolled back): committed_only keeps the
+    last record of each position. Version 1 (one token per forward) gets step = record index."""
     with open(path, "rb") as f:
         if f.read(4) != b"DSRT":
             sys.exit(f"{path}: not a routing log")
         version, n_layer, k = np.frombuffer(f.read(12), dtype="<i4")
-        if version != 1:
+        if version not in (1, 2):
             sys.exit(f"{path}: version {version}")
-        rec = np.dtype([("pos", "<i4"), ("token", "<i4"), ("prompt", "<i4"),
-                        ("ids", "<i2", (n_layer, k)), ("w", "<f4", (n_layer, k))])
+        fields = [("pos", "<i4"), ("token", "<i4"), ("prompt", "<i4")] + ([("step", "<i4")] if version == 2 else [])
+        rec = np.dtype(fields + [("ids", "<i2", (n_layer, k)), ("w", "<f4", (n_layer, k))])
         data = np.frombuffer(f.read(), dtype=rec)
+    if version == 1:
+        out = np.zeros(len(data), np.dtype(fields + [("step", "<i4")] + rec.descr[3:]))
+        for name in rec.names:
+            out[name] = data[name]
+        out["step"] = np.arange(len(data))
+        data = out
+    if committed_only:
+        data = data[committed_mask(data["pos"])]
     return data, int(n_layer), int(k)
+
+
+def committed_mask(pos):
+    """True for the last record of each position (earlier ones were rolled back)"""
+    last = {}
+    for i, p in enumerate(pos):
+        last[int(p)] = i
+    m = np.zeros(len(pos), bool)
+    m[list(last.values())] = True
+    return m
 
 
 def capacity(budget_gb):

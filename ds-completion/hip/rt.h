@@ -91,8 +91,9 @@ class Runtime {
   // last step (gaps included: a group charged with idle time was waiting on the host)
   bool profile = false;
   // routing log (scripts/route_stats.py reads it): opens `path` and appends one record per token
-  // (prompt tokens included): its position, id, whether it is a prompt token, and per layer the
-  // router's expert ids and weights. Format in rt.cpp (Runtime::log_routing).
+  // forwarded (prompt tokens and rejected drafts included): its position, id, whether it is a
+  // prompt token, the forward it ran in, and per layer the router's expert ids and weights.
+  // Format in rt.cpp (Runtime::log_routing).
   void log_routing(const std::string& path);
   std::map<std::string, double> last_groups;
 
@@ -177,9 +178,10 @@ class Runtime {
   float *h_yr, *h_erows, *att_scratch;
 
   FILE* route_log = nullptr;
-  int* d_route = nullptr;     // [n_layer][8] this step's expert ids (device), then the weights
+  int* d_route = nullptr;     // [kChunk][n_layer][16] this forward's expert ids (device), then the weights
+  int route_step = 0;         // forwards logged so far
   bool in_prefill = false;
-  void write_route_record();
+  void write_route_records(const int32_t* toks, int M);
 
   // verification (verify / commit)
   bool verifying = false;

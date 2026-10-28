@@ -1303,3 +1303,68 @@ and the CPU pre-sum their own experts), the multi-token chunk version, the small
 (1-3 experts per die), the gather in `canon_dot_rows` that reads 3 bytes past a row's last
 block (harmless inside the file, to be bounded at the tensor's end), and further speed (shared
 memory for the activation digits on the GPU).
+
+## Step 29: cache simulation with realistic constraints (cache plan, phase 1)
+
+The question: how much of the oracle placement's speed can an adaptive cache reach when loads
+are limited, take time and compete with the CPU, and what policy should decide the loads?
+
+- **Data**: routing logs now cover verify chunks too (log version 2: every forwarded token,
+  rejected drafts included, with its forward's number; the last record of a position is the
+  committed one). `scripts/spec-routing.sh` logged the 8 held-out prompts with `--spec` and
+  study30, up to 1,024 tokens (5,480 generated tokens in 2,018 steps); every output starts with
+  the earlier 300/500-token output (logging changes nothing). Plain decoding of the same texts
+  is replayed from the committed tokens; the 30 study logs (plain) are a second set, warm
+  started leave-one-out.
+- **Simulator** (`scripts/cache_sim.py`): 6,201 slots (the runtime's, with the draft loaded),
+  warm start from study30; a step's slots hit if their expert is resident when it starts; loads
+  start at up to R per second of modelled time, evict a victim at once and become resident 1
+  step later (sensitivity: 2-8).
+- **Time model**, fitted on the 16 measured study30 runs (plain and `--spec`):
+  step = 39 + 15 (M - 1) + 10.5 draft (M > 1) + max(0, 0.27 x missed slots - 6.5) ms. The GPU
+  part (39 + 15 per extra token) is the oracle placement's verify step by chunk size; the miss
+  cost matches step 12's 0.27 ms per expert-token, with 6.5 ms per step hidden under GPU work.
+  Error 4.8% rms, within 10% on every run, no bias between plain and spec. (Fitting all four
+  numbers on the study30 runs alone confounds the chunk size with the misses and gave either
+  `--spec` slower than plain at full hits or plain at full hits far above the oracle's 25 t/s.)
+  Loads are shown free (fully overlapped) and charged like one missed slot each (an 18.8 MB host
+  read competing for memory bandwidth); phase 2 will measure where between the two they land.
+
+Results, held-out prompts (`results/cache-sim.txt`; est t/s; "charged" in brackets):
+
+| policy | loads/s | hits | load GB/s | `--spec` t/s | plain t/s |
+|---|---|---|---|---|---|
+| static study30 | 0 | 60.5% | 0 | 18.8 | 17.2 |
+| LRU (load on every miss) | 50 | 69.4% | 0.9 | 21.2 (21.0) | 19.5 |
+| | 100 | 77.6% | 1.8 | 24.2 (23.5) | 21.8 |
+| | 200 | 86.2% | 3.7 | 28.1 (26.7) | 23.9 |
+| | unlimited | 94.7% | 8.0 | 33.5 (30.0) | 25.5 (23.5) |
+| admit after 3 misses in 256 tokens | 50 | 78.6% | 0.9 | 24.6 (24.3) | 21.4 |
+| | 100 | 85.7% | 1.8 | 27.9 (27.2) | 23.7 |
+| | 200 | 90.9% | 2.7 | 30.9 (29.7) | 24.9 |
+| rebalance every 16 tokens, last 256 | 50 | 83.3% | 0.9 | **26.7 (26.4)** | 23.1 |
+| | 100 | 87.5% | 1.9 | **28.9 (28.1)** | 24.1 |
+| | 200 | 90.6% | 3.3 | 30.7 (29.3) | 24.6 |
+
+- **The load rate is the knob, and returns diminish fast**: 50 loads/s (0.9 GB/s) already
+  gives `--spec` +42% over static, 100 loads/s +54%; unlimited LRU needs ~8 GB/s for +60-78%.
+- **Frequency beats recency when loads are limited**: at 50-100 loads/s, LRU spends its budget
+  on one-off experts; counting use over the last 256 tokens (rebalance every 16 tokens: the
+  most-used non-resident experts replace the least-used residents) gives +2.5 to +5.5 t/s more
+  at the same rate. LRU wins only when loads are unlimited.
+- **Speculation gains more from the cache than plain decoding**: `--spec` over plain goes from
+  +9% (static) to +20% (100 loads/s) and +25% (200), since the CPU misses grow with the chunk
+  (more tokens, more distinct experts) while the GPU part grows by only 15 ms per token.
+- **Rejected drafts do not pollute the cache**: driving it from committed tokens only changes
+  hits by under 0.5 points; the forwarded tokens' hit rate equals the committed ones'. So the
+  cache can act on all forwarded tokens and need not wait for the verify result.
+- **Latency is cheap at moderate rates**: 1 -> 8 steps costs 0.4 t/s at 100 loads/s (2.2 at
+  unlimited).
+- On the 30 study logs (plain, leave-one-out) the order is the same, from a higher static start
+  (70.6% hits, 19.4 t/s): rebalance at 50-100 loads/s 24.1-24.7 t/s, unlimited LRU 25.5.
+
+Not modelled: the split over dies (die 0 has half the others' slots; a layer's hot experts
+could crowd one die), the canonical numerics' cost (+5% CPU, +13% GPU expert kernels, step 28),
+and loads' PCIe traffic next to the per-layer staging copies. For phase 2 the target is
+100-200 loads/s (1.9-3.7 GB/s); for phase 3 the policy is the frequency rebalance, with the
+load rate as the CLI knob (0 = today's static placement).
