@@ -189,6 +189,12 @@ class Runtime {
   int *rids, *iota;
   std::map<int, int*> topk_buf;  // [index source] its selection buffers, [kChunk][idx_topk]
   std::vector<std::map<int, const int*>> topk_cur = std::vector<std::map<int, const int*>>(kChunk);
+  // candidate blocks (the reference's two-level top-k, > 16k positions): per token of the chunk,
+  // the candidate source's keep mask [max_ctx / block + 1], or null when every block is kept
+  std::vector<const uint8_t*> cand_cur = std::vector<const uint8_t*>(kChunk, nullptr);
+  uint8_t* cand_keep = nullptr;  // [kChunk][max_ctx / block + 1]
+  float* cand_bscore = nullptr;  // [max_ctx / block + 1]
+  int* cand_bidx = nullptr;      // [cand_topk_blocks]
                                  // [token of the chunk][index source] its selection (topk_buf or iota)
   // the routed experts' inputs, staged together so one copy moves them (device and pinned host):
   // lists [kChunk][kMoeListStride] (per token: the dies', then the CPU's), then x [kChunk][n_embd];

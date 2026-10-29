@@ -1,0 +1,7 @@
+# Summary: ds-completion (DeepSeek-V4.1-Flash on Mac Pro)
+
+- **What it is:** A single-model, single-machine inference tool (`./ds-completion -m <model> -p "prompt"`) for DeepSeek-V4.1-Flash on a Mac Pro (755 GB RAM, 4x Vega II), built on a llama.cpp fork's CPU ggml plus an own HIP GPU runtime. Priorities: correctness, clarity, then performance.
+
+- **Correctness ladder:** A pure-torch CPU reference (`ref/`) runs the official model math one layer at a time from GGUF-decoded weights; the fork serves as a second opinion; per-layer and end-to-end gates compare against the reference. Weight provenance was proven bit-exact against the 1017 checkpoint (256 exact comparisons, ALL OK), and the GGUF is lossless against the original.
+
+- **CPU-only baseline:** 3.5 t/s decode, matching the fork. End-to-end vs the reference: 16/17 argmax agreement, mean KL 1.8e-2 (exact quant) vs 3.0e-2 (no quant) vs the fork's 2.5e

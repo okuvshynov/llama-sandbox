@@ -1,0 +1,7 @@
+# long prompts through the runtime past the old 4,096-token limit: bin-hip/ds-completion -m $M --rt $F8 --placement placements/study30.txt --chat --max-ctx N -p "<README.md text> + a summary request"; commit 0eae272+changes; sclk 2; 2026-10-29
+# readme6k: the first 24,000 bytes of README.md, --max-ctx 8192, -n 256 (crosses 4,096; below 16,384: no candidate blocks)
+# readme-full: all of README.md, --max-ctx 32768, -n 400 (past 16,384: candidate blocks active in layers 24-36)
+prompt     tokens  prompt t/s  generation t/s (position)   output
+readme6k     7394       16.36  17.47 (~7.4K)               coherent, accurate summary (readme6k.out)
+readme-full 29553       16.98  17.18 (~29.6K)              coherent, accurate summary of the whole document (readme-full.out)
+short (reference point, step 32 runs)  ~20   -   ~18.5 (fast static, 300 tokens)

@@ -5,6 +5,7 @@
 
 #include <hip/hip_fp16.h>
 
+#include <algorithm>
 #include <cfloat>
 
 // ================================================================== helpers
@@ -568,35 +569,121 @@ void k_index_scores(const float* q, int n_head, int dim, const float* keys, int 
 }
 
 // bitonic sort of (score, index) pairs, descending, in shared memory; then the first k indices
-__global__ void topk_kernel(const float* score, int n, int k, int* idx) {
-  __shared__ float sv[kTopkMaxN];
-  __shared__ int si[kTopkMaxN];
-  int P = 1;
-  while (P < n) P <<= 1;
-  for (int i = threadIdx.x; i < P; i += blockDim.x) {
-    sv[i] = i < n ? score[i] : -INFINITY;
-    si[i] = i;
+// order-preserving key of a float: larger float -> larger unsigned (-inf lowest, +inf highest)
+__device__ inline uint32_t topk_key(float f) {
+  const uint32_t u = __float_as_uint(f);
+  return (u & 0x80000000u) ? ~u : (u | 0x80000000u);
+}
+
+// exclusive prefix sum over the block's threads (blockDim.x <= 1024, a multiple of 32); tmp:
+// blockDim.x / 32 ints of shared memory; returns the sum of all threads in *total
+__device__ inline int block_exclusive_scan(int v, int* tmp, int* total) {
+  const int lane = threadIdx.x & 31, wid = threadIdx.x >> 5, nw = blockDim.x >> 5;
+  int x = v;
+#pragma unroll
+  for (int o = 1; o < 32; o <<= 1) {
+    const int y = __shfl_up(x, o, 32);
+    if (lane >= o) x += y;
+  }
+  if (lane == 31) tmp[wid] = x;
+  __syncthreads();
+  if (wid == 0) {
+    int w = lane < nw ? tmp[lane] : 0;
+#pragma unroll
+    for (int o = 1; o < 32; o <<= 1) {
+      const int y = __shfl_up(w, o, 32);
+      if (lane >= o) w += y;
+    }
+    if (lane < nw) tmp[lane] = w;  // inclusive per warp
   }
   __syncthreads();
-  for (int size = 2; size <= P; size <<= 1)
-    for (int stride = size >> 1; stride > 0; stride >>= 1) {
-      for (int i = threadIdx.x; i < P; i += blockDim.x) {
-        const int j = i ^ stride;
-        if (j > i) {
-          const bool desc = (i & size) == 0;
-          const float a = sv[i], b = sv[j];
-          if (desc ? a < b : a > b) {
-            sv[i] = b; sv[j] = a;
-            const int t = si[i]; si[i] = si[j]; si[j] = t;
-          }
-        }
-      }
-      __syncthreads();
+  const int before = (wid ? tmp[wid - 1] : 0) + x - v;
+  *total = tmp[nw - 1];
+  __syncthreads();
+  return before;
+}
+
+// one block of 1024 threads; thread i owns positions [i * per, (i + 1) * per)
+__global__ void __launch_bounds__(1024) topk_kernel(const float* score, int n, int k, int* idx) {
+  __shared__ int hist[256];
+  __shared__ int tmp[32];
+  __shared__ uint32_t s_prefix;
+  __shared__ int s_krem;
+  const int per = (n + blockDim.x - 1) / blockDim.x, i0 = min(n, threadIdx.x * per), i1 = min(n, i0 + per);
+  // radix select, 8 bits at a time from the top: the k-th largest key and how many of its ties to take
+  uint32_t prefix = 0;
+  int krem = k;
+  for (int shift = 24; shift >= 0; shift -= 8) {
+    for (int i = threadIdx.x; i < 256; i += blockDim.x) hist[i] = 0;
+    __syncthreads();
+    const uint32_t hi_mask = shift == 24 ? 0u : ~0u << (shift + 8);
+    for (int i = i0; i < i1; i++) {
+      const uint32_t key = topk_key(score[i]);
+      if ((key & hi_mask) == prefix) atomicAdd(&hist[(key >> shift) & 255], 1);
     }
-  for (int i = threadIdx.x; i < k; i += blockDim.x) idx[i] = si[i];
+    __syncthreads();
+    if (threadIdx.x == 0) {
+      int d = 255, above = 0;
+      while (above + hist[d] < krem) above += hist[d--];
+      s_prefix = prefix | ((uint32_t)d << shift);
+      s_krem = krem - above;
+    }
+    __syncthreads();
+    prefix = s_prefix;
+    krem = s_krem;
+    __syncthreads();
+  }
+  const uint32_t T = prefix;  // the k-th largest key; take every larger key and the first krem equal ones
+  int gt = 0, eq = 0;
+  for (int i = i0; i < i1; i++) {
+    const uint32_t key = topk_key(score[i]);
+    gt += key > T;
+    eq += key == T;
+  }
+  int total;
+  const int eq_before = block_exclusive_scan(eq, tmp, &total);
+  const int take_eq = max(0, min(eq, krem - eq_before));
+  int out = block_exclusive_scan(gt + take_eq, tmp, &total);
+  int eq_seen = 0;
+  for (int i = i0; i < i1; i++) {
+    const uint32_t key = topk_key(score[i]);
+    if (key > T || (key == T && eq_seen++ < take_eq)) idx[out++] = i;
+  }
 }
 
 void k_topk(const float* score, int n, int k, int* idx, hipStream_t s) { topk_kernel<<<1, 1024, 0, s>>>(score, n, k, idx); }
+
+__global__ void block_max_kernel(const float* score, int n, int block, float* bscore, int nb) {
+  const int b = blockIdx.x * blockDim.x + threadIdx.x;
+  if (b >= nb) return;
+  float m = -INFINITY;
+  for (int i = b * block; i < min(n, (b + 1) * block); i++) m = fmaxf(m, score[i]);
+  // the block holding the newest position (n - 1) is only partly filled: pinned in
+  bscore[b] = b == (n - 1) / block ? INFINITY : m;
+}
+
+__global__ void keep_blocks_kernel(const float* bscore, const int* bidx, int kb, uint8_t* keep) {
+  const int j = blockIdx.x * blockDim.x + threadIdx.x;
+  if (j < kb && bscore[bidx[j]] > -INFINITY) keep[bidx[j]] = 1;
+}
+
+void k_candidate_blocks(const float* score, int n, int block, int topk_blocks, float* bscore, int* bidx, uint8_t* keep,
+                        hipStream_t s) {
+  const int nb = cdiv(n, block), kb = std::min(topk_blocks, nb);
+  block_max_kernel<<<cdiv(nb, 256), 256, 0, s>>>(score, n, block, bscore, nb);
+  k_topk(bscore, nb, kb, bidx, s);
+  if (hipMemsetAsync(keep, 0, nb, s) != hipSuccess) throw std::runtime_error("k_candidate_blocks: memset");
+  keep_blocks_kernel<<<cdiv(kb, 256), 256, 0, s>>>(bscore, bidx, kb, keep);
+}
+
+__global__ void mask_candidates_kernel(float* score, int n, int block, const uint8_t* keep) {
+  const int i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i < n && !keep[i / block]) score[i] = -INFINITY;
+}
+
+void k_mask_candidates(float* score, int n, int block, const uint8_t* keep, hipStream_t s) {
+  mask_candidates_kernel<<<cdiv(n, 256), 256, 0, s>>>(score, n, block, keep);
+}
 
 // ================================================================== compressor
 

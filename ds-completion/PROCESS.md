@@ -218,6 +218,14 @@ Each rule is followed by where it mattered most.
   "Further optimization ideas": cache tuning, the dense part and TP, speculation, the draft),
   then long context first.
 
+- **Long context, steps 1, 2, 4 (README step 34):** the reference's selection rules were read
+  first (sorted top-k indices; candidate blocks with the newest block pinned), then built as one
+  radix-select kernel used twice, then **gated against the reference's own functions** on the
+  same scores before any end-to-end run (46 of 46; the one apparent mismatch was a tie at the
+  512th value, where torch's choice is unspecified, so the check now detects ties itself). End
+  to end: 7.4k and 29.5k-token prompts give accurate summaries at 17.5 / 17.2 t/s. **Open:** a
+  numerical end-to-end gate past 16k needs a very long reference run.
+
 ## 4. Predictions against outcomes
 
 Estimates were made before measuring wherever possible; this is how they fared.

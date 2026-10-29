@@ -205,7 +205,16 @@ Runtime::Runtime(const Model& model, RtOptions options, const std::string& fp8_p
   ik = dalloc<float>(hp.idx_dim);
   iq = dalloc<float>(hp.idx_heads * hp.idx_dim);
   iw = dalloc<float>(hp.idx_heads);
-  iscore = dalloc<float>(kTopkMaxN);
+  iscore = dalloc<float>(opt.max_ctx);  // one indexer's scores: up to max_ctx compressed positions (ratio 1)
+  if (hp.cand_source >= 0) {
+    const size_t nb = (size_t)opt.max_ctx / hp.cand_block + 1;
+    cand_keep = dalloc<uint8_t>((size_t)C * nb);
+    cand_bscore = dalloc<float>(nb);
+    cand_bidx = dalloc<int>(hp.cand_topk_blocks);
+    for (int L = 0; L < hp.n_layer; L++)  // consumers mask positions in the source's coordinates
+      if (m.layers[L].loaded && m.layers[L].kind.uses_cands && hp.compress_ratios[L] != hp.compress_ratios[hp.cand_source])
+        throw std::runtime_error("runtime: a candidate consumer with another compression ratio than its source");
+  }
   gate = dalloc<float>((size_t)C * hp.n_ff_exp);
   up = dalloc<float>((size_t)C * hp.n_ff_exp);
   act = dalloc<float>((size_t)C * hp.n_ff_exp);
@@ -250,7 +259,6 @@ Runtime::Runtime(const Model& model, RtOptions options, const std::string& fp8_p
   }
   CHECK(hipHostMalloc(&h_yr, (size_t)C * (opt.canon ? hp.n_expert_used : 1) * E * 4, 0));  // canon: the CPU's rows
   CHECK(hipHostMalloc(&h_erows, hp.engram_layers.size() * C * hp.engram_cols() * hp.engram_dim * 4, 0));
-  if (opt.max_ctx > kTopkMaxN) throw std::runtime_error("runtime: --max-ctx above the top-k kernel's limit");
   CHECK(hipEventCreateWithFlags(&ev_staged, hipEventDisableTiming));
 
   if (!opt.dspark.empty()) dspark.reset(new DSpark(*this, opt.dspark));  // before the pools take the rest
@@ -296,6 +304,7 @@ std::vector<int32_t> Runtime::forward_chunk(const std::vector<int32_t>& toks) {
   auto t0 = Clock::now();
   pos = n_past_;
   for (auto& tc : topk_cur) tc.clear();
+  std::fill(cand_cur.begin(), cand_cur.end(), nullptr);
   last = Times{};
   marks.clear();
   mark("engram.fetch");
@@ -518,7 +527,7 @@ Runtime::~Runtime() {
   for (void* p : {(void*)h, (void*)h2, (void*)pre, (void*)a_pre, (void*)a_post, (void*)a_comb, (void*)f_pre, (void*)f_post,
                   (void*)f_comb, (void*)mixes, (void*)x, (void*)t1, (void*)qr, (void*)q, (void*)kvv, (void*)o, (void*)oa,
                   (void*)y, (void*)ysh, (void*)yr, (void*)canon_rows, (void*)canon_where, (void*)logits_d, (void*)partial, (void*)A.q, (void*)A.s, (void*)B.q, (void*)B.s, (void*)cmp_kvn,
-                  (void*)cmp_sc, (void*)lat, (void*)ik, (void*)iq, (void*)iw, (void*)iscore, (void*)gate, (void*)up,
+                  (void*)cmp_sc, (void*)lat, (void*)ik, (void*)iq, (void*)iw, (void*)iscore, (void*)cand_keep, (void*)cand_bscore, (void*)cand_bidx, (void*)gate, (void*)up,
                   (void*)act, (void*)router_logits, (void*)d_moe.lists, (void*)rw, (void*)rids, (void*)att_scratch, (void*)erows, (void*)ekv, (void*)iota,
                   fp8_buf, (void*)freqs_buf})
     (void)hipFree(p);
@@ -689,6 +698,18 @@ void Runtime::attn_core(int L, int t, const float* xin, float* q_t, const float*
       const float* keys = S[k.kv_from].idx_k;
       k_index_scores(iq, hp.idx_heads, hp.idx_dim, keys, n_comp, iw, 1.0f / sqrtf((float)hp.idx_dim) / sqrtf((float)hp.idx_heads),
                      iscore, s);
+      // two-level top-k beyond cand_topk_blocks blocks: the source picks candidate blocks from its
+      // own scores, later indexers score only inside them (a no-op below 16,384 positions)
+      if (k.cand_source) {
+        cand_cur[t] = nullptr;
+        if ((n_comp + hp.cand_block - 1) / hp.cand_block > hp.cand_topk_blocks) {
+          uint8_t* keep = cand_keep + (size_t)t * (opt.max_ctx / hp.cand_block + 1);
+          k_candidate_blocks(iscore, n_comp, hp.cand_block, hp.cand_topk_blocks, cand_bscore, cand_bidx, keep, s);
+          cand_cur[t] = keep;
+        }
+      } else if (k.uses_cands && cand_cur[t]) {
+        k_mask_candidates(iscore, n_comp, hp.cand_block, cand_cur[t], s);
+      }
       if (K == n_comp) {
         tcur[L] = iota;  // every compressed position is picked
       } else {
@@ -910,6 +931,7 @@ void Runtime::begin_step(int32_t tok) {
   hist = tokens_;
   hist.push_back(tok);
   for (auto& tc : topk_cur) tc.clear();
+  std::fill(cand_cur.begin(), cand_cur.end(), nullptr);
   last = Times{};
   marks.clear();
   mark("engram.fetch");

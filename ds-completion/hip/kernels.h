@@ -72,9 +72,18 @@ void k_kv_finish(const float* kv, const float* w, int dim, int rope_dim, const f
 // score[c] = sum_h relu(q[h] . keys[c]) * w[h] * wscale for c < n (Indexer.forward, one query)
 void k_index_scores(const float* q, int n_head, int dim, const float* keys, int n, const float* w, float wscale,
                     float* score, hipStream_t s);
-// the indices of the k largest of score[0..n) (any order); n <= kTopkMaxN
-constexpr int kTopkMaxN = 4096;
+// The indices of the k largest of score[0..n), in increasing index order (the reference sorts its
+// torch.topk indices); ties at the k-th value go to the lower index. Any n (one block: a radix
+// select on the scores' bits, then a compaction in index order). k <= n.
 void k_topk(const float* score, int n, int k, int* idx, hipStream_t s);
+// Candidate blocks (the reference's select_candidate_blocks, one query at decode): blocks of
+// `block` positions scored by their best position, the newest (partly filled) block pinned in;
+// keep[b] = 1 for the top `topk_blocks` blocks (those with a score above -inf), else 0. bidx: the
+// scratch for the selected block indices [topk_blocks], bscore: [n / block + 1].
+void k_candidate_blocks(const float* score, int n, int block, int topk_blocks, float* bscore, int* bidx, uint8_t* keep,
+                        hipStream_t s);
+// score[i] = -inf where keep[i / block] == 0 (a later indexer scores only inside the candidates)
+void k_mask_candidates(float* score, int n, int block, const uint8_t* keep, hipStream_t s);
 
 // ---- compressor (Compressor.forward, decode) ----
 

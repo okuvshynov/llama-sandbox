@@ -110,8 +110,10 @@ Means over all 17 steps: 1.8e-2 to 2.5e-2 for every mode.
 
 ## Limits
 
-- Context: at most 4096 tokens with `--rt` (the top-k kernel), 16k otherwise (candidate-block
-  selection is not implemented).
+- Context with `--rt`: 65,536 tokens by default (prompt + generation), up to the model's
+  1,048,576 with `--max-ctx N` (~6.4 KB of GPU 0 memory per position). The prompt is processed
+  one token at a time (~16-17 t/s: a 30k-token prompt takes ~30 min). Without `--rt` (the CPU
+  path): 4,096 by default, at most 16k (no candidate-block selection there).
 - The dense part uses one GPU; the others only hold experts with `--placement`.
 - Sampling is greedy only.
 

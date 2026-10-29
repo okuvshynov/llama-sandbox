@@ -1,0 +1,9 @@
+## Summary
+
+- **What was built:** `ds-completion`, a single-model, single-machine inference program for DeepSeek-V4.1-Flash on a Mac Pro (755 GB RAM, 4x Vega II). It has a CPU path (ggml kernels, own KV/state code), a reference implementation in `ref/` (official `model.py` math on CPU with golden dumps), and an own HIP GPU runtime (`hip/rt.cpp`) with exact fp8 GEMV, exact fp4 expert kernels, and a DSpark speculative draft. Correctness is gated layer-by-layer and end-to-end against the reference, with discrete decisions (expert ids, indexer top-k) checked separately.
+
+- **CPU baseline:** 3.5 t/s decode, matching the llama.cpp fork; end-to-end mean KL 1.8e-2 vs the reference (fork: 2.5e-2), argmax 16/17 on the hello prompt (the miss is a near tie).
+
+- **GPU runtime:** dense weights as exact fp8 on one die, routed experts on the CPU, then split per layer between GPUs and CPU via a placement file. Speed went from 6.0 t/s (ggml GPU path) to ~9.5-10 t/s (own runtime), then 12-12.5 t/s with no GPU experts at 16 threads, 17.7-21.7 t/s with the study30 placement, and ~25 t/s with an oracle (perfect-knowledge) placement. The runtime is deterministic and exact to the reference's fp8 math (median per-layer errors ~8e-8).
+
+- **Speculative decoding:** the DSpark draft (batched, confidence-head-driven draft length, backoff) gives byte-identical output to plain greedy and +7% to +33% on held-out prompts (geometric mean +22%), with

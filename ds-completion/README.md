@@ -1559,3 +1559,50 @@ cache the CPU experts were nearly half. So the next levers are the dense part of
 (attention ~42 ms, of which the core runs token by token; the shared expert's fp8 GEMVs ~2x one
 token at 6; the per-layer routing with 6 top-k launches), then the remaining CPU misses, then the
 draft. The ideas are collected in PLAN.md "Further optimization ideas".
+
+## Step 34: long context in the runtime (PLAN.md "Long context", items 1, 2, 4)
+
+Checked against the official `inference/model.py`, everything the runtime implemented already held
+at any position (YaRN only on the compressed layers, rope angles with full-precision cosf/sinf, the
+window, compressor groups, engram, the draft's window). What stopped it at 4,096 tokens:
+
+- **Top-k for any number of positions** (`k_topk`): the indexer keeps the best 512 compressed
+  positions (up to n = max_ctx on the ratio-1 layers). The old kernel was a bitonic sort of all
+  scores in shared memory (at most 4,096). Now one block does a radix select on the scores' order-
+  preserving bit patterns (four 8-bit passes give the 512th value and how many of its ties to take),
+  then compacts in position order: the output is sorted by position, as the reference sorts its
+  `topk` indices, and ties go to the lower index. (Attention now receives the positions in sorted
+  order, so outputs with 512-4,096 compressed positions differ in the last bits from before; below
+  512 every position is attended and nothing changed: a 300-token run is byte-identical.)
+- **Candidate blocks beyond 16,384 positions** (`k_candidate_blocks`, `k_mask_candidates`): layer
+  20's indexer scores blocks of 8 positions by their best score (the newest, partly filled block
+  pinned in), keeps the top 2,048 with the same top-k kernel, and layers 24, 28, 32, 36 mask their
+  scores outside those blocks before their own top-k. Per token of a verify chunk, as the top-k.
+- **`--max-ctx`**: the runtime defaults to 65,536 (the original training context; YaRN extends it
+  16x) and accepts up to 1,048,576; ~6.4 KB per position on GPU 0 (fp32 compressed caches and
+  index keys): ~420 MB at 64k (13 fewer expert slots on die 0), ~6.7 GB at 1M (until the caches move
+  to fp8/fp4, open). The CPU path keeps 4,096 and still stops at 16k.
+
+**Gate against the reference's own code** (`ref/check_topk.py` with `bin-hip/test-topk`,
+`results/check-topk.txt`): random and indexer-like scores (sums of rectified values), n = 513 to
+1,048,576: `k_topk` gives exactly `torch.topk(...).indices.sort()`; `k_candidate_blocks` exactly
+`select_candidate_blocks` (copied verbatim); candidates + masked top-k exactly the reference's
+two-level selection. Where the 512th value is tied (exact zeros of rectified sums), torch's pick is
+unspecified: the selected values match and our tie rule holds. 46 of 46 cases.
+
+**End to end** (`results/long-context/`, fast kernels, study30, sclk 2):
+
+| prompt | tokens | prompt t/s | generation t/s (at position) | output |
+|---|---|---|---|---|
+| first 24 KB of README.md + a summary request | 7,394 | 16.4 | 17.5 (~7.4k) | accurate summary |
+| all of README.md + a summary request | 29,553 | 17.0 | 17.2 (~29.6k) | accurate summary of the whole document |
+| short (step 32) | ~20 | | ~18.5 | |
+
+The indexer's cost grows with the context but is still small at 30k (-7%). The prompt is processed
+one token at a time: 29.5k tokens took 29 minutes (batched prompt processing, PLAN item 20, is
+what fixes that). With `--canon`, the 65,536-token default leaves die 0 with 858 expert slots
+instead of 871, and the output is byte-identical to the canonical gate reference.
+
+Not done yet: compressed caches in fp8/fp4; an end-to-end numerical gate at long positions (the
+Python reference took 22 minutes for 1,100 prompt tokens, so a >16k run is an overnight job: PLAN
+"Long context" 5b/5c); speed against position beyond 30k.

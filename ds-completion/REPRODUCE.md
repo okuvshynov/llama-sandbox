@@ -119,6 +119,8 @@ Unless stated: sclk 2, 16 CPU threads (32 before README step 18), the study30 pl
 | 29 | `cache-sim.txt` | `scripts/spec-routing.sh`, then `scripts/cache_sim.py` |
 | 30 | `bench-expert-load.txt`, `load-test/` | `bin-hip/bench-expert-load -m $M`, `scripts/load-test.sh` |
 | 31-32 | `canon-gate.txt`, `canon-gate/` | `scripts/canon-gate.sh` (rerun for step 32) |
+| 34 | `check-topk.txt` | `~/venvs/ds-ref/bin/python ref/check_topk.py` (runs `bin-hip/test-topk`) |
+| 34 | `long-context/` | `bin-hip/ds-completion ... --max-ctx N -p "$(cat README.md) ..."` (commands in `long-context/summary.txt`) |
 | 33 | `verify-breakdown.txt` | `bin-hip/ds-completion ... --dspark $D --spec --spec-n 5 --canon --profile [--cache-loads 200 --cache-wait]` (command in the file's header), medians of the second half |
 | 32 | `cache-test/`, `cache-test-sclk8/` | `scripts/cache-test.sh` (at sclk 8: `scripts/cache-test.sh "spec fast static" "spec canon 200"`); the CPU kernel at 1, 2, 6 experts: `bin/bench-cpu-moe -m $M -t 16 --tokens 8 --check-layers 2 -k N` |
 

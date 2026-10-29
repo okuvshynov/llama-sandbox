@@ -62,6 +62,7 @@ int main(int argc, char** argv) {
   [[maybe_unused]] double load_test = -1;
   [[maybe_unused]] bool load_pinned = false;
   [[maybe_unused]] bool canon = false;
+  bool max_ctx_set = false;
   [[maybe_unused]] double cache_loads = 0;
   [[maybe_unused]] int cache_period = 16, cache_window = 256;
   [[maybe_unused]] bool cache_wait = false;
@@ -99,7 +100,7 @@ int main(int argc, char** argv) {
     else if (a == "--rt") rt_path = next();
     else if (a == "--log-routing") route_log = next();  // runtime: every token's experts per layer
     else if (a == "--no-quant") opt.exact_quant = false;
-    else if (a == "--max-ctx") opt.max_ctx = atoi(next());
+    else if (a == "--max-ctx") max_ctx_set = true, opt.max_ctx = atoi(next());
     else { fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
   }
   if (model_path.empty() || prompt.empty()) {
@@ -124,6 +125,10 @@ int main(int argc, char** argv) {
            prompt + "<｜Assistant｜><think>";
   else text = bos + prompt;
   std::vector<int32_t> toks = tokenize(vocab, text);
+  // the GPU runtime defaults to the model's original training context (YaRN extends it 16x, to
+  // 1M: --max-ctx); ~6.4 KB per position on the home die (compressed caches, index keys). The CPU
+  // path keeps 4096 (it builds dense masks per prompt and stops at 16k: no candidate blocks)
+  if (!rt_path.empty() && !max_ctx_set) opt.max_ctx = 65536;
 
   if ((int)toks.size() >= opt.max_ctx) {
     fprintf(stderr, "prompt is %zu tokens; --max-ctx is %d\n", toks.size(), opt.max_ctx);

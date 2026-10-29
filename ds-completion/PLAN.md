@@ -50,8 +50,8 @@ Features and limits
 
 | | item | status | one line |
 |---|---|---|---|
-| 26 | Context above 4096 with the runtime | **next** | the full range (YaRN to 1M tokens); see "Long context" below |
-| 27 | Candidate-block selection (>16k tokens) | **next** | the reference's layer-20 path; part of "Long context" below |
+| 26 | Context above 4096 with the runtime | done (gates in progress) | 65,536 by default, 1M with `--max-ctx`; see "Long context" below (README step 34) |
+| 27 | Candidate-block selection (>16k tokens) | done (runtime) | the reference's layer-20 path, checked against its own function; the CPU path still stops at 16k |
 | 28 | Full 1017 checkpoint | waiting | download pending (user); needed for item 19 and exact safetensors refs |
 | 29 | Sampling beyond greedy | idea | temperature/top-p; a non-goal so far |
 
@@ -358,29 +358,31 @@ length: YaRN only on the compressed layers (compress_rope_theta 160000, factor 1
 plain rope on window-only layers; rope angles with full-precision cosf/sinf; the 128-slot window,
 compressor groups, indexer top-512, engram, the draft's window. What is missing:
 
-1. **Top-k over large candidate sets.** The indexer keeps the best 512 of all compressed
+1. **Top-k over large candidate sets.** **Done** (README step 34). The indexer keeps the best 512 of all compressed
    positions (n / ratio: up to 1M on layers 20-39). Today's kernel holds every candidate in
    shared memory (`kTopkMaxN` = 4096). Needed: a global-memory top-k (radix select on the score
    bits, then the 512 survivors sorted), bit-identical selection to the reference's `topk`
    (ties by lower index), for N up to 1M; the CPU Engine the same.
-2. **Candidate-block pre-filtering** (`select_candidate_blocks`): layer 20's indexer scores
+2. **Candidate-block pre-filtering** (`select_candidate_blocks`): **done in the runtime** (step 34). layer 20's indexer scores
    blocks of 8 positions by their best score and keeps the top 2,048 blocks (16,384 positions);
    the later index sources (24, 28, 32, 36) mask everything outside them before their own top-k.
    A no-op below 16,384 compressed positions (all blocks kept), so it only changes outputs
    beyond 16k tokens. Runtime and CPU Engine.
-3. **Compressed caches in their real formats.** Compressed KV and index keys are fp32 on die 0
+3. **Compressed caches in their real formats.** Open (matters beyond ~64k). Compressed KV and index keys are fp32 on die 0
    (~0.6 GB at 64K, ~10 GB at 1M: ~500 expert slots). The reference stores them as fp8 / fp4 and
    our values are already rounded to those formats, so storing them so is exact and 4-8x
    smaller.
-4. **`--max-ctx` up to the full range**, sized from free memory; the verify path's room check
-   already exists.
-5. **Gates.** The Python reference runs one layer at a time on the CPU: a 20K-token golden run of
+4. **`--max-ctx` up to the full range.** **Done:** the runtime defaults to 65,536 (the original
+   training context; ~420 MB on GPU 0), any value up to 1M with `--max-ctx`.
+5. **Gates.** (a) **done** (`ref/check_topk.py`: 46 of 46 cases, 513 to 1M positions); (b) and (c)
+   open. The Python reference runs one layer at a time on the CPU: a 20K-token golden run of
    the whole model is very slow. Instead: (a) kernel-level checks of top-k and candidate blocks
    against the reference's functions on synthetic scores at 4K-1M candidates (bit-identical
    indices); (b) a teacher-forced per-layer gate at long positions for a few attention layers
    (2, 20, 24) on a ~20K-token prompt; (c) end to end: the runtime vs the CPU Engine on a
    ~20K-token prompt (both ours, independent paths), plus greedy agreement on long documents.
-6. **Measure:** decode speed against position (indexer scoring grows linearly with context);
+6. **Measure** (first points, step 34: 18.5 / 17.5 / 17.2 t/s at ~0.3k / 7.4k / 29.6k
+   positions, fast static): decode speed against position (indexer scoring grows linearly with context);
    prompt speed (token by token today: a 64K prompt takes 1-2 h, which makes item 20, batched
    prompt processing, the next priority after this).
 
