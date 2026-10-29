@@ -24,6 +24,11 @@ inline float e8m0(uint8_t e) {
 }  // namespace
 
 void canon_act(const float* x, int n, CanonAct& a) {
+  canon_act_size(n, a);
+  canon_act_blocks(x, 0, a.nb, a);
+}
+
+void canon_act_size(int n, CanonAct& a) {
   a.nb = n / QB;
   a.d0.resize(n);
   a.d1.resize(n);
@@ -31,7 +36,10 @@ void canon_act(const float* x, int n, CanonAct& a) {
   a.x9.resize(n);
   a.corr.resize(a.nb);
   a.c.resize(a.nb);
-  for (int b = 0; b < a.nb; b++) {
+}
+
+void canon_act_blocks(const float* x, int b0, int b1, CanonAct& a) {
+  for (int b = b0; b < b1; b++) {
     float q[QB];
     const float s = fq_fp8_split(x + b * QB, q);
     a.c[b] = s * 0x1p-10f;

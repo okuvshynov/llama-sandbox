@@ -66,8 +66,14 @@ Options:
   is chosen from the draft's confidence. `--spec-n N` fixes it; `--spec-log FILE` writes
   per-step data.
 - `--canon`: placement-invariant expert numerics: the output no longer depends on where the
-  experts run (any placement, any `--moe-dies`, with or without the draft give the same bytes);
-  slower expert kernels. Needed by the adaptive expert cache (in progress).
+  experts run (any placement, any `--moe-dies`, with or without the draft, with or without the
+  cache give the same bytes); ~2% slower.
+- `--cache-loads R`: the adaptive expert cache (README step 32): the GPUs keep the experts used
+  most in the last 256 tokens, loading up to R experts per second in the background (100 is a
+  good default; 0 = the static placement). Use with `--canon`, or the output depends on load
+  timing. It starts loading ~30-40 s after startup (registering the model's expert memory with
+  the GPUs); `--cache-wait` waits for that before generating. `--cache-period N` (16) and
+  `--cache-window N` (256) set how often it rebalances and over how many tokens it counts.
 - `--load-test R [--load-pinned]`: a measurement aid: loads random experts into spare GPU slots
   at R loads/s in the background, as the cache would (README step 30); output unchanged.
 
@@ -76,11 +82,12 @@ Without `--rt` (or with `bin/ds-completion`) everything runs on the CPU.
 With `--placement placements/study30.txt` the four GPUs hold the routed experts used most in
 the 30-prompt routing study (43% of all, 10-30 s upload); 17.7-21.7 t/s on the test prompts (README step 18).
 
-## Current results (2026-10-28)
+## Current results (2026-10-29)
 
 | mode | command | decode | KL vs reference*: median / mean without the near-tie step |
 |---|---|---|---|
-| **+ speculative decoding** | `... --placement placements/study30.txt --dspark ... --spec` | **16-24 t/s** (300 tokens, held-out prompts; +22% geometric mean) | output byte-identical to the row below |
+| **+ adaptive expert cache** | `... --placement placements/study30.txt --dspark ... --spec --canon --cache-loads 200` | **19.9-30.6 t/s, mean 25.6** (300 tokens, held-out prompts; 29.1 at sclk 8) | output byte-identical to the plain `--canon` run |
+| + speculative decoding | `... --placement placements/study30.txt --dspark ... --spec` | 16-24 t/s (300 tokens, held-out prompts; +22% geometric mean) | output byte-identical to the row below |
 | own runtime + experts placed on GPUs | `bin-hip/ds-completion --rt ... --placement placements/study30.txt` | 17.7-21.7 t/s (128 tokens) | same numerics: per-layer gate identical to below |
 | own runtime, dense on GPU 0 | `bin-hip/ds-completion --rt ...` | 12.0-12.5 t/s | 5.9e-6 / 4.8e-3 (earlier run 1.7e-5 / 6.3e-4) |
 | CPU only | `bin/ds-completion` | 3.5 t/s | 1.3e-5 / 3.9e-3 |

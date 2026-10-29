@@ -1,7 +1,9 @@
 // bench-cpu-moe: the CPU routed-expert kernel (cpu_moe.h) against ggml's mul_mat_id path (what
 // the runtime used so far) and against a double-precision host computation of the reference math.
 //
-//   bench-cpu-moe -m <model.gguf> [-t 32] [--tokens 5] [--check-layers 0,20,39]
+//   bench-cpu-moe -m <model.gguf> [-t 32] [--tokens 5] [--check-layers 0,20,39] [-k 6]
+//
+// -k: experts per layer in the speed part (the runtime's CPU usually gets 1-2: its misses)
 //
 // Accuracy: for a few layers, both against the double reference (same fp8 fake quantization of
 // the inputs, exact fp4 weights). Speed: a "token" = all 40 layers in sequence, 6 random experts
@@ -105,13 +107,14 @@ static double rel(const std::vector<float>& a, const std::vector<float>& b) {
 int main(int argc, char** argv) {
   setvbuf(stdout, nullptr, _IOLBF, 0);
   std::string path;
-  int threads = 32, tokens = 5;
+  int threads = 32, tokens = 5, kspeed = 0;
   std::vector<int> check = {0, 20, 39};
   for (int i = 1; i < argc; i++) {
     std::string a = argv[i];
     if (a == "-m") path = argv[++i];
     else if (a == "-t") threads = atoi(argv[++i]);
     else if (a == "--tokens") tokens = atoi(argv[++i]);
+    else if (a == "-k") kspeed = atoi(argv[++i]);
     else if (a == "--check-layers") { check.clear(); for (char* p = argv[++i]; *p;) { check.push_back((int)strtol(p, &p, 10)); if (*p == ',') p++; } }
   }
   Model m;
@@ -172,9 +175,10 @@ int main(int argc, char** argv) {
     }
   }
 
-  printf("# speed: one token = %d layers x %d experts (%.1f MB of weights)\n", hp.n_layer, K,
-         hp.n_layer * K * 3.0 * ggml_nbytes(m.layers[0].gate_exps) / hp.n_expert / 1e6);
-  const double bytes = hp.n_layer * K * 3.0 * ggml_nbytes(m.layers[0].gate_exps) / hp.n_expert;
+  const int KS = kspeed > 0 && kspeed <= K ? kspeed : K;
+  printf("# speed: one token = %d layers x %d experts (%.1f MB of weights)\n", hp.n_layer, KS,
+         hp.n_layer * KS * 3.0 * ggml_nbytes(m.layers[0].gate_exps) / hp.n_expert / 1e6);
+  const double bytes = hp.n_layer * KS * 3.0 * ggml_nbytes(m.layers[0].gate_exps) / hp.n_expert;
   for (int t = 0; t < tokens; t++) {
     double ms[3] = {0, 0, 0};
     for (int impl = 0; impl < 3; impl++) {  // fresh experts for each implementation
@@ -185,13 +189,13 @@ int main(int argc, char** argv) {
         auto t0 = Clock::now();
         if (impl == 0) {
           const CpuExperts ex = {m.layers[L].gate_exps, m.layers[L].up_exps, m.layers[L].down_exps, hp.swiglu_clamp[L]};
-          kern.forward(ex, x.data(), ids.data(), w.data(), K, y.data());
+          kern.forward(ex, x.data(), ids.data(), w.data(), KS, y.data());
         } else if (impl == 1) {
           const CpuExperts ex = {m.layers[L].gate_exps, m.layers[L].up_exps, m.layers[L].down_exps, hp.swiglu_clamp[L]};
-          kern.forward_canon(ex, x.data(), ids.data(), w.data(), K, y.data());
+          kern.forward_canon(ex, x.data(), ids.data(), w.data(), KS, y.data());
         } else {
           const CpuExperts ex = {m.layers[L].gate_exps, m.layers[L].up_exps, m.layers[L].down_exps, hp.swiglu_clamp[L]};
-          volatile uint64_t sink = kern.touch(ex, ids.data(), K);
+          volatile uint64_t sink = kern.touch(ex, ids.data(), KS);
           (void)sink;
         }
         ms[impl] += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();

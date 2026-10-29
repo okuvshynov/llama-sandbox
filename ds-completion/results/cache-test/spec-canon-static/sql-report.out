@@ -1,0 +1,31 @@
+# SQL Query: Customer 2024 Totals and Ranking
+
+```sql
+WITH customer_totals AS (
+    SELECT
+        c.id,
+        c.name,
+        COALESCE(SUM(o.amount), 0) AS total_amount_2024
+    FROM customers c
+    LEFT JOIN orders o
+        ON o.customer_id = c.id
+        AND o.created_at >= '2024-01-01'
+        AND o.created_at <  '2025-01-01'
+    GROUP BY c.id, c.name
+)
+SELECT
+    id,
+    name,
+    total_amount_2024,
+    RANK() OVER (ORDER BY total_amount_2024 DESC) AS rank
+FROM customer_totals
+ORDER BY rank, name;
+```
+
+## Key design decisions
+
+1. **`LEFT JOIN` from `customers`** — ensures customers with no 2024 orders still appear (with `total_amount_2024 = 0`). If you only want customers who ordered in 2024, switch to `INNER JOIN`.
+
+2. **Date filter in the `ON` clause, not `WHERE`** — critical for the `LEFT JOIN`. Putting `created_at` conditions in `WHERE` would silently turn the outer join into an inner join and drop zero-order customers.
+
+3. **Half-open date range** (`>= '2024-01-01' AND < '2025-01-01'

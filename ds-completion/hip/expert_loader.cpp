@@ -134,6 +134,8 @@ void ExpertLoader::work(int d) {
   CHECK(hipDeviceGetStreamPriorityRange(&lo, &hi));
   const size_t bytes = (size_t)p.view.gate.N * p.view.gate.K / 32 * 17;
   LoadStage st = load_stage_create(p.dev, bytes, lo);
+  hipEvent_t fin;  // a served request's completion (blocking: the thread sleeps)
+  CHECK(hipEventCreateWithFlags(&fin, hipEventDisableTiming | hipEventBlockingSync));
   std::mt19937 rng(1234 + d);
   const auto t0 = std::chrono::steady_clock::now();
   long n = 0;
@@ -156,8 +158,22 @@ void ExpertLoader::work(int d) {
     load_expert(st, p, r.slot, m.layers[r.layer], r.expert, registered);
     n++;
     n_loads++;
+    if (test_rate == 0) {
+      CHECK(hipEventRecord(fin, st.s));
+      CHECK(hipEventSynchronize(fin));
+      std::lock_guard<std::mutex> lk(mu);
+      done.push_back(r);
+    }
   }
+  (void)hipEventDestroy(fin);
   load_stage_free(st);
+}
+
+std::vector<ExpertLoader::Request> ExpertLoader::take_done() {
+  std::lock_guard<std::mutex> lk(mu);
+  std::vector<Request> r;
+  r.swap(done);
+  return r;
 }
 
 ExpertLoader::~ExpertLoader() {

@@ -15,6 +15,7 @@
 
 #include "forward.h"  // Taps, engram_rows
 #include "dspark.h"
+#include "expert_cache.h"
 #include "expert_loader.h"
 #include "expert_pool.h"
 #include "fp4_moe.h"
@@ -50,6 +51,11 @@ struct RtOptions {
   // order, so the output does not depend on the placement (or on a cache's contents); slower
   // expert kernels (README step 28)
   bool canon = false;
+  // adaptive expert cache (expert_cache.h): > 0 = load rate in experts per second, rebalancing
+  // every cache_period tokens by use over the last cache_window; 0 = the static placement
+  double cache_loads = 0;
+  int cache_period = 16, cache_window = 256;
+  bool cache_wait = false;  // wait at startup until the cache can load (expert_cache.h)
   bool load_pinned = false;  // the load test's path: pinned staging instead of direct (expert_loader.h)
 };
 
@@ -163,6 +169,8 @@ class Runtime {
   std::vector<Die> dies;
   static constexpr int kLoadTestSlots = 8;
   std::unique_ptr<ExpertLoader> loader;  // the load test's
+  std::vector<int> h_table;              // host copy of d_table (the cache edits it)
+  std::unique_ptr<ExpertCache> cache;
   Placement placement;
   int* d_table = nullptr;       // [n_layer][n_expert]: die << 16 | slot, or -1 (home die)
   hipEvent_t ev_staged;         // the block (x, router outputs, lists) is in host memory

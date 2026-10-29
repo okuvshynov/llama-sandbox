@@ -1,0 +1,11 @@
+# scripts/cache-test.sh, commit 51bce5d+changes, sclk 2, 2026-10-28T22:06:13-04:00
+# config: t/s per prompt (tcp-udp py-lru cpp-matrix sql-report geometry zh-travel ja-email summary-json ), mean t/s, routed experts on GPUs, outputs equal to the reference
+plain canon static    18.67  18.45  17.63  16.94  18.39  15.70  15.35  18.24  mean 17.42  on GPUs 63.5%  same yes
+plain fast static     19.26  18.66  17.98  17.50  18.69  16.15  15.53  18.44  mean 17.78  on GPUs 63.5%  same -
+plain canon 100       20.97  20.23  19.98  20.05  21.26  19.96  20.77  20.28  mean 20.44  on GPUs 82.3%  same yes
+spec fast static      20.15  20.72  21.73  20.26  22.37  15.93  15.71  22.89  mean 19.97  on GPUs 60.8%  same -
+spec canon static     20.09  21.78  21.68  19.86  22.59  15.13  14.80  21.88  mean 19.73  on GPUs 60.8%  same yes
+spec canon 50         23.37  24.89  25.45  24.56  26.88  19.10  20.82  24.78  mean 23.73  on GPUs 76.3%  same yes
+spec canon 100        23.53  25.60  26.04  24.45  28.54  20.38  22.01  25.55  mean 24.51  on GPUs 79.9%  same yes
+spec canon 200        23.35  26.26  28.38  25.22  30.59  20.96  23.05  26.58  mean 25.55  on GPUs 83.8%  same yes
+# done 2026-10-28T22:55:43-04:00

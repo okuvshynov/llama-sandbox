@@ -740,10 +740,10 @@ void k_moe_dispatch(const int* ids, const float* w, int k, const int* table, int
   moe_dispatch_kernel<<<1, M, 0, s>>>(ids, w, k, table, n_dies, lists, where);
 }
 
-// one block per token
+// grid: (elements / 256, tokens); every block finds its token's k rows
 __global__ void moe_combine_kernel(const float* shared, const float* rows, int cap, const MoeList* lists, const int* where,
                                    int k, int n_dies, float* out, int len) {
-  const int t = blockIdx.x;
+  const int t = blockIdx.y;
   __shared__ const float* src[kMoeMaxK];
   if (threadIdx.x < k) {
     const int j = threadIdx.x, code = where[t * kMoeIdStride + j], p = code >> 8;
@@ -752,7 +752,8 @@ __global__ void moe_combine_kernel(const float* shared, const float* rows, int c
     src[j] = rows + ((size_t)p * cap + base + (code & 0xFF)) * len;
   }
   __syncthreads();
-  for (int i = threadIdx.x; i < len; i += blockDim.x) {
+  const int i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i < len) {
     float v = shared[(size_t)t * len + i];
     for (int j = 0; j < k; j++) v = __fadd_rn(v, src[j][i]);
     out[(size_t)t * len + i] = v;
@@ -761,7 +762,7 @@ __global__ void moe_combine_kernel(const float* shared, const float* rows, int c
 
 void k_moe_combine(const float* shared, const float* rows, int cap, const MoeList* lists, const int* where, int k, int n_dies,
                    int M, float* out, int len, hipStream_t s) {
-  moe_combine_kernel<<<M, 256, 0, s>>>(shared, rows, cap, lists, where, k, n_dies, out, len);
+  moe_combine_kernel<<<dim3((len + 255) / 256, M), 256, 0, s>>>(shared, rows, cap, lists, where, k, n_dies, out, len);
 }
 
 struct Parts { const float* p[kMoeMaxDies + 1]; };

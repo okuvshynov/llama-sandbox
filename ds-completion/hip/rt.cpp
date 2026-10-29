@@ -322,6 +322,7 @@ std::vector<int32_t> Runtime::forward_chunk(const std::vector<int32_t>& toks) {
   for (int t = 0; t < M; t++)
     next[t] = (int32_t)(std::max_element(lg.begin() + (size_t)t * V, lg.begin() + (size_t)(t + 1) * V) - (lg.begin() + (size_t)t * V));
   if (route_log) write_route_records(toks.data(), M);
+  if (cache) cache->step(M);  // a step boundary: the forward's GPU work has finished
   n_past_ += M;
   tokens_.insert(tokens_.end(), toks.begin(), toks.end());
   if (profile) {
@@ -433,7 +434,8 @@ void Runtime::setup_experts() {
   for (auto& t : th) t.join();
   for (auto& e : errors) if (!e.empty()) throw std::runtime_error("expert upload: " + e);
   CHECK(hipSetDevice(home));
-  std::vector<int> table((size_t)hp.n_layer * X);
+  std::vector<int>& table = h_table;
+  table.assign((size_t)hp.n_layer * X, -1);
   size_t n_gpu = 0;
   for (size_t k = 0; k < table.size(); k++) {
     table[k] = placement.die[k] < 0 ? -1 : (placement.die[k] << 16 | placement.slot[k]);
@@ -445,6 +447,15 @@ void Runtime::setup_experts() {
           100.0 * n_gpu / (std::count(loaded.begin(), loaded.end(), true) * X));
   for (size_t i = 0; i < dies.size(); i++) fprintf(stderr, "%s%d: %d", i ? ", " : " (", dies[i].dev, placement.used[i]);
   fprintf(stderr, "), loaded in %.1f s\n", ms_since(t0) / 1000);
+  if (opt.cache_loads > 0) {
+    if (opt.load_test >= 0) throw std::runtime_error("--load-test and the expert cache are exclusive");
+    std::vector<ExpertPool*> pools;
+    for (Die& d : dies) pools.push_back(&d.pool);
+    cache.reset(new ExpertCache(m, pools, h_table, d_table, X, {opt.cache_loads, opt.cache_period, opt.cache_window, opt.cache_wait}));
+    fprintf(stderr, "# expert cache: up to %.0f loads/s, rebalance every %d tokens over the last %d%s\n", opt.cache_loads,
+            opt.cache_period, opt.cache_window, opt.canon ? "" : " (without --canon the output depends on load timing)");
+    CHECK(hipSetDevice(home));
+  }
   if (opt.load_test >= 0) {
     std::vector<ExpertPool*> pools;
     for (Die& d : dies) pools.push_back(&d.pool);
@@ -462,6 +473,12 @@ Runtime::~Runtime() {
   if (loader) {
     fprintf(stderr, "# load test: %ld loads\n", loader->loads());
     loader.reset();
+  }
+  if (cache) {
+    const ExpertCache::Stats cs = cache->stats();
+    fprintf(stderr, "# expert cache: %ld rebalances, %ld swaps planned, %ld loads started, %ld published\n", cs.rebalances,
+            cs.swaps_planned, cs.loads_started, cs.loads_published);
+    cache.reset();
   }
   dspark.reset();
   cpu_moe.reset();
@@ -767,6 +784,7 @@ void Runtime::moe(int L, float* out, int M, Taps* taps) {
     last.cpu_experts += lt[n_dies].count;
     total_cpu_experts += lt[n_dies].count;
   }
+  if (cache) cache->observe(L, h_moe.lists, M, n_dies);
   if (opt.canon)
     for (int i = 0; i < n_dies; i++) {
       Die& d = dies[i];
@@ -941,6 +959,7 @@ void Runtime::write_route_records(const int32_t* toks, int M) {
 void Runtime::end_step() {
   CHECK(hipStreamSynchronize(s));
   if (route_log) write_route_records(&token, 1);
+  if (cache) cache->step(1);  // a step boundary: no GPU work reads a pool now
   n_past_++;
   tokens_.push_back(token);
 }

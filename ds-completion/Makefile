@@ -28,7 +28,7 @@ CORE_H = src/model.h src/forward.h src/fakequant.h src/cpu_moe.h src/canon_dot.h
 ROCM = /opt/rocm-6.3.4
 ifeq ($(HIP),1)
 RT_OBJ   = $(BIN)/obj/rt.o $(BIN)/obj/kernels.o $(BIN)/obj/fp8_gemv.o $(BIN)/obj/fp4_moe.o $(BIN)/obj/expert_pool.o \
-           $(BIN)/obj/expert_loader.o $(BIN)/obj/dspark.o
+           $(BIN)/obj/expert_loader.o $(BIN)/obj/expert_cache.o $(BIN)/obj/dspark.o
 RT_FLAGS = -DDS_RUNTIME -D__HIP_PLATFORM_AMD__ -Ihip -I$(ROCM)/include
 RT_LIBS  = $(RT_OBJ) -L$(ROCM)/lib -Wl,-rpath,$(ROCM)/lib -lamdhip64
 endif
@@ -83,7 +83,11 @@ $(BIN)/obj/expert_loader.o: hip/expert_loader.cpp hip/expert_loader.h hip/expert
 	@mkdir -p $(BIN)/obj
 	$(HIPCC) $(HIPFLAGS) -c -o $@ $<
 
-$(BIN)/obj/rt.o: hip/rt.cpp hip/rt.h hip/expert_loader.h hip/dspark.h hip/kernels.h hip/fp8_gemv.h hip/fp4_moe.h hip/expert_pool.h $(CORE_H)
+$(BIN)/obj/expert_cache.o: hip/expert_cache.cpp hip/expert_cache.h hip/expert_loader.h hip/expert_pool.h hip/kernels.h $(CORE_H)
+	@mkdir -p $(BIN)/obj
+	$(HIPCC) $(HIPFLAGS) -c -o $@ $<
+
+$(BIN)/obj/rt.o: hip/rt.cpp hip/rt.h hip/expert_cache.h hip/expert_loader.h hip/dspark.h hip/kernels.h hip/fp8_gemv.h hip/fp4_moe.h hip/expert_pool.h $(CORE_H)
 	@mkdir -p $(BIN)/obj
 	$(HIPCC) $(HIPFLAGS) -c -o $@ $<
 

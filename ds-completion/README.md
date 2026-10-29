@@ -1455,8 +1455,7 @@ adaptive cache (whose contents depend on timing) cannot change it.
   the fast path's one partial sum per token.
 - **Cost of the GPU kernel:** batching over experts (each expert's down projection in parallel
   instead of a loop) brought the canonical expert block from +13% to +2% over the fast kernel
-  (287 vs 283 us per layer, 6 experts). The end-to-end cost on the held-out prompts is being
-  measured (`scripts/canon-speed.sh` -> `results/canon-speed.txt`).
+  (287 vs 283 us per layer, 6 experts). The end-to-end cost on the held-out prompts: step 32.
 - **The fast path is unchanged** (the default; same output as before, checked on a 300-token
   run against `results/spec-sclk/out2`).
 
@@ -1474,3 +1473,60 @@ every configuration gives the same output bytes:
 
 So with `--canon`, speculative decoding also equals plain decoding *without* the draft loaded,
 which was impossible before (the draft's memory changes the placement, step 19).
+
+## Step 32: the adaptive expert cache (cache plan, phase 3b)
+
+`--canon --cache-loads R` (`hip/expert_cache.{h,cpp}`): the GPU pools follow the experts in use.
+
+- **Policy** (phase 1's best at limited rates): count each (layer, expert)'s use over the last
+  256 forwarded tokens (rejected drafts included, from the dispatch lists the host already
+  has); every 16 tokens the most-used non-resident experts replace the least-used residents (a
+  swap only if the newcomer was used more); loads start at up to R per second.
+- **Protocol** (between forwards, when no GPU work reads a pool): finished loads are published;
+  a swap first removes its victim from the routing table (it runs on the CPU from the next
+  forward), the table is uploaded, and only then the loader may overwrite the slot. The loader
+  (`expert_loader.h`) reports a load once its copy and unpack have completed.
+- **Loads only direct:** until the expert tensors are registered (~30-40 s after startup) the
+  cache counts and plans but does not load (pinned loads cost ~9%, step 30); `--cache-wait`
+  waits for registration at startup.
+- **Stress test:** 1,000 loads/s, rebalance every token over 16 tokens: 1,255 swaps in 128
+  tokens, output byte-identical to the all-CPU canonical run.
+
+**The canonical cost, found and fixed.** The first live run cost 9-11% (plain 15.69 vs 17.58
+t/s), against the kernel benchmarks' +5% (CPU) / +2% (GPU). A profile (median step 56.7 -> 63.2
+ms) split it into: the combine kernel, one block per token (+2.6 ms: a single block of 256
+threads per layer); and the CPU path (+2.6 ms of compute), whose input digits and per-expert
+activation ran on one thread: the runtime's CPU usually has 1-2 misses per layer, where the
+benchmark used 6 (`bench-cpu-moe -k`: +8.3% at 1 expert, +6.6% at 2, +5.0% at 6). Both now run
+per 32-value block over all threads, and the combine kernel over (elements / 256, tokens):
+canonical costs 1-2%, and its CPU kernel is now faster than the fast one at 1-2 experts (-22%,
+-14%; the fast path has the same one-thread preparation, a later fix). Exactness unchanged
+(vector = scalar specification on every row; GPU vs CPU 0 of 5,120 differ).
+
+Results (`scripts/cache-test.sh`, `results/cache-test/`, 8 held-out prompts, 300 tokens,
+study30 warm start, sclk 2; "same" = every output byte-identical to the plain static `--canon`
+run, `--spec` included):
+
+| configuration | plain t/s | on GPUs | `--spec` t/s | on GPUs |
+|---|---|---|---|---|
+| fast kernels, static | 17.78 | 63.5% | 19.97 | 60.8% |
+| `--canon`, static | 17.42 (-2.0%) | 63.5% | 19.73 (-1.2%) | 60.8% |
+| `--canon --cache-loads 50` | | | 23.73 (+18.8%) | 76.3% |
+| `--canon --cache-loads 100` | 20.44 (+15.0%) | 82.3% | 24.51 (+22.7%) | 79.9% |
+| `--canon --cache-loads 200` | | | **25.55 (+27.9%)** | 83.8% |
+
+At sclk 8 (`results/cache-test-sclk8/`): fast static 22.19, `--canon --cache-loads 200`
+**29.09 t/s (+31%)**, 83.1% on GPUs, outputs identical to the level-2 runs. The clock now
+helps `--spec` more (+14% with the cache vs +11% without; step 27 found +9% without, as CPU
+misses do not scale with it): the cache turned CPU misses into GPU work.
+
+- **Every prompt gains**, the ones the static placement serves worst most: ja-email 15.7 ->
+  22.0 (`--spec`, 100 loads/s), zh-travel 15.9 -> 20.4.
+- **Against the simulation** (step 29: 87% hits, ~28.9 t/s at 100 loads/s): live 80% and 24.5
+  t/s, in 300-token runs (the simulation used 1,024: the cache adapts for a larger share of a
+  short run) and including the canonical cost the simulation did not model.
+- **It does not settle in long runs:** each rebalance plans 600-1,700 swaps, more than the rate
+  allows before the next one; near the cut-off (~6,200 slots of ~10,000 experts in use) counts
+  are 1-3 and noisy. Hysteresis (a newcomer must beat its victim by a margin) is the tuning
+  item (PLAN phase 4, deferred until after long context).
+- The full placement-invariance gate (`scripts/canon-gate.sh`) passes again on this code.

@@ -1,0 +1,43 @@
+# LRU Cache Implementation
+
+Here's a clean implementation using a doubly-linked list + hash map for O(1) operations:
+
+```python
+class Node:
+    """Doubly-linked list node."""
+    __slots__ = ("key", "value", "prev", "next")
+
+    def __init__(self, key=None, value=None):
+        self.key = key
+        self.value = value
+        self.prev = None
+        self.next = None
+
+
+class LRUCache:
+    """
+    Least Recently Used cache with O(1) get and put.
+
+    Uses a hash map for O(1) lookup and a doubly-linked list to track
+    recency. The head of the list is the most recently used item; the
+    tail is the least recently used.
+    """
+
+    def __init__(self, capacity: int):
+        if capacity <= 0:
+            raise ValueError("capacity must be a positive integer")
+        self.capacity = capacity
+        self._map = {}  # key -> Node
+
+        # Sentinel nodes to avoid edge-case checks
+        self._head = Node()
+        self._tail = Node()
+        self._head.next = self._tail
+        self._tail.prev = self._head
+
+    # ---- internal helpers ----
+
+    def _remove(self, node: Node) -> None:
+        """Unlink a node from the list."""
+        node.prev.next = node.next
+        node.next.prev = node.prev

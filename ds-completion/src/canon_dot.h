@@ -36,6 +36,10 @@ struct CanonAct {
 
 // x [n] (n a multiple of 32, not yet quantized) -> a
 void canon_act(const float* x, int n, CanonAct& a);
+// the same in parts (for threads): size a for n values, then fill blocks [b0, b1) from x (the
+// whole vector's pointer)
+void canon_act_size(int n, CanonAct& a);
+void canon_act_blocks(const float* x, int b0, int b1, CanonAct& a);
 
 // One row in ggml block_mxfp4 layout (nb blocks of 17 bytes: e8m0 scale, 16 code bytes; code
 // byte j holds element j in its low nibble, j + 16 in its high one). nb even.

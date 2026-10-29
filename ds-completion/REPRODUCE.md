@@ -118,7 +118,8 @@ Unless stated: sclk 2, 16 CPU threads (32 before README step 18), the study30 pl
 | 28 | `canon-phase0.txt` | `bin/bench-cpu-moe -t 16 --tokens 14 --check-layers 2,20,39`, `bin-hip/bench-fp4-moe --layer 20 --reps 300` |
 | 29 | `cache-sim.txt` | `scripts/spec-routing.sh`, then `scripts/cache_sim.py` |
 | 30 | `bench-expert-load.txt`, `load-test/` | `bin-hip/bench-expert-load -m $M`, `scripts/load-test.sh` |
-| 31 | `canon-gate.txt`, `canon-gate/`, `canon-speed.txt` | `scripts/canon-gate.sh`, `scripts/canon-speed.sh` |
+| 31-32 | `canon-gate.txt`, `canon-gate/` | `scripts/canon-gate.sh` (rerun for step 32) |
+| 32 | `cache-test/`, `cache-test-sclk8/` | `scripts/cache-test.sh` (at sclk 8: `scripts/cache-test.sh "spec fast static" "spec canon 200"`); the CPU kernel at 1, 2, 6 experts: `bin/bench-cpu-moe -m $M -t 16 --tokens 8 --check-layers 2 -k N` |
 
 ## 7. Open items (to confirm)
 

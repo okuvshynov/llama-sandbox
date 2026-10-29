@@ -65,6 +65,8 @@ class ExpertLoader {
   // blocks until registering is over (true: direct loads from now on)
   bool wait_direct();
   long loads() const { return n_loads.load(); }
+  // requests whose copy and unpack have finished since the last call (served from the queue)
+  std::vector<Request> take_done();
   bool direct_ready() const { return registered.load(); }
 
  private:
@@ -76,6 +78,7 @@ class ExpertLoader {
   std::mutex mu;
   std::condition_variable cv;
   std::vector<std::deque<Request>> queues;
+  std::vector<Request> done;  // finished, not yet taken (guarded by mu)
   std::atomic<bool> stop{false}, registered{false};
   std::atomic<long> n_loads{0};
   double test_rate = 0;  // loads/s per die; 0 = serve the queue

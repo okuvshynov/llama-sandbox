@@ -108,11 +108,17 @@ void CpuMoeKernel::forward_canon(const CpuExperts& L, const float* x, const int*
 
 void CpuMoeKernel::forward_canon_rows(const CpuExperts& L, const float* x, const int* ids, const float* w, int k, float* rows) {
   constexpr int CH = 32;  // rows per task
-  canon_act(x, E, x_c);
+  constexpr int AB = 8;   // activation blocks (of 32 values) per task
+  canon_act_size(E, x_c);
+  for (int j = 0; j < k; j++) canon_act_size(F, act_c[j]);
   const size_t gu_row = L.gate->nb[1], d_row = L.down->nb[1];
   const int gu_tasks = k * 2 * (F / CH), d_tasks = k * (E / CH);
+  const int x_tasks = E / QB / AB, a_per = F / QB / AB, a_tasks = k * a_per;  // E / 32 and F / 32 are multiples of 8
 #pragma omp parallel num_threads(n_threads)
   {
+    // the input's digits, a few blocks per task (one thread for all of it cost ~8% at 1 expert)
+#pragma omp for schedule(static)
+    for (int t = 0; t < x_tasks; t++) canon_act_blocks(x, t * AB, (t + 1) * AB, x_c);
 #pragma omp for schedule(static)
     for (int t = 0; t < gu_tasks; t++) {
       const int per = F / CH, j = t / (2 * per), m = (t / per) % 2, c = t % per;
@@ -120,15 +126,17 @@ void CpuMoeKernel::forward_canon_rows(const CpuExperts& L, const float* x, const
       float* out = (m ? up_out.data() : gate_out.data()) + (size_t)j * F;
       canon_dot_rows(expert_base(W, ids[j]), gu_row, x_c, c * CH, (c + 1) * CH, out);
     }
+    // the activation and its digits, a few blocks of one expert per task
 #pragma omp for schedule(static)
-    for (int j = 0; j < k; j++) {
+    for (int t = 0; t < a_tasks; t++) {
+      const int j = t / a_per, b0 = (t % a_per) * AB;
       float* a = act_q.data() + (size_t)j * F;
-      for (int i = 0; i < F; i++) {
+      for (int i = b0 * QB; i < (b0 + AB) * QB; i++) {
         const float g = std::min(gate_out[(size_t)j * F + i], L.limit);
         const float u = std::clamp(up_out[(size_t)j * F + i], -L.limit, L.limit);
         a[i] = w[j] * (canon_silu(g) * u);
       }
-      canon_act(a, F, act_c[j]);
+      canon_act_blocks(a, b0, b0 + AB, act_c[j]);
     }
 #pragma omp for schedule(static)
     for (int t = 0; t < d_tasks; t++) {

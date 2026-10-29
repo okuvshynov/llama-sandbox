@@ -192,8 +192,25 @@ Each rule is followed by where it mattered most.
   computed, sized from the dispatch counts it already has). **Gate:** the same bytes with all
   experts on the CPU, two placements, three dies only, and `--spec` at two placements
   (results/canon-gate.txt). Batching the canonical GPU kernel over experts also cut its cost
-  from +13% to +2%. The end-to-end speed cost against the fast kernels is being measured
-  (`scripts/canon-speed.sh`). **Decided:** build the cache manager (3b) on top.
+  from +13% to +2%. The end-to-end speed cost against the fast kernels: phase 3b below. **Decided:** build the cache manager (3b) on top.
+
+- **Phase 3b, built and measured:** the cache manager (frequency rebalance, loads only once the
+  expert memory is registered, table changes only between forwards). First live run: canonical
+  numerics cost 9-11% end to end, far above the kernel benchmarks' +5% / +2%. **A profile found
+  why:** the canonical CPU path prepared its inputs on one thread, which dominates with the
+  runtime's usual 1-2 misses per layer (the benchmark used 6), and the combine kernel ran one
+  block per token. Fixed: canonical costs 1-2%, and its CPU kernel is now faster than the fast
+  one at 1-2 experts. **Measured** (held-out, `--spec`): fast static 19.97 -> 25.55 t/s with the
+  cache at 200 loads/s, every output identical; at sclk 8 22.19 -> 29.09.
+- **Hypothesis revisited (the person's, step 27):** a higher clock helps speculation more. Without
+  the cache: no (+9% vs +8%). With it: partly (+14% for `--spec`), because the cache turned CPU
+  misses into GPU work.
+- **A bug in the measuring method:** compiling during a timing run (CPU-bound timings): the run
+  was stopped and redone.
+- **Q (the person's):** do we support the model's full context? **Found** (against the official
+  code): everything implemented matches at any position, but the runtime stops at 4,096 tokens
+  and the candidate-block pre-filter (>16k) is missing. **Decided:** long context before any
+  cache tuning (PLAN "Long context").
 
 ## 4. Predictions against outcomes
 
@@ -209,6 +226,8 @@ Estimates were made before measuring wherever possible; this is how they fared.
 | higher clock helps speculation more (27) | yes (the person's hypothesis) | no: +8% plain, +9% spec | CPU misses do not scale with the GPU clock |
 | canonical numerics cost (28) | within 15% | CPU +5%, GPU +13% (+2% after batching) | |
 | load cost at 100 loads/s (30) | 2.7% (the simulation's pessimistic case) | ~1.1% with direct copies | |
+| canonical cost end to end (32) | ~5% (kernel benchmarks) | 9-11%, then 1-2% after two fixes | benchmarks used 6 experts; the runtime's CPU gets 1-2 |
+| cache, `--spec`, 100 loads/s (29 -> 32) | ~28.9 t/s, 87% hits (1,024 tokens, no canonical cost) | 24.5 t/s, 80% hits (300 tokens) | shorter runs adapt for a larger share of the run |
 
 ## 5. Mistakes and how they were caught
 

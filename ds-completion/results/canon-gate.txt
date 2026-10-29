@@ -1,5 +1,5 @@
-# scripts/canon-gate.sh (-n 128), commit e4fb841+changes (phase 3a, committed next), sclk 2, 2026-10-28; per prompt: t/s and whether the output equals the cpu-only run
-tcp-udp     cpu-only 10.72 t/s ref  study30 17.07 t/s same  oracle 16.02 t/s same  study30-dies123 16.01 t/s same  study30-spec 19.11 t/s same  oracle-spec5 12.23 t/s same
-py-lru      cpu-only 10.39 t/s ref  study30 17.50 t/s same  oracle 18.33 t/s same  study30-dies123 15.92 t/s same  study30-spec 19.48 t/s same  oracle-spec5 15.68 t/s same
-zh-travel   cpu-only 10.53 t/s ref  study30 14.67 t/s same  oracle 12.90 t/s same  study30-dies123 13.86 t/s same  study30-spec 12.89 t/s same  oracle-spec5 5.31 t/s same
+# scripts/canon-gate.sh (-n 128), commit 51bce5d+changes (phase 3b), sclk 2, 2026-10-28T23:03:01-04:00; per prompt: t/s and whether the output equals the cpu-only run
+tcp-udp     cpu-only 11.34 t/s ref  study30 18.60 t/s same  oracle 17.62 t/s same  study30-dies123 17.45 t/s same  study30-spec 20.66 t/s same  oracle-spec5 13.77 t/s same
+py-lru      cpu-only 11.48 t/s ref  study30 19.34 t/s same  oracle 20.13 t/s same  study30-dies123 17.66 t/s same  study30-spec 21.85 t/s same  oracle-spec5 18.03 t/s same
+zh-travel   cpu-only 11.72 t/s ref  study30 16.16 t/s same  oracle 14.26 t/s same  study30-dies123 15.29 t/s same  study30-spec 14.62 t/s same  oracle-spec5 7.19 t/s same
 PASS: every configuration gave the same output

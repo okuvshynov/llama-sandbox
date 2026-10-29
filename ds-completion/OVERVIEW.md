@@ -30,10 +30,11 @@ Decode speed (sclk level 2, 16 CPU threads, 128 generated tokens):
 | ours, CPU only | 3.5 t/s |
 | ours, own GPU runtime, routed experts on the CPU | ~12 t/s |
 | ours, + most-used experts placed on the 4 GPUs (`--placement`) | 17.7-21.7 t/s |
-| **ours, + speculative decoding with the model's DSpark draft (`--dspark ... --spec`)** | **16-24 t/s; +22% (geometric mean) on 8 held-out prompts, +7% to +33%** |
+| ours, + speculative decoding with the model's DSpark draft (`--dspark ... --spec`) | 16-24 t/s; +22% (geometric mean) on 8 held-out prompts, +7% to +33% |
+| **ours, + adaptive expert cache (`--canon --cache-loads 200`)** | **mean 25.6 t/s with `--spec` on the 8 held-out prompts (+28% over the line above); 29.1 at sclk 8; 20.4 plain at 100 loads/s** |
 | upper bound: placement from the prompt's own routing (perfect knowledge) | ~25 t/s plain; 29-41 t/s with `--spec` |
 
-(The speculative numbers are 300-token runs on held-out prompts; README step 26.)
+(The speculative and cache numbers are 300-token runs on held-out prompts; README steps 26, 32.)
 
 Prompt processing runs token by token through the runtime: ~10-16 t/s. Startup: ~15 s, plus
 10-30 s to upload experts with a placement.
@@ -168,12 +169,14 @@ win depends on how many guesses are right (2 per step on chat, 4 on code).
 
 ## 7. What is next
 
-1. **Adaptive expert cache** (in progress, README steps 28-31): start from the study's placement
-   and keep the most-used experts in GPU memory, loading them in the background. Done so far:
-   expert numerics that give the same bits on any die or the CPU (`--canon`, so the cache cannot
-   change the output); a simulation (held-out `--spec` ~19 -> ~29 t/s at 100 loads/s, with
-   frequency-based rebalancing rather than LRU); the load path (~1% cost at 100 loads/s). Next:
-   the cache manager.
+1. **Long context** (PLAN.md "Long context"): the runtime stops at 4,096 tokens; the model
+   supports 1M (YaRN). Needed: a top-k kernel for large candidate sets, the candidate-block
+   pre-filter beyond 16k tokens, compressed caches in fp8/fp4, and gates that do not need a
+   whole-model reference run at 20k tokens.
+2. **Adaptive expert cache, tuning** (README steps 28-32): built and working (`--canon
+   --cache-loads R`: +28% with `--spec` at sclk 2, every output identical); left: the default
+   rate, hysteresis so it settles in long runs, the fast path's CPU preparation (the same fix as
+   the canonical one).
 2. **The rest of a verify step:** fp8 projections over 64-lane rows are still ~2x one token at
    6 tokens; the router's 6 top-k launches; attention core per token.
 3. **The ~35 ms floor:** a higher GPU clock (free, if the power is acceptable), fusing the router

@@ -49,8 +49,8 @@ Features and limits
 
 | | item | status | one line |
 |---|---|---|---|
-| 26 | Context above 4096 with the runtime | idea | a top-k kernel for larger candidate sets |
-| 27 | Candidate-block selection (>16k tokens) | idea | the reference's layer-20 path, not implemented anywhere yet |
+| 26 | Context above 4096 with the runtime | **next** | the full range (YaRN to 1M tokens); see "Long context" below |
+| 27 | Candidate-block selection (>16k tokens) | **next** | the reference's layer-20 path; part of "Long context" below |
 | 28 | Full 1017 checkpoint | waiting | download pending (user); needed for item 19 and exact safetensors refs |
 | 29 | Sampling beyond greedy | idea | temperature/top-p; a non-goal so far |
 
@@ -251,15 +251,19 @@ Phases:
 3. **Cache manager on the host.** 3a **done** (README step 31): `--canon` in the runtime, each
    expert writes its own row on any die or the CPU, one kernel sums shared + rows in router-rank
    order; the same output bytes with no placement, study30, an oracle placement, dies 1-3 only,
-   and `--spec` at two placements. 3b **next**: the manager itself, with the policy of phase 1
-   (frequency rebalance: every 16 tokens the most-used non-resident experts of the last 256
-   replace the least-used residents) at a load rate in loads/s, warm-started from study30; new
-   experts placed so each layer stays spread over the dies. Table changes at step boundaries only: an evicted
-   expert leaves the table before its slot is overwritten; a slot is overwritten only after
-   the work that may read it (an event per die); a loaded expert is published only when its
-   copy and unpack are done.
+   and `--spec` at two placements. 3b **done** (README step 32;
+   `hip/expert_cache.{h,cpp}`, `--cache-loads R`): frequency rebalance every 16 tokens over the
+   last 256, loads at R per second once the expert tensors are registered (~30-40 s; no pinned
+   loads), victims leave the table before their slot is overwritten, newcomers are published
+   when their load has finished; table changes only between forwards. Held-out `--spec`, sclk 2:
+   fast static 19.97 -> 25.55 t/s at 200 loads/s (+28%); sclk 8: 22.19 -> 29.09 (+31%); every
+   output byte-identical to the static canonical run. Not done: placing newcomers so each
+   layer stays spread over the dies (a newcomer takes its victim's slot).
 4. **Tune** budget, admission rule and rebalance period (simulation, then live); expose them on
-   the CLI with the tuned default.
+   the CLI with the tuned default. The knobs exist (`--cache-loads`, `--cache-period`,
+   `--cache-window`). Open: the default rate (100-200 loads/s), hysteresis so the cache settles
+   in long runs (today it keeps loading at the full rate: the boundary of the ranking is noisy),
+   live vs simulated hits. **Deferred until after "Long context".**
 5. **Measure:** plain and `--spec` on the held-out set; live hit rate vs simulated; loads per
    token; verify-step profile against the oracle's 121 ms.
 
@@ -294,6 +298,41 @@ work, so phase 5 should measure sclk 2 and 8 again.
 Risks: the CPU kernel's speed under A; memory bandwidth (loads + CPU misses share ~112 GB/s);
 PCIe shared with the per-layer staging copies; hit rate under speculation below the
 simulation's 95% (rejected drafts, late loads).
+
+## Long context: plan (2026-10-29; before any further cache tuning)
+
+The model supports 1,048,576 positions (YaRN: a 65,536-token training context x 16). The runtime
+stops at 4,096 tokens in all (prompt + generation; refused or capped with a message, never
+silently wrong). Checked against the official `inference/model.py`, what already holds at any
+length: YaRN only on the compressed layers (compress_rope_theta 160000, factor 16, beta 32/1),
+plain rope on window-only layers; rope angles with full-precision cosf/sinf; the 128-slot window,
+compressor groups, indexer top-512, engram, the draft's window. What is missing:
+
+1. **Top-k over large candidate sets.** The indexer keeps the best 512 of all compressed
+   positions (n / ratio: up to 1M on layers 20-39). Today's kernel holds every candidate in
+   shared memory (`kTopkMaxN` = 4096). Needed: a global-memory top-k (radix select on the score
+   bits, then the 512 survivors sorted), bit-identical selection to the reference's `topk`
+   (ties by lower index), for N up to 1M; the CPU Engine the same.
+2. **Candidate-block pre-filtering** (`select_candidate_blocks`): layer 20's indexer scores
+   blocks of 8 positions by their best score and keeps the top 2,048 blocks (16,384 positions);
+   the later index sources (24, 28, 32, 36) mask everything outside them before their own top-k.
+   A no-op below 16,384 compressed positions (all blocks kept), so it only changes outputs
+   beyond 16k tokens. Runtime and CPU Engine.
+3. **Compressed caches in their real formats.** Compressed KV and index keys are fp32 on die 0
+   (~0.6 GB at 64K, ~10 GB at 1M: ~500 expert slots). The reference stores them as fp8 / fp4 and
+   our values are already rounded to those formats, so storing them so is exact and 4-8x
+   smaller.
+4. **`--max-ctx` up to the full range**, sized from free memory; the verify path's room check
+   already exists.
+5. **Gates.** The Python reference runs one layer at a time on the CPU: a 20K-token golden run of
+   the whole model is very slow. Instead: (a) kernel-level checks of top-k and candidate blocks
+   against the reference's functions on synthetic scores at 4K-1M candidates (bit-identical
+   indices); (b) a teacher-forced per-layer gate at long positions for a few attention layers
+   (2, 20, 24) on a ~20K-token prompt; (c) end to end: the runtime vs the CPU Engine on a
+   ~20K-token prompt (both ours, independent paths), plus greedy agreement on long documents.
+6. **Measure:** decode speed against position (indexer scoring grows linearly with context);
+   prompt speed (token by token today: a 64K prompt takes 1-2 h, which makes item 20, batched
+   prompt processing, the next priority after this).
 
 ## History
 
