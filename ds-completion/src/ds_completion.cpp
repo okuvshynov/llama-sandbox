@@ -2,7 +2,7 @@
 //
 //   ds-completion -m <model-00001-of-000NN.gguf> -p "prompt" [--chat | --think] [-n 128]
 //                 [-t 16] [--no-quant] [--max-ctx 4096]
-//                 [--rt <dense-fp8.gguf> [--gpu D] [--placement file [--moe-dies 0,1,2,3]] [--profile]]
+//                 [--rt <dense-fp8.gguf> [--gpu D] [--placement file [--moe-dies 0,1,2,3] [--load-test R [--load-pinned]]] [--profile]]
 //
 // The prompt is fed as one chunk (prefill), then one token per step, greedy. --chat wraps the
 // prompt as one user turn in the model's chat format without thinking, --think with it (the
@@ -59,6 +59,8 @@ int main(int argc, char** argv) {
   std::string route_log;
   std::string placement;
   std::vector<int> moe_dies = {0, 1, 2, 3};
+  [[maybe_unused]] double load_test = -1;
+  [[maybe_unused]] bool load_pinned = false;
   [[maybe_unused]] std::string dspark_path;
   bool spec = false;
   [[maybe_unused]] int spec_n = 0;
@@ -78,6 +80,8 @@ int main(int argc, char** argv) {
     else if (a == "--spec-log") spec_log_path = next();  // per verify step: n k verify_ms draft_ms conf[0..]
     else if (a == "--spec-n") spec_n = atoi(next());  // fixed drafts verified per step (default: chosen per step)  // drafts verified per step (default: all the draft makes)  // with --rt and --dspark: speculative decoding (greedy, same output)  // runtime: the DSpark draft GGUF (shadow mode: drafts measured, not used)
     else if (a == "--placement") placement = next();  // runtime: routed experts on GPUs (expert_pool.h)
+    else if (a == "--load-test") load_test = atof(next());  // runtime: background loads to spare slots (rt.h)
+    else if (a == "--load-pinned") load_pinned = true;
     else if (a == "--moe-dies") {
       moe_dies.clear();
       for (char* q = (char*)next(); *q;) { moe_dies.push_back((int)strtol(q, &q, 10)); if (*q == ',') q++; }
@@ -90,7 +94,7 @@ int main(int argc, char** argv) {
     else { fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
   }
   if (model_path.empty() || prompt.empty()) {
-    fprintf(stderr, "usage: ds-completion -m <model.gguf> -p \"prompt\" [--chat|--think] [-n N] [-t N] [--no-quant] [--max-ctx N] [--rt dense-fp8.gguf [--gpu D] [--placement file [--moe-dies 0,1,2,3]] [--profile]]\n");
+    fprintf(stderr, "usage: ds-completion -m <model.gguf> -p \"prompt\" [--chat|--think] [-n N] [-t N] [--no-quant] [--max-ctx N] [--rt dense-fp8.gguf [--gpu D] [--placement file [--moe-dies 0,1,2,3] [--load-test R [--load-pinned]]] [--profile]]\n");
     return 2;
   }
 
@@ -145,6 +149,8 @@ int main(int argc, char** argv) {
     ro.max_ctx = opt.max_ctx;
     ro.placement = placement;
     ro.moe_dies = moe_dies;
+    ro.load_test = load_test;
+    ro.load_pinned = load_pinned;
     ro.dspark = dspark_path;
     if (spec && dspark_path.empty()) { fprintf(stderr, "--spec needs --dspark\n"); return 2; }
     rt.reset(new Runtime(m, ro, rt_path));

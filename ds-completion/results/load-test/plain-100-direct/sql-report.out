@@ -1,0 +1,31 @@
+# SQL Query: Customer Totals and Rankings for 2024
+
+```sql
+WITH customer_totals AS (
+    SELECT
+        c.id,
+        c.name,
+        COALESCE(SUM(o.amount), 0) AS total_amount
+    FROM customers c
+    LEFT JOIN orders o
+        ON o.customer_id = c.id
+        AND o.created_at >= '2024-01-01'
+        AND o.created_at <  '2025-01-01'
+    GROUP BY c.id, c.name
+)
+SELECT
+    id,
+    name,
+    total_amount,
+    RANK() OVER (ORDER BY total_amount DESC) AS rank
+FROM customer_totals
+ORDER BY rank, name;
+```
+
+## Explanation
+
+**1. `customer_totals` CTE**
+- Uses a **`LEFT JOIN`** so customers with no 2024 orders still appear (with `total_amount = 0`).
+- The date filter is placed in the **`ON` clause**, not `WHERE` — this is critical. If it were in `WHERE`, the `LEFT JOIN` would effectively become an `INNER JOIN` and drop customers with no 2024 orders.
+- `COALESCE(SUM(...), 0)` converts `NULL` (from customers with no matching orders) to `0`.
+- The date range `>= '2024-01-01' AND < '2025-01-

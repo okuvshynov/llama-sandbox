@@ -1,0 +1,67 @@
+# expert: 3 x 6.27 MB; 40 layers with experts
+# direct: registered 288.8 GB of expert tensors in 41.1 s
+
+## 1. throughput, loading as fast as possible (3 s each)
+path    dies  threads/die   loads/s  GB/s   loader CPU ms/load
+pinned     1            1       468   8.8       2.11
+pinned     1            2       634  11.9       2.88
+pinned     4            1      1437  27.0       2.76
+pinned     4            2      1420  26.7       3.97
+direct     1            1       491   9.2       1.03
+direct     1            2       633  11.9       1.10
+direct     4            1      1437  27.0       1.09
+direct     4            2      1432  26.9       1.13
+
+## 2. CPU expert kernel (40 layers x 6 random experts, 16 threads) with loads on all 4 dies
+path    target loads/s  achieved   CPU kernel ms/token  (vs none)
+pinned               0         0                 52.4   +0.0%
+pinned              50        50                 59.7  +13.9%
+pinned             100       100                 61.4  +17.2%
+pinned             200       200                 69.6  +32.8%
+pinned             400       399                106.1  +102.3%
+pinned             max       998                129.6  +147.1%
+direct              50        50                 52.4   -0.1%
+direct             100       100                 51.9   -1.0%
+direct             200       199                 55.4   +5.7%
+direct             400       400                 57.8  +10.2%
+direct             max      1449                 70.6  +34.7%
+
+## 3. decode-like step on one die (40 x [copy in, fp4_moe_chunk 6 tokens x 6 experts, copy out, wait])
+##    with this die's share of a 4-die load rate, low-priority stream
+die  path    target loads/s  achieved (x4)  step ms  (vs none)
+  0  pinned               0             0     63.7   +0.0%
+  0  pinned              50            49     64.1   +0.7%
+  0  direct              50            49     64.1   +0.7%
+  0  pinned             100           101     64.5   +1.4%
+  0  direct             100           101     64.5   +1.4%
+  0  pinned             200           199     65.4   +2.7%
+  0  direct             200           199     65.4   +2.7%
+  0  pinned             max          1743     82.4  +29.3%
+  0  direct             max          1887     84.4  +32.6%
+  1  pinned               0             0     64.6   +0.0%
+  1  pinned              50            49     65.0   +0.7%
+  1  direct              50            49     65.0   +0.6%
+  1  pinned             100           101     65.5   +1.3%
+  1  direct             100           101     65.5   +1.3%
+  1  pinned             200           199     66.3   +2.7%
+  1  direct             200           199     66.3   +2.7%
+  1  pinned             max          1842     85.0  +31.7%
+  1  direct             max          1901     85.4  +32.3%
+  2  pinned               0             0     64.1   +0.0%
+  2  pinned              50            49     64.6   +0.7%
+  2  direct              50            49     64.5   +0.6%
+  2  pinned             100           100     65.0   +1.3%
+  2  direct             100           100     64.9   +1.2%
+  2  pinned             200           201     65.9   +2.7%
+  2  direct             200           201     65.8   +2.6%
+  2  pinned             max          1834     84.1  +31.1%
+  2  direct             max          1886     84.8  +32.3%
+  3  pinned               0             0     63.9   +0.0%
+  3  pinned              50            49     64.3   +0.6%
+  3  direct              50            49     64.3   +0.6%
+  3  pinned             100           100     64.8   +1.3%
+  3  direct             100           100     64.8   +1.3%
+  3  pinned             200           201     65.7   +2.7%
+  3  direct             200           201     65.6   +2.7%
+  3  pinned             max          1776     82.8  +29.6%
+  3  direct             max          1900     84.2  +31.7%

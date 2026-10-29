@@ -1,0 +1,23 @@
+# TCP vs UDP: Key Differences and Use Cases
+
+## Core Differences
+
+| Aspect | TCP | UDP |
+|--------|-----|-----|
+| **Connection** | Connection-oriented (3-way handshake) | Connectionless |
+| **Reliability** | Guaranteed delivery, retransmits lost packets | Best-effort, no retransmission |
+| **Ordering** | Packets delivered in order | No ordering guarantee |
+| **Error checking** | Checksums + retransmission | Checksum only (no recovery) |
+| **Speed** | Slower (overhead, ACKs) | Faster (minimal overhead) |
+| **Header size** | 20–60 bytes | 8 bytes |
+| **Flow control** | Yes (windowing, congestion control) | No |
+| **Broadcast/multicast** | Not supported | Supported |
+| **Data stream** | Byte stream | Datagrams (message boundaries preserved) |
+
+## How They Work
+
+**TCP** establishes a connection via a three-way handshake (SYN → SYN-ACK → ACK), numbers every segment, acknowledges receipt, retransmits lost data, and manages congestion. This makes it reliable but adds latency and overhead.
+
+**UDP** simply fires datagrams at the destination with no handshake, no acknowledgments, and no ordering. If a packet is lost, it's gone — the application must handle that if it cares.
+
+## When to Choose TCP

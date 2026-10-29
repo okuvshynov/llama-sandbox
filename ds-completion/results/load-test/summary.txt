@@ -1,0 +1,9 @@
+# load test, sclk 2, 2026-10-28T19:31:41-04:00; t/s per prompt, then the mean; 'same' = output identical to the 0-loads run
+spec 0 direct       20.74  21.72  22.54  19.70  22.51  14.91  15.07  23.60  mean 20.10  same yes  loads 0
+spec 50 direct      20.71  21.69  22.12  20.22  22.66  16.03  15.62  23.30  mean 20.29  same yes  loads 6698
+spec 100 direct     20.35  21.28  21.87  20.21  22.04  15.62  15.05  22.56  mean 19.87  same yes  loads 13678
+spec 200 direct     19.45  20.13  20.71  19.19  21.23  15.10  14.58  21.98  mean 19.05  same yes  loads 28555
+spec 100 pinned     18.99  19.29  19.91  18.20  20.55  14.70  13.49  21.18  mean 18.29  same yes  loads 14866
+plain 0 direct      18.70  18.15  17.80  16.97  18.47  15.50  15.17  18.26  mean 17.38  same yes  loads 0
+plain 100 direct    18.36  17.42  17.14  16.60  17.86  15.98  14.93  17.64  mean 16.99  same yes  loads 15295
+# done 2026-10-28T20:26:08-04:00

@@ -244,11 +244,10 @@ Phases:
    Frequency (the most-used experts of the last 256 tokens replace the least-used residents,
    every 16 tokens) beats LRU by 2.5-5.5 t/s at limited rates; rejected drafts do not pollute
    (load from all forwarded tokens); latency of 1-8 steps costs little.
-2. **Load path, measured alone:** ~200-450 loads/s at 18.8 MB (11 per token at 20-40 t/s).
-   mmap -> pinned memcpy costs ~2-3 ms CPU per expert, so 2-4 loader threads, then an async
-   copy on a low-priority stream per die, then unpack. Also test registering the whole expert
-   mmap with the GPUs (DMA straight from the page cache, no host copy). Measure throughput and
-   the effect on the CPU miss kernel and on verify steps.
+2. **Load path, measured alone.** **Done** (README step 30; `hip/expert_loader.{h,cpp}`):
+   direct copies from the registered mmap (registration ~40 s, in the background), at most 2
+   matrices in flight per loader, blocking waits. ~1,400 loads/s possible; live cost with
+   `--spec` -1.1% at 100 loads/s, -5.2% at 200 (pinned: -9.0% at 100); output unchanged.
 3. **Cache manager on the host:** LRU per die, warm-started from study30; new experts placed so
    each layer stays spread over the dies. Table changes at step boundaries only: an evicted
    expert leaves the table before its slot is overwritten; a slot is overwritten only after

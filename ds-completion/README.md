@@ -1368,3 +1368,57 @@ could crowd one die), the canonical numerics' cost (+5% CPU, +13% GPU expert ker
 and loads' PCIe traffic next to the per-layer staging copies. For phase 2 the target is
 100-200 loads/s (1.9-3.7 GB/s); for phase 3 the policy is the frequency rebalance, with the
 load rate as the CLI knob (0 = today's static placement).
+
+## Step 30: the load path, measured (cache plan, phase 2)
+
+A load copies one expert (gate, up, down: 3 x 6.27 MB of mxfp4 blocks) from the model's mmap
+to a die and unpacks it into a pool slot, on a low-priority stream (`hip/expert_loader.{h,cpp}`:
+the staging, `load_expert`, and `ExpertLoader`, one thread per die fed by a queue). Two paths:
+
+- **pinned**: a host memcpy into pinned staging, then the copy (the startup upload's path);
+- **direct**: the expert tensors registered with HIP (`hipHostRegister`, read-only; 289 GB in
+  6 merged ranges, ~40 s, so on a background thread with pinned loads until it is done), and the
+  copy engine reads the page cache itself.
+
+Two details mattered: at most 2 matrices in flight per loader (with an unbounded queue a die's
+other copies wait behind the loads, whatever the stream priority: a decode-like step went from
+64 ms to 3.2 s), and blocking-sync events (a spinning wait in 4 loader threads cost the CPU
+expert kernel ~5% at any rate).
+
+Standalone (`bench-expert-load`, `results/bench-expert-load.txt`, sclk 2):
+
+| | pinned | direct |
+|---|---|---|
+| throughput, 1 die / 4 dies (1 thread each) | 468 / 1,437 loads/s | 491 / 1,437 loads/s (27 GB/s) |
+| loader CPU per load | 2.1-2.8 ms | 1.0-1.1 ms (API calls) |
+| CPU expert kernel at 50 / 100 / 200 / 400 loads/s | +14 / +17 / +33 / +102% | 0 / -1 / +6 / +10% |
+| decode-like GPU step at 50 / 100 / 200 loads/s | +0.7 / +1.4 / +2.7% | the same |
+
+Throughput is 7-14x the 100-200 loads/s the simulation asks for. The cost is on the CPU: a
+pinned load reads and writes 18.8 MB through the same memory the CPU expert kernel streams.
+Copying in 1 MB pieces instead of 6.27 MB was no better for the GPU step.
+
+Live (`scripts/load-test.sh`, `results/load-test/summary.txt`): the runtime with
+`--load-test R` keeps 8 spare slots per die and loads random experts into them at R loads/s in
+all, as the cache would, while decoding the 8 held-out prompts (study30):
+
+| mode | loads/s | path | mean t/s | vs no loads | output |
+|---|---|---|---|---|---|
+| `--spec` | 0 | | 20.10 | | |
+| | 50 | direct | 20.29 | +0.9% (noise) | identical |
+| | 100 | direct | 19.87 | -1.1% | identical |
+| | 200 | direct | 19.05 | -5.2% | identical |
+| | 100 | pinned | 18.29 | **-9.0%** | identical |
+| plain | 0 | | 17.38 | | |
+| | 100 | direct | 16.99 | -2.2% | identical |
+
+- **Direct is the path**: at 100 loads/s it costs ~1-2%, pinned ~9%.
+- **The cost is at or below the simulation's "charged" column** (step 29: one missed slot,
+  0.27 ms, per load: 2.7% at 100 loads/s), so the simulated gains hold: at 100 loads/s the
+  frequency policy's +54% (`--spec`) against ~1-2% for the loads.
+- 200 loads/s costs 5%; the simulation's gain from 100 to 200 is +6% free / +4% charged, so
+  ~100 loads/s is the sensible default and 200 the useful maximum.
+
+(The spec outputs differ from the plain ones here: without the draft, die 0 holds 1,296 experts
+instead of 871, a different placement; the gate compares runs with the draft loaded, step 19.
+The canonical numerics of step 28 remove this.)

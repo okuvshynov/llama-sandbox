@@ -15,6 +15,7 @@
 
 #include "forward.h"  // Taps, engram_rows
 #include "dspark.h"
+#include "expert_loader.h"
 #include "expert_pool.h"
 #include "fp4_moe.h"
 #include "kernels.h"
@@ -40,6 +41,11 @@ struct RtOptions {
   double reserve_gb = 0.75;
   // the DSpark draft head's GGUF (dspark.h); empty = none
   std::string dspark;
+  // load test (README step 30): >= 0 keeps kLoadTestSlots spare slots per die and loads random
+  // experts into them at this many loads/s in all (0: spare slots, no loads), in the background,
+  // as an adaptive cache would; nothing reads them, so the output must not change
+  double load_test = -1;
+  bool load_pinned = false;  // the load test's path: pinned staging instead of direct (expert_loader.h)
 };
 
 class Runtime {
@@ -150,6 +156,8 @@ class Runtime {
     float *d_y = nullptr, *h_y = nullptr;
   };
   std::vector<Die> dies;
+  static constexpr int kLoadTestSlots = 8;
+  std::unique_ptr<ExpertLoader> loader;  // the load test's
   Placement placement;
   int* d_table = nullptr;       // [n_layer][n_expert]: die << 16 | slot, or -1 (home die)
   hipEvent_t ev_staged;         // the block (x, router outputs, lists) is in host memory

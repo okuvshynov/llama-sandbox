@@ -395,7 +395,8 @@ void Runtime::setup_experts() {
   CHECK(hipEventCreateWithFlags(&ev_dispatched, hipEventDisableTiming));
   CHECK(hipEventCreateWithFlags(&ev_local, hipEventDisableTiming));
   std::vector<int> cap;
-  for (const Die& d : dies) cap.push_back(pool_slots_that_fit(d.dev, E, F, (size_t)(opt.reserve_gb * 1e9)));
+  const int spare = opt.load_test >= 0 ? kLoadTestSlots : 0;
+  for (const Die& d : dies) cap.push_back(std::max(0, pool_slots_that_fit(d.dev, E, F, (size_t)(opt.reserve_gb * 1e9)) - spare));
   std::vector<bool> loaded(hp.n_layer);
   for (int L = 0; L < hp.n_layer; L++) loaded[L] = m.layers[L].loaded;
   placement = place_experts(read_placement(opt.placement), hp.n_layer, X, cap, loaded);
@@ -406,7 +407,7 @@ void Runtime::setup_experts() {
     th.emplace_back([&, i] {
       try {
         Die& d = dies[i];
-        d.pool = pool_create(d.dev, placement.used[i], E, F);
+        d.pool = pool_create(d.dev, placement.used[i] + spare, E, F);
         CHECK(hipSetDevice(d.dev));
         hipStream_t ls;
         CHECK(hipStreamCreate(&ls));
@@ -438,10 +439,24 @@ void Runtime::setup_experts() {
           100.0 * n_gpu / (std::count(loaded.begin(), loaded.end(), true) * X));
   for (size_t i = 0; i < dies.size(); i++) fprintf(stderr, "%s%d: %d", i ? ", " : " (", dies[i].dev, placement.used[i]);
   fprintf(stderr, "), loaded in %.1f s\n", ms_since(t0) / 1000);
+  if (opt.load_test >= 0) {
+    std::vector<ExpertPool*> pools;
+    for (Die& d : dies) pools.push_back(&d.pool);
+    loader.reset(new ExpertLoader(m, pools, !opt.load_pinned));
+    if (!opt.load_pinned) loader->wait_direct();  // measure the direct path only
+    if (opt.load_test > 0) loader->start_test(kLoadTestSlots, opt.load_test);
+    fprintf(stderr, "# load test: %d spare slots per die, %.0f loads/s (%s)\n", kLoadTestSlots, opt.load_test,
+            loader->direct_ready() ? "direct" : "pinned");
+    CHECK(hipSetDevice(home));
+  }
 }
 
 Runtime::~Runtime() {
   (void)hipStreamSynchronize(s);
+  if (loader) {
+    fprintf(stderr, "# load test: %ld loads\n", loader->loads());
+    loader.reset();
+  }
   dspark.reset();
   cpu_moe.reset();
   for (Die& d : dies) {

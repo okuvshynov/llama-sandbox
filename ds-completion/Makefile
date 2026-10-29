@@ -28,14 +28,14 @@ CORE_H = src/model.h src/forward.h src/fakequant.h src/cpu_moe.h src/canon_dot.h
 ROCM = /opt/rocm-6.3.4
 ifeq ($(HIP),1)
 RT_OBJ   = $(BIN)/obj/rt.o $(BIN)/obj/kernels.o $(BIN)/obj/fp8_gemv.o $(BIN)/obj/fp4_moe.o $(BIN)/obj/expert_pool.o \
-           $(BIN)/obj/dspark.o
+           $(BIN)/obj/expert_loader.o $(BIN)/obj/dspark.o
 RT_FLAGS = -DDS_RUNTIME -D__HIP_PLATFORM_AMD__ -Ihip -I$(ROCM)/include
 RT_LIBS  = $(RT_OBJ) -L$(ROCM)/lib -Wl,-rpath,$(ROCM)/lib -lamdhip64
 endif
 
 all: $(BIN)/ds-completion $(BIN)/ds-inspect $(BIN)/ds-test $(BIN)/test-fakequant $(BIN)/llama-logits $(BIN)/fp8pack $(BIN)/bench-cpu-moe
 ifeq ($(HIP),1)
-all: $(BIN)/bench-fp8 $(BIN)/bench-kernels $(BIN)/bench-fp4-moe $(BIN)/bench-expert-pool
+all: $(BIN)/bench-fp8 $(BIN)/bench-kernels $(BIN)/bench-fp4-moe $(BIN)/bench-expert-pool $(BIN)/bench-expert-load
 endif
 
 # our own HIP kernels (PLAN.md B1 onwards)
@@ -65,6 +65,11 @@ $(BIN)/bench-fp4-moe: hip/bench_fp4_moe.cpp $(BIN)/obj/fp4_moe.o src/model.cpp s
 	$(CXX) $(CXXFLAGS) $(RT_FLAGS) -O3 -o $@ hip/bench_fp4_moe.cpp src/model.cpp src/cpu_moe.cpp src/canon_dot.cpp src/fakequant.cpp \
 	    $(BIN)/obj/fp4_moe.o -L$(ROCM)/lib -Wl,-rpath,$(ROCM)/lib -lamdhip64 $(LDLIBS)
 
+$(BIN)/bench-expert-load: hip/bench_expert_load.cpp $(BIN)/obj/fp4_moe.o $(BIN)/obj/expert_pool.o $(BIN)/obj/expert_loader.o src/model.cpp src/cpu_moe.cpp src/fakequant.cpp $(CORE_H)
+	@mkdir -p $(BIN)
+	$(CXX) $(CXXFLAGS) $(RT_FLAGS) -O3 -o $@ hip/bench_expert_load.cpp src/model.cpp src/cpu_moe.cpp src/canon_dot.cpp src/fakequant.cpp \
+	    $(BIN)/obj/fp4_moe.o $(BIN)/obj/expert_pool.o $(BIN)/obj/expert_loader.o -L$(ROCM)/lib -Wl,-rpath,$(ROCM)/lib -lamdhip64 $(LDLIBS)
+
 $(BIN)/bench-expert-pool: hip/bench_expert_pool.cpp $(BIN)/obj/fp4_moe.o $(BIN)/obj/expert_pool.o src/model.cpp src/cpu_moe.cpp src/fakequant.cpp $(CORE_H)
 	@mkdir -p $(BIN)
 	$(CXX) $(CXXFLAGS) $(RT_FLAGS) -O3 -o $@ hip/bench_expert_pool.cpp src/model.cpp src/cpu_moe.cpp src/canon_dot.cpp src/fakequant.cpp \
@@ -74,7 +79,11 @@ $(BIN)/obj/%.o: hip/%.hip hip/kernels.h hip/fp8_gemv.h hip/fp4_moe.h hip/expert_
 	@mkdir -p $(BIN)/obj
 	$(HIPCC) $(HIPFLAGS) -c -o $@ $<
 
-$(BIN)/obj/rt.o: hip/rt.cpp hip/rt.h hip/dspark.h hip/kernels.h hip/fp8_gemv.h hip/fp4_moe.h hip/expert_pool.h $(CORE_H)
+$(BIN)/obj/expert_loader.o: hip/expert_loader.cpp hip/expert_loader.h hip/expert_pool.h hip/fp4_moe.h $(CORE_H)
+	@mkdir -p $(BIN)/obj
+	$(HIPCC) $(HIPFLAGS) -c -o $@ $<
+
+$(BIN)/obj/rt.o: hip/rt.cpp hip/rt.h hip/expert_loader.h hip/dspark.h hip/kernels.h hip/fp8_gemv.h hip/fp4_moe.h hip/expert_pool.h $(CORE_H)
 	@mkdir -p $(BIN)/obj
 	$(HIPCC) $(HIPFLAGS) -c -o $@ $<
 
