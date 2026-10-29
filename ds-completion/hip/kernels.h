@@ -110,7 +110,16 @@ struct MoeList {
 // + t * kMoeIdStride, lists at + t * kMoeListStride; lists[0..n_dies) are the dies, lists[n_dies]
 // the CPU.
 constexpr int kMoeIdStride = 8, kMoeListStride = kMoeMaxDies + 1;
-void k_moe_dispatch(const int* ids, const float* w, int k, const int* table, int n_dies, MoeList* lists, int M, hipStream_t s);
+// where (optional, [M][kMoeIdStride]): for each token's rank j, the place that runs it (die
+// index, n_dies = the CPU) << 8 | its index in that place's list
+void k_moe_dispatch(const int* ids, const float* w, int k, const int* table, int n_dies, MoeList* lists, int M, hipStream_t s,
+                    int* where = nullptr);
+// Placement-invariant sum (PLAN.md "Adaptive expert cache"): out[t] = ((shared[t] + row(t, 0)) +
+// row(t, 1)) + ... in router-rank order, where row(t, j) is the expert output that where[t][j]'s
+// place computed: place p's rows are compact over the tokens (fp4_moe_canon_rows' layout) at
+// rows + p * cap * len.
+void k_moe_combine(const float* shared, const float* rows, int cap, const MoeList* lists, const int* where, int k, int n_dies,
+                   int M, float* out, int len, hipStream_t s);
 // y = a + parts[0] + ... + parts[n - 1] in this order (null parts skipped)
 void k_add_parts(const float* a, const float* const* parts, int n, float* y, int len, hipStream_t s);
 // y[j][i] = x[i] for j < copies (the embedding into hc copies)

@@ -1,0 +1,5 @@
+# scripts/canon-gate.sh (-n 128), commit e4fb841+changes (phase 3a, committed next), sclk 2, 2026-10-28; per prompt: t/s and whether the output equals the cpu-only run
+tcp-udp     cpu-only 10.72 t/s ref  study30 17.07 t/s same  oracle 16.02 t/s same  study30-dies123 16.01 t/s same  study30-spec 19.11 t/s same  oracle-spec5 12.23 t/s same
+py-lru      cpu-only 10.39 t/s ref  study30 17.50 t/s same  oracle 18.33 t/s same  study30-dies123 15.92 t/s same  study30-spec 19.48 t/s same  oracle-spec5 15.68 t/s same
+zh-travel   cpu-only 10.53 t/s ref  study30 14.67 t/s same  oracle 12.90 t/s same  study30-dies123 13.86 t/s same  study30-spec 12.89 t/s same  oracle-spec5 5.31 t/s same
+PASS: every configuration gave the same output

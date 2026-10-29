@@ -191,6 +191,10 @@ Runtime::Runtime(const Model& model, RtOptions options, const std::string& fp8_p
   y = dalloc<float>((size_t)C * E);
   ysh = dalloc<float>((size_t)C * E);
   yr = dalloc<float>((size_t)C * E);
+  if (opt.canon) {
+    canon_rows = dalloc<float>((size_t)(kMoeMaxDies + 1) * C * hp.n_expert_used * E);
+    canon_where = dalloc<int>((size_t)C * kMoeIdStride);
+  }
   logits_d = dalloc<float>((size_t)C * hp.n_vocab);
   partial = dalloc<float>((size_t)kSplitMax * std::max(hp.n_vocab, 32768));
   A = {dalloc<uint8_t>((size_t)C * NH * HD), dalloc<float>((size_t)C * NH * HD / 32)};
@@ -244,7 +248,7 @@ Runtime::Runtime(const Model& model, RtOptions options, const std::string& fp8_p
       S[L].idx_k = dalloc<float>((size_t)opt.max_ctx / r * hp.idx_dim);
     }
   }
-  CHECK(hipHostMalloc(&h_yr, (size_t)C * E * 4, 0));
+  CHECK(hipHostMalloc(&h_yr, (size_t)C * (opt.canon ? hp.n_expert_used : 1) * E * 4, 0));  // canon: the CPU's rows
   CHECK(hipHostMalloc(&h_erows, hp.engram_layers.size() * C * hp.engram_cols() * hp.engram_dim * 4, 0));
   if (opt.max_ctx > kTopkMaxN) throw std::runtime_error("runtime: --max-ctx above the top-k kernel's limit");
   CHECK(hipEventCreateWithFlags(&ev_staged, hipEventDisableTiming));
@@ -380,13 +384,15 @@ void Runtime::setup_experts() {
     Die& d = dies[i];
     d.dev = opt.moe_dies[i];
     CHECK(hipSetDevice(d.dev));
-    CHECK(hipMalloc(&d.scratch, fp4_moe_scratch_bytes(E, F, kMoeMaxK, kChunk)));
+    CHECK(hipMalloc(&d.scratch, opt.canon ? fp4_moe_canon_rows_scratch_bytes(E, F, kMoeMaxK, kChunk)
+                                          : fp4_moe_scratch_bytes(E, F, kMoeMaxK, kChunk)));
+    const size_t y_rows = (size_t)kChunk * (opt.canon ? kMoeMaxK : 1);  // canon: one row per expert
     if (d.dev != home) {
       CHECK(hipStreamCreateWithFlags(&d.st, hipStreamNonBlocking));
       CHECK(hipEventCreateWithFlags(&d.done, hipEventDisableTiming));
       CHECK(hipMalloc(&d.d_in, moe_block_bytes(kChunk)));
-      CHECK(hipMalloc(&d.d_y, (size_t)kChunk * E * 4));
-      CHECK(hipHostMalloc(&d.h_y, (size_t)kChunk * E * 4, 0));
+      CHECK(hipMalloc(&d.d_y, y_rows * E * 4));
+      CHECK(hipHostMalloc(&d.h_y, y_rows * E * 4, 0));
     }
     CHECK(hipSetDevice(home));
     d.y_home = dalloc<float>((size_t)kChunk * E);
@@ -494,7 +500,7 @@ Runtime::~Runtime() {
     for (float* p : {st.win, st.cmp_kv, st.cmp_score, st.comp, st.idx_k}) if (p) (void)hipFree(p);
   for (void* p : {(void*)h, (void*)h2, (void*)pre, (void*)a_pre, (void*)a_post, (void*)a_comb, (void*)f_pre, (void*)f_post,
                   (void*)f_comb, (void*)mixes, (void*)x, (void*)t1, (void*)qr, (void*)q, (void*)kvv, (void*)o, (void*)oa,
-                  (void*)y, (void*)ysh, (void*)yr, (void*)logits_d, (void*)partial, (void*)A.q, (void*)A.s, (void*)B.q, (void*)B.s, (void*)cmp_kvn,
+                  (void*)y, (void*)ysh, (void*)yr, (void*)canon_rows, (void*)canon_where, (void*)logits_d, (void*)partial, (void*)A.q, (void*)A.s, (void*)B.q, (void*)B.s, (void*)cmp_kvn,
                   (void*)cmp_sc, (void*)lat, (void*)ik, (void*)iq, (void*)iw, (void*)iscore, (void*)gate, (void*)up,
                   (void*)act, (void*)router_logits, (void*)d_moe.lists, (void*)rw, (void*)rids, (void*)att_scratch, (void*)erows, (void*)ekv, (void*)iota,
                   fp8_buf, (void*)freqs_buf})
@@ -700,7 +706,7 @@ void Runtime::moe(int L, float* out, int M, Taps* taps) {
   // copy (the CPU and the other dies read it there)
   const int n_dies = (int)dies.size();
   mark("ffn.dispatch");
-  k_moe_dispatch(rids, rw, KE, d_table ? d_table + (size_t)L * hp.n_expert : nullptr, n_dies, d_moe.lists, M, s);
+  k_moe_dispatch(rids, rw, KE, d_table ? d_table + (size_t)L * hp.n_expert : nullptr, n_dies, d_moe.lists, M, s, canon_where);
   if (n_dies) CHECK(hipEventRecord(ev_dispatched, s));
   const size_t block = moe_block_bytes(M);
   CHECK(hipMemcpyAsync(h_moe.lists, d_moe.lists, moe_lists_bytes, hipMemcpyDeviceToHost, s));
@@ -710,13 +716,17 @@ void Runtime::moe(int L, float* out, int M, Taps* taps) {
   auto sel = [&](const MoeList* lists, int die) {  // die `die`'s list of every token
     return ExpertSel{lists[die].ids, lists[die].w, &lists[die].count, LS};
   };
+  auto place_rows = [&](int p) { return canon_rows + (size_t)p * kChunk * KE * E; };  // canon
   bool local = false;
   for (int i = 0; i < n_dies; i++) {
     Die& d = dies[i];
     if (!d.st) {  // the home die: its lists on the second stream, next to the shared expert
       local = true;
       CHECK(hipStreamWaitEvent(s_local, ev_dispatched, 0));
-      fp4_moe_chunk(d.pool.view, xin, sel(d_moe.lists, i), KE, M, hp.swiglu_clamp[L], d.y_home, d.scratch, s_local);
+      if (opt.canon)
+        fp4_moe_canon_rows(d.pool.view, xin, sel(d_moe.lists, i), KE, M, hp.swiglu_clamp[L], place_rows(i), d.scratch, s_local);
+      else
+        fp4_moe_chunk(d.pool.view, xin, sel(d_moe.lists, i), KE, M, hp.swiglu_clamp[L], d.y_home, d.scratch, s_local);
       CHECK(hipEventRecord(ev_local, s_local));
       continue;
     }
@@ -724,10 +734,14 @@ void Runtime::moe(int L, float* out, int M, Taps* taps) {
     CHECK(hipSetDevice(d.dev));
     CHECK(hipStreamWaitEvent(d.st, ev_staged, 0));
     CHECK(hipMemcpyAsync(d.d_in, h_moe.lists, block, hipMemcpyHostToDevice, d.st));
-    fp4_moe_chunk(d.pool.view, (const float*)(d.d_in + moe_lists_bytes), sel((const MoeList*)d.d_in, i), KE, M,
-                  hp.swiglu_clamp[L], d.d_y, d.scratch, d.st);
-    CHECK(hipMemcpyAsync(d.h_y, d.d_y, (size_t)M * E * 4, hipMemcpyDeviceToHost, d.st));
-    CHECK(hipEventRecord(d.done, d.st));
+    const float* dx = (const float*)(d.d_in + moe_lists_bytes);
+    if (opt.canon) {  // the copy back waits for the counts (below)
+      fp4_moe_canon_rows(d.pool.view, dx, sel((const MoeList*)d.d_in, i), KE, M, hp.swiglu_clamp[L], d.d_y, d.scratch, d.st);
+    } else {
+      fp4_moe_chunk(d.pool.view, dx, sel((const MoeList*)d.d_in, i), KE, M, hp.swiglu_clamp[L], d.d_y, d.scratch, d.st);
+      CHECK(hipMemcpyAsync(d.h_y, d.d_y, (size_t)M * E * 4, hipMemcpyDeviceToHost, d.st));
+      CHECK(hipEventRecord(d.done, d.st));
+    }
     CHECK(hipSetDevice(opt.gpu));
   }
   mark("ffn.shared");
@@ -741,41 +755,73 @@ void Runtime::moe(int L, float* out, int M, Taps* taps) {
   auto t0 = Clock::now();
   CHECK(hipEventSynchronize(ev_staged));
   last.wait_ms += ms_since(t0);
-  std::vector<char> has_cpu(M, 0);
-  bool any_cpu = false;
+  // the place's rows of this chunk (canon): the counts are known now
+  std::vector<int> n_rows(n_dies + 1, 0);
   for (int t = 0; t < M; t++) {
     const MoeList* lt = h_moe.lists + (size_t)t * kMoeListStride;
+    for (int i = 0; i <= n_dies; i++) n_rows[i] += lt[i].count;
     for (int i = 0; i < n_dies; i++) {
       last.gpu_experts += lt[i].count;
       total_gpu_experts += lt[i].count;
     }
     last.cpu_experts += lt[n_dies].count;
     total_cpu_experts += lt[n_dies].count;
-    if (lt[n_dies].count > 0) {
-      if (!any_cpu) mark("ffn.wait_for_cpu_experts");
-      any_cpu = has_cpu[t] = true;
-      auto t1c = Clock::now();
-      const Layer& hl = m.layers[L];  // host tensors: the experts live in the mmap
-      cpu_moe->forward(CpuExperts{hl.gate_exps, hl.up_exps, hl.down_exps, hp.swiglu_clamp[L]}, h_moe.x + (size_t)t * E,
-                       lt[n_dies].ids, lt[n_dies].w, lt[n_dies].count, h_yr + (size_t)t * E);
-      last.cpu_moe_ms += ms_since(t1c);
-    }
   }
-  if (any_cpu) CHECK(hipMemcpyAsync(yr, h_yr, (size_t)M * E * 4, hipMemcpyHostToDevice, s));
+  if (opt.canon)
+    for (int i = 0; i < n_dies; i++) {
+      Die& d = dies[i];
+      if (!d.st) continue;
+      CHECK(hipSetDevice(d.dev));
+      if (n_rows[i]) CHECK(hipMemcpyAsync(d.h_y, d.d_y, (size_t)n_rows[i] * E * 4, hipMemcpyDeviceToHost, d.st));
+      CHECK(hipEventRecord(d.done, d.st));
+      CHECK(hipSetDevice(opt.gpu));
+    }
+  // the host: the CPU's misses, token by token
+  std::vector<char> has_cpu(M, 0);
+  bool any_cpu = false;
+  int cpu_row = 0;
+  for (int t = 0; t < M; t++) {
+    const MoeList& lc = h_moe.lists[(size_t)t * kMoeListStride + n_dies];
+    if (lc.count == 0) continue;
+    if (!any_cpu) mark("ffn.wait_for_cpu_experts");
+    any_cpu = has_cpu[t] = true;
+    auto t1c = Clock::now();
+    const Layer& hl = m.layers[L];  // host tensors: the experts live in the mmap
+    const CpuExperts ce{hl.gate_exps, hl.up_exps, hl.down_exps, hp.swiglu_clamp[L]};
+    if (opt.canon) {
+      cpu_moe->forward_canon_rows(ce, h_moe.x + (size_t)t * E, lc.ids, lc.w, lc.count, h_yr + (size_t)cpu_row * E);
+      cpu_row += lc.count;
+    } else {
+      cpu_moe->forward(ce, h_moe.x + (size_t)t * E, lc.ids, lc.w, lc.count, h_yr + (size_t)t * E);
+    }
+    last.cpu_moe_ms += ms_since(t1c);
+  }
+  if (any_cpu) {
+    if (opt.canon) CHECK(hipMemcpyAsync(place_rows(n_dies), h_yr, (size_t)cpu_row * E * 4, hipMemcpyHostToDevice, s));
+    else CHECK(hipMemcpyAsync(yr, h_yr, (size_t)M * E * 4, hipMemcpyHostToDevice, s));
+  }
   // the dies' results, waited for in the stream
   if (n_dies) mark("ffn.wait_for_gpu_experts");
   if (local) CHECK(hipStreamWaitEvent(s, ev_local, 0));
   for (int i = 0; i < n_dies; i++)
     if (dies[i].st) {
       CHECK(hipStreamWaitEvent(s, dies[i].done, 0));
-      CHECK(hipMemcpyAsync(dies[i].y_home, dies[i].h_y, (size_t)M * E * 4, hipMemcpyHostToDevice, s));
+      if (opt.canon) {
+        if (n_rows[i]) CHECK(hipMemcpyAsync(place_rows(i), dies[i].h_y, (size_t)n_rows[i] * E * 4, hipMemcpyHostToDevice, s));
+      } else {
+        CHECK(hipMemcpyAsync(dies[i].y_home, dies[i].h_y, (size_t)M * E * 4, hipMemcpyHostToDevice, s));
+      }
     }
   mark("ffn.add");
-  for (int t = 0; t < M; t++) {  // fixed order: dies, then the CPU (if this token had misses)
-    const float* parts[kMoeMaxDies + 1] = {};
-    for (int i = 0; i < n_dies; i++) parts[i] = dies[i].y_home + (size_t)t * E;
-    if (has_cpu[t]) parts[n_dies] = yr + (size_t)t * E;
-    k_add_parts(ysh + (size_t)t * E, parts, n_dies + 1, out + (size_t)t * E, E, s);
+  if (opt.canon) {
+    k_moe_combine(ysh, canon_rows, kChunk * KE, d_moe.lists, canon_where, KE, n_dies, M, out, E, s);
+  } else {
+    for (int t = 0; t < M; t++) {  // fixed order: dies, then the CPU (if this token had misses)
+      const float* parts[kMoeMaxDies + 1] = {};
+      for (int i = 0; i < n_dies; i++) parts[i] = dies[i].y_home + (size_t)t * E;
+      if (has_cpu[t]) parts[n_dies] = yr + (size_t)t * E;
+      k_add_parts(ysh + (size_t)t * E, parts, n_dies + 1, out + (size_t)t * E, E, s);
+    }
   }
   if (taps) {
     tap(taps, "router_w", rw, {KE, 1});  // (synchronizes the stream)

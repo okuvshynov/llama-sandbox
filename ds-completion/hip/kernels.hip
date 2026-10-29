@@ -717,7 +717,8 @@ void k_engram(float* h, const float* kv, const float* gate_w, int hc, int n, flo
 
 
 // one thread per token: k is 6
-__global__ void moe_dispatch_kernel(const int* ids, const float* w, int k, const int* table, int n_dies, MoeList* lists) {
+__global__ void moe_dispatch_kernel(const int* ids, const float* w, int k, const int* table, int n_dies, MoeList* lists,
+                                    int* where) {
   const int t = threadIdx.x;
   ids += t * kMoeIdStride;
   w += t * kMoeIdStride;
@@ -725,15 +726,42 @@ __global__ void moe_dispatch_kernel(const int* ids, const float* w, int k, const
   for (int d = 0; d <= n_dies; d++) lists[d].count = 0;
   for (int j = 0; j < k; j++) {
     const int code = table ? table[ids[j]] : -1;
-    MoeList& l = lists[code < 0 ? n_dies : code >> 16];
+    const int p = code < 0 ? n_dies : code >> 16;
+    MoeList& l = lists[p];
     l.ids[l.count] = code < 0 ? ids[j] : (code & 0xFFFF);
     l.w[l.count] = w[j];
+    if (where) where[t * kMoeIdStride + j] = p << 8 | l.count;
     l.count++;
   }
 }
 
-void k_moe_dispatch(const int* ids, const float* w, int k, const int* table, int n_dies, MoeList* lists, int M, hipStream_t s) {
-  moe_dispatch_kernel<<<1, M, 0, s>>>(ids, w, k, table, n_dies, lists);
+void k_moe_dispatch(const int* ids, const float* w, int k, const int* table, int n_dies, MoeList* lists, int M, hipStream_t s,
+                    int* where) {
+  moe_dispatch_kernel<<<1, M, 0, s>>>(ids, w, k, table, n_dies, lists, where);
+}
+
+// one block per token
+__global__ void moe_combine_kernel(const float* shared, const float* rows, int cap, const MoeList* lists, const int* where,
+                                   int k, int n_dies, float* out, int len) {
+  const int t = blockIdx.x;
+  __shared__ const float* src[kMoeMaxK];
+  if (threadIdx.x < k) {
+    const int j = threadIdx.x, code = where[t * kMoeIdStride + j], p = code >> 8;
+    int base = 0;  // place p's rows of the tokens before t
+    for (int u = 0; u < t; u++) base += lists[u * kMoeListStride + p].count;
+    src[j] = rows + ((size_t)p * cap + base + (code & 0xFF)) * len;
+  }
+  __syncthreads();
+  for (int i = threadIdx.x; i < len; i += blockDim.x) {
+    float v = shared[(size_t)t * len + i];
+    for (int j = 0; j < k; j++) v = __fadd_rn(v, src[j][i]);
+    out[(size_t)t * len + i] = v;
+  }
+}
+
+void k_moe_combine(const float* shared, const float* rows, int cap, const MoeList* lists, const int* where, int k, int n_dies,
+                   int M, float* out, int len, hipStream_t s) {
+  moe_combine_kernel<<<M, 256, 0, s>>>(shared, rows, cap, lists, where, k, n_dies, out, len);
 }
 
 struct Parts { const float* p[kMoeMaxDies + 1]; };

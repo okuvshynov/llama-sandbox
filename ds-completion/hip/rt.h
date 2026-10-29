@@ -45,6 +45,11 @@ struct RtOptions {
   // experts into them at this many loads/s in all (0: spare slots, no loads), in the background,
   // as an adaptive cache would; nothing reads them, so the output must not change
   double load_test = -1;
+  // placement-invariant expert numerics (canon_dot.h; PLAN.md "Adaptive expert cache"): every
+  // routed expert gives the same bits on any die or the CPU and they are summed in router-rank
+  // order, so the output does not depend on the placement (or on a cache's contents); slower
+  // expert kernels (README step 28)
+  bool canon = false;
   bool load_pinned = false;  // the load test's path: pinned staging instead of direct (expert_loader.h)
 };
 
@@ -184,6 +189,10 @@ class Runtime {
   size_t moe_lists_bytes = 0;
   size_t moe_block_bytes(int M) const { return moe_lists_bytes + (size_t)M * hp.n_embd * 4; }
   float *h_yr, *h_erows, *att_scratch;
+  // canon: the expert output rows, compact per place ([place][kChunk * k][n_embd], place = die
+  // index, n_dies = the CPU), and each token's rank -> (place, index) from the dispatch
+  float* canon_rows = nullptr;
+  int* canon_where = nullptr;
 
   FILE* route_log = nullptr;
   int* d_route = nullptr;     // [kChunk][n_layer][16] this forward's expert ids (device), then the weights

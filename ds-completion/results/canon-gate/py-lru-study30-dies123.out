@@ -1,0 +1,23 @@
+# LRU Cache Implementation in Python
+
+Here's a complete implementation using a doubly-linked list + hash map for O(1) operations, along with unit tests.
+
+```python
+"""
+lru_cache.py
+
+An LRU (Least Recently Used) cache with O(1) get and put operations.
+
+Data structures:
+  - dict: maps key -> node for O(1) lookup
+  - doubly-linked list: tracks recency order
+      * head = most recently used
+      * tail = least recently used
+"""
+
+from __future__ import annotations
+from typing import Any, Optional
+
+
+class _Node:
+    """A

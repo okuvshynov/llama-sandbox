@@ -4,16 +4,30 @@ Goal: `./ds-completion -m <model> -p "prompt"`. One model, one machine, one
 sequence. Priorities: correctness, clarity, then performance. Non-goals: other
 models, other quants, other hardware, serving features.
 
-Status, 2026-10-27:
+Status, 2026-10-29 (sclk 2, 16 CPU threads; details in [OVERVIEW.md](OVERVIEW.md)):
 
-- CPU only: 3.5 t/s decode, matching the reference (fork: 3.5 t/s).
-- Dense part on one GPU through ggml, routed experts on the CPU: 6.0 t/s.
-- Own decode runtime on one GPU (exact fp8, deterministic), routed experts on the CPU with
-  our own exact kernel: **9.7-9.9 t/s**. The CPU experts are 2/3 of every step.
+- CPU only: 3.5 t/s decode, matching the reference (the llama.cpp fork: 3.5 t/s).
+- Own GPU runtime (exact fp8, deterministic), routed experts on the CPU: ~12 t/s.
+- The most-used experts placed on the 4 GPUs (`--placement placements/study30.txt`): 17.7-21.7 t/s.
+- Speculative decoding with the DSpark draft (`--dspark ... --spec`): +7% to +33% on held-out
+  prompts, output byte-identical to plain greedy decoding.
+- In progress: an adaptive expert cache (PLAN.md "Adaptive expert cache"); phases 0-2 done
+  (steps 28-30), placement-invariant numerics in the runtime (`--canon`, step 31).
 
-Performance work from here on is planned in [PLAN.md](PLAN.md). The short version of how to run
-it and what it does now: [QUICKSTART.md](QUICKSTART.md).
-Operand types and accumulation: [NUMERICS.md](NUMERICS.md). A 20-minute overview: [OVERVIEW.md](OVERVIEW.md).
+How to run it: [QUICKSTART.md](QUICKSTART.md). Plans and cost models: [PLAN.md](PLAN.md).
+Operand types and accumulation: [NUMERICS.md](NUMERICS.md). A 20-minute overview:
+[OVERVIEW.md](OVERVIEW.md). How the work was approached, decision by decision:
+[PROCESS.md](PROCESS.md). How to rebuild the setup and rerun every result:
+[REPRODUCE.md](REPRODUCE.md).
+
+## Docs and commits
+
+Every commit that changes code, scripts or results updates, in the same commit: this file (a
+step: what was done and measured), PROCESS.md (the question, prediction, result and decision),
+REPRODUCE.md (new scripts and results and what produces them), and QUICKSTART.md / OVERVIEW.md /
+PLAN.md when what they say changed. New result files start with a `#` header naming the command
+or script, the commit, the clock level and the date. (The rule for the assistant is in the
+sandbox's CLAUDE.md.)
 
 ## Tools
 
@@ -1422,3 +1436,41 @@ all, as the cache would, while decoding the 8 held-out prompts (study30):
 (The spec outputs differ from the plain ones here: without the draft, die 0 holds 1,296 experts
 instead of 871, a different placement; the gate compares runs with the draft loaded, step 19.
 The canonical numerics of step 28 remove this.)
+
+## Step 31: placement-invariant numerics in the runtime (cache plan, phase 3a)
+
+`--canon` makes the runtime's output independent of where the routed experts run, so an
+adaptive cache (whose contents depend on timing) cannot change it.
+
+- **Rows instead of partial sums.** Today each die and the CPU pre-sum their own experts, so the
+  result depends on the split. With `--canon` every expert writes its own output row: on a die
+  `fp4_moe_canon_rows` (the phase-0 kernels, now for chunks of tokens: grid over token and
+  expert; rows compact per die), on the CPU `CpuMoeKernel::forward_canon_rows`. Both give the
+  same bits (`bench-fp4-moe`: 0 of 5,120 differ).
+- **One sum in a fixed order.** The dispatch also records, for each token's router rank, which
+  place runs it and its index there; `k_moe_combine` adds shared + the 6 rows in rank order
+  (`__fadd_rn`), finding each row from the dispatch counts.
+- **Copies sized exactly.** The host already waits for the dispatch lists (for the CPU's work),
+  so it enqueues each die's copy back with the exact number of rows, about the same bytes as
+  the fast path's one partial sum per token.
+- **Cost of the GPU kernel:** batching over experts (each expert's down projection in parallel
+  instead of a loop) brought the canonical expert block from +13% to +2% over the fast kernel
+  (287 vs 283 us per layer, 6 experts). The end-to-end cost on the held-out prompts is being
+  measured (`scripts/canon-speed.sh` -> `results/canon-speed.txt`).
+- **The fast path is unchanged** (the default; same output as before, checked on a 300-token
+  run against `results/spec-sclk/out2`).
+
+Gate (`scripts/canon-gate.sh`, `results/canon-gate.txt`, 128 tokens, 3 prompts): with `--canon`,
+every configuration gives the same output bytes:
+
+| configuration | tcp-udp | py-lru | zh-travel |
+|---|---|---|---|
+| no placement (all experts on the CPU) | reference | reference | reference |
+| study30 | same | same | same |
+| oracle placement (code-rust's) | same | same | same |
+| study30 on dies 1-3 only | same | same | same |
+| study30 + draft, `--spec` (die 0 holds fewer experts) | same | same | same |
+| oracle + draft, `--spec --spec-n 5` | same | same | same |
+
+So with `--canon`, speculative decoding also equals plain decoding *without* the draft loaded,
+which was impossible before (the draft's memory changes the placement, step 19).

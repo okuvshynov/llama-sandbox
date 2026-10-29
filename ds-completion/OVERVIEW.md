@@ -168,10 +168,12 @@ win depends on how many guesses are right (2 per step on chat, 4 on code).
 
 ## 7. What is next
 
-1. **Adaptive expert cache:** start from the study's placement and load missed experts into GPU
-   memory in the background (LRU). Simulated: ~95% hits with ~11 loads per token, ~23 t/s
-   plain. With speculation it is worth more: CPU misses are 40% of a verify step, and a perfect
-   placement took code from 21.7 to 40.8 t/s. Pinned staging is in place (uploads 18.6 GB/s).
+1. **Adaptive expert cache** (in progress, README steps 28-31): start from the study's placement
+   and keep the most-used experts in GPU memory, loading them in the background. Done so far:
+   expert numerics that give the same bits on any die or the CPU (`--canon`, so the cache cannot
+   change the output); a simulation (held-out `--spec` ~19 -> ~29 t/s at 100 loads/s, with
+   frequency-based rebalancing rather than LRU); the load path (~1% cost at 100 loads/s). Next:
+   the cache manager.
 2. **The rest of a verify step:** fp8 projections over 64-lane rows are still ~2x one token at
    6 tokens; the router's 6 top-k launches; attention core per token.
 3. **The ~35 ms floor:** a higher GPU clock (free, if the power is acceptable), fusing the router

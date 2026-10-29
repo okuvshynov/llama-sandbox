@@ -25,8 +25,10 @@ class CpuMoeKernel {
   CpuMoeKernel(int n_embd, int n_ff, int k_max, int n_threads);
   // x [n_embd] (f32, not yet quantized), ids/w [k] -> y [n_embd]
   void forward(const CpuExperts& L, const float* x, const int* ids, const float* w, int k, float* y);
-  // the same in the placement-invariant numerics (canon_dot.h; PLAN.md "Adaptive expert cache"
-  // phase 0): prototype
+  // the same in the placement-invariant numerics (canon_dot.h; PLAN.md "Adaptive expert cache"):
+  // every expert's output row [k][E] (bit-identical to fp4_moe_canon_rows' on a GPU), or their sum
+  // in expert order
+  void forward_canon_rows(const CpuExperts& L, const float* x, const int* ids, const float* w, int k, float* rows);
   void forward_canon(const CpuExperts& L, const float* x, const int* ids, const float* w, int k, float* y);
   // control for the benchmark: the same tasks and rows, only reading the bytes
   uint64_t touch(const CpuExperts& L, const int* ids, int k);

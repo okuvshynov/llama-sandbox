@@ -65,6 +65,11 @@ Options:
 - `--spec`: speculative decoding (needs `--dspark`); the number of guesses verified per step
   is chosen from the draft's confidence. `--spec-n N` fixes it; `--spec-log FILE` writes
   per-step data.
+- `--canon`: placement-invariant expert numerics: the output no longer depends on where the
+  experts run (any placement, any `--moe-dies`, with or without the draft give the same bytes);
+  slower expert kernels. Needed by the adaptive expert cache (in progress).
+- `--load-test R [--load-pinned]`: a measurement aid: loads random experts into spare GPU slots
+  at R loads/s in the background, as the cache would (README step 30); output unchanged.
 
 Without `--rt` (or with `bin/ds-completion`) everything runs on the CPU.
 

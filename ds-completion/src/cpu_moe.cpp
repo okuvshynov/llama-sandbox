@@ -98,6 +98,15 @@ CpuMoeKernel::CpuMoeKernel(int n_embd, int n_ff, int k_max, int nt) : E(n_embd),
 }
 
 void CpuMoeKernel::forward_canon(const CpuExperts& L, const float* x, const int* ids, const float* w, int k, float* y) {
+  forward_canon_rows(L, x, ids, w, k, down_out.data());
+  for (int i = 0; i < E; i++) {
+    float v = 0.0f;
+    for (int j = 0; j < k; j++) v += down_out[(size_t)j * E + i];
+    y[i] = v;
+  }
+}
+
+void CpuMoeKernel::forward_canon_rows(const CpuExperts& L, const float* x, const int* ids, const float* w, int k, float* rows) {
   constexpr int CH = 32;  // rows per task
   canon_act(x, E, x_c);
   const size_t gu_row = L.gate->nb[1], d_row = L.down->nb[1];
@@ -124,13 +133,7 @@ void CpuMoeKernel::forward_canon(const CpuExperts& L, const float* x, const int*
 #pragma omp for schedule(static)
     for (int t = 0; t < d_tasks; t++) {
       const int per = E / CH, j = t / per, c = t % per;
-      canon_dot_rows(expert_base(L.down, ids[j]), d_row, act_c[j], c * CH, (c + 1) * CH, down_out.data() + (size_t)j * E);
-    }
-#pragma omp for schedule(static)
-    for (int i = 0; i < E; i++) {
-      float v = 0.0f;
-      for (int j = 0; j < k; j++) v += down_out[(size_t)j * E + i];
-      y[i] = v;
+      canon_dot_rows(expert_base(L.down, ids[j]), d_row, act_c[j], c * CH, (c + 1) * CH, rows + (size_t)j * E);
     }
   }
 }

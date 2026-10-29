@@ -248,8 +248,13 @@ Phases:
    direct copies from the registered mmap (registration ~40 s, in the background), at most 2
    matrices in flight per loader, blocking waits. ~1,400 loads/s possible; live cost with
    `--spec` -1.1% at 100 loads/s, -5.2% at 200 (pinned: -9.0% at 100); output unchanged.
-3. **Cache manager on the host:** LRU per die, warm-started from study30; new experts placed so
-   each layer stays spread over the dies. Table changes at step boundaries only: an evicted
+3. **Cache manager on the host.** 3a **done** (README step 31): `--canon` in the runtime, each
+   expert writes its own row on any die or the CPU, one kernel sums shared + rows in router-rank
+   order; the same output bytes with no placement, study30, an oracle placement, dies 1-3 only,
+   and `--spec` at two placements. 3b **next**: the manager itself, with the policy of phase 1
+   (frequency rebalance: every 16 tokens the most-used non-resident experts of the last 256
+   replace the least-used residents) at a load rate in loads/s, warm-started from study30; new
+   experts placed so each layer stays spread over the dies. Table changes at step boundaries only: an evicted
    expert leaves the table before its slot is overwritten; a slot is overwritten only after
    the work that may read it (an event per die); a loaded expert is published only when its
    copy and unpack are done.

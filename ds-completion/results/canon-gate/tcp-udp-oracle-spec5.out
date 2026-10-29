@@ -1,0 +1,11 @@
+# TCP vs UDP: Key Differences and Use Cases
+
+## Core Differences
+
+| Aspect | TCP | UDP |
+|--------|-----|-----|
+| **Connection** | Connection-oriented (3-way handshake) | Connectionless |
+| **Reliability** | Guaranteed delivery, ordering, and integrity | Best-effort; no guarantees |
+| **Error handling** | Retransmits lost packets, checksums | Checksums only; drops bad packets |
+| **Ordering** | Packets reassembled in order | No ordering guarantee |
+| **Flow/Congestion control** | Yes (windowing, slow start, etc
