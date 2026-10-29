@@ -238,6 +238,12 @@ Each rule is followed by where it mattered most.
   way:** the per-layer tool silently skipped most columns of a `--keep-last` golden in runtime
   mode (blank cells, not wrong numbers); fixed before reading any result.
 
+- **Q (the person's):** a short prompt that reasons for long: can it come from a file, and is
+  the reasoning effort controlled? **Found:** the official encoding takes an effort of 1-100
+  (default 75, the value `--think` had fixed). **Done:** `-f` and `--effort`, checked against
+  `encode_messages` (same tokens). **Noted:** a slow first prompt after a memory-heavy job is the
+  model's pages coming back from disk, not the runtime (README step 36).
+
 ## 4. Predictions against outcomes
 
 Estimates were made before measuring wherever possible; this is how they fared.

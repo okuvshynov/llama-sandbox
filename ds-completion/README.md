@@ -1657,3 +1657,15 @@ pick falls where the reference could not pick at all (no visibility or masking b
 Tooling fixed on the way: `ds-test --runtime` compared the prompt step only for goldens that keep
 every position (with `--keep-last` it skipped all but h_in: each key now uses its own kept rows);
 `ds-test --max-ctx` (default 65,536 with `--runtime`, as `ds-completion`).
+
+## Step 36: prompts from a file, and the reasoning effort
+
+`-f prompt.txt` reads the prompt from a file (as is). `--effort N` sets `--think`'s reasoning
+effort, 1-100 or `low` / `high` / `max` (50 / 75 / 100); until now it was fixed at 75, the
+official default. The prompt string is the one `encoding/encoding.py` builds
+(`encode_messages(..., thinking_mode="thinking", reasoning_effort=...)`): for a one-line question
+at `--effort max`, 39 tokens on both sides. First long-reasoning run (the person's, not logged;
+`--spec --canon --cache-loads 200`, sclk 6, effort max): 9,813 tokens of reasoning and answer at
+31.7 t/s. Its prompt took 5 minutes for 192 tokens because the model's pages had been evicted by
+the step 35 reference runs (~500 GB) and were read from disk on first use; warm, the prompt runs
+at its usual ~15 t/s.

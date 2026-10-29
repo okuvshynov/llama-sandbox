@@ -1,12 +1,13 @@
 // ds-completion: DeepSeek-V4.1-Flash text completion.
 //
-//   ds-completion -m <model-00001-of-000NN.gguf> -p "prompt" [--chat | --think] [-n 128]
+//   ds-completion -m <model-00001-of-000NN.gguf> (-p "prompt" | -f prompt.txt) [--chat | --think [--effort 75]] [-n 128]
 //                 [-t 16] [--no-quant] [--max-ctx 4096]
 //                 [--rt <dense-fp8.gguf> [--gpu D] [--placement file [--moe-dies 0,1,2,3] [--load-test R [--load-pinned]] [--cache-loads R [--cache-period N] [--cache-window N] [--cache-wait]]] [--canon] [--profile]]
 //
 // The prompt is fed as one chunk (prefill), then one token per step, greedy. --chat wraps the
 // prompt as one user turn in the model's chat format without thinking, --think with it (the
-// strings encoding/encoding.py produces); otherwise the prompt is raw text after BOS.
+// strings encoding/encoding.py produces; --effort is its reasoning effort, 1-100, default 75);
+// otherwise the prompt is raw text after BOS. -f reads the prompt from a file.
 // Only the tokenizer comes from libllama (vocab-only load).
 // Without --rt: everything on the CPU through the ggml Engine (forward.cpp), the prompt as one
 // chunk. --rt <dense-fp8.gguf> (bin-hip build): every token through the own runtime (hip/rt.h:
@@ -53,6 +54,7 @@ static std::string piece(const llama_vocab* v, int32_t tok) {
 int main(int argc, char** argv) {
   std::string model_path, prompt, mode = "raw", rt_path;
   int n_predict = 128;
+  int effort = 75;  // --think's reasoning effort (encoding.py's default)
   Options opt;
   [[maybe_unused]] int gpu = 0;
   [[maybe_unused]] bool profile = false;
@@ -75,6 +77,20 @@ int main(int argc, char** argv) {
     auto next = [&] { if (i + 1 >= argc) { fprintf(stderr, "missing value for %s\n", a.c_str()); exit(2); } return argv[++i]; };
     if (a == "-m") model_path = next();
     else if (a == "-p") prompt = next();
+    else if (a == "-f") {  // the prompt from a text file, as is (trailing newline included)
+      const char* path = next();
+      FILE* f = fopen(path, "rb");
+      if (!f) { fprintf(stderr, "cannot read %s\n", path); return 1; }
+      prompt.clear();
+      char buf[65536];
+      for (size_t n; (n = fread(buf, 1, sizeof buf, f)) > 0;) prompt.append(buf, n);
+      fclose(f);
+    }
+    else if (a == "--effort") {  // --think: 1-100, or low / high / max (encoding.py: 50 / 75 / 100)
+      const std::string e = next();
+      effort = e == "low" ? 50 : e == "high" ? 75 : e == "max" ? 100 : atoi(e.c_str());
+      if (effort < 1 || effort > 100) { fprintf(stderr, "--effort: 1-100, low, high or max\n"); return 2; }
+    }
     else if (a == "--chat") mode = "chat";
     else if (a == "--think") mode = "think";
     else if (a == "-n") n_predict = atoi(next());
@@ -104,7 +120,7 @@ int main(int argc, char** argv) {
     else { fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
   }
   if (model_path.empty() || prompt.empty()) {
-    fprintf(stderr, "usage: ds-completion -m <model.gguf> -p \"prompt\" [--chat|--think] [-n N] [-t N] [--no-quant] [--max-ctx N] [--rt dense-fp8.gguf [--gpu D] [--placement file [--moe-dies 0,1,2,3] [--load-test R [--load-pinned]] [--cache-loads R [--cache-period N] [--cache-window N] [--cache-wait]]] [--canon] [--profile]]\n");
+    fprintf(stderr, "usage: ds-completion -m <model.gguf> (-p \"prompt\" | -f prompt.txt) [--chat|--think [--effort 1-100|low|high|max]] [-n N] [-t N] [--no-quant] [--max-ctx N] [--rt dense-fp8.gguf [--gpu D] [--placement file [--moe-dies 0,1,2,3] [--load-test R [--load-pinned]] [--cache-loads R [--cache-period N] [--cache-window N] [--cache-wait]]] [--canon] [--profile]]\n");
     return 2;
   }
 
@@ -121,8 +137,9 @@ int main(int argc, char** argv) {
   std::string text;
   if (mode == "chat") text = bos + "<｜User｜>" + prompt + "<｜Assistant｜></think>";
   else if (mode == "think")
-    text = bos + "<｜System｜>Reasoning Effort: 75 (range 1-100, the higher the value, the more thorough the reasoning)\n\n<｜User｜>" +
-           prompt + "<｜Assistant｜><think>";
+    text = bos + "<｜System｜>Reasoning Effort: " + std::to_string(effort) +
+           " (range 1-100, the higher the value, the more thorough the reasoning)\n\n<｜User｜>" + prompt +
+           "<｜Assistant｜><think>";
   else text = bos + prompt;
   std::vector<int32_t> toks = tokenize(vocab, text);
   // the GPU runtime defaults to the model's original training context (YaRN extends it 16x, to

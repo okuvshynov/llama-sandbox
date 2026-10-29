@@ -50,8 +50,10 @@ bin-hip/ds-completion -m $M --rt ~/llms/ds-1017-fp8/dense-fp8.gguf \
 
 Options:
 
+- `-p "text"` or `-f prompt.txt`: the prompt, inline or from a file (as is).
 - `--chat`: one user turn, no thinking.
-- `--think`: with thinking.
+- `--think`: with thinking. `--effort N`: its reasoning effort, 1-100 (default 75), or `low` /
+  `high` / `max` (50 / 75 / 100), as the official encoding; the model card's benchmarks use 100.
 - neither: the prompt is raw text after BOS.
 - `-n`: max new tokens.
 - `-t`: CPU threads; the default 16 (one per physical core) is best with `--rt`. 32 leaves no
