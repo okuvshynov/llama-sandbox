@@ -212,6 +212,12 @@ Each rule is followed by where it mattered most.
   and the candidate-block pre-filter (>16k) is missing. **Decided:** long context before any
   cache tuning (PLAN "Long context").
 
+- **Q (the person's):** with the cache and speculation, where does a step go now? **Measured**
+  (6-token verify steps, sclk 8): the dense part ~64%, CPU experts ~20% (77.6 -> 24.8 ms), the
+  draft ~10%, GPU experts ~3% visible. **Decided:** record the next levers by part (PLAN
+  "Further optimization ideas": cache tuning, the dense part and TP, speculation, the draft),
+  then long context first.
+
 ## 4. Predictions against outcomes
 
 Estimates were made before measuring wherever possible; this is how they fared.

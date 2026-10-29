@@ -167,6 +167,29 @@ plus the draft, ~12 ms (at sclk 8 the GPU parts shrink ~25%; the CPU misses do n
 One token alone costs ~50 ms, so 6 tokens verified cost ~3.4x one; the
 win depends on how many guesses are right (2 per step on chat, 4 on code).
 
+With the adaptive cache (`--canon --cache-loads 200`, sclk 8; README step 33,
+`results/verify-breakdown.txt`), the dense part is now most of a verify step:
+
+| ms per verify step (6 tokens) | static study30 | + cache 200/s |
+|---|---|---|
+| **CPU experts** (the GPU waiting for them) | **77.6** | **24.8** |
+| (host CPU expert compute, partly overlapped) | 85.4 | 32.3 |
+| (expert uses per step on GPU / CPU) | 1,156 / 284 | 1,348 / 92 |
+| **GPU experts** (visible part; the rest overlaps the shared expert) | 2.9 | 4.2 |
+| attention: core (per token, in order) | 15.8 | 15.9 |
+| attention: output projection | 11.1 | 11.2 |
+| attention: q, indexer, compressor, kv | 15.0 | 15.2 |
+| shared expert | 13.4 | 14.4 |
+| router + dispatch + sum (per layer) | 10.5 | 10.6 |
+| hyper-connections | 4.7 | 4.7 |
+| output head | 3.7 | 3.7 |
+| engram | 14.6 (cold table pages; ~3 warm) | 2.8 |
+| **step** | **172.4** (~160 warm) | **110.8** |
+| draft (separate) | 8.8 | 11.6 |
+
+Per verify step plus draft (~122 ms): dense part ~64%, CPU experts ~20%, draft ~10%, GPU
+experts ~3% visible.
+
 ## 7. What is next
 
 1. **Long context** (PLAN.md "Long context"): the runtime stops at 4,096 tokens; the model

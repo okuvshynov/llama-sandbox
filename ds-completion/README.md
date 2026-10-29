@@ -1530,3 +1530,32 @@ misses do not scale with it): the cache turned CPU misses into GPU work.
   are 1-3 and noisy. Hysteresis (a newcomer must beat its victim by a margin) is the tuning
   item (PLAN phase 4, deferred until after long context).
 - The full placement-invariance gate (`scripts/canon-gate.sh`) passes again on this code.
+
+## Step 33: where a verify step goes with the cache
+
+`results/verify-breakdown.txt`: 6-token verify steps (`--spec-n 5 --profile`), `--canon`,
+sclk 8, the concurrency prompt (chat), medians of the second half of a 256-token run:
+
+| ms per verify step (6 tokens) | static study30 | + cache 200/s |
+|---|---|---|
+| **CPU experts** (the GPU waiting for them) | **77.6** | **24.8** |
+| (host CPU expert compute, partly overlapped) | 85.4 | 32.3 |
+| (expert uses per step on GPU / CPU) | 1,156 / 284 | 1,348 / 92 |
+| **GPU experts** (visible part; the rest overlaps the shared expert) | 2.9 | 4.2 |
+| attention: core (per token, in order) | 15.8 | 15.9 |
+| attention: output projection | 11.1 | 11.2 |
+| attention: q, indexer, compressor, kv | 15.0 | 15.2 |
+| shared expert | 13.4 | 14.4 |
+| router + dispatch + sum (per layer) | 10.5 | 10.6 |
+| hyper-connections | 4.7 | 4.7 |
+| output head | 3.7 | 3.7 |
+| engram | 14.6 (cold table pages; ~3 warm) | 2.8 |
+| **step** | **172.4** (~160 warm) | **110.8** |
+| draft (separate) | 8.8 | 11.6 |
+
+With the cache, a verify step plus its draft is ~122 ms: **the dense part ~78 ms (~64%)**, CPU
+experts ~25 ms (~20%), the draft ~12 ms (~10%), GPU experts ~4 ms visible (~3%). Before the
+cache the CPU experts were nearly half. So the next levers are the dense part of a verify step
+(attention ~42 ms, of which the core runs token by token; the shared expert's fp8 GEMVs ~2x one
+token at 6; the per-layer routing with 6 top-k launches), then the remaining CPU misses, then the
+draft. The ideas are collected in PLAN.md "Further optimization ideas".

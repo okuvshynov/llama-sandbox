@@ -1,0 +1,8 @@
+# verify-step breakdown with the cache: ds-completion -p "Explain the difference between concurrency and parallelism" --chat -n 256 --rt $F8 --placement placements/study30.txt --dspark $D --spec --spec-n 5 --canon --profile [--cache-loads 200 --cache-wait]; commit 5ec0716, sclk 8, 2026-10-28T23:44:03-04:00
+# medians of the second half of the run (46 verify steps of 6 tokens each); GPU timeline groups in ms; the static run went first (its engram.fetch read cold table pages)
+== static: generation: 256 tokens in 16.56 s = 15.46 t/s | routed experts: 80.0% on GPUs (108242 of 135360) | draft 8.8 ms per step
+step 172.4 ms; host CPU expert compute 85.4 ms; expert uses per step gpu 1156 cpu 284
+  ffn.wait_for_cpu_experts 77.6  attn.core 15.8  ffn.shared 13.4  engram.fetch 13.3  attn.out 11.1  ffn.router 7.7  attn.q 5.0  hc 4.7  attn.indexer 4.5  attn.compressor 4.2  head 3.7  ffn.wait_for_gpu_experts 2.9  ffn.dispatch 2.2  attn.kv 1.3  engram 1.3  ffn.add 0.6
+== cache: generation: 256 tokens in 12.43 s = 20.60 t/s | routed experts: 90.4% on GPUs (122404 of 135360) | draft 11.6 ms per step
+step 110.8 ms; host CPU expert compute 32.3 ms; expert uses per step gpu 1348 cpu 92
+  ffn.wait_for_cpu_experts 24.8  attn.core 15.9  ffn.shared 14.4  attn.out 11.2  ffn.router 7.9  attn.q 5.2  hc 4.7  attn.indexer 4.5  ffn.wait_for_gpu_experts 4.2  attn.compressor 4.2  head 3.7  ffn.dispatch 2.2  engram.fetch 1.5  engram 1.3  attn.kv 1.3  ffn.add 0.5

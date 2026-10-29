@@ -33,7 +33,7 @@ Speed
 | 14 | HIP graphs + kernel fusion (D) | started | engram per step + experts mapped at load done (~1%); graphs save little on this ROCm, fusion ~37 -> ~22 launches per layer for ~2-3 ms (README step 12) |
 | 15 | Per-layer expert split, CPU and all dies concurrently (A1/EP) | done | `--placement`: fixed set from the study; 17.7-21.7 t/s (README steps 14-18) |
 | 15a | Expert path fixes: no die waits for the host; faster small-count kernel; 16 threads | done | oracle bound 16 -> ~25 t/s (README steps 15-18) |
-| 16 | Adaptive expert cache (A1 + A2) | next | start from the study30 set, load missed experts into HBM in the background (LRU): ~95% hits at 128 GB, est. ~23 t/s; needs pinned staging first (loads ~4.8 GB/s) |
+| 16 | Adaptive expert cache (A1 + A2) | done; tuning planned | `--canon --cache-loads R`: frequency rebalance, held-out `--spec` +28% at sclk 2 (25.6 t/s), 29.1 at sclk 8, outputs identical (README steps 28-33); tuning: "Further optimization ideas" A |
 | 17 | Tensor parallelism, 2-way then 4-way (C1/C2) | planned | split the dense GEMVs over dies: ~-6..10 ms per step, matters once experts are mostly on GPUs |
 | 18 | Shared expert by TP, routed by EP (C4) | planned | the dense shared expert splits like any other GEMV under TP |
 | 19 | DSpark speculative decoding (E1) | done | `--dspark ... --spec`, output identical to plain greedy; held-out prompts +7% to +33% (geometric mean +22%), oracle placement +19% / +71% (README steps 19-26) |
@@ -44,6 +44,7 @@ Speed
 | 23 | Weight interleaving for TP (C3) | idea | lay out weights so each die's slice is contiguous |
 | 24 | fp8 output head | idea | halves the 2.3 ms head, but is no longer exact vs the reference |
 | 25 | Clock level by phase | idea | sclk 4-6 for decode with CPU experts, 8 once GPU experts dominate |
+| 30 | Further optimization ideas (2026-10-29) | ideas | cache tuning, the dense part of a verify step and TP, speculation tuning, a faster draft: see the section below |
 
 Features and limits
 
@@ -298,6 +299,55 @@ work, so phase 5 should measure sclk 2 and 8 again.
 Risks: the CPU kernel's speed under A; memory bandwidth (loads + CPU misses share ~112 GB/s);
 PCIe shared with the per-layer staging copies; hit rate under speculation below the
 simulation's 95% (rejected drafts, late loads).
+
+## Further optimization ideas (2026-10-29)
+
+From the verify-step breakdown with the cache (README step 33: per verify step + draft ~122 ms
+at sclk 8: dense part ~64%, CPU experts ~20%, draft ~10%, GPU experts ~3% visible). Brief; each
+needs its own measurement first. Order: after "Long context".
+
+**A. Tuning the expert cache** (the CPU experts' ~25 ms)
+- Hysteresis: a newcomer must beat its victim by a margin, so the cache settles in long runs
+  instead of churning at the noisy boundary; window length / decayed counts; the default rate
+  (100-200 loads/s). Simulate first (`scripts/cache_sim.py`), then live.
+- Place newcomers so each layer stays spread over the dies (today a newcomer takes its victim's
+  slot).
+- More slots: compressed caches in fp8/fp4 (part of "Long context") and anything else freed on
+  die 0.
+- The fast path's CPU preparation on one thread (the fix the canonical path got: -14 to -22% at
+  1-2 experts); the CPU's fixed per-layer latency (wake-up, event waits).
+- Hardware (discussed, not planned): DDR5 or a multi-socket box with experts striped by rows
+  across sockets (exact under the canonical numerics).
+
+**B. The dense part of a verify step** (~78 ms)
+- Attention core batched over the chunk's tokens (~16 ms, today token by token in order).
+- The router's per-token top-k (6 launches per layer) as one launch; router + dispatch fusion
+  (item 22a); the per-layer routing is ~11 ms.
+- fp8 GEMVs over 64-lane rows at 6 tokens are still ~2x one token (attention output, shared
+  expert ~25 ms together): more rows per wave / tile reuse.
+- Kernel fusion of the small ops (hc, norms, quantize): item 14.
+- Tensor parallelism (items 17, 18, 23): attention projections and the shared expert split over
+  the XGMI pair 0-1 (dies 2-3 through host memory, so likely not); worth it once the above is
+  done, since it adds two all-reduces per layer.
+
+**C. Tuning speculation**
+- The draft-length rule refits its verify-cost line online, so with the cache it already sees
+  cheaper verifies; check that it now picks longer drafts and whether the backoff still pays.
+- A tiny tree (top-2 at the first draft slot): the sandbox's offline study (`dspark-tree`, on
+  V4-Flash) found trees buy little (+0.2 accepted tokens for one extra draft token, +0.7 for 25x
+  the budget), so only the smallest trees are worth a test.
+- Per-prompt-type expectations: code accepts ~2x more than chat; nothing to tune, but the
+  held-out mix decides the average.
+
+**D. A faster draft** (~12 ms per step: 3 layers, dense BF16, 128 experts top-3, on die 0)
+- fp8 for the draft's dense weights if the release is fp8 (an exact repack, as the main model).
+- Fewer launches (its per-layer kernels are small and latency-bound); its experts are already
+  on GPU 0.
+- Overlap: start drafting on another die as soon as layer 39's states of the accepted prefix
+  exist, next to the main model's head and argmax (a few ms); or draft ahead assuming every
+  draft is accepted, kept only if it was.
+- TP does not fit a 3-layer latency-bound model; batching it with the verify (one forward for
+  both) is the bigger structural idea, and the hardest.
 
 ## Long context: plan (2026-10-29; before any further cache tuning)
 
