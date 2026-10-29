@@ -50,7 +50,7 @@ Features and limits
 
 | | item | status | one line |
 |---|---|---|---|
-| 26 | Context above 4096 with the runtime | done (gates in progress) | 65,536 by default, 1M with `--max-ctx`; see "Long context" below (README step 34) |
+| 26 | Context above 4096 with the runtime | done | 65,536 by default, 1M with `--max-ctx`; see "Long context" below (README step 34) |
 | 27 | Candidate-block selection (>16k tokens) | done (runtime) | the reference's layer-20 path, checked against its own function; the CPU path still stops at 16k |
 | 28 | Full 1017 checkpoint | waiting | download pending (user); needed for item 19 and exact safetensors refs |
 | 29 | Sampling beyond greedy | idea | temperature/top-p; a non-goal so far |
@@ -375,7 +375,11 @@ compressor groups, indexer top-512, engram, the draft's window. What is missing:
 4. **`--max-ctx` up to the full range.** **Done:** the runtime defaults to 65,536 (the original
    training context; ~420 MB on GPU 0), any value up to 1M with `--max-ctx`.
 5. **Gates.** (a) **done** (`ref/check_topk.py`: 46 of 46 cases, 513 to 1M positions); (b) and (c)
-   open. The Python reference runs one layer at a time on the CPU: a 20K-token golden run of
+   **done differently** (README step 35): the whole reference at 20,000 tokens took 42 minutes,
+   not a night, so the runtime was gated against it directly: per layer (teacher-forced) and end
+   to end (9/9 greedy, KL as at short context), and every indexer disagreement ranked against
+   the reference's own scores (near-ties). The CPU Engine still stops at 16k (not needed as a
+   second path any more). The original plan: The Python reference runs one layer at a time on the CPU: a 20K-token golden run of
    the whole model is very slow. Instead: (a) kernel-level checks of top-k and candidate blocks
    against the reference's functions on synthetic scores at 4K-1M candidates (bit-identical
    indices); (b) a teacher-forced per-layer gate at long positions for a few attention layers

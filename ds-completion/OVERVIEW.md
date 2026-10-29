@@ -195,8 +195,9 @@ experts ~3% visible.
 1. **Long context** (PLAN.md "Long context", README step 34): the runtime now runs past
    4,096 tokens (65,536 by default, 1M with `--max-ctx`): a top-k for any number of positions and
    the candidate-block pre-filter beyond 16k, both checked against the reference's own
-   functions; a 29.5k-token prompt decodes at 17.2 t/s. Left: compressed caches in fp8/fp4 (for
-   contexts far beyond 64k), an end-to-end gate at long positions, batched prompt processing.
+   functions; a 29.5k-token prompt decodes at 17.2 t/s; at 20k tokens the runtime gives the
+   reference's greedy tokens with short-context KL (step 35). Left: compressed caches in fp8/fp4
+   (for contexts far beyond 64k), batched prompt processing.
 2. **Adaptive expert cache, tuning** (README steps 28-32): built and working (`--canon
    --cache-loads R`: +28% with `--spec` at sclk 2, every output identical); left: the default
    rate, hysteresis so it settles in long runs, the fast path's CPU preparation (the same fix as

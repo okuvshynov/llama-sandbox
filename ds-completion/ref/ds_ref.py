@@ -224,9 +224,10 @@ class Recorder:
     inputs are always kept whole: teacher-forced layer tests rebuild the KV caches from them."""
     FULL = {"h_in", "pre_in", "engram_in"}
 
-    def __init__(self, model: ref.Transformer, keep_last: int = 0):
+    def __init__(self, model: ref.Transformer, keep_last: int = 0, scores: bool = False):
         self.layers = {}
         self.keep_last = keep_last
+        self.scores = scores
         for L, blk in enumerate(model.layers):
             self._hook_block(L, blk)
 
@@ -261,8 +262,28 @@ class Recorder:
         blk.ffn.gate.register_forward_hook(gate_out)
         if blk.attn.indexer is not None:
             blk.attn.indexer.register_forward_hook(lambda m, a, o: self._rec(L, "topk", o))
+            if self.scores:
+                self._hook_scores(L, blk.attn.indexer)
         if blk.engram is not None:
             blk.engram.register_forward_pre_hook(lambda m, a: self._rec(L, "engram_in", a[0]))
+
+    def _hook_scores(self, L, indexer):
+        """--scores: the scores the indexer hands to its top-k ("index_score" [s, n], after the
+        candidate mask; -inf = not selectable), recorded by catching that one topk call. Lets a
+        top-k disagreement be ranked against the reference's own scores (near-tie or not)."""
+        orig = torch.Tensor.topk
+
+        def topk(t, *args, **kw):
+            self._rec(L, "index_score", t.float())
+            return orig(t, *args, **kw)
+
+        def pre(m, a):
+            torch.Tensor.topk = topk
+
+        def post(m, a, o):
+            torch.Tensor.topk = orig
+        indexer.register_forward_pre_hook(pre)
+        indexer.register_forward_hook(post)
 
     def take(self):
         out, self.layers = self.layers, {}
@@ -293,6 +314,7 @@ def main():
     ap.add_argument("--threads", type=int, default=16)
     ap.add_argument("--prompt-tokens", type=int, default=0)
     ap.add_argument("--keep-last", type=int, default=0, help="see Recorder")
+    ap.add_argument("--scores", action="store_true", help="also record the indexer's scores (Recorder._hook_scores)")
     ap.add_argument("--fp32", action="store_true",
                     help="variant: activations in fp32 instead of the reference's bf16 (bf16 weights widened)")
     ap.add_argument("--no-quant", action="store_true",
@@ -361,7 +383,7 @@ def main():
             if p.dtype == torch.bfloat16:
                 p.data = p.data.float()
     install_lazy_experts(model, G, Gd, args.n_layers)
-    rec = Recorder(model, a.keep_last)
+    rec = Recorder(model, a.keep_last, a.scores)
 
     # the generate() loop of the reference, batch 1, greedy, recording every forward
     steps = []

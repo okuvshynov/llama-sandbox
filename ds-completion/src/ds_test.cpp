@@ -15,6 +15,7 @@
 //   ds-test -m <model> -g data/golden/hello --e2e data/ds/hello.f32
 //       End to end: the full forward on the reference's token sequence, the logits of every
 //       step written as [steps][n_vocab] f32 (compare with ref/compare_logits.py).
+//   --max-ctx N: capacity of the compressed caches (CPU 4096, runtime 65536 by default).
 //
 // Columns: relative L2 error ||ours - ref|| / ||ref|| of each recorded intermediate; "experts"
 // is the fraction of tokens whose 6 routed experts are the same set; "topk" the fraction of
@@ -116,6 +117,8 @@ int main(int argc, char** argv) {
   setvbuf(stdout, nullptr, _IOLBF, 0);
   std::string model_path, gdir, e2e, rt_path;
   bool determinism = false;
+  bool max_ctx_set = false;
+  FILE* topk_dump = nullptr;  // runtime: our indexer picks where the golden kept its own (ref/check_topk_ties.py)
   [[maybe_unused]] bool per_token = false;
   std::vector<int> layers;
   Options opt;
@@ -142,15 +145,18 @@ int main(int argc, char** argv) {
     else if (a == "--e2e") e2e = next();
     else if (a == "--runtime") rt_path = next();
     else if (a == "--determinism") determinism = true;
+    else if (a == "--max-ctx") max_ctx_set = true, opt.max_ctx = atoi(next());
+    else if (a == "--dump-topk") topk_dump = fopen(next(), "wb");
     else if (a == "--per-token") per_token = true;  // runtime: also a row per prompt token and layer
     else { fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
   }
   if (model_path.empty() || gdir.empty()) {
-    fprintf(stderr, "usage: ds-test -m <model> -g <golden dir> [--layers 0-39] [--no-quant] [-t N] [--e2e out.f32] [--runtime dense-fp8.gguf [--gpu D] [--placement file [--moe-dies 0,1,2,3]] [--per-token]]\n");
+    fprintf(stderr, "usage: ds-test -m <model> -g <golden dir> [--layers 0-39] [--no-quant] [-t N] [--e2e out.f32] [--max-ctx N] [--runtime dense-fp8.gguf [--dump-topk out.bin] [--gpu D] [--placement file [--moe-dies 0,1,2,3]] [--per-token]]\n");
     return 2;
   }
   Golden G;
   G.open(gdir);
+  if (!rt_path.empty() && !max_ctx_set) opt.max_ctx = 65536;  // as ds-completion --rt
   Model m;
   const int L_max = layers.empty() ? 39 : *std::max_element(layers.begin(), layers.end());
   std::vector<int> load;
@@ -286,25 +292,29 @@ int main(int argc, char** argv) {
             printf("  t%-3d %3d", t, L);
             for (int k = 0; k < n_keys; k++) {
               const GTensor* ref = G.get(s, L, keys[k]);
-              if (!ref || !tp.count(keys[k]) || (int64_t)tp[keys[k]].f.size() != ref->numel() / kept) { printf(" %9s", "-"); continue; }
-              const int64_t n = ref->numel() / kept;
+              const int rows = ref ? (int)ref->shape[0] : 0, rk = r - (kept - rows);
+              if (!ref || !tp.count(keys[k]) || rk < 0 || (int64_t)tp[keys[k]].f.size() != ref->numel() / rows) { printf(" %9s", "-"); continue; }
+              const int64_t n = ref->numel() / rows;
               double nu = 0, de = 0;
-              for (int64_t i = 0; i < n; i++) { const double d = tp[keys[k]].f[i] - ref->f()[r * n + i]; nu += d * d; de += (double)ref->f()[r * n + i] * ref->f()[r * n + i]; }
+              for (int64_t i = 0; i < n; i++) { const double d = tp[keys[k]].f[i] - ref->f()[rk * n + i]; nu += d * d; de += (double)ref->f()[rk * n + i] * ref->f()[rk * n + i]; }
               printf(" %9.2e", sqrt(nu / std::max(de, 1e-300)));
             }
             printf("\n");
           }
           a.ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
           for (int k = 0; k < n_keys; k++) {
+            // each key keeps its own rows: the block inputs all of them, the rest maybe the last few
             const GTensor* ref = G.get(s, L, keys[k]);
             if (!ref || !tp.count(keys[k])) continue;
-            const int64_t n = ref->numel() / kept;
+            const int rows = (int)ref->shape[0], rk = r - (kept - rows);
+            if (rk < 0) continue;
+            const int64_t n = ref->numel() / rows;
             const std::vector<float>& v = tp[keys[k]].f;
             if ((int64_t)v.size() != n) continue;
             for (int64_t i = 0; i < n; i++) {
-              const double d = v[i] - ref->f()[r * n + i];
+              const double d = v[i] - ref->f()[rk * n + i];
               a.num[k] += d * d;
-              a.den[k] += (double)ref->f()[r * n + i] * ref->f()[r * n + i];
+              a.den[k] += (double)ref->f()[rk * n + i] * ref->f()[rk * n + i];
             }
           }
           const GTensor* ri = G.get(s, L, "router_i");
@@ -328,6 +338,11 @@ int main(int argc, char** argv) {
             for (int v : x) inter += y.count(v);
             u = x;
             u.insert(y.begin(), y.end());
+            if (topk_dump) {  // (step, layer, row in the golden's topk, count, picks...), int32
+              const int32_t hdr[4] = {s, L, rt_k, (int32_t)x.size()};
+              fwrite(hdr, sizeof hdr, 1, topk_dump);
+              for (int v : x) { const int32_t vv = v; fwrite(&vv, 4, 1, topk_dump); }
+            }
             a.tk_eq += x == y;
             a.jac += u.empty() ? 1.0 : (double)inter / u.size();
             a.tk_n++;
@@ -355,6 +370,7 @@ int main(int argc, char** argv) {
         printf(" %7.0f\n", a.ms);
       }
     }
+    if (topk_dump) fclose(topk_dump);
     return 0;
   }
 #endif
@@ -426,5 +442,6 @@ int main(int argc, char** argv) {
     }
     eng.end_chunk();
   }
+  if (topk_dump) fclose(topk_dump);
   return 0;
 }

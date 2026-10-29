@@ -226,6 +226,18 @@ Each rule is followed by where it mattered most.
   to end: 7.4k and 29.5k-token prompts give accurate summaries at 17.5 / 17.2 t/s. **Open:** a
   numerical end-to-end gate past 16k needs a very long reference run.
 
+- **The long-context gate (README step 35).** **Predicted:** 6-10 h for a 20k-token reference
+  run (scaled from 22 minutes for 1,100 tokens). **Measured:** 42 minutes; the short run was
+  fixed cost. Memory was watched while it ran (it rose to ~500 GB: freed heap the allocator
+  kept, identified from the process's memory map, not a leak), with a guard to stop it before
+  the system ran out. **Result:** 9/9 greedy tokens, KL at the short-context level, per-layer
+  errors as at 1,100 tokens. The indexer overlap fell (0.97-0.99 -> 0.85-0.94); rather than
+  explain it away (at 1,100 tokens 512 of 550 were picked, so overlap was nearly free), the
+  reference was rerun recording its own scores, and every disagreement was ranked against them:
+  all just past the cutoff, gaps under 1% of the top-512 range in the median. **Caught on the
+  way:** the per-layer tool silently skipped most columns of a `--keep-last` golden in runtime
+  mode (blank cells, not wrong numbers); fixed before reading any result.
+
 ## 4. Predictions against outcomes
 
 Estimates were made before measuring wherever possible; this is how they fared.
@@ -242,6 +254,7 @@ Estimates were made before measuring wherever possible; this is how they fared.
 | load cost at 100 loads/s (30) | 2.7% (the simulation's pessimistic case) | ~1.1% with direct copies | |
 | canonical cost end to end (32) | ~5% (kernel benchmarks) | 9-11%, then 1-2% after two fixes | benchmarks used 6 experts; the runtime's CPU gets 1-2 |
 | cache, `--spec`, 100 loads/s (29 -> 32) | ~28.9 t/s, 87% hits (1,024 tokens, no canonical cost) | 24.5 t/s, 80% hits (300 tokens) | shorter runs adapt for a larger share of the run |
+| reference run, 20k tokens (35) | 6-10 h (scaled from 1,100 tokens) | 42 min | the 1,100-token run was mostly fixed cost |
 
 ## 5. Mistakes and how they were caught
 

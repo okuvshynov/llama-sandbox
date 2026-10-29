@@ -13,6 +13,9 @@ Status, 2026-10-29 (sclk 2, 16 CPU threads; details in [OVERVIEW.md](OVERVIEW.md
   prompts, output byte-identical to plain greedy decoding.
 - In progress: an adaptive expert cache (PLAN.md "Adaptive expert cache"); phases 0-2 done
   (steps 28-30), placement-invariant numerics in the runtime (`--canon`, step 31).
+- Long context: 65,536 tokens by default, up to 1M (step 34); gated against the reference at
+  20,000 tokens: same greedy tokens, KL as at short context, indexer differences are near-ties
+  (step 35).
 
 How to run it: [QUICKSTART.md](QUICKSTART.md). Plans and cost models: [PLAN.md](PLAN.md).
 Operand types and accumulation: [NUMERICS.md](NUMERICS.md). A 20-minute overview:
@@ -1603,6 +1606,54 @@ one token at a time: 29.5k tokens took 29 minutes (batched prompt processing, PL
 what fixes that). With `--canon`, the 65,536-token default leaves die 0 with 858 expert slots
 instead of 871, and the output is byte-identical to the canonical gate reference.
 
-Not done yet: compressed caches in fp8/fp4; an end-to-end numerical gate at long positions (the
-Python reference took 22 minutes for 1,100 prompt tokens, so a >16k run is an overnight job: PLAN
-"Long context" 5b/5c); speed against position beyond 30k.
+Not done yet: compressed caches in fp8/fp4; an end-to-end numerical gate at long positions
+(step 35); speed against position beyond 30k.
+
+## Step 35: the long-context gate against the reference (20,000 tokens)
+
+The reference run that was expected to take all night (22 minutes for 1,100 tokens) took 42
+minutes for 20,000: the 1,100-token run was dominated by fixed costs (materializing the experts
+of every layer), not by the tokens. Prompt: the first 20,000 tokens of this file at commit
+ddf9b43 (`prompts/ds-completion-readme-ddf9b43.md`, raw, no chat template), then 8 greedy tokens.
+That covers both new paths: layers 2-19 pick 512 of 10,000 positions (the old kernel held 4,096),
+layers 20-39 512 of 20,000, after layer 20 kept 2,048 of 2,500 candidate blocks. Peak memory of
+the reference: ~500 GB, mostly freed-but-kept heap (the block inputs it keeps are 34 GB).
+
+**End to end** (`ds-test --runtime --e2e`, `results/compare-readme20k-ref-vs-rt.txt`): argmax
+agrees on 9 of 9 steps (": batched hyper-connections, batched"), mean KL 2.2e-2 (hello, short
+context: 1.8e-2). The large KLs (4.6e-2, 6.0e-2, 7.8e-2) are the steps where the reference itself
+is unsure (top-1 probability 0.14-0.36); where it is sure, KL is 1e-6 to 5e-4.
+
+**Per layer, teacher-forced** (`results/rt-readme20k.txt`): attn_out errors 3-10e-2 at the
+prompt's last 32 positions and at every decode step, ffn_out 3-13e-2, the same levels as readme1100
+(3.6-7.6e-2; both against the real bf16 reference, whose own rounding sets the floor). Expert sets
+agree on 93% of decode layer-tokens (readme1100: 94%).
+
+**Indexer picks** overlap the reference's with Jaccard 0.85-0.94 (readme1100: 0.97-0.99). Not
+comparable: at 1,100 tokens layers 2-19 picked 512 of 550 positions, almost all of them. Whether
+the differences are near-ties was checked against the reference's own scores: `ds_ref.py
+--scores` records what each indexer hands to its top-k, `ds-test --dump-topk` our picks, and
+`ref/check_topk_ties.py` ranks every pick we make that the reference did not
+(`results/topk-ties-readme20k.txt`):
+
+| layer | Jaccard | extra picks per query | their rank in the reference's order: median / p99 / max | gap below its 512th score (fraction of its top-512 range): median / p99 / max | outside its candidate blocks |
+|---|---|---|---|---|---|
+| 2 | 0.907 | 24.9 | 547 / 738 / 890 | 0.1% / 0.9% / 1.3% | - |
+| 8 | 0.936 | 16.9 | 536 / 655 / 972 | 0.3% / 1.9% / 3.8% | - |
+| 14 | 0.941 | 15.6 | 533 / 672 / 776 | 0.5% / 3.1% / 5.6% | - |
+| 20 (source) | 0.923 | 20.4 | 540 / 692 / 996 | 0.5% / 2.5% / 4.2% | - |
+| 24 | 0.853 | 40.8 | 566 / 946 / 1428 | 0.3% / 1.8% / 3.2% | 92 of 1,632 |
+| 28 | 0.919 | 21.6 | 543 / 704 / 822 | 0.4% / 2.2% / 3.6% | 8 of 864 |
+| 32 | 0.914 | 23.1 | 544 / 731 / 997 | 0.6% / 3.5% / 6.0% | 10 of 924 |
+| 36 | 0.925 | 20.1 | 538 / 754 / 902 | 0.7% / 4.8% / 7.1% | 23 of 804 |
+
+(40 queries per layer: the prompt's last 32 positions and the 8 decode steps.) Every pick we make
+that the reference did not lies just past its cutoff (median rank 533-566 of 10,000-20,000), less
+than 1% of the top-512 range below its 512th score in the median: near-ties, which the reference's
+bf16 scores (32 heads summed in bf16) and our fp32 ones break differently. Before the consumers no
+pick falls where the reference could not pick at all (no visibility or masking bug); on layers
+24-36 a few do, the blocks layer 20 itself ranked differently near its 2,048-block cutoff.
+
+Tooling fixed on the way: `ds-test --runtime` compared the prompt step only for goldens that keep
+every position (with `--keep-last` it skipped all but h_in: each key now uses its own kept rows);
+`ds-test --max-ctx` (default 65,536 with `--runtime`, as `ds-completion`).

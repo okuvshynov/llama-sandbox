@@ -66,11 +66,11 @@ D=~/llms/dspark/dspark-DeepSeek-V4.1-Flash-1017-BF16.gguf
 
 Run from this directory (placement files are relative paths). How to run: [QUICKSTART.md](QUICKSTART.md).
 
-## 5. Data that is not in git (`data/`, ~14 GB)
+## 5. Data that is not in git (`data/`, ~14 GB; ~115 GB with the 20k-token run of README step 35)
 
 | directory | what | how to regenerate | cost |
 |---|---|---|---|
-| `data/ref/` | reference runs (`.pt`): the official model math on the CPU (`ref/ds_ref.py`) | `~/venvs/ds-ref/bin/python ref/ds_ref.py --prompt "..." --chat --n-decode 16 [--fp32] [--no-quant] --out data/ref/x.pt` (prompts: README step 2) | hours per prompt (one layer at a time) |
+| `data/ref/` | reference runs (`.pt`): the official model math on the CPU (`ref/ds_ref.py`) | `~/venvs/ds-ref/bin/python ref/ds_ref.py --prompt "..." --chat --n-decode 16 [--fp32] [--no-quant] --out data/ref/x.pt` (prompts: README step 2; the 20k-token run: step 35) | minutes to ~1 h (20k tokens: 42 min, ~500 GB of RAM, a 35 GB file) |
 | `data/golden/` | per-layer golden activations and logits for the gates | `ref/export_golden.py data/ref/x.pt data/golden/x` | minutes |
 | `data/ds/`, `data/llama/` | our and the fork's logits for the comparisons | `bin/ds-test ... --e2e`, `bin/llama-logits` (README steps 2-3) | minutes |
 | `data/fq/` | fake-quant test vectors | `ref/make_fq_test.py` | seconds |
@@ -120,6 +120,9 @@ Unless stated: sclk 2, 16 CPU threads (32 before README step 18), the study30 pl
 | 30 | `bench-expert-load.txt`, `load-test/` | `bin-hip/bench-expert-load -m $M`, `scripts/load-test.sh` |
 | 31-32 | `canon-gate.txt`, `canon-gate/` | `scripts/canon-gate.sh` (rerun for step 32) |
 | 34 | `check-topk.txt` | `~/venvs/ds-ref/bin/python ref/check_topk.py` (runs `bin-hip/test-topk`) |
+| 35 | `ref-readme20k.txt`, `ref-readme20k-scores.txt` | `ref/ds_ref.py --file prompts/ds-completion-readme-ddf9b43.md --prompt-tokens 20000 --n-decode 8 --max-seq-len 20480 --keep-last 32 [--scores]` (~42 min, ~500 GB peak), then `ref/export_golden.py` (only the `--scores` run is kept) |
+| 35 | `rt-readme20k.txt`, `rt-readme20k-e2e.txt`, `compare-readme20k-ref-vs-rt.txt` | `bin-hip/ds-test -m $M -g data/golden/readme20k-s --runtime $F8 --dump-topk data/ds/readme20k-topk.bin` (~35 min); `... -g data/golden/readme20k-s --runtime $F8 --e2e data/ds/readme20k-rt.f32`; `ref/compare_logits.py data/ref/readme20k-s.pt data/ds/readme20k-rt.f32` (the e2e and compare files name `readme20k`, the first run without `--scores`: bit-identical in every tensor it has, since deleted) |
+| 35 | `topk-ties-readme20k.txt` | `~/venvs/ds-ref/bin/python ref/check_topk_ties.py data/golden/readme20k-s data/ds/readme20k-topk.bin` |
 | 34 | `long-context/` | `bin-hip/ds-completion ... --max-ctx N -p "$(cat README.md) ..."` (commands in `long-context/summary.txt`) |
 | 33 | `verify-breakdown.txt` | `bin-hip/ds-completion ... --dspark $D --spec --spec-n 5 --canon --profile [--cache-loads 200 --cache-wait]` (command in the file's header), medians of the second half |
 | 32 | `cache-test/`, `cache-test-sclk8/` | `scripts/cache-test.sh` (at sclk 8: `scripts/cache-test.sh "spec fast static" "spec canon 200"`); the CPU kernel at 1, 2, 6 experts: `bin/bench-cpu-moe -m $M -t 16 --tokens 8 --check-layers 2 -k N` |
