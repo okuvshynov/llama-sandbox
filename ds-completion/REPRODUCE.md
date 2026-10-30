@@ -120,6 +120,8 @@ Unless stated: sclk 2, 16 CPU threads (32 before README step 18), the study30 pl
 | 30 | `bench-expert-load.txt`, `load-test/` | `bin-hip/bench-expert-load -m $M`, `scripts/load-test.sh` |
 | 31-32 | `canon-gate.txt`, `canon-gate/` | `scripts/canon-gate.sh` (rerun for step 32) |
 | 34 | `check-topk.txt` | `~/venvs/ds-ref/bin/python ref/check_topk.py` (runs `bin-hip/test-topk`) |
+| 39 | `prefill/bench-fp8-gemm.txt` | `bin-hip/bench-fp8 $F8 --gemm --ms 256 --sweep`, then `--gemm --ms 64,512` |
+| 39 | `prefill/gemm-e2e.txt` | `bin-hip/ds-completion ... -f results/prefill/gate/pN.txt -n 32 [--canon] [--prefill-chunk 1] [--profile]` (commands in the file) |
 | 38 | `prefill/overlap.txt` | `bin-hip/ds-completion ... -f results/prefill/gate/pN.txt -n 32 [--no-overlap] [--canon] [--profile]` (commands in the file) |
 | 37 | `prefill/gate.txt`, `prefill/gate/` | `scripts/prefill-gate.sh <baseline ds-completion>` (baseline: a build of commit 73b6891, token-by-token prompt) |
 | 37 | `prefill/profile.txt` | `bin-hip/ds-completion ... -f <prompt> -n 1 --profile --prefill-chunk N` (command and stages in the file) |

@@ -264,6 +264,13 @@ Each rule is followed by where it mattered most.
   the next gains need both (GPU kernels and CPU sharing). The restructuring kept every output
   identical (gate: with and without overlap, and canonical against the token-by-token build).
 
+- **fp8 matrix multiply (README step 39).** The constraint first: bit-identical results, so the
+  kernel keeps the GEMV's per-output order and is free only in tiling. A sweep, then two fixes
+  found by reading the kernel (idle lanes in short K tiles) and the compiler's resource report
+  (registers: pipelining made it slower). **Predicted** ~3 ms per prompt token saved on the GPU;
+  **measured** ~3.5 ms (34 -> 27 s), but end to end only +10%: with the GPU faster the CPU's
+  experts set the pace. Tuning the kernel further waits until the CPU side is faster.
+
 ## 4. Predictions against outcomes
 
 Estimates were made before measuring wherever possible; this is how they fared.

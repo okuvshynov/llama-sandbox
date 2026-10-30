@@ -655,6 +655,10 @@ void Runtime::quant(const float* xin, int n, Codes c, int M) { fp8_quant_act(xin
 void Runtime::gemv8(const Fp8W& w, Codes c, float* yout, int rows_per_group, int M) {
   // at most 8 inputs per call; every row's result is the same at any M (fp8_gemv.h)
   const int rpg = rows_per_group ? rows_per_group : w.N, Kt = w.K * (w.N / rpg);
+  if (M > 8) {  // prompt chunks: the many-input kernel (the same bits as one input at a time)
+    fp8_gemm(w.q, w.s, w.N, w.K, rpg, Fp8Act{c.q, c.s}, M, yout, s);
+    return;
+  }
   for (int m0 = 0; m0 < M; m0 += 8)
     fp8_gemv(w.q, w.s, w.N, w.K, rpg, Fp8Act{c.q + (size_t)m0 * Kt, c.s + (size_t)m0 * Kt / 32}, std::min(8, M - m0),
              yout + (size_t)m0 * w.N, s);

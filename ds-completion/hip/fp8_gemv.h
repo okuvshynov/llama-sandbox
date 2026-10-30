@@ -37,3 +37,12 @@ void fp8_gemv_cfg(const uint8_t* w, const uint8_t* w_scale, int N, int K, int ro
                   float* y, hipStream_t stream, int lpr, int r);
 void fp8_gemv(const uint8_t* w, const uint8_t* w_scale, int N, int K, int rows_per_group, Fp8Act x, int M,
               float* y, hipStream_t stream);
+// the lanes-per-row split fp8_gemv uses for a shape (it fixes every output's order of additions)
+int fp8_lpr(int N, int K);
+// Any number of inputs (prompt chunks): tiles of mt inputs, r rows per lane group; every result
+// bit-identical to fp8_gemv on that input alone (same split, same per-lane order, same tree).
+// r / mt = 0: the built-in choice.
+void fp8_gemm_cfg(const uint8_t* w, const uint8_t* w_scale, int N, int K, int rows_per_group, Fp8Act x, int M,
+                  float* y, hipStream_t stream, int r, int mt);
+void fp8_gemm(const uint8_t* w, const uint8_t* w_scale, int N, int K, int rows_per_group, Fp8Act x, int M,
+              float* y, hipStream_t stream);

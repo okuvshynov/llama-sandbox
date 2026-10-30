@@ -1752,3 +1752,28 @@ the GPU's attention core 10.1 s, shared expert 6.5 s, attention output 5.5 s (8-
 router, indexer, q and compressor 1.7-2.9 s each; the CPU's ~256 tokens per half give each expert
 ~2-3 tokens. Next: an fp8 matrix-multiply kernel for many tokens and a batched attention core on
 the GPU; larger chunks for the CPU.
+
+## Step 39: an fp8 matrix-multiply kernel for prompt chunks
+
+The fp8 projections ran as 8-input matrix-vector calls (64 per 512-token chunk). `fp8_gemm` takes
+any number of inputs with the same arithmetic per output as `fp8_gemv`: the same lanes-per-row
+split (`fp8_lpr(N, K)`, a function of the shape), each lane's 16-code steps in the same order, the
+same shuffle tree, so every result is bit-identical to a one-input call. Free to choose: rows per
+lane group (r), inputs per tile (mt), the K tile. A block decodes a tile of mt inputs into shared
+memory once (the 64-lane GEMV decoded every input again per row group); the K tile is at least one
+lane stride so every lane has a step in every tile (a 512-code tile left half of the 64-lane rows
+idle). Built-in: r = 2, mt = 8 (sweep in `results/prefill/bench-fp8-gemm.txt`); 8-lane rows (q_b)
+gain nothing and stay with the GEMV. Not yet tuned further: 96 registers per lane (2 waves per
+SIMD), ~4-6 TFLOPS of ~26; software pipelining made it slower (more registers).
+
+| tensor (512 inputs) | 8-input slices | fp8_gemm |
+|---|---|---|
+| attn_q_a, attn_kv | 5.3, 2.1 ms | 1.9, 0.8 ms (2.7-2.8x) |
+| attn_output_a / _b | 16.6 / 16.7 | 10.2 / 11.3 (1.5x) |
+| ffn_gate_shexp / down | 6.4 / 2.9 | 3.3 / 2.3 (1.3-1.9x) |
+| engram_kv | 56.7 | 42.8 (1.3x) |
+
+All bit-identical (bench, and end to end: `results/prefill/gemm-e2e.txt`: `--canon` against the
+token-by-token build, fast chunk 512 against chunk 1). In the prompt (1,989 tokens): shared
+expert 6.5 -> 1.9 s, attention output 5.5 -> 3.5 s, the GPU's busy time ~34 -> ~27 s; prompt 51.6
+-> 57.1 t/s fast, 40.0 -> 40.5 with `--canon`: the CPU's experts (30 s of 36) are now the limit.

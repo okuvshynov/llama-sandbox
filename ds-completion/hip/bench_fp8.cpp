@@ -9,12 +9,16 @@
 //   - time per call (events, back to back) and weight GB/s against the ~880 GB/s HBM ceiling.
 // --bitwise: instead, for M = 2..8, every token's result of one M-token call must equal a
 // single-token call on that token bit for bit (batched verification relies on it).
+// --gemm: the many-input kernel (fp8_gemm, prompt chunks) for each M of --ms: every token's
+// result against a one-token fp8_gemv call, bit for bit; time against fp8_gemv in slices of 8;
+// with --sweep every (rows per lane group, inputs per tile) instance.
 
 #include "fp8_gemv.h"
 #include "fakequant.h"
 #include "gguf.h"
 #include "ggml.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -42,7 +46,7 @@ int main(int argc, char** argv) {
   setvbuf(stdout, nullptr, _IOLBF, 0);
   if (argc < 2) { fprintf(stderr, "usage: bench-fp8 <dense-fp8.gguf> [--dev D] [--layer L] [--ms 1,2,4,8] [--reps N]\n"); return 2; }
   int dev = 0, layer = 2, reps = 200;
-  bool sweep = false, bitwise = false;
+  bool sweep = false, bitwise = false, gemm = false;
   std::vector<int> ms = {1, 2, 4, 8};
   for (int i = 2; i < argc; i++) {
     std::string a = argv[i];
@@ -51,6 +55,7 @@ int main(int argc, char** argv) {
     else if (a == "--reps") reps = atoi(argv[++i]);
     else if (a == "--sweep") sweep = true;
     else if (a == "--bitwise") bitwise = true;
+    else if (a == "--gemm") gemm = true;
     else if (a == "--ms") { ms.clear(); for (char* p = argv[++i]; *p;) { ms.push_back((int)strtol(p, &p, 10)); if (*p == ',') p++; } }
   }
   CHECK(hipSetDevice(dev));
@@ -124,6 +129,50 @@ int main(int argc, char** argv) {
       for (size_t i = 0; i < hs.size(); i++) qbad += gs[i] != hs[i];
 
       Fp8Act act = {dxq, dxs};
+      if (gemm) {
+        auto timed = [&](auto fn) {
+          for (int i = 0; i < 3; i++) fn();
+          CHECK(hipEventRecord(e0, st));
+          for (int i = 0; i < 20; i++) fn();
+          CHECK(hipEventRecord(e1, st));
+          CHECK(hipEventSynchronize(e1));
+          float t;
+          CHECK(hipEventElapsedTime(&t, e0, e1));
+          return t * 1000.0 / 20;
+        };
+        auto slices = [&]() {
+          for (int m0 = 0; m0 < M; m0 += 8)
+            fp8_gemv(dw, ds, N, K, rpg, Fp8Act{dxq + (size_t)m0 * Kt, dxs + (size_t)m0 * Kt / 32}, std::min(8, M - m0), dy + (size_t)m0 * N, st);
+        };
+        float* dy1;
+        CHECK(hipMalloc(&dy1, (size_t)N * 4));
+        std::vector<float> yM((size_t)M * N), y1(N);
+        auto check = [&]() {  // the last fp8_gemm result in dy against one-token calls
+          CHECK(hipMemcpy(yM.data(), dy, yM.size() * 4, hipMemcpyDeviceToHost));
+          long diff = 0;
+          for (int m = 0; m < M; m++) {
+            fp8_gemv(dw, ds, N, K, rpg, Fp8Act{dxq + (size_t)m * Kt, dxs + (size_t)m * Kt / 32}, 1, dy1, st);
+            CHECK(hipMemcpy(y1.data(), dy1, N * 4, hipMemcpyDeviceToHost));
+            diff += memcmp(y1.data(), yM.data() + (size_t)m * N, N * 4) ? 1 : 0;
+          }
+          return diff;
+        };
+        const double us8 = timed(slices);
+        printf("%-18s %6d %6d %4d lpr %2d  gemv x8: %8.1f us", sh.name, K, N, M, fp8_lpr(N, K), us8);
+        std::vector<std::pair<int, int>> cfgs = {{0, 0}};
+        if (sweep) cfgs = {{1, 16}, {2, 8}, {2, 16}, {4, 8}, {4, 16}};
+        for (const auto& cfg : cfgs) {
+          const int r = cfg.first, mt = cfg.second;
+          const double us = timed([&]() { fp8_gemm_cfg(dw, ds, N, K, rpg, act, M, dy, st, r, mt); });
+          fp8_gemm_cfg(dw, ds, N, K, rpg, act, M, dy, st, r, mt);
+          const long diff = check();
+          printf("  gemm %d/%d: %8.1f us (%.1fx) %s", r, mt, us, us8 / us, diff ? "DIFFERS" : "same");
+        }
+        printf("\n");
+        CHECK(hipFree(dy1));
+        CHECK(hipFree(dx)); CHECK(hipFree(dxq)); CHECK(hipFree(dxs)); CHECK(hipFree(dy));
+        continue;
+      }
       if (bitwise) {
         // every token of the M-token call against a one-token call on that token alone
         float* dy1;

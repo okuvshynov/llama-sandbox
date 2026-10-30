@@ -1,0 +1,5 @@
+# fp8_gemm in the prompt path (README step 39). Per prompt: bin-hip/ds-completion -m $M --rt $F8 --placement placements/study30.txt -f results/prefill/gate/pN.txt -n 32 [--canon] [--prefill-chunk 1] [--profile]
+# commit 230f77c + fp8_gemm (uncommitted at the time); sclk 2 (manual, all four cards); 2026-10-30
+p1200: --canon 46.50 t/s, output vs the token-by-token baseline same; fast 55.41 t/s, output vs --prefill-chunk 1 same
+p6000: --canon 40.46 t/s, output vs the token-by-token baseline same; fast 57.05 t/s, output vs --prefill-chunk 1 same
+# profile, p6000 (1,989 tokens), fast: prompt profile: 4 chunks of up to 512, 36184 ms (cpu experts 30094, waiting for the GPU 371); GPU timeline: attn.compressor 1738 attn.core 10157 attn.indexer 2525 attn.kv 155 attn.out 3466 attn.q 1627 engram 403 engram.fetch 503 ffn.add 579 ffn.dispatch 135 ffn.router 2868 ffn.shared 1909 ffn.wait_for_cpu_experts 8890 ffn.wait_for_gpu_experts 369 hc 695

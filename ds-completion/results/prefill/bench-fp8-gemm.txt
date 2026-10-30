@@ -1,0 +1,29 @@
+# bin-hip/bench-fp8 $F8 --gemm --ms 64,256,512 [--sweep]: fp8_gemm (r rows per lane group / mt inputs per tile) against fp8_gemv in slices of 8, every token bit for bit against a one-token fp8_gemv
+# commit 230f77c + fp8_gemm (uncommitted at the time); sclk 2 (manual, all four cards); 2026-10-30
+attn_q_a             5120   1280  256 lpr 64  gemv x8:   2639.0 us  gemm 1/16:   2965.0 us (0.9x) same  gemm 2/8:    942.1 us (2.8x) same  gemm 2/16:   1953.5 us (1.4x) same  gemm 4/8:   1774.1 us (1.5x) same  gemm 4/16:   1607.3 us (1.6x) same
+attn_q_b             1280  32768  256 lpr  8  gemv x8:   3401.2 us  gemm 1/16:   3690.2 us (0.9x) same  gemm 2/8:   3537.5 us (1.0x) same  gemm 2/16:   3815.7 us (0.9x) same  gemm 4/8:   5616.5 us (0.6x) same  gemm 4/16:   5028.0 us (0.7x) same
+attn_kv              5120    512  256 lpr 64  gemv x8:   1011.5 us  gemm 1/16:   1267.8 us (0.8x) same  gemm 2/8:    388.1 us (2.6x) same  gemm 2/16:    864.5 us (1.2x) same  gemm 4/8:    691.8 us (1.5x) same  gemm 4/16:    617.8 us (1.6x) same
+attn_output_a        4096   8192  256 lpr 64  gemv x8:   8326.8 us  gemm 1/16:  16065.2 us (0.5x) same  gemm 2/8:   5102.2 us (1.6x) same  gemm 2/16:  11066.3 us (0.8x) same  gemm 4/8:   9761.8 us (0.9x) same  gemm 4/16:   9040.2 us (0.9x) same
+attn_output_b        8192   5120  256 lpr 64  gemv x8:   8348.1 us  gemm 1/16:  16920.5 us (0.5x) same  gemm 2/8:   5665.9 us (1.5x) same  gemm 2/16:  12180.3 us (0.7x) same  gemm 4/8:  12477.6 us (0.7x) same  gemm 4/16:   9457.5 us (0.9x) same
+indexer.attn_q_b     1280   4096  256 lpr 16  gemv x8:    799.8 us  gemm 1/16:    621.3 us (1.3x) same  gemm 2/8:    566.1 us (1.4x) same  gemm 2/16:    634.5 us (1.3x) same  gemm 4/8:    996.0 us (0.8x) same  gemm 4/16:    874.1 us (0.9x) same
+ffn_gate_shexp       5120   2304  256 lpr 64  gemv x8:   3176.4 us  gemm 1/16:   5198.8 us (0.6x) same  gemm 2/8:   1679.2 us (1.9x) same  gemm 2/16:   3478.8 us (0.9x) same  gemm 4/8:   3278.6 us (1.0x) same  gemm 4/16:   2930.0 us (1.1x) same
+ffn_down_shexp       2304   5120  256 lpr 16  gemv x8:   1452.7 us  gemm 1/16:   1240.0 us (1.2x) same  gemm 2/8:   1137.3 us (1.3x) same  gemm 2/16:   1275.1 us (1.1x) same  gemm 4/8:   1894.7 us (0.8x) same  gemm 4/16:   1655.2 us (0.9x) same
+engram_kv            6144  25600  256 lpr 64  gemv x8:  28329.8 us  gemm 1/16:  65831.0 us (0.4x) same  gemm 2/8:  21374.9 us (1.3x) same  gemm 2/16:  46178.4 us (0.6x) same  gemm 4/8:  42399.6 us (0.7x) same  gemm 4/16:  37942.3 us (0.7x) same
+attn_q_a             5120   1280   64 lpr 64  gemv x8:    658.4 us  gemm 0/0:    248.4 us (2.6x) same
+attn_q_a             5120   1280  512 lpr 64  gemv x8:   5270.8 us  gemm 0/0:   1867.2 us (2.8x) same
+attn_q_b             1280  32768   64 lpr  8  gemv x8:    850.7 us  gemm 0/0:    851.0 us (1.0x) same
+attn_q_b             1280  32768  512 lpr  8  gemv x8:   6838.4 us  gemm 0/0:   6859.0 us (1.0x) same
+attn_kv              5120    512   64 lpr 64  gemv x8:    230.3 us  gemm 0/0:    104.6 us (2.2x) same
+attn_kv              5120    512  512 lpr 64  gemv x8:   2054.1 us  gemm 0/0:    766.2 us (2.7x) same
+attn_output_a        4096   8192   64 lpr 64  gemv x8:   2084.4 us  gemm 0/0:   1294.6 us (1.6x) same
+attn_output_a        4096   8192  512 lpr 64  gemv x8:  16590.8 us  gemm 0/0:  10173.8 us (1.6x) same
+attn_output_b        8192   5120   64 lpr 64  gemv x8:   2088.5 us  gemm 0/0:   1451.2 us (1.4x) same
+attn_output_b        8192   5120  512 lpr 64  gemv x8:  16680.6 us  gemm 0/0:  11311.4 us (1.5x) same
+indexer.attn_q_b     1280   4096   64 lpr 16  gemv x8:    199.8 us  gemm 0/0:    151.2 us (1.3x) same
+indexer.attn_q_b     1280   4096  512 lpr 16  gemv x8:   1598.3 us  gemm 0/0:   1115.5 us (1.4x) same
+ffn_gate_shexp       5120   2304   64 lpr 64  gemv x8:    794.0 us  gemm 0/0:    433.3 us (1.8x) same
+ffn_gate_shexp       5120   2304  512 lpr 64  gemv x8:   6352.6 us  gemm 0/0:   3333.0 us (1.9x) same
+ffn_down_shexp       2304   5120   64 lpr 16  gemv x8:    363.3 us  gemm 0/0:    297.4 us (1.2x) same
+ffn_down_shexp       2304   5120  512 lpr 16  gemv x8:   2902.3 us  gemm 0/0:   2251.1 us (1.3x) same
+engram_kv            6144  25600   64 lpr 64  gemv x8:   7080.0 us  gemm 0/0:   5363.7 us (1.3x) same
+engram_kv            6144  25600  512 lpr 64  gemv x8:  56680.4 us  gemm 0/0:  42752.5 us (1.3x) same
