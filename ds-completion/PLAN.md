@@ -37,7 +37,7 @@ Speed
 | 17 | Tensor parallelism, 2-way then 4-way (C1/C2) | planned | split the dense GEMVs over dies: ~-6..10 ms per step, matters once experts are mostly on GPUs |
 | 18 | Shared expert by TP, routed by EP (C4) | planned | the dense shared expert splits like any other GEMV under TP |
 | 19 | DSpark speculative decoding (E1) | done | `--dspark ... --spec`, output identical to plain greedy; held-out prompts +7% to +33% (geometric mean +22%), oracle placement +19% / +71% (README steps 19-26) |
-| 20 | Batched prompt processing (F) | in progress | README steps 37-38: chunks of up to 512, CPU experts batched, CPU/GPU overlap; byte-identical output: 16.8 -> 51.6 t/s (fast), 17.4 -> 40.0 (canon), 1,989 tokens. CPU and GPU now balanced (~33 s each): step 39 (fp8_gemm, bit-identical): 57.1 t/s fast; now the CPU experts are the limit (30 of 36 s): larger chunks, the canonical CPU kernel, then a batched attention core (GPU) |
+| 20 | Batched prompt processing (F) | in progress | README steps 37-38: chunks of up to 512, CPU experts batched, CPU/GPU overlap; byte-identical output: 16.8 -> 51.6 t/s (fast), 17.4 -> 40.0 (canon), 1,989 tokens. CPU and GPU now balanced (~33 s each): step 39 (fp8_gemm, bit-identical): 57.1 t/s fast; now the CPU experts are the limit (30 of 36 s). Options and the expert-streaming estimate: "Prompt processing: where it stands and the options" (P1-P9) |
 | 30 | Expert registration stalls the GPU | open | with `--cache-loads`, `hipHostRegister` of 289 GB (~90 s, more after the page cache was evicted) blocks every other HIP call: a run's first ~90 s do nothing. Register in small pieces between steps, or before the model is used |
 | 21 | Dynamic expert cache (A2) | merged into 16 | item 13 showed recent usage beats fixed sets |
 | 22 | Faster GPU fp4 expert kernel | partly done | 287 -> 406 GB/s (item 8); the per-row fp8 activation decode is the next cost; matters little while it overlaps |
@@ -390,6 +390,71 @@ compressor groups, indexer top-512, engram, the draft's window. What is missing:
    positions, fast static): decode speed against position (indexer scoring grows linearly with context);
    prompt speed (token by token today: a 64K prompt takes 1-2 h, which makes item 20, batched
    prompt processing, the next priority after this).
+
+## Prompt processing: where it stands and the options (2026-10-30)
+
+Done (README steps 37-39; every output byte-identical to token by token): chunks of up to 512,
+CPU experts batched per expert, the CPU's experts overlapped with the GPU's work on the other
+half of a chunk, an fp8 matrix-multiply kernel. 1,989-token prompt at sclk 2: 16.8 -> 57.1 t/s
+(fast), 17.4 -> 40.5 (`--canon`).
+
+Where a prompt token goes now (36.2 s for 1,989 tokens, fast): the CPU computes experts 30 s
+(~15 ms per token), the GPU is busy ~27 s (~13.6 ms per token: attention core 10.2 s, attention
+output 3.5, router 2.9, indexer 2.5, shared expert 1.9, compressor 1.7, q 1.6, the rest ~3) and
+waits 9 s for the CPU. With `--canon` the CPU's share is about twice that (its kernel gains
+little from batching).
+
+### Estimate: stream the CPU's experts to the GPUs instead (no code yet)
+
+Measured costs (README steps 30, 37): loading one expert (18.8 MB) runs at 1,437 loads/s over the
+4 dies (27 GB/s): ~0.7 ms of transfer per expert, whatever its number of tokens. The CPU costs
+0.086 ms per expert-token (fast) or 0.17 ms (canonical) once an expert has 8+ tokens, ~0.27 ms
+with 1-2. The GPU's fp4 kernel is ~18 us per expert-token on one die. So streaming an expert beats
+computing it on the CPU above ~8 of its tokens in the chunk (fast), ~4 (canonical).
+
+A chunk of B tokens gives each expert ~B/64 tokens (6 of 384), the non-resident ones ~B/90 (the
+GPUs already hold the popular ones: ~60% of expert-tokens on 43% of the experts):
+
+| B | tokens per non-resident expert | stream them all? |
+|---|---|---|
+| 256 | ~3 | no (canonical: about even) |
+| 512 | ~6 | about even (fast); yes (canonical) |
+| 1,024 | ~11 | yes |
+| 2,048+ | ~23 | clearly |
+
+A hybrid moves the threshold down: per chunk and layer, stream the non-resident experts with the
+most tokens, leave the rare ones to the CPU. Can the loads keep up? ~220 non-resident experts per
+layer = ~150 ms of loads per layer, independent of B; the GPU's own work is ~0.34 ms x B per layer
+(~175 ms at 512, ~700 at 2,048), so loading layer L + 1's experts while L computes hides them
+from B ~ 450. Result: the CPU leaves prompt processing; the limit becomes the GPU's own work
+(today ~13.6 + ~1 ms per token for the extra experts: ~65-70 t/s, and the same with `--canon`,
+since the GPU's canonical expert kernel exists and is bit-identical). The CPU path tops out at
+~85 t/s fast / ~45 canonical even with perfect batching; with streaming, a faster GPU side
+(attention, matrix kernel) could reach ~200 t/s, the loads (~3 ms per token at B = 2,048) being
+the floor.
+
+Caveats: 1,437 loads/s was measured alone (copy engines and staging share PCIe with compute); the
+direct path needs the 289 GB registered (item 30's ~90 s stall: fix first; the pinned path reaches
+the same rate but costs ~4 CPU cores); spare slots per die to stream through (~20-40: 0.4-0.8 GB);
+larger chunks cost ~2 MB per token on die 0; real routing is skewed, so measure the per-chunk
+token counts on a long prompt before building it (cheap: a routing log and a script).
+
+### All the options, by part
+
+| # | option | part | expected | cost / risk | depends on |
+|---|---|---|---|---|---|
+| P1 | measure tokens per non-resident expert per chunk size on a long prompt | estimate | decides P2's design (threshold, hybrid split) | an hour, no runtime change | - |
+| P2 | stream non-resident experts to the GPUs for prompt chunks (hybrid: hottest streamed, rare ones on the CPU) | CPU experts | CPU out of the prompt path: ~57 -> ~65-70 t/s now (canonical ~40 -> ~65), more as the GPU side speeds up | large: spare slots, a per-layer load schedule ahead of compute, the loader at full rate | P1, P3 |
+| P3 | fix the registration stall (register in pieces between steps, or before use) | infrastructure | removes ~90 s at startup with `--cache-loads`; needed for direct loads | small-medium | - |
+| P4 | larger chunks (1,024+) | CPU experts | ~2x tokens per CPU expert per half: CPU 30 s -> ~20-24 s | ~1 GB more on die 0 per 512 tokens (fewer decode slots) unless prompt buffers are freed after the prompt | - |
+| P5 | canonical CPU kernel tiled (rows x tokens, as the fast one) | CPU experts, canonical | ~25% at most (its integer formula is the limit) | medium | moot if P2 |
+| P6 | batched attention core (many queries per call; the window ring needs a separate staging area for the chunk's own keys) | GPU | attention core 10.2 s -> ~1-2 s | medium-large; outputs must stay bit-identical per query | - |
+| P7 | batched router, indexer and compressor (per-token loops today) | GPU | ~7 s -> ~2 s | medium | - |
+| P8 | fp8_gemm tuning (96 registers, 2 waves per SIMD; ~4-6 of ~26 TFLOPS) | GPU | ~5 s -> ~2-3 s | medium (several tuning rounds) | worth it once the GPU is the limit |
+| P9 | dense work of a chunk on several dies (layer pipeline over dies, or splitting the matrix rows) | GPU | up to ~2-4x on the GPU side | large; XGMI pairs only (0-1, 2-3), cross-pair copies over PCIe | P6-P8 first |
+
+Order, as it looks now: P1 (cheap, decides P2), P3 (needed anyway), then P2 or P4 depending on
+P1; then the GPU side (P6, P7, P8), which becomes the limit once the CPU is out; P9 last.
 
 ## History
 

@@ -1777,3 +1777,7 @@ All bit-identical (bench, and end to end: `results/prefill/gemm-e2e.txt`: `--can
 token-by-token build, fast chunk 512 against chunk 1). In the prompt (1,989 tokens): shared
 expert 6.5 -> 1.9 s, attention output 5.5 -> 3.5 s, the GPU's busy time ~34 -> ~27 s; prompt 51.6
 -> 57.1 t/s fast, 40.0 -> 40.5 with `--canon`: the CPU's experts (30 s of 36) are now the limit.
+
+The options for prompt processing from here (and an estimate of when streaming the CPU's experts
+to the GPUs beats computing them on the CPU: from ~512-token chunks, clearly above ~1,000) are in
+PLAN.md, "Prompt processing: where it stands and the options" (P1-P9).

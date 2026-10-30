@@ -271,6 +271,13 @@ Each rule is followed by where it mattered most.
   **measured** ~3.5 ms (34 -> 27 s), but end to end only +10%: with the GPU faster the CPU's
   experts set the pace. Tuning the kernel further waits until the CPU side is faster.
 
+- **Q (the person's):** at what chunk size does moving the CPU's experts to the GPUs beat
+  computing them on the CPU? **Estimated** from measured unit costs (no code): a load is a fixed
+  ~0.7 ms per expert, the CPU ~0.09-0.17 ms per expert-token, so ~4-8 tokens per expert, i.e.
+  chunks of ~500-1,000; the loads hide behind the GPU's work from ~450. **Decided** (the
+  person's): document it with all the options (PLAN P1-P9), then first the pure optimizations
+  (kernel tuning: P8, P5, P6) before restructuring.
+
 ## 4. Predictions against outcomes
 
 Estimates were made before measuring wherever possible; this is how they fared.
