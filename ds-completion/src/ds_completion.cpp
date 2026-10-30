@@ -66,6 +66,7 @@ int main(int argc, char** argv) {
   [[maybe_unused]] bool canon = false;
   bool max_ctx_set = false;
   [[maybe_unused]] int prefill_chunk = 512;
+  [[maybe_unused]] bool prefill_overlap = true;
   [[maybe_unused]] double cache_loads = 0;
   [[maybe_unused]] int cache_period = 16, cache_window = 256;
   [[maybe_unused]] bool cache_wait = false;
@@ -119,6 +120,7 @@ int main(int argc, char** argv) {
     else if (a == "--no-quant") opt.exact_quant = false;
     else if (a == "--max-ctx") max_ctx_set = true, opt.max_ctx = atoi(next());
     else if (a == "--prefill-chunk") prefill_chunk = atoi(next());  // runtime: prompt tokens per forward
+    else if (a == "--no-overlap") prefill_overlap = false;  // runtime: prompt chunks without the CPU/GPU overlap
     else { fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
   }
   if (model_path.empty() || prompt.empty()) {
@@ -186,6 +188,7 @@ int main(int argc, char** argv) {
     ro.load_pinned = load_pinned;
     ro.canon = canon;
     ro.prefill_chunk = prefill_chunk;
+    ro.prefill_overlap = prefill_overlap;
     ro.cache_loads = cache_loads;
     ro.cache_period = cache_period;
     ro.cache_window = cache_window;

@@ -36,6 +36,7 @@ struct RtOptions {
   int n_threads = 16;  // CPU expert kernel
   int max_ctx = 4096;  // capacity of the compressed caches
   int prefill_chunk = 512;  // prompt tokens per forward (1 .. Runtime::kChunk)
+  bool prefill_overlap = true;  // a prompt chunk in two halves: CPU experts overlap GPU work
   // routed experts on GPUs (expert_pool.h): a ranked placement file fills these dies' free
   // memory, keeping `reserve_gb` free on each; empty = every routed expert on the CPU
   std::string placement;
@@ -242,7 +243,24 @@ class Runtime {
   void attn_core(int L, int t, const float* x_t, float* q_t, const float* kvv_t, Codes qr_t, float* o_t);
   // the routed + shared experts of the chunk's M tokens (x [M][E] staged in d_moe.x)
   void moe(int L, float* out, int M, Taps* taps);
+  void moe_launch(int L, int M);                           // GPU: router .. the dies' experts, shared expert
+  void moe_finish(int L, float* out, int M, Taps* taps);  // host: the CPU's experts, then the sum
   void block(int L, Taps* taps, int M = 1);
+  void block_pre(int L, Taps* taps, int M);   // up to the routed experts started
+  void block_post(int L, Taps* taps, int M);  // the CPU's experts onwards
+
+  // A prompt chunk in two halves (CPU/GPU overlap, RtOptions::prefill_overlap): while the host
+  // computes one half's CPU experts, the GPU runs the other half's attention. set_half() points
+  // every per-token buffer at the half's first token (tok_ptrs), gives it its own residual
+  // stream pair (h/h2 swap per sublayer) and its own events; tok_base offsets the per-token
+  // indexer tables.
+  struct TokPtr { void** p; size_t bytes; };  // a per-token buffer and its bytes per token
+  std::vector<TokPtr> tok_ptrs;
+  int tok_base = 0, cur_half = -1;
+  float *half_h[2] = {}, *half_h2[2] = {};
+  struct HalfEvents { hipEvent_t staged, dispatched, local; std::vector<hipEvent_t> done; } half_ev[2];
+  void shift_tokens(int t0);
+  void set_half(int i, int t0);  // i = -1: back to whole-chunk addressing
   void engram(int L, int M = 1);
   void fetch_engram_rows(const std::vector<int32_t>& chunk);
   std::vector<int32_t> forward_chunk(const std::vector<int32_t>& toks, bool head = true);  // the greedy next token after each

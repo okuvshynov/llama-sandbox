@@ -58,6 +58,7 @@ Options:
 - `-n`: max new tokens.
 - `--prefill-chunk N`: prompt tokens per forward (default and most 512, the fastest for
   long prompts in the fast numerics). The output does not depend on it.
+- `--no-overlap`: prompt chunks without the CPU/GPU overlap (slower; for comparisons).
 - `-t`: CPU threads; the default 16 (one per physical core) is best with `--rt`. 32 leaves no
   CPU for the host thread and the HIP runtime and is much slower (README step 18).
 - `--profile`: a per-step time breakdown.

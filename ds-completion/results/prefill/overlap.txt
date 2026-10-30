@@ -1,0 +1,8 @@
+# CPU/GPU overlap of prompt chunks (README step 38). Per prompt: bin-hip/ds-completion -m $M --rt $F8 --placement placements/study30.txt -f results/prefill/gate/pN.txt -n 32 [--no-overlap] [--canon]
+# commit 9c07848 + overlap (uncommitted at the time); sclk 2 (manual, all four cards); 2026-10-30
+# outputs: fast with vs without overlap compared within this build; --canon compared with results/prefill/gate/pN-base-canon.out (token-by-token build)
+p1200 (364 tokens): fast overlap 54.21 t/s vs --no-overlap 37.16 t/s, output same; --canon overlap 46.21 t/s, output vs baseline same
+p6000 (1989 tokens): fast overlap 51.63 t/s vs --no-overlap 34.82 t/s, output same; --canon overlap 39.98 t/s, output vs baseline same
+# profile, p6000 (1,989 tokens), fast, overlap, --profile:
+# prompt profile: 4 chunks of up to 512, 40557 ms (cpu experts 33009, waiting for the GPU 646; expert-tokens gpu 286206 cpu 190914); GPU timeline: attn.compressor 1742 attn.core 10069 attn.indexer 2526 attn.kv 328 attn.out 5539 attn.q 1936 engram 496 engram.fetch 510 ffn.add 537 ffn.dispatch 135 ffn.router 2871 ffn.shared 6520 ffn.wait_for_cpu_experts 6162 ffn.wait_for_gpu_experts 369 hc 657
+# prompt: 1989 tokens in 40.62 s = 48.96 t/s

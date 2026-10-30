@@ -1720,3 +1720,35 @@ Found on the way: with `--cache-loads`, the first ~90 s of a run stall every GPU
 loader registers the 289 GB of expert tensors (`hipHostRegister` blocks the other HIP calls);
 after a memory-heavy job it also pages the model back in. A short prompt then "takes" 90-300 s
 (step 36's slow prompt was mostly this, not only the page cache). Open (PLAN).
+
+## Step 38: CPU experts overlapped with the GPU's work on the prompt
+
+After step 37 the GPU and the host took turns: the GPU waited for the CPU experts (~16 ms per
+prompt token), then the host waited for the GPU (~15 ms). A prompt chunk now runs as two halves
+A and B, each layer split at the point the routed experts start (`block_pre`: everything up to
+the dies' experts and the shared expert; `block_post`: the CPU's experts onwards):
+
+    pre(L, A)  pre(L, B)  post(L, A)  pre(L+1, A)  post(L, B)  pre(L+1, B)  ...
+
+The host computes A's CPU experts while the GPU runs B's attention, and B's while the GPU runs A's
+next layer. The causal order holds (B's attention at L follows A's). `set_half` points every
+per-token buffer at the half's first token; each half has its own residual-stream pair (h / h2
+swap per sublayer) and its own events; per-die outputs are per token, so B's experts never
+overwrite A's results before they are copied back. On the way: the staging copy to the host
+moved the expert lists of all 512 chunk tokens every layer, also when decoding one token; now
+only the forward's own tokens. `--no-overlap` turns it off.
+
+`results/prefill/overlap.txt` (sclk 2; outputs identical with and without overlap, and with
+`--canon` identical to the token-by-token build):
+
+| prompt | fast, no overlap | fast, overlap | `--canon`, overlap (no overlap: step 37) |
+|---|---|---|---|
+| 364 tokens | 37.2 t/s | 54.2 t/s | 46.2 (30.7) |
+| 1,989 tokens | 34.8 | 51.6 | 40.0 (26.3) |
+
+~3x over token by token (16.8 t/s). Profile (1,989 tokens, 40.6 s): the host computes CPU experts
+for 33 s, the GPU is busy ~34 s and waits for the host only 6 s, so both sides are now the limit:
+the GPU's attention core 10.1 s, shared expert 6.5 s, attention output 5.5 s (8-input fp8 kernels),
+router, indexer, q and compressor 1.7-2.9 s each; the CPU's ~256 tokens per half give each expert
+~2-3 tokens. Next: an fp8 matrix-multiply kernel for many tokens and a batched attention core on
+the GPU; larger chunks for the CPU.

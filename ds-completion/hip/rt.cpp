@@ -263,6 +263,86 @@ Runtime::Runtime(const Model& model, RtOptions options, const std::string& fp8_p
 
   if (!opt.dspark.empty()) dspark.reset(new DSpark(*this, opt.dspark));  // before the pools take the rest
   setup_experts();
+
+  // the per-token buffers, for addressing half a chunk (set_half); h / h2 are kept per half
+  {
+    const int KE = hp.n_expert_used, rows = opt.canon ? KE : 1;
+    auto add = [&](void* p, size_t bytes) { tok_ptrs.push_back({(void**)p, bytes}); };
+    for (float** p : {&pre, &a_pre, &a_post, &f_pre, &f_post}) add(p, (size_t)HC * 4);
+    for (float** p : {&a_comb, &f_comb}) add(p, (size_t)HC * HC * 4);
+    add(&mixes, (size_t)(2 + HC) * HC * 4);
+    for (float** p : {&x, &y, &ysh, &yr}) add(p, (size_t)E * 4);
+    for (float** p : {&t1, &qr}) add(p, (size_t)hp.q_lora * 4);
+    for (float** p : {&q, &o}) add(p, (size_t)NH * HD * 4);
+    add(&kvv, (size_t)HD * 4);
+    add(&oa, (size_t)hp.o_groups * hp.o_lora * 4);
+    for (float** p : {&gate, &up, &act}) add(p, (size_t)hp.n_ff_exp * 4);
+    add(&router_logits, (size_t)hp.n_expert * 4);
+    add(&rw, (size_t)kMoeIdStride * 4);
+    add(&rids, (size_t)kMoeIdStride * 4);
+    add(&ekv, (size_t)E * (HC + 1) * 4);
+    add(&erows, (size_t)hp.engram_cols() * hp.engram_dim * 4);
+    add(&d_moe.lists, (size_t)kMoeListStride * sizeof(MoeList));
+    add(&h_moe.lists, (size_t)kMoeListStride * sizeof(MoeList));
+    add(&d_moe.x, (size_t)E * 4);
+    add(&h_moe.x, (size_t)E * 4);
+    add(&h_yr, (size_t)rows * E * 4);
+    add(&canon_rows, (size_t)KE * E * 4);  // null without --canon (skipped)
+    add(&canon_where, (size_t)kMoeIdStride * 4);
+    add(&d_route, (size_t)hp.n_layer * 16 * 4);  // null unless --log-routing
+    for (Die& d : dies) {
+      add(&d.y_home, (size_t)E * 4);
+      add(&d.d_y, (size_t)rows * E * 4);
+      add(&d.h_y, (size_t)rows * E * 4);
+    }
+    if (dspark) add(&dspark->hid_chunk, dspark->target_layers.size() * (size_t)E * 4);
+    // half 0 uses the events above, half 1 its own
+    half_ev[0] = {ev_staged, ev_dispatched, ev_local, {}};
+    half_ev[1] = {nullptr, nullptr, nullptr, {}};
+    auto ev = [&]() { hipEvent_t e; CHECK(hipEventCreateWithFlags(&e, hipEventDisableTiming)); return e; };
+    half_ev[1].staged = ev();
+    if (ev_dispatched) half_ev[1].dispatched = ev();
+    if (ev_local) half_ev[1].local = ev();
+    for (Die& d : dies) {
+      CHECK(hipSetDevice(d.dev));
+      half_ev[0].done.push_back(d.done);
+      half_ev[1].done.push_back(d.done ? ev() : nullptr);
+    }
+    CHECK(hipSetDevice(opt.gpu));
+  }
+}
+
+// every per-token buffer from token tok_base to token t0 (null buffers stay null)
+void Runtime::shift_tokens(int t0) {
+  const ptrdiff_t dt = t0 - tok_base;
+  for (const TokPtr& tp : tok_ptrs)
+    if (*tp.p) *tp.p = (char*)*tp.p + dt * (ptrdiff_t)tp.bytes;
+  tok_base = t0;
+}
+
+void Runtime::set_half(int i, int t0) {
+  const size_t hb = (size_t)hp.n_embd * hp.hc_mult;
+  if (cur_half >= 0) {  // keep the current half's stream pair (unshifted)
+    half_h[cur_half] = h - tok_base * hb;
+    half_h2[cur_half] = h2 - tok_base * hb;
+  }
+  shift_tokens(i < 0 ? 0 : t0);
+  if (i >= 0) {
+    h = half_h[i] + tok_base * hb;
+    h2 = half_h2[i] + tok_base * hb;
+    ev_staged = half_ev[i].staged;
+    ev_dispatched = half_ev[i].dispatched;
+    ev_local = half_ev[i].local;
+    for (size_t d = 0; d < dies.size(); d++) dies[d].done = half_ev[i].done[d];
+  } else {
+    h = half_h[0];  // both halves end every layer on the same buffer (two swaps per block)
+    h2 = half_h2[0];
+    ev_staged = half_ev[0].staged;
+    ev_dispatched = half_ev[0].dispatched;
+    ev_local = half_ev[0].local;
+    for (size_t d = 0; d < dies.size(); d++) dies[d].done = half_ev[0].done[d];
+  }
+  cur_half = i;
 }
 
 std::vector<int32_t> Runtime::verify(const std::vector<int32_t>& chunk, bool head) {
@@ -319,7 +399,28 @@ std::vector<int32_t> Runtime::forward_chunk(const std::vector<int32_t>& toks, bo
   CHECK(hipMemcpyAsync(pre, one_hot.data(), one_hot.size() * 4, hipMemcpyHostToDevice, s));
   for (int t = 0; t < M; t++) k_repeat(x + (size_t)t * E, E, HC, h + (size_t)t * E * HC, s);
   chunked = true;
-  for (int L = 0; L < hp.n_layer; L++) block(L, nullptr, M);
+  if (!head && opt.prefill_overlap && M >= 2) {
+    // two halves A, B: pre(L, A) pre(L, B) post(L, A) pre(L + 1, A) post(L, B) pre(L + 1, B) ...
+    // The host computes A's CPU experts while the GPU runs B's attention, and B's while the GPU
+    // runs A's next layer. Causal order holds: B's attention at L follows A's at L.
+    const int n0 = M / 2, n[2] = {n0, M - n0}, t0[2] = {0, n0};
+    half_h[0] = half_h[1] = h;
+    half_h2[0] = half_h2[1] = h2;
+    auto pre_h = [&](int L, int i) { set_half(i, t0[i]); pos = n_past_ + t0[i]; block_pre(L, nullptr, n[i]); };
+    auto post_h = [&](int L, int i) { set_half(i, t0[i]); pos = n_past_ + t0[i]; block_post(L, nullptr, n[i]); };
+    pre_h(0, 0);
+    pre_h(0, 1);
+    for (int L = 0; L < hp.n_layer; L++) {
+      post_h(L, 0);
+      if (L + 1 < hp.n_layer) pre_h(L + 1, 0);
+      post_h(L, 1);
+      if (L + 1 < hp.n_layer) pre_h(L + 1, 1);
+    }
+    set_half(-1, 0);
+    pos = n_past_;
+  } else {
+    for (int L = 0; L < hp.n_layer; L++) block(L, nullptr, M);
+  }
   chunked = false;
   std::vector<int32_t> next;
   if (head) {
@@ -631,7 +732,7 @@ void Runtime::attention(int L, const float* xin, float* out, int M) {
   gemv8(w.kv, A, kvv, 0, M);
   for (int t = 0; t < M; t++) {
     pos = p0 + t;
-    attn_core(L, t, xin + (size_t)t * E, q + (size_t)t * NH * HD, kvv + (size_t)t * HD,
+    attn_core(L, tok_base + t, xin + (size_t)t * E, q + (size_t)t * NH * HD, kvv + (size_t)t * HD,
               Codes{B.q + (size_t)t * hp.q_lora, B.s + (size_t)t * hp.q_lora / 32}, o + (size_t)t * NH * HD);
   }
   pos = p0;
@@ -738,6 +839,12 @@ void Runtime::attn_core(int L, int t, const float* xin, float* q_t, const float*
 }
 
 void Runtime::moe(int L, float* out, int M, Taps* taps) {
+  moe_launch(L, M);
+  moe_finish(L, out, M, taps);
+}
+
+// the GPU part: router, dispatch, staging to the host, the dies' experts, the shared expert
+void Runtime::moe_launch(int L, int M) {
   const LayerW& w = W[L];
   const int E = hp.n_embd, F = hp.n_ff_exp, KE = hp.n_expert_used;
   const float* xin = d_moe.x;  // [M][E]
@@ -758,8 +865,8 @@ void Runtime::moe(int L, float* out, int M, Taps* taps) {
   mark("ffn.dispatch");
   k_moe_dispatch(rids, rw, KE, d_table ? d_table + (size_t)L * hp.n_expert : nullptr, n_dies, d_moe.lists, M, s, canon_where);
   if (n_dies) CHECK(hipEventRecord(ev_dispatched, s));
-  const size_t block = moe_block_bytes(M);
-  CHECK(hipMemcpyAsync(h_moe.lists, d_moe.lists, moe_lists_bytes, hipMemcpyDeviceToHost, s));
+  const size_t lists_bytes = (size_t)M * kMoeListStride * sizeof(MoeList);  // this forward's tokens only
+  CHECK(hipMemcpyAsync(h_moe.lists, d_moe.lists, lists_bytes, hipMemcpyDeviceToHost, s));
   CHECK(hipMemcpyAsync(h_moe.x, d_moe.x, (size_t)M * E * 4, hipMemcpyDeviceToHost, s));
   CHECK(hipEventRecord(ev_staged, s));
   constexpr int LS = kMoeListStride * (int)(sizeof(MoeList) / 4);  // a token's lists, in ints
@@ -783,7 +890,8 @@ void Runtime::moe(int L, float* out, int M, Taps* taps) {
     // another die: starts when the block is in host memory, no host involvement
     CHECK(hipSetDevice(d.dev));
     CHECK(hipStreamWaitEvent(d.st, ev_staged, 0));
-    CHECK(hipMemcpyAsync(d.d_in, h_moe.lists, block, hipMemcpyHostToDevice, d.st));
+    CHECK(hipMemcpyAsync(d.d_in, h_moe.lists, lists_bytes, hipMemcpyHostToDevice, d.st));
+    CHECK(hipMemcpyAsync(d.d_in + moe_lists_bytes, h_moe.x, (size_t)M * E * 4, hipMemcpyHostToDevice, d.st));
     const float* dx = (const float*)(d.d_in + moe_lists_bytes);
     if (opt.canon) {  // the copy back waits for the counts (below)
       fp4_moe_canon_rows(d.pool.view, dx, sel((const MoeList*)d.d_in, i), KE, M, hp.swiglu_clamp[L], d.d_y, d.scratch, d.st);
@@ -801,7 +909,15 @@ void Runtime::moe(int L, float* out, int M, Taps* taps) {
   k_swiglu(gate, up, hp.swiglu_clamp_sh[L], M * F, act, s);
   quant(act, F, B, M);
   gemv8(w.down_sh, B, ysh, 0, M);
-  // the host: the lists (counts for the statistics) and the CPU's misses, token by token
+}
+
+// the host part: the CPU's experts, the dies' results back, the sum
+void Runtime::moe_finish(int L, float* out, int M, Taps* taps) {
+  const int E = hp.n_embd, KE = hp.n_expert_used, n_dies = (int)dies.size();
+  auto place_rows = [&](int p) { return canon_rows + (size_t)p * kChunk * KE * E; };  // canon
+  bool local = false;
+  for (const Die& d : dies) local |= !d.st;
+  // the host: the lists (counts for the statistics) and the CPU's misses
   auto t0 = Clock::now();
   CHECK(hipEventSynchronize(ev_staged));
   last.wait_ms += ms_since(t0);
@@ -904,6 +1020,12 @@ void Runtime::moe(int L, float* out, int M, Taps* taps) {
 }
 
 void Runtime::block(int L, Taps* taps, int M) {
+  block_pre(L, taps, M);
+  block_post(L, taps, M);
+}
+
+// up to the routed experts started (GPU work only: the host does not wait)
+void Runtime::block_pre(int L, Taps* taps, int M) {
   const LayerW& w = W[L];
   const int E = hp.n_embd, HC = hp.hc_mult, MIX = (2 + HC) * HC;
   const float eps = hp.rms_eps;
@@ -933,7 +1055,13 @@ void Runtime::block(int L, Taps* taps, int M) {
   k_hc_split(h, E * HC, mixes, w.hc_ffn_scale, w.hc_ffn_base, eps, hp.hc_eps, hp.hc_iters, f_pre, f_post, f_comb, s, M);
   k_hc_pre_norm(h, a_pre, w.ffn_norm, E, eps, d_moe.x, s, M);
   tap(taps, "ffn_in", d_moe.x, {E, 1});
-  moe(L, y, M, taps);
+  moe_launch(L, M);
+}
+
+// from the CPU's experts (the host computes them) to the block output
+void Runtime::block_post(int L, Taps* taps, int M) {
+  const int E = hp.n_embd, HC = hp.hc_mult;
+  moe_finish(L, y, M, taps);
   tap(taps, "ffn_out", y, {E, 1});
   mark("hc");
   k_hc_post(y, h, f_post, f_comb, E, h2, s, M);

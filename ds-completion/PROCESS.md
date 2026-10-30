@@ -257,6 +257,13 @@ Each rule is followed by where it mattered most.
   compares with `--canon` across builds. And a separate stall: expert registration blocks the
   GPU for ~90 s (step 36's slow prompt).
 
+- **CPU/GPU overlap (README step 38).** The profile showed the two sides taking turns, each about
+  half the time. **Predicted:** up to ~2x by overlapping halves of a chunk. **Measured:** 1.5x;
+  the overlap is nearly complete (the GPU waits 6 of 40 s), but each half gives the CPU half the
+  tokens per expert, so the CPU's own time grew slightly; both sides are now equal, which says
+  the next gains need both (GPU kernels and CPU sharing). The restructuring kept every output
+  identical (gate: with and without overlap, and canonical against the token-by-token build).
+
 ## 4. Predictions against outcomes
 
 Estimates were made before measuring wherever possible; this is how they fared.
@@ -273,6 +280,7 @@ Estimates were made before measuring wherever possible; this is how they fared.
 | load cost at 100 loads/s (30) | 2.7% (the simulation's pessimistic case) | ~1.1% with direct copies | |
 | canonical cost end to end (32) | ~5% (kernel benchmarks) | 9-11%, then 1-2% after two fixes | benchmarks used 6 experts; the runtime's CPU gets 1-2 |
 | cache, `--spec`, 100 loads/s (29 -> 32) | ~28.9 t/s, 87% hits (1,024 tokens, no canonical cost) | 24.5 t/s, 80% hits (300 tokens) | shorter runs adapt for a larger share of the run |
+| CPU/GPU overlap of two half-chunks (38) | up to ~2x | 1.5x | half the tokens per CPU expert; both sides now ~33 s |
 | chunks of 64 share CPU expert reads (37) | most of the 53% saved | nothing | 384 experts: ~1 token per CPU expert per chunk; then compute-bound until tiled |
 | reference run, 20k tokens (35) | 6-10 h (scaled from 1,100 tokens) | 42 min | the 1,100-token run was mostly fixed cost |
 

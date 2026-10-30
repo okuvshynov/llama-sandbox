@@ -198,7 +198,7 @@ experts ~3% visible.
    functions; a 29.5k-token prompt decodes at 17.2 t/s; at 20k tokens the runtime gives the
    reference's greedy tokens with short-context KL (step 35). Left: compressed caches in fp8/fp4
    (for contexts far beyond 64k), faster prompt processing (in progress, README step 37:
-   chunks of up to 512, ~20 -> 34 t/s so far).
+   chunks of up to 512, CPU experts batched and overlapped with the GPU: ~17 -> 52 t/s so far).
 2. **Adaptive expert cache, tuning** (README steps 28-32): built and working (`--canon
    --cache-loads R`: +28% with `--spec` at sclk 2, every output identical); left: the default
    rate, hysteresis so it settles in long runs, the fast path's CPU preparation (the same fix as
