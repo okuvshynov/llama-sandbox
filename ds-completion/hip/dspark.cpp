@@ -173,7 +173,7 @@ DSpark::DSpark(Runtime& r, const std::string& path) : rt(r) {
   auto dz = [&](size_t n) { return (float*)upload(nullptr, n * 4); };
   const int B = block_size;
   main_hidden = dz((size_t)n_t * E);
-  hid_chunk = dz((size_t)kMaxChunk * n_t * E);
+  hid_chunk = dz((size_t)Runtime::kChunk * n_t * E);  // a verify chunk's or a prompt chunk's
   {
     std::vector<float> qv(HC, 1.0f / HC);
     quarter = (const float*)upload(qv.data(), HC * 4);

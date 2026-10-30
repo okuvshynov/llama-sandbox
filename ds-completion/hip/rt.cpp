@@ -195,7 +195,7 @@ Runtime::Runtime(const Model& model, RtOptions options, const std::string& fp8_p
     canon_rows = dalloc<float>((size_t)(kMoeMaxDies + 1) * C * hp.n_expert_used * E);
     canon_where = dalloc<int>((size_t)C * kMoeIdStride);
   }
-  logits_d = dalloc<float>((size_t)C * hp.n_vocab);
+  logits_d = dalloc<float>((size_t)DSpark::kMaxChunk * hp.n_vocab);  // only verify chunks get logits
   partial = dalloc<float>((size_t)kSplitMax * std::max(hp.n_vocab, 32768));
   A = {dalloc<uint8_t>((size_t)C * NH * HD), dalloc<float>((size_t)C * NH * HD / 32)};
   B = {dalloc<uint8_t>((size_t)C * NH * HD), dalloc<float>((size_t)C * NH * HD / 32)};
@@ -265,7 +265,7 @@ Runtime::Runtime(const Model& model, RtOptions options, const std::string& fp8_p
   setup_experts();
 }
 
-std::vector<int32_t> Runtime::verify(const std::vector<int32_t>& chunk) {
+std::vector<int32_t> Runtime::verify(const std::vector<int32_t>& chunk, bool head) {
   const int M = (int)chunk.size(), HD = hp.head_dim, WIN = hp.window;
   if (M < 1 || M > DSpark::kMaxChunk) throw std::runtime_error("verify: chunk of " + std::to_string(M));
   if (!ring_backup) ring_backup = dalloc<float>((size_t)hp.n_layer * DSpark::kMaxChunk * HD);
@@ -288,7 +288,7 @@ std::vector<int32_t> Runtime::verify(const std::vector<int32_t>& chunk) {
     CHECK(hipMemcpyAsync(cmp_backup[L] + (size_t)r * HD, S[L].cmp_score, (size_t)r * HD * 4, hipMemcpyDeviceToDevice, s));
   }
   verifying = true;
-  std::vector<int32_t> next = forward_chunk(chunk);
+  std::vector<int32_t> next = forward_chunk(chunk, head);
   verifying = false;
   return next;
 }
@@ -296,10 +296,10 @@ std::vector<int32_t> Runtime::verify(const std::vector<int32_t>& chunk) {
 // M tokens at positions n_past .. in one forward: every token computed exactly as decode()
 // would compute it alone (batched kernels are bit-identical per row), the greedy next token
 // after each. The sequence advances by M.
-std::vector<int32_t> Runtime::forward_chunk(const std::vector<int32_t>& toks) {
+std::vector<int32_t> Runtime::forward_chunk(const std::vector<int32_t>& toks, bool head) {
   const int M = (int)toks.size(), E = hp.n_embd, HC = hp.hc_mult;
   const int64_t V = hp.n_vocab;
-  if (M < 1 || M > kChunk) throw std::runtime_error("forward_chunk: " + std::to_string(M) + " tokens");
+  if (M < 1 || M > kChunk || (head && M > DSpark::kMaxChunk)) throw std::runtime_error("forward_chunk: " + std::to_string(M) + " tokens");
   if (n_past_ + M > opt.max_ctx) throw std::runtime_error("runtime: chunk past --max-ctx");
   auto t0 = Clock::now();
   pos = n_past_;
@@ -318,18 +318,26 @@ std::vector<int32_t> Runtime::forward_chunk(const std::vector<int32_t>& toks) {
   CHECK(hipMemcpyAsync(x, emb.data(), emb.size() * 4, hipMemcpyHostToDevice, s));
   CHECK(hipMemcpyAsync(pre, one_hot.data(), one_hot.size() * 4, hipMemcpyHostToDevice, s));
   for (int t = 0; t < M; t++) k_repeat(x + (size_t)t * E, E, HC, h + (size_t)t * E * HC, s);
+  chunked = true;
   for (int L = 0; L < hp.n_layer; L++) block(L, nullptr, M);
-  mark("head");
-  k_hc_pre(h, pre, E, x, s, M);
-  k_rms_norm(x, out_norm, x, E, M, hp.rms_eps, s);
-  k_gemv_bf16_m(out_w, (int)V, E, x, M, logits_d, partial, s);
-  std::vector<float> lg((size_t)M * V);
-  mark("end");
-  CHECK(hipMemcpyAsync(lg.data(), logits_d, lg.size() * 4, hipMemcpyDeviceToHost, s));
-  CHECK(hipStreamSynchronize(s));
-  std::vector<int32_t> next(M);
-  for (int t = 0; t < M; t++)
-    next[t] = (int32_t)(std::max_element(lg.begin() + (size_t)t * V, lg.begin() + (size_t)(t + 1) * V) - (lg.begin() + (size_t)t * V));
+  chunked = false;
+  std::vector<int32_t> next;
+  if (head) {
+    mark("head");
+    k_hc_pre(h, pre, E, x, s, M);
+    k_rms_norm(x, out_norm, x, E, M, hp.rms_eps, s);
+    k_gemv_bf16_m(out_w, (int)V, E, x, M, logits_d, partial, s);
+    std::vector<float> lg((size_t)M * V);
+    mark("end");
+    CHECK(hipMemcpyAsync(lg.data(), logits_d, lg.size() * 4, hipMemcpyDeviceToHost, s));
+    CHECK(hipStreamSynchronize(s));
+    next.resize(M);
+    for (int t = 0; t < M; t++)
+      next[t] = (int32_t)(std::max_element(lg.begin() + (size_t)t * V, lg.begin() + (size_t)(t + 1) * V) - (lg.begin() + (size_t)t * V));
+  } else {
+    mark("end");
+    CHECK(hipStreamSynchronize(s));
+  }
   if (route_log) write_route_records(toks.data(), M);
   if (cache) cache->step(M);  // a step boundary: the forward's GPU work has finished
   n_past_ += M;
@@ -544,7 +552,11 @@ void Runtime::quant(const float* xin, int n, Codes c, int M) { fp8_quant_act(xin
 
 // the exact fp8 GEMV on a quantized input (rows_per_group: block-diagonal, attn_output_a)
 void Runtime::gemv8(const Fp8W& w, Codes c, float* yout, int rows_per_group, int M) {
-  fp8_gemv(w.q, w.s, w.N, w.K, rows_per_group ? rows_per_group : w.N, Fp8Act{c.q, c.s}, M, yout, s);
+  // at most 8 inputs per call; every row's result is the same at any M (fp8_gemv.h)
+  const int rpg = rows_per_group ? rows_per_group : w.N, Kt = w.K * (w.N / rpg);
+  for (int m0 = 0; m0 < M; m0 += 8)
+    fp8_gemv(w.q, w.s, w.N, w.K, rpg, Fp8Act{c.q + (size_t)m0 * Kt, c.s + (size_t)m0 * Kt / 32}, std::min(8, M - m0),
+             yout + (size_t)m0 * w.N, s);
 }
 
 void Runtime::mark(const char* group) {
@@ -815,11 +827,30 @@ void Runtime::moe(int L, float* out, int M, Taps* taps) {
       CHECK(hipEventRecord(d.done, d.st));
       CHECK(hipSetDevice(opt.gpu));
     }
-  // the host: the CPU's misses, token by token
+  // the host: the CPU's misses; a chunk at once (each expert's rows read once for all its
+  // tokens, the same bits as token by token), a single token directly
   std::vector<char> has_cpu(M, 0);
   bool any_cpu = false;
   int cpu_row = 0;
-  for (int t = 0; t < M; t++) {
+  if (M > 1) {
+    std::vector<CpuMoeKernel::CpuRoute> routes(M);
+    for (int t = 0; t < M; t++) {
+      const MoeList& lc = h_moe.lists[(size_t)t * kMoeListStride + n_dies];
+      routes[t] = {lc.ids, lc.w, lc.count};
+      has_cpu[t] = lc.count > 0;
+      any_cpu |= lc.count > 0;
+      cpu_row += lc.count;
+    }
+    if (any_cpu) {
+      mark("ffn.wait_for_cpu_experts");
+      auto t1c = Clock::now();
+      const Layer& hl = m.layers[L];
+      const CpuExperts ce{hl.gate_exps, hl.up_exps, hl.down_exps, hp.swiglu_clamp[L]};
+      cpu_moe->forward_batch(ce, h_moe.x, M, routes.data(), opt.canon, h_yr);
+      last.cpu_moe_ms += ms_since(t1c);
+    }
+  }
+  for (int t = 0; t < M && M == 1; t++) {
     const MoeList& lc = h_moe.lists[(size_t)t * kMoeListStride + n_dies];
     if (lc.count == 0) continue;
     if (!any_cpu) mark("ffn.wait_for_cpu_experts");
@@ -884,8 +915,8 @@ void Runtime::block(int L, Taps* taps, int M) {
     const int d = dspark->target_index(L);
     const size_t nh = dspark->target_layers.size() * E;
     if (d >= 0)
-      for (int t = 0; t < M; t++)  // while verifying, per chunk position (only kept ones seed the draft)
-        k_hc_pre(ht(t), dspark->quarter, E, (verifying ? dspark->hid_chunk + t * nh : dspark->main_hidden) + (size_t)d * E, s);
+      for (int t = 0; t < M; t++)  // in a chunk, per position (verify: only kept ones seed the draft)
+        k_hc_pre(ht(t), dspark->quarter, E, (chunked ? dspark->hid_chunk + t * nh : dspark->main_hidden) + (size_t)d * E, s);
   }
   mark("hc");
   // each sublayer's mixes give the next sublayer's input mix (see Engine::block)
@@ -996,9 +1027,38 @@ Taps Runtime::run_layer(int L, const std::vector<float>& h_in, const std::vector
 }
 
 std::vector<float> Runtime::prefill(const std::vector<int32_t>& tokens) {
-  std::vector<float> logits;
+  if (tokens.empty()) return {};
   in_prefill = true;
-  for (size_t i = 0; i < tokens.size(); i++) logits = decode(tokens[i], i + 1 == tokens.size());
+  // chunks through forward_chunk: the dense projections are bit-identical per token at any M
+  // (README step 20), the attention part runs token by token, so the window ring and the
+  // compressor state end up exactly as after decode() per token
+  Times sum;
+  std::map<std::string, double> groups;
+  int chunks = 0;
+  for (size_t i = 0; i + 1 < tokens.size();) {
+    const size_t n = std::min<size_t>(std::clamp(opt.prefill_chunk, 1, kChunk), tokens.size() - 1 - i);
+    const int p0 = n_past_;
+    forward_chunk(std::vector<int32_t>(tokens.begin() + i, tokens.begin() + i + n), false);
+    if (dspark) {  // every position of the chunk into the draft's rings, as decode() does per token
+      const size_t nh = dspark->target_layers.size() * hp.n_embd;
+      for (size_t j = 0; j < n; j++) dspark->seed(p0 + (int)j, dspark->hid_chunk + j * nh);
+      CHECK(hipMemcpyAsync(dspark->main_hidden, dspark->hid_chunk + (n - 1) * nh, nh * 4, hipMemcpyDeviceToDevice, s));
+    }
+    i += n;
+    if (profile) {  // the prompt's chunks summed: where prompt processing goes
+      sum.total_ms += last.total_ms, sum.cpu_moe_ms += last.cpu_moe_ms, sum.wait_ms += last.wait_ms;
+      sum.gpu_experts += last.gpu_experts, sum.cpu_experts += last.cpu_experts;
+      for (auto& [g, ms] : last_groups) groups[g] += ms;
+      chunks++;
+    }
+  }
+  if (profile && chunks) {
+    fprintf(stderr, "# prompt profile: %d chunks of up to %d, %.0f ms (cpu experts %.0f, waiting for the GPU %.0f; expert-tokens gpu %d cpu %d); GPU timeline:",
+            chunks, std::clamp(opt.prefill_chunk, 1, kChunk), sum.total_ms, sum.cpu_moe_ms, sum.wait_ms, sum.gpu_experts, sum.cpu_experts);
+    for (auto& [g, ms] : groups) fprintf(stderr, " %s %.0f", g.c_str(), ms);
+    fprintf(stderr, "\n");
+  }
+  std::vector<float> logits = decode(tokens.back(), true);
   in_prefill = false;
   return logits;
 }

@@ -46,3 +46,6 @@ void canon_act_blocks(const float* x, int b0, int b1, CanonAct& a);
 float canon_dot_ref(const uint8_t* row, const CanonAct& a);  // scalar: the specification
 // rows r0 .. r1 - 1 (row stride row_bytes) -> y[r0 .. r1 - 1]; AVX-512 VNNI
 void canon_dot_rows(const uint8_t* rows, size_t row_bytes, const CanonAct& a, int r0, int r1, float* y);
+// the same rows against nx activations (y[j][r] for a[j]), each row decoded once per 16 blocks;
+// every y[j] is bit-identical to canon_dot_rows on a[j] alone
+void canon_dot_rows_multi(const uint8_t* rows, size_t row_bytes, const CanonAct* const* a, int nx, int r0, int r1, float* const* y);

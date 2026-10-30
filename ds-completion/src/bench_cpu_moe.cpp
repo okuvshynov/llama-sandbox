@@ -1,8 +1,10 @@
 // bench-cpu-moe: the CPU routed-expert kernel (cpu_moe.h) against ggml's mul_mat_id path (what
 // the runtime used so far) and against a double-precision host computation of the reference math.
 //
-//   bench-cpu-moe -m <model.gguf> [-t 32] [--tokens 5] [--check-layers 0,20,39] [-k 6]
+//   bench-cpu-moe -m <model.gguf> [-t 32] [--tokens 5] [--check-layers 0,20,39] [-k 6] [--batch T]
 //
+// --batch T: prompt chunks (forward_batch): T tokens all routed to the same k experts per layer,
+// batched against T one-token calls, fast and canonical, outputs compared bit for bit.
 // -k: experts per layer in the speed part (the runtime's CPU usually gets 1-2: its misses)
 //
 // Accuracy: for a few layers, both against the double reference (same fp8 fake quantization of
@@ -107,7 +109,7 @@ static double rel(const std::vector<float>& a, const std::vector<float>& b) {
 int main(int argc, char** argv) {
   setvbuf(stdout, nullptr, _IOLBF, 0);
   std::string path;
-  int threads = 32, tokens = 5, kspeed = 0;
+  int threads = 32, tokens = 5, kspeed = 0, batch = 0;
   std::vector<int> check = {0, 20, 39};
   for (int i = 1; i < argc; i++) {
     std::string a = argv[i];
@@ -115,6 +117,7 @@ int main(int argc, char** argv) {
     else if (a == "-t") threads = atoi(argv[++i]);
     else if (a == "--tokens") tokens = atoi(argv[++i]);
     else if (a == "-k") kspeed = atoi(argv[++i]);
+    else if (a == "--batch") batch = atoi(argv[++i]);
     else if (a == "--check-layers") { check.clear(); for (char* p = argv[++i]; *p;) { check.push_back((int)strtol(p, &p, 10)); if (*p == ',') p++; } }
   }
   Model m;
@@ -176,6 +179,38 @@ int main(int argc, char** argv) {
   }
 
   const int KS = kspeed > 0 && kspeed <= K ? kspeed : K;
+  if (batch > 0) {
+    const int T = batch;
+    printf("# batch: %d tokens x the same %d experts, all %d layers\n", T, KS, hp.n_layer);
+    for (int canon = 0; canon < 2; canon++) {
+      double ms_one = 0, ms_batch = 0;
+      long diff = 0;
+      for (int L = 0; L < hp.n_layer; L++) {
+        std::vector<int> ids;
+        std::vector<float> w, x0, x((size_t)T * E);
+        pick(ids, w, x0);
+        for (auto& v : x) v = nd(rng);
+        const CpuExperts ex = {m.layers[L].gate_exps, m.layers[L].up_exps, m.layers[L].down_exps, hp.swiglu_clamp[L]};
+        const size_t rows = canon ? (size_t)T * KS : (size_t)T;
+        std::vector<float> y1(rows * E), y2(rows * E);
+        auto t0 = Clock::now();
+        for (int t = 0; t < T; t++) {
+          if (canon) kern.forward_canon_rows(ex, x.data() + (size_t)t * E, ids.data(), w.data(), KS, y1.data() + (size_t)t * KS * E);
+          else kern.forward(ex, x.data() + (size_t)t * E, ids.data(), w.data(), KS, y1.data() + (size_t)t * E);
+        }
+        auto t1 = Clock::now();
+        std::vector<CpuMoeKernel::CpuRoute> r(T, {ids.data(), w.data(), KS});
+        kern.forward_batch(ex, x.data(), T, r.data(), canon, y2.data());
+        auto t2 = Clock::now();
+        ms_one += std::chrono::duration<double, std::milli>(t1 - t0).count();
+        ms_batch += std::chrono::duration<double, std::milli>(t2 - t1).count();
+        diff += memcmp(y1.data(), y2.data(), y1.size() * 4) != 0;
+      }
+      printf("%s: one token at a time %.1f ms, batched %.1f ms (%.3f vs %.3f ms per expert-token); layers differing: %ld\n",
+             canon ? "canonical" : "fast", ms_one, ms_batch, ms_one / (hp.n_layer * T * KS), ms_batch / (hp.n_layer * T * KS), diff);
+    }
+    return 0;
+  }
   printf("# speed: one token = %d layers x %d experts (%.1f MB of weights)\n", hp.n_layer, KS,
          hp.n_layer * KS * 3.0 * ggml_nbytes(m.layers[0].gate_exps) / hp.n_expert / 1e6);
   const double bytes = hp.n_layer * KS * 3.0 * ggml_nbytes(m.layers[0].gate_exps) / hp.n_expert;

@@ -1,0 +1,11 @@
+# bin/bench-cpu-moe -m $M -t 16 --check-layers "" --batch T (T = 1, 8, 16)
+# commit 73b6891 + prefill changes (uncommitted at the time); CPU only (sclk n/a); 2026-10-30
+# batch: 1 tokens x the same 6 experts, all 40 layers
+fast: one token at a time 74.9 ms, batched 76.8 ms (0.312 vs 0.320 ms per expert-token); layers differing: 0
+canonical: one token at a time 65.1 ms, batched 67.5 ms (0.271 vs 0.281 ms per expert-token); layers differing: 0
+# batch: 8 tokens x the same 6 experts, all 40 layers
+fast: one token at a time 443.0 ms, batched 185.6 ms (0.231 vs 0.097 ms per expert-token); layers differing: 0
+canonical: one token at a time 425.2 ms, batched 331.3 ms (0.221 vs 0.173 ms per expert-token); layers differing: 0
+# batch: 16 tokens x the same 6 experts, all 40 layers
+fast: one token at a time 794.0 ms, batched 331.8 ms (0.207 vs 0.086 ms per expert-token); layers differing: 0
+canonical: one token at a time 802.1 ms, batched 708.8 ms (0.209 vs 0.185 ms per expert-token); layers differing: 0

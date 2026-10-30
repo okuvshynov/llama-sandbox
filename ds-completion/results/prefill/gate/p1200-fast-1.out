@@ -1,0 +1,6 @@
+-proached: [METHOD.md](METHOD.md).
+The reference implementation: `../llama.cpp` (the fork).
+
+## Layout
+
+- `src/`

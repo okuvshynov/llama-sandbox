@@ -30,6 +30,13 @@ class CpuMoeKernel {
   // in expert order
   void forward_canon_rows(const CpuExperts& L, const float* x, const int* ids, const float* w, int k, float* rows);
   void forward_canon(const CpuExperts& L, const float* x, const int* ids, const float* w, int k, float* y);
+  // A prompt chunk's experts at once: token t's routed experts are routes[t] (x: [T][n_embd]).
+  // Grouped by expert, so every expert's rows are read once for all its tokens; per (token,
+  // expert) the arithmetic is forward()'s (canon: forward_canon_rows'), so the results are
+  // bit-identical. out: canon, every pair's row [in token order, then list order][E]; else per
+  // token its sum [T][E] (tokens without experts: untouched).
+  struct CpuRoute { const int* ids; const float* w; int count; };
+  void forward_batch(const CpuExperts& L, const float* x, int T, const CpuRoute* routes, bool canon, float* out);
   // control for the benchmark: the same tasks and rows, only reading the bytes
   uint64_t touch(const CpuExperts& L, const int* ids, int k);
 
@@ -38,4 +45,6 @@ class CpuMoeKernel {
   std::vector<float> xq, gate_out, up_out, act_q, act_l, down_out;  // scratch (act_l: lane order)
   CanonAct x_c;
   std::vector<CanonAct> act_c;
+  std::vector<float> b_gate, b_up, b_xl, b_act, b_down;  // forward_batch scratch
+  std::vector<CanonAct> b_xc, b_ac;
 };

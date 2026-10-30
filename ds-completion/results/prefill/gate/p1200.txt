@@ -1,0 +1,19 @@
+# ds-completion — DeepSeek-V4.1-Flash inference for the Mac Pro (755 GB RAM, 4x Vega II)
+
+Goal: `./ds-completion -m <model> -p "prompt"`. One model, one machine, one
+sequence. Priorities: correctness, clarity, then performance. Non-goals: other
+models, other quants, other hardware, serving features.
+
+Status, 2026-10-29 (sclk 2, 16 CPU threads; details in [OVERVIEW.md](OVERVIEW.md)):
+
+- CPU only: 3.5 t/s decode, matching the reference (the llama.cpp fork: 3.5 t/s).
+- Own GPU runtime (exact fp8, deterministic), routed experts on the CPU: ~12 t/s.
+- The most-used experts placed on the 4 GPUs (`--placement placements/study30.txt`): 17.7-21.7 t/s.
+- Speculative decoding with the DSpark draft (`--dspark ... --spec`): +7% to +33% on held-out
+  prompts, output byte-identical to plain greedy decoding.
+- In progress: an adaptive expert cache (PLAN.md "Adaptive expert cache"); phases 0-2 done
+  (steps 28-30), placement-invariant numerics in the runtime (`--canon`, step 31).
+
+How to run it: [QUICKSTART.md](QUICKSTART.md). Plans and cost models: [PLAN.md](PLAN.md).
+Operand types and accumulation: [NUMERICS.md](NUMERICS.md). A 20-minute overview:
+[OVERVIEW.md](OVERVIEW.md). How the work was ap

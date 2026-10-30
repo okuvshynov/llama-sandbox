@@ -37,7 +37,8 @@ Speed
 | 17 | Tensor parallelism, 2-way then 4-way (C1/C2) | planned | split the dense GEMVs over dies: ~-6..10 ms per step, matters once experts are mostly on GPUs |
 | 18 | Shared expert by TP, routed by EP (C4) | planned | the dense shared expert splits like any other GEMV under TP |
 | 19 | DSpark speculative decoding (E1) | done | `--dspark ... --spec`, output identical to plain greedy; held-out prompts +7% to +33% (geometric mean +22%), oracle placement +19% / +71% (README steps 19-26) |
-| 20 | Batched prompt processing (F) | planned | read each weight once for many prompt tokens; matters for long prompts |
+| 20 | Batched prompt processing (F) | in progress | README step 37: chunks of up to 512, CPU experts batched, byte-identical output: ~20 -> 33.6 t/s. Next: overlap CPU experts with GPU work (two halves per chunk), an fp8 matrix-multiply kernel for many tokens, a batched attention core; the canonical CPU kernel barely gains from batching |
+| 30 | Expert registration stalls the GPU | open | with `--cache-loads`, `hipHostRegister` of 289 GB (~90 s, more after the page cache was evicted) blocks every other HIP call: a run's first ~90 s do nothing. Register in small pieces between steps, or before the model is used |
 | 21 | Dynamic expert cache (A2) | merged into 16 | item 13 showed recent usage beats fixed sets |
 | 22 | Faster GPU fp4 expert kernel | partly done | 287 -> 406 GB/s (item 8); the per-row fp8 activation decode is the next cost; matters little while it overlaps |
 | 22a | Router + dispatch fusion, copy only what dies need | idea | the per-layer expert overhead (dispatch, copies, waits) is ~7 ms per token at high hit rates |

@@ -1669,3 +1669,54 @@ at `--effort max`, 39 tokens on both sides. First long-reasoning run (the person
 31.7 t/s. Its prompt took 5 minutes for 192 tokens because the model's pages had been evicted by
 the step 35 reference runs (~500 GB) and were read from disk on first use; warm, the prompt runs
 at its usual ~15 t/s.
+
+## Step 37: the prompt in chunks (PLAN item 20, stage 1 and the first part of stage 2)
+
+The prompt went through the runtime one token at a time (~19-25 t/s): a 30k-token document took
+half an hour. Every change below keeps the output byte-identical to token by token
+(`scripts/prefill-gate.sh`, `results/prefill/gate.txt`).
+
+- **Chunks through the batched forward.** `Runtime::prefill` runs all but the last prompt token
+  through `forward_chunk` (the path speculation verifies with) without the output head, then
+  `decode()` for the last. The dense projections are bit-identical per token at any batch size
+  (step 20), the attention part still runs token by token inside the chunk, so the window ring
+  and compressor state end up exactly as after per-token decoding. First version (chunks of 8
+  through verify + commit): 7,384-token prompt 19.4 -> 24.5 t/s plain, 17.8 -> 27.6 with `--spec`.
+- **Chunks of up to 512** (`--prefill-chunk N`, default 512 = `Runtime::kChunk`). The
+  fp8 and f32/bf16 matrix-vector kernels take at most 8 inputs, so larger chunks call them in
+  slices of 8 (each row's result does not depend on M). The per-token buffers grew (~1 GB on die
+  0: 1,254 expert slots instead of ~1,300). That changes the fast path's bits through the
+  placement, so the gate compares with `--canon` across builds, and fast chunk 1 against 512
+  within one build.
+- **Profile** (`--profile` now also sums the prompt's chunks): CPU experts were 53% of the time,
+  0.25 ms per expert-token, one token at a time even inside a chunk.
+- **CPU experts batched** (`CpuMoeKernel::forward_batch`): a chunk's (token, expert) pairs grouped
+  by expert, every expert's rows read once for all its tokens, per pair exactly the per-token
+  arithmetic. The fast kernel tiles 4 rows x 4 tokens (an input block loaded once for 4 rows, a
+  weight block decoded once for 4 tokens); the canonical one decodes a row once for all tokens.
+  `bench-cpu-moe --batch T` (`results/prefill/bench-cpu-moe-batch.txt`, 6 experts per layer,
+  outputs compared bit for bit, none differ):
+
+| tokens per expert | fast, one at a time | fast, batched | canonical, one at a time | canonical, batched |
+|---|---|---|---|---|
+| 1 | 0.31 ms | 0.32 ms | 0.27 ms | 0.28 ms |
+| 8 | 0.23 | 0.097 | 0.22 | 0.173 |
+| 16 | 0.21 | 0.086 | 0.21 | 0.185 |
+
+  (ms per expert-token.) One token is bound by memory (18.8 MB per expert at ~70 GB/s); batched,
+  the fast kernel is bound by its own arithmetic (three fp32 operations per 32 products, fixed by
+  its numerics), the canonical one more so (three integer digit passes per block).
+
+**Where a prompt token goes now** (`results/prefill/profile.txt`, 1,989 tokens, chunks of 512;
+the clock level of that sitting is uncertain, 2 or 6): 33.6 t/s (from ~20 token by token;
+at sclk 2 in the gate: 35.0 vs 16.8 t/s fast, 26.3 vs 17.4 with `--canon`, whose CPU kernel
+gains little from batching): CPU experts 15.7 ms per token, while the GPUs wait;
+the GPU's own work ~15 ms (attention core 5.0, fp8 projections ~7.5: 8-input kernels, router,
+indexer, compressor). Next (PLAN item 20): overlap the CPU experts with the GPU's work on the
+other half of a chunk, then an fp8 matrix-multiply kernel for many tokens and a batched
+attention core.
+
+Found on the way: with `--cache-loads`, the first ~90 s of a run stall every GPU call, while the
+loader registers the 289 GB of expert tensors (`hipHostRegister` blocks the other HIP calls);
+after a memory-heavy job it also pages the model back in. A short prompt then "takes" 90-300 s
+(step 36's slow prompt was mostly this, not only the page cache). Open (PLAN).

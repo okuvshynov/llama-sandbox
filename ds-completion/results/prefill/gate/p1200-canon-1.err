@@ -1,0 +1,7 @@
+# mapped 289 GB of CPU experts in 1.1 s
+# runtime: 6.37 GiB of fp8 weights on GPU 0
+# runtime: 1.75 GiB of small weights on GPU 0
+# runtime: 6531 experts (42.5% of the loaded layers' pairs) on GPUs (0: 1236, 1: 1765, 2: 1765, 3: 1765), loaded in 5.0 s
+# loaded in 8.9 s; prompt 364 tokens; fake-quant on; 16 threads
+# routed experts: 62.3% on GPUs (55925 of 89760)
+# prompt: 364 tokens in 21.15 s = 17.21 t/s; generation: 10 tokens in 0.67 s = 14.99 t/s

@@ -4,6 +4,8 @@
 
 #include <immintrin.h>
 
+#include <algorithm>
+
 #include <cmath>
 #include <cstring>
 
@@ -168,6 +170,59 @@ inline void dot_rows_r(const Consts& K, const uint8_t* rows, size_t row_bytes, c
   }
 }
 
+// One row against nx activations (prompt chunks: several tokens routed to one expert). Per
+// 16-block group the row's 8 weight registers are decoded once, then every activation takes
+// exactly dot_rows_r's steps, so each result is bit-identical to a one-activation call.
+inline void dot_row_multi(const Consts& K, const uint8_t* row, const CanonAct* const* a, int nx, float* const* y, int r) {
+  const int nb = a[0]->nb;
+  constexpr int NXM = 8;
+  for (int x0 = 0; x0 < nx; x0 += NXM) {
+    const int n = std::min(NXM, nx - x0);
+    __m512 acc[NXM];
+    for (int j = 0; j < n; j++) acc[j] = _mm512_setzero_ps();
+    for (int b0 = 0; b0 < nb; b0 += 16) {
+      const int nk = nb - b0 >= 16 ? 8 : (nb - b0) / 2;
+      const __mmask16 live = nk == 8 ? (__mmask16)0xFFFF : (__mmask16)((1u << (2 * nk)) - 1);
+      __m512i Wd[8];
+      for (int k = 0; k < nk; k++) {
+        const int b = b0 + 2 * k;
+        if ((k & 1) == 0 && x0 == 0) _mm_prefetch((const char*)(row + (size_t)b * BLK + kPrefetch), _MM_HINT_T1);
+        const __m128i c0 = _mm_loadu_si128((const __m128i*)(row + (size_t)b * BLK + 1));
+        const __m128i c1 = _mm_loadu_si128((const __m128i*)(row + (size_t)(b + 1) * BLK + 1));
+        const __m512i v = _mm512_inserti64x4(_mm512_castsi256_si512(_mm256_broadcastsi128_si256(c0)),
+                                             _mm256_broadcastsi128_si256(c1), 1);
+        Wd[k] = _mm512_shuffle_epi8(K.lut, _mm512_and_si512(_mm512_srlv_epi64(v, K.sh), K.low4));
+      }
+      const __m512i e = _mm512_and_si512(_mm512_mask_i32gather_epi32(_mm512_setzero_si512(), live, K.gidx, row + (size_t)b0 * BLK, 1),
+                                         _mm512_set1_epi32(0xFF));
+      const __m512 escale = _mm512_castsi512_ps(_mm512_slli_epi32(e, 23));
+      for (int j = 0; j < n; j++) {
+        const CanonAct& aj = *a[x0 + j];
+        __m512i T[8];
+        for (int k = 0; k < 8; k++) {
+          if (k >= nk) { T[k] = _mm512_setzero_si512(); continue; }
+          const size_t off = (size_t)(b0 + 2 * k) * QB;
+          const __m512i d2 = _mm512_loadu_si512(aj.d2.data() + off), d1 = _mm512_loadu_si512(aj.d1.data() + off),
+                        d0 = _mm512_loadu_si512(aj.d0.data() + off);
+          __m512i t = _mm512_dpbusd_epi32(_mm512_setzero_si512(), Wd[k], d2);
+          t = _mm512_dpbusd_epi32(_mm512_slli_epi32(t, 7), Wd[k], d1);
+          T[k] = _mm512_dpbusd_epi32(_mm512_slli_epi32(t, 7), Wd[k], d0);
+        }
+        const __m512i corr = _mm512_maskz_loadu_epi32(live, aj.corr.data() + b0);
+        const __m512 c = _mm512_maskz_loadu_ps(live, aj.c.data() + b0);
+        const __m512i S = _mm512_sub_epi32(_mm512_permutexvar_epi32(K.unperm, reduce8(T)), corr);
+        const __m512 scale = _mm512_mul_ps(escale, c);
+        acc[j] = _mm512_mask_add_ps(acc[j], live, acc[j], _mm512_mul_ps(_mm512_cvtepi32_ps(S), scale));
+      }
+    }
+    for (int j = 0; j < n; j++) {
+      __m512 v = acc[j];
+      for (int i = 0; i < 4; i++) v = _mm512_add_ps(v, _mm512_permutexvar_ps(K.xor_idx[i], v));
+      y[x0 + j][r] = _mm512_cvtss_f32(v);
+    }
+  }
+}
+
 }  // namespace
 
 void canon_dot_rows(const uint8_t* rows, size_t row_bytes, const CanonAct& a, int r0, int r1, float* y) {
@@ -177,4 +232,9 @@ void canon_dot_rows(const uint8_t* rows, size_t row_bytes, const CanonAct& a, in
   // kernel)
   for (; r + 4 <= r1; r += 4) dot_rows_r<4>(K, rows + (size_t)r * row_bytes, row_bytes, a, y + r);
   for (; r < r1; r++) dot_rows_r<1>(K, rows + (size_t)r * row_bytes, row_bytes, a, y + r);
+}
+
+void canon_dot_rows_multi(const uint8_t* rows, size_t row_bytes, const CanonAct* const* a, int nx, int r0, int r1, float* const* y) {
+  static const Consts K;
+  for (int r = r0; r < r1; r++) dot_row_multi(K, rows + (size_t)r * row_bytes, a, nx, y, r);
 }

@@ -1,0 +1,10 @@
+# bin-hip/ds-completion -m $M --rt $F8 --placement placements/study30.txt -f <first 6,000 bytes of prompts/ds-completion-readme-ddf9b43.md + "\n\nSummarize..." = 1,989 tokens> -n 1 --profile [--prefill-chunk N]
+# commit 73b6891 + prefill changes, at the three stages below (each line from its own build); sclk uncertain (read as 6 earlier in the session, 2 at commit time; all rows were measured in one sitting); 2026-10-30
+# "prompt profile": the prompt's chunks summed; GPU timeline groups in ms (a group charged with idle time was waiting on the host)
+stage                                       prompt t/s  total ms  cpu experts ms  wait_for_cpu ms  attn.core  attn.out  ffn.shared  ffn.router  attn.indexer  attn.q  attn.compressor
+token by token (before)                         ~19-20         -               -                -          -         -           -           -             -       -                -
+chunks of 8 via verify+commit                    24.67     80416           47731            42457      10224      5701        6478        3266          2609    2159             1858
+chunks of 64, CPU experts per token              25.97     76521           47773            41506      10139      5561        6559        3021          2555    1960             1781
+chunks of 512, CPU experts batched (tiled)       33.64     59059           31161            24846      10061      5535        6517        2847          2502    1931             1722
+# expert-tokens: gpu 286,206 / cpu 190,914 at 512 (die 0 has 1,254 slots instead of 1,302: the bigger chunk buffers)
+# old vs new on the 7,384-token prompt (chunks of 8, verify+commit, byte-identical): plain 19.39 -> 24.47 t/s, --spec 17.77 -> 27.58 t/s

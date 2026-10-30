@@ -35,6 +35,7 @@ struct RtOptions {
   int gpu = 0;         // the die for the dense part and the state (ROCm device index)
   int n_threads = 16;  // CPU expert kernel
   int max_ctx = 4096;  // capacity of the compressed caches
+  int prefill_chunk = 512;  // prompt tokens per forward (1 .. Runtime::kChunk)
   // routed experts on GPUs (expert_pool.h): a ranked placement file fills these dies' free
   // memory, keeping `reserve_gb` free on each; empty = every routed expert on the CPU
   std::string placement;
@@ -68,7 +69,8 @@ class Runtime {
   // one step for `token` at position n_past(): returns the logits (empty when
   // want_logits is false: prompt tokens before the last skip the 1.3 GB head)
   std::vector<float> decode(int32_t token, bool want_logits = true);
-  // the prompt, one token at a time (decode() for each); the last token's logits
+  // the prompt: all but its last token in chunks of up to kChunk (forward_chunk, no head), then
+  // decode() for the last; its logits
   std::vector<float> prefill(const std::vector<int32_t>& tokens);
 
   // teacher-forced single layer (tests): begin_step(token), then run_layer for L = 0.. in
@@ -91,8 +93,11 @@ class Runtime {
   // and the draft is seeded with the kept positions only. The compressor state needs nothing:
   // it is keyed by position and only read after the token completing it, which the real tokens
   // rewrite.
-  std::vector<int32_t> verify(const std::vector<int32_t>& chunk);
-  static constexpr int kChunk = DSpark::kMaxChunk;  // most tokens one forward runs at once
+  // head = false: no logits (prompt chunks), returns an empty vector
+  std::vector<int32_t> verify(const std::vector<int32_t>& chunk, bool head = true);
+  // most tokens one forward runs at once: a prompt chunk (prefill); a verify chunk is at most
+  // DSpark::kMaxChunk. Per-token buffers are sized by it.
+  static constexpr int kChunk = 512;
   void commit(int n_keep);
   DraftResult draft(int32_t anchor, bool keep_logits = false);
   void draft_log_hidden(const std::string& path) {
@@ -216,6 +221,7 @@ class Runtime {
 
   // verification (verify / commit)
   bool verifying = false;
+  bool chunked = false;  // in forward_chunk: per-token draft hiddens go to dspark->hid_chunk
   int verify_p0 = 0, verify_m = 0;
   float* ring_backup = nullptr;  // [n_layer][kMaxChunk][head_dim]: the ring slots a chunk overwrites
   // compressor partial groups (ratio > 1): a later rejected position can overwrite the slot of a
@@ -239,7 +245,7 @@ class Runtime {
   void block(int L, Taps* taps, int M = 1);
   void engram(int L, int M = 1);
   void fetch_engram_rows(const std::vector<int32_t>& chunk);
-  std::vector<int32_t> forward_chunk(const std::vector<int32_t>& toks);  // the greedy next token after each
+  std::vector<int32_t> forward_chunk(const std::vector<int32_t>& toks, bool head = true);  // the greedy next token after each
   void tap(Taps* taps, const char* name, const float* d, std::vector<int64_t> ne);
   void mark(const char* group);
   std::vector<std::pair<const char*, hipEvent_t>> marks;

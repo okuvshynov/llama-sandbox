@@ -253,11 +253,12 @@ static void gemv_m(const T* W, int N, int K, const float* x, int M, float* y, fl
   split_sum_m_kernel<<<dim3(cdiv(N, 256), M), 256, 0, s>>>(partial, N, splits, y);
 }
 
+// more than 8 inputs: slices of 8 (each row's result does not depend on M)
 void k_gemv_f32_m(const float* W, int N, int K, const float* x, int M, float* y, float* partial, hipStream_t s) {
-  gemv_m<float, 4>(W, N, K, x, M, y, partial, s);
+  for (int m0 = 0; m0 < M; m0 += 8) gemv_m<float, 4>(W, N, K, x + (size_t)m0 * K, std::min(8, M - m0), y + (size_t)m0 * N, partial, s);
 }
 void k_gemv_bf16_m(const uint16_t* W, int N, int K, const float* x, int M, float* y, float* partial, hipStream_t s) {
-  gemv_m<uint16_t, 8>(W, N, K, x, M, y, partial, s);
+  for (int m0 = 0; m0 < M; m0 += 8) gemv_m<uint16_t, 8>(W, N, K, x + (size_t)m0 * K, std::min(8, M - m0), y + (size_t)m0 * N, partial, s);
 }
 
 void k_gemv_f32(const float* W, int N, int K, const float* x, float* y, float* partial, hipStream_t s) {

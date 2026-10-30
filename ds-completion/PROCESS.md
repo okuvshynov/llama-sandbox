@@ -244,6 +244,19 @@ Each rule is followed by where it mattered most.
   `encode_messages` (same tokens). **Noted:** a slow first prompt after a memory-heavy job is the
   model's pages coming back from disk, not the runtime (README step 36).
 
+- **Batched prompt processing (README step 37).** Order chosen by payoff for the person: prompt
+  speed was the practical limit of long context. **First the cheapest change:** prompt chunks
+  through the existing verify path (bit-identical per token): +26% / +55%, every output the same.
+  **Then a profile before designing more:** CPU experts were 53% of the time and did not
+  amortize. **Predicted:** chunks of 64 would share expert reads. **Measured:** no change; with
+  384 experts, 64 tokens give each CPU expert about one token. **Then** chunks of 512: still no
+  change, and a kernel benchmark showed why: batched, the kernel was compute-bound, not reading
+  the weights; tiling 4 rows x 4 tokens fixed it (0.27 -> 0.086 ms per expert-token at 16
+  tokens, bit-identical). **Caught on the way:** a "difference" in the fast path that was the
+  expert placement changing with buffer sizes (the reason canonical numerics exist): the gate
+  compares with `--canon` across builds. And a separate stall: expert registration blocks the
+  GPU for ~90 s (step 36's slow prompt).
+
 ## 4. Predictions against outcomes
 
 Estimates were made before measuring wherever possible; this is how they fared.
@@ -260,6 +273,7 @@ Estimates were made before measuring wherever possible; this is how they fared.
 | load cost at 100 loads/s (30) | 2.7% (the simulation's pessimistic case) | ~1.1% with direct copies | |
 | canonical cost end to end (32) | ~5% (kernel benchmarks) | 9-11%, then 1-2% after two fixes | benchmarks used 6 experts; the runtime's CPU gets 1-2 |
 | cache, `--spec`, 100 loads/s (29 -> 32) | ~28.9 t/s, 87% hits (1,024 tokens, no canonical cost) | 24.5 t/s, 80% hits (300 tokens) | shorter runs adapt for a larger share of the run |
+| chunks of 64 share CPU expert reads (37) | most of the 53% saved | nothing | 384 experts: ~1 token per CPU expert per chunk; then compute-bound until tiled |
 | reference run, 20k tokens (35) | 6-10 h (scaled from 1,100 tokens) | 42 min | the 1,100-token run was mostly fixed cost |
 
 ## 5. Mistakes and how they were caught

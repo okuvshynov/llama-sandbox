@@ -120,6 +120,9 @@ Unless stated: sclk 2, 16 CPU threads (32 before README step 18), the study30 pl
 | 30 | `bench-expert-load.txt`, `load-test/` | `bin-hip/bench-expert-load -m $M`, `scripts/load-test.sh` |
 | 31-32 | `canon-gate.txt`, `canon-gate/` | `scripts/canon-gate.sh` (rerun for step 32) |
 | 34 | `check-topk.txt` | `~/venvs/ds-ref/bin/python ref/check_topk.py` (runs `bin-hip/test-topk`) |
+| 37 | `prefill/gate.txt`, `prefill/gate/` | `scripts/prefill-gate.sh <baseline ds-completion>` (baseline: a build of commit 73b6891, token-by-token prompt) |
+| 37 | `prefill/profile.txt` | `bin-hip/ds-completion ... -f <prompt> -n 1 --profile --prefill-chunk N` (command and stages in the file) |
+| 37 | `prefill/bench-cpu-moe-batch.txt` | `bin/bench-cpu-moe -m $M -t 16 --check-layers "" --batch T` |
 | 35 | `ref-readme20k.txt`, `ref-readme20k-scores.txt` | `ref/ds_ref.py --file prompts/ds-completion-readme-ddf9b43.md --prompt-tokens 20000 --n-decode 8 --max-seq-len 20480 --keep-last 32 [--scores]` (~42 min, ~500 GB peak), then `ref/export_golden.py` (only the `--scores` run is kept) |
 | 35 | `rt-readme20k.txt`, `rt-readme20k-e2e.txt`, `compare-readme20k-ref-vs-rt.txt` | `bin-hip/ds-test -m $M -g data/golden/readme20k-s --runtime $F8 --dump-topk data/ds/readme20k-topk.bin` (~35 min); `... -g data/golden/readme20k-s --runtime $F8 --e2e data/ds/readme20k-rt.f32`; `ref/compare_logits.py data/ref/readme20k-s.pt data/ds/readme20k-rt.f32` (the e2e and compare files name `readme20k`, the first run without `--scores`: bit-identical in every tensor it has, since deleted) |
 | 35 | `topk-ties-readme20k.txt` | `~/venvs/ds-ref/bin/python ref/check_topk_ties.py data/golden/readme20k-s data/ds/readme20k-topk.bin` |

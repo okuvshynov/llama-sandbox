@@ -1,0 +1,97 @@
+# ds-completion — DeepSeek-V4.1-Flash inference for the Mac Pro (755 GB RAM, 4x Vega II)
+
+Goal: `./ds-completion -m <model> -p "prompt"`. One model, one machine, one
+sequence. Priorities: correctness, clarity, then performance. Non-goals: other
+models, other quants, other hardware, serving features.
+
+Status, 2026-10-29 (sclk 2, 16 CPU threads; details in [OVERVIEW.md](OVERVIEW.md)):
+
+- CPU only: 3.5 t/s decode, matching the reference (the llama.cpp fork: 3.5 t/s).
+- Own GPU runtime (exact fp8, deterministic), routed experts on the CPU: ~12 t/s.
+- The most-used experts placed on the 4 GPUs (`--placement placements/study30.txt`): 17.7-21.7 t/s.
+- Speculative decoding with the DSpark draft (`--dspark ... --spec`): +7% to +33% on held-out
+  prompts, output byte-identical to plain greedy decoding.
+- In progress: an adaptive expert cache (PLAN.md "Adaptive expert cache"); phases 0-2 done
+  (steps 28-30), placement-invariant numerics in the runtime (`--canon`, step 31).
+
+How to run it: [QUICKSTART.md](QUICKSTART.md). Plans and cost models: [PLAN.md](PLAN.md).
+Operand types and accumulation: [NUMERICS.md](NUMERICS.md). A 20-minute overview:
+[OVERVIEW.md](OVERVIEW.md). How the work was approached, decision by decision:
+[PROCESS.md](PROCESS.md). How to rebuild the setup and rerun every result:
+[REPRODUCE.md](REPRODUCE.md).
+
+## Docs and commits
+
+Every commit that changes code, scripts or results updates, in the same commit: this file (a
+step: what was done and measured), PROCESS.md (the question, prediction, result and decision),
+REPRODUCE.md (new scripts and results and what produces them), and QUICKSTART.md / OVERVIEW.md /
+PLAN.md when what they say changed. New result files start with a `#` header naming the command
+or script, the commit, the clock level and the date. (The rule for the assistant is in the
+sandbox's CLAUDE.md.)
+
+## Tools
+
+```bash
+make                                      # links the fork's CPU ggml (static)
+M=~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf
+bin/ds-completion -m $M -p "Hello, how are you?" --chat -n 64    # or --think, or raw text
+make HIP=1   # -> bin-hip/: also the own GPU runtime (ROCm 6.3.4; same CPU fork libraries)
+bin/fp8pack -m $M -o ~/llms/ds-1017-fp8/dense-fp8.gguf            # fp8 repack (PLAN.md B0), 20 s
+bin-hip/bench-fp8 ~/llms/ds-1017-fp8/dense-fp8.gguf [--ms 1,4] [--sweep]  # fp8 GEMV (B1)
+F8=~/llms/ds-1017-fp8/dense-fp8.gguf
+bin-hip/ds-completion -m $M -p "..." --chat --rt $F8 [--gpu 0] [--profile]   # own GPU runtime
+bin-hip/ds-test -m $M -g data/golden/hello-fp32 --runtime $F8 [--per-token]  # its per-layer gate
+bin-hip/ds-test -m $M -g data/golden/hello --runtime $F8 --e2e data/ds/x.f32  # its end-to-end logits
+bin/ds-test -m $M -g data/golden/hello-fp32-nq --no-quant --determinism  # bitwise repeatability (CPU)
+bin-hip/bench-kernels                                                    # each runtime kernel alone
+bin/bench-cpu-moe -m $M [-t 32] [--tokens 5]                             # the CPU expert kernel vs ggml
+bin-hip/bench-fp4-moe -m $M [--layer 20] [--dev 0]                       # one layer's experts in HBM
+bin-hip/ds-completion ... --rt $F8 --placement placements/study30.txt   # most-used experts on GPUs
+bin-hip/bench-expert-pool -m $M -p placements/study30.txt                # expert pools: load, exactness, time
+bin/ds-inspect -m $M [--layers 0,1,2-5] [--touch]
+bin/ds-test -m $M -g data/golden/hello [--layers 0-39] [--no-quant]  # teacher-forced, per layer
+bin/ds-test -m $M -g data/golden/hello --e2e data/ds/hello.f32       # end-to-end logits
+bin/test-fakequant                                                   # needs ref/make_fq_test.py first
+~/venvs/ds-ref/bin/python ref/check_weights.py [--layers 0,1,2] [--experts 8|all] [--hf remote|local]
+~/venvs/ds-ref/bin/python ref/ds_ref.py --prompt "..." --chat --n-decode 16 [--fp32] [--no-quant] --out data/ref/x.pt
+~/venvs/ds-ref/bin/python ref/export_golden.py data/ref/x.pt data/golden/x
+~/venvs/ds-ref/bin/python ref/compare_logits.py data/ref/x.pt data/ds/x.f32
+```
+
+## What the model is (measured from the files, 2026-10-26)
+
+- 40 blocks, hidden 5120, 64 heads x 512 head_dim, a single shared KV latent
+  (MQA-like). q is low-rank (5120 -> 1280 -> 64x512), and the output projection
+  is grouped low-rank (8 groups, 4096 -> 1024 each, then 8192 -> 5120).
+- **Hyper-connections**: the residual is 4 parallel copies of 5120. Each
+  sublayer mixes them with coefficients from a 20480 -> 24 projection plus 20
+  Sinkhorn iterations.
+- **Attention**:
+  - Every layer has a 128-token sliding window.
+  - Layers 2-19 also see KV compressed 2:1, and layers 20-39 see it 1:1.
+  - Only layers 2, 8, 14 and 20 build the compressed KV; the others reuse it.
+  - An indexer (32 heads x 128) picks the top 512 compressed positions. It
+    runs in 8 layers (2, 8, 14, 20, 24, 28, 32, 36), the others reuse the
+    result.
+  - Layer 20 also pre-selects 2048 candidate blocks of 8 for the later
+    indexers.
+  - Each head has an attention sink.
+- **MoE**: 384 routed experts, top-6, plus 1 shared expert, inter 2304.
+  - Scores are sqrt(softplus); the bias is used only for selection.
+  - Routing weights are normalized, x1.5.
+  - SwiGLU is clamped at 10.
+- **Engram** (layers 1 and 14):
+  - The last 2-4 tokens, mapped to a 99k "normalized" vocab, are hashed into
+    24 rows of 256.
+  - Those rows go through a 6144 -> 25600 projection, which gives a key per
+    hc copy plus one value.
+  - A gated add puts the value into the residual.
+- MTP / DSpark draft layers exist in the safetensors but **not** in the GGUF.
+
+| part | GGUF type | size | bytes read per decode token |
+|---|---|---|---|
+| routed experts | mxfp4 (= original fp4) | 269 GiB | 4.5 GB (6 x 40 x 18.8 MB) |
+| engram table | mxfp8 (= original fp8) | 189 GiB | ~0 (48 rows) |
+| attention + indexer | bf16 (original **fp8**, 32x32 e8m0 scales) | 9.6 GiB | 10.1 GB |
+| shared experts | bf16 (original **fp8**) | 2.6 GiB | 2.8 GB |
+| head / embed | bf16

@@ -1,0 +1,8 @@
+# scripts/prefill-gate.sh <commit 73b6891 build> (baseline: token-by-token prompt)
+# commit 73b6891 + prefill changes; sclk 2 (manual, all four cards, read at commit time); 2026-10-30
+# (the script's own lines were lost: the header was edited in place while it ran; the lines below are recomputed from results/prefill/gate/ with the script's comparisons)
+p1200 canon vs baseline:  chunk 1 same (17.21 t/s)  chunk 8 same (26.60 t/s)  chunk 13 same (28.08 t/s)  chunk 512 same (30.71 t/s) (baseline 18.14 t/s)
+p1200 fast, chunk 1 vs 512: same (17.63 vs 37.05 t/s)
+p6000 canon vs baseline:  chunk 1 same (16.62 t/s)  chunk 8 same (24.77 t/s)  chunk 13 same (25.93 t/s)  chunk 512 same (26.34 t/s) (baseline 17.39 t/s)
+p6000 fast, chunk 1 vs 512: same (16.76 vs 34.97 t/s)
+PASS: every chunked prompt gave the same output
