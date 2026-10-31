@@ -286,6 +286,12 @@ Each rule is followed by where it mattered most.
   reasoning survives without the dead code. Stopped at diminishing returns, since end to end the
   CPU sets the pace.
 
+- **P5, the canonical CPU kernel (README step 41).** **Predicted** from the fast kernel's history:
+  the same flaw (one row at a time, activations re-read per row), so tiling should help; ~25% at
+  most, since its integer formula costs more per product. **Measured:** 0.17 -> 0.14 (~20%), and
+  an L1 capacity effect found on the way (16 tokens slower than 8) fixed by blocking the tokens.
+  End to end the canonical prompt gained the same ~20%, since there the CPU is the limit.
+
 ## 4. Predictions against outcomes
 
 Estimates were made before measuring wherever possible; this is how they fared.

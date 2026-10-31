@@ -1,11 +1,15 @@
-# bin/bench-cpu-moe -m $M -t 16 --check-layers "" --batch T (T = 1, 8, 16)
-# commit 73b6891 + prefill changes (uncommitted at the time); CPU only (sclk n/a); 2026-10-30
+# bin/bench-cpu-moe -m $M -t 16 --check-layers "" --batch T (T = 1, 8, 16, 32)
+# commit a166780 + the tiled canonical kernel (README step 41; uncommitted at the time); CPU only (sclk n/a); 2026-10-30
+# (step 37 version: git history of this file)
 # batch: 1 tokens x the same 6 experts, all 40 layers
-fast: one token at a time 74.9 ms, batched 76.8 ms (0.312 vs 0.320 ms per expert-token); layers differing: 0
-canonical: one token at a time 65.1 ms, batched 67.5 ms (0.271 vs 0.281 ms per expert-token); layers differing: 0
+fast: one token at a time 72.9 ms, batched 75.6 ms (0.304 vs 0.315 ms per expert-token); layers differing: 0
+canonical: one token at a time 67.8 ms, batched 71.7 ms (0.282 vs 0.299 ms per expert-token); layers differing: 0
 # batch: 8 tokens x the same 6 experts, all 40 layers
-fast: one token at a time 443.0 ms, batched 185.6 ms (0.231 vs 0.097 ms per expert-token); layers differing: 0
-canonical: one token at a time 425.2 ms, batched 331.3 ms (0.221 vs 0.173 ms per expert-token); layers differing: 0
+fast: one token at a time 405.7 ms, batched 168.8 ms (0.211 vs 0.088 ms per expert-token); layers differing: 0
+canonical: one token at a time 414.9 ms, batched 267.0 ms (0.216 vs 0.139 ms per expert-token); layers differing: 0
 # batch: 16 tokens x the same 6 experts, all 40 layers
-fast: one token at a time 794.0 ms, batched 331.8 ms (0.207 vs 0.086 ms per expert-token); layers differing: 0
-canonical: one token at a time 802.1 ms, batched 708.8 ms (0.209 vs 0.185 ms per expert-token); layers differing: 0
+fast: one token at a time 787.6 ms, batched 338.7 ms (0.205 vs 0.088 ms per expert-token); layers differing: 0
+canonical: one token at a time 805.3 ms, batched 556.3 ms (0.210 vs 0.145 ms per expert-token); layers differing: 0
+# batch: 32 tokens x the same 6 experts, all 40 layers
+fast: one token at a time 1539.7 ms, batched 592.9 ms (0.200 vs 0.077 ms per expert-token); layers differing: 0
+canonical: one token at a time 1592.5 ms, batched 1089.0 ms (0.207 vs 0.142 ms per expert-token); layers differing: 0

@@ -1803,3 +1803,27 @@ What is left: at sclk 2 (1,204 MHz) the best configurations reach ~20% of `v_dot
 instruction mix (weight decode, scale multiply, shared-memory reads around each 8-`dot2` chain)
 caps it near ~40%. End to end nothing changes (52.8-57.1 t/s over three runs, the spread is the
 CPU's expert time, 30-32 s): the CPU's experts set the pace (PLAN P2/P4/P5).
+
+## Step 41: the canonical CPU kernel tiled for prompt chunks (PLAN P5)
+
+Batched, the canonical kernel (exact integer block sums, `canon_dot.h`) cost 0.17-0.19 ms per
+expert-token, twice the fast one: like the fast kernel before step 37's tiling, it took one row
+at a time and re-read every token's activation digits (15 KB each) per row, mostly from L2.
+`canon_dot_rows_multi` now takes 2 rows per pass: per 16-block group both rows' decoded weights
+go to a 1 KB buffer in L1 (they do not fit in registers next to the 2 x 8 partial sums), each
+token's digits are loaded once for the two rows, the tokens go in blocks of 8 (their digits for
+a group then stay in L1; at 16+ tokens it was slower than at 8 without). Per (row, token) the
+same steps, so bit-identical. 3 rows per pass: no better.
+
+`results/prefill/bench-cpu-moe-batch.txt` (ms per expert-token, batched; no layer differs):
+
+| tokens per expert | 1 | 8 | 16 | 32 |
+|---|---|---|---|---|
+| canonical, step 37 | 0.28 | 0.173 | 0.185 | |
+| canonical, now | 0.30 | 0.139 | 0.145 | 0.142 |
+| fast (unchanged) | 0.32 | 0.088 | 0.088 | 0.077 |
+
+End to end with `--canon` (`results/prefill/canon-e2e.txt`, output identical to the token-by-token
+build): 364 tokens 46.5 -> 53.6 t/s, 1,989 tokens 40.4 -> 48.8 t/s. The canonical kernel is still
+~1.6x the fast one: 3 integer digit passes and 2 shifts per block pair on one port, against 3
+fp32 operations on two.
