@@ -216,8 +216,9 @@ __global__ void __launch_bounds__(256) fp8_gemv_lds_kernel(const uint8_t* __rest
 // every lane reuses each input's fp16 values for its R weight rows and each decoded weight row
 // for the MT inputs. A lane takes the steps that are its own in the specification (k = 16 l mod
 // 16 LPR), in increasing order, whatever the K tile.
-template <int LPR, int R, int MT>
-__global__ void __launch_bounds__(256) fp8_gemm_kernel(const uint8_t* __restrict__ w, const uint8_t* __restrict__ ws,
+// MINB: blocks per CU the compiler must allow (caps registers; 3: 2 rows x 16 inputs at 3 blocks)
+template <int LPR, int R, int MT, int MINB>
+__global__ void __launch_bounds__(256, MINB) fp8_gemm_kernel(const uint8_t* __restrict__ w, const uint8_t* __restrict__ ws,
                                                        int N, int K, int rpg, int M, const uint8_t* __restrict__ xq,
                                                        const float* __restrict__ xs, float* __restrict__ y) {
   // K tile: at least one lane stride, so every lane has a step in every tile
@@ -335,40 +336,42 @@ int fp8_lpr(int N, int K) {
   return lpr;
 }
 
-template <int LPR, int R, int MT>
+template <int LPR, int R, int MT, int MINB>
 static bool launch_gemm(const uint8_t* w, const uint8_t* ws, int N, int K, int rpg, Fp8Act x, int M, float* y,
                         hipStream_t stream) {
   const int rows_per_block = 4 * (64 / LPR) * R;
   if (rpg % rows_per_block) return false;  // a block's rows must lie in one group
   const dim3 grid((N + rows_per_block - 1) / rows_per_block, (M + MT - 1) / MT), block(256);
-  fp8_gemm_kernel<LPR, R, MT><<<grid, block, 0, stream>>>(w, ws, N, K, rpg, M, x.q, x.s, y);
+  fp8_gemm_kernel<LPR, R, MT, MINB><<<grid, block, 0, stream>>>(w, ws, N, K, rpg, M, x.q, x.s, y);
   return true;
 }
 
 template <int LPR>
 static bool gemm_lpr(const uint8_t* w, const uint8_t* ws, int N, int K, int rpg, Fp8Act x, int M, float* y,
-                     hipStream_t stream, int r, int mt) {
-#define G(R_, MT_) if (r == R_ && mt == MT_) return launch_gemm<LPR, R_, MT_>(w, ws, N, K, rpg, x, M, y, stream);
-  G(2, 8) G(2, 16) G(4, 8) G(4, 16) G(1, 16)
+                     hipStream_t stream, int r, int mt, int minb) {
+#define G(R_, MT_, MINB_) if (r == R_ && mt == MT_ && minb == MINB_) return launch_gemm<LPR, R_, MT_, MINB_>(w, ws, N, K, rpg, x, M, y, stream);
+  G(2, 8, 1) G(2, 8, 2) G(2, 16, 1) G(2, 16, 3) G(4, 8, 1) G(4, 8, 2) G(4, 16, 1) G(4, 16, 2)
 #undef G
   return false;
 }
 
 void fp8_gemm_cfg(const uint8_t* w, const uint8_t* w_scale, int N, int K, int rows_per_group, Fp8Act x, int M,
-                  float* y, hipStream_t stream, int r, int mt) {
+                  float* y, hipStream_t stream, int r, int mt, int minb) {
   const int lpr = fp8_lpr(N, K);
-  // built-in choice (results/prefill/bench-fp8-gemm.txt): 2 rows x 8 inputs; 8-lane rows (q_b)
-  // gain nothing over the GEMV and stay with it
-  if (r == 0 && mt == 0 && lpr == 8) r = -1;
-  if (r == 0) r = 2;
-  if (mt == 0) mt = 8;
+  // built-in choice (results/prefill/bench-fp8-gemm*.txt): 64-lane rows 2 rows x 8 inputs; 8- and
+  // 16-lane rows 2 x 16 at 3 blocks per CU
+  if (r == 0 && mt == 0) {
+    r = 2;
+    mt = lpr == 64 ? 8 : 16;
+    minb = lpr == 64 ? 1 : 3;
+  }
+  if (minb == 0) minb = 1;
   bool ok = false;
-  switch (r < 0 ? 0 : lpr) {
-    case 0: break;
-    case 64: ok = gemm_lpr<64>(w, w_scale, N, K, rows_per_group, x, M, y, stream, r, mt); break;
-    case 32: ok = gemm_lpr<32>(w, w_scale, N, K, rows_per_group, x, M, y, stream, r, mt); break;
-    case 16: ok = gemm_lpr<16>(w, w_scale, N, K, rows_per_group, x, M, y, stream, r, mt); break;
-    default: ok = gemm_lpr<8>(w, w_scale, N, K, rows_per_group, x, M, y, stream, r, mt); break;
+  switch (lpr) {
+    case 64: ok = gemm_lpr<64>(w, w_scale, N, K, rows_per_group, x, M, y, stream, r, mt, minb); break;
+    case 32: ok = gemm_lpr<32>(w, w_scale, N, K, rows_per_group, x, M, y, stream, r, mt, minb); break;
+    case 16: ok = gemm_lpr<16>(w, w_scale, N, K, rows_per_group, x, M, y, stream, r, mt, minb); break;
+    default: ok = gemm_lpr<8>(w, w_scale, N, K, rows_per_group, x, M, y, stream, r, mt, minb); break;
   }
   if (!ok)  // no instance for this split: slices of 8 through the GEMV (the same bits)
     for (int m0 = 0; m0 < M; m0 += 8)
@@ -378,7 +381,7 @@ void fp8_gemm_cfg(const uint8_t* w, const uint8_t* w_scale, int N, int K, int ro
 
 void fp8_gemm(const uint8_t* w, const uint8_t* w_scale, int N, int K, int rows_per_group, Fp8Act x, int M, float* y,
               hipStream_t stream) {
-  fp8_gemm_cfg(w, w_scale, N, K, rows_per_group, x, M, y, stream, 0, 0);
+  fp8_gemm_cfg(w, w_scale, N, K, rows_per_group, x, M, y, stream, 0, 0, 0);
 }
 
 void fp8_gemv_cfg(const uint8_t* w, const uint8_t* w_scale, int N, int K, int rows_per_group, Fp8Act x, int M,

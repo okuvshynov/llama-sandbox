@@ -450,7 +450,7 @@ token counts on a long prompt before building it (cheap: a routing log and a scr
 | P5 | canonical CPU kernel tiled (rows x tokens, as the fast one) | CPU experts, canonical | ~25% at most (its integer formula is the limit) | medium | moot if P2 |
 | P6 | batched attention core (many queries per call; the window ring needs a separate staging area for the chunk's own keys) | GPU | attention core 10.2 s -> ~1-2 s | medium-large; outputs must stay bit-identical per query | - |
 | P7 | batched router, indexer and compressor (per-token loops today) | GPU | ~7 s -> ~2 s | medium | - |
-| P8 | fp8_gemm tuning (96 registers, 2 waves per SIMD; ~4-6 of ~26 TFLOPS) | GPU | ~5 s -> ~2-3 s | medium (several tuning rounds) | worth it once the GPU is the limit |
+| P8 | fp8_gemm tuning | GPU | done as far as cheap knobs go (README step 40): 8/16-lane shapes +0.3-0.4x; 64-lane shapes unchanged (~20% of `dot2` peak at sclk 2; the instruction mix caps ~40%); no end-to-end change while the CPU is the limit | further gains need a different weight decode / formulation | worth more once the GPU is the limit |
 | P9 | dense work of a chunk on several dies (layer pipeline over dies, or splitting the matrix rows) | GPU | up to ~2-4x on the GPU side | large; XGMI pairs only (0-1, 2-3), cross-pair copies over PCIe | P6-P8 first |
 
 Order, as it looks now: P1 (cheap, decides P2), P3 (needed anyway), then P2 or P4 depending on

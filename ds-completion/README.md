@@ -1781,3 +1781,25 @@ expert 6.5 -> 1.9 s, attention output 5.5 -> 3.5 s, the GPU's busy time ~34 -> ~
 The options for prompt processing from here (and an estimate of when streaming the CPU's experts
 to the GPUs beats computing them on the CPU: from ~512-token chunks, clearly above ~1,000) are in
 PLAN.md, "Prompt processing: where it stands and the options" (P1-P9).
+
+## Step 40: tuning the fp8 matrix-multiply kernel (PLAN P8)
+
+Three sweeps (`results/prefill/bench-fp8-gemm-tuning.txt`, 256 inputs, every configuration
+bit-identical to one-input calls) of knobs that leave each output's arithmetic alone:
+
+- **A minimum of blocks per CU** (`__launch_bounds__`, caps the registers): helps the 8- and
+  16-lane shapes at 2 rows x 16 inputs and 3 blocks per CU (q_b 1.0 -> 1.3x, indexer q_b 1.4 ->
+  1.8x, shared down 1.3 -> 1.6x over 8-input slices). Kept as their built-in choice.
+- **Capping the unroll of the input loop**: much slower everywhere (the accumulators then need
+  dynamic register indexing). Dropped.
+- **Inputs decoded once per call into global memory** instead of once per block into shared
+  memory (each input tile was decoded again by every row block, 160 times for q_a): not faster.
+  Decoding the inputs was not the limit. Dropped.
+- **Scales from the cache instead of shared memory** (lets 16-input tiles of 64-lane rows fit two
+  blocks per CU): 64-lane rows at 16 inputs 1.35 -> 1.97x, still below 8 inputs (2.8x); 16-lane
+  rows slower. Dropped.
+
+What is left: at sclk 2 (1,204 MHz) the best configurations reach ~20% of `v_dot2` peak; the
+instruction mix (weight decode, scale multiply, shared-memory reads around each 8-`dot2` chain)
+caps it near ~40%. End to end nothing changes (52.8-57.1 t/s over three runs, the spread is the
+CPU's expert time, 30-32 s): the CPU's experts set the pace (PLAN P2/P4/P5).

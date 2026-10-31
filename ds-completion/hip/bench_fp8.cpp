@@ -19,6 +19,7 @@
 #include "ggml.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -159,14 +160,15 @@ int main(int argc, char** argv) {
         };
         const double us8 = timed(slices);
         printf("%-18s %6d %6d %4d lpr %2d  gemv x8: %8.1f us", sh.name, K, N, M, fp8_lpr(N, K), us8);
-        std::vector<std::pair<int, int>> cfgs = {{0, 0}};
-        if (sweep) cfgs = {{1, 16}, {2, 8}, {2, 16}, {4, 8}, {4, 16}};
+        // (rows per lane group, inputs per tile, blocks per CU); 0s = the built-in choice
+        std::vector<std::array<int, 3>> cfgs = {{0, 0, 0}};
+        if (sweep) cfgs = {{2, 8, 1}, {2, 8, 2}, {2, 16, 1}, {2, 16, 3}, {4, 8, 1}, {4, 8, 2}, {4, 16, 1}, {4, 16, 2}};
         for (const auto& cfg : cfgs) {
-          const int r = cfg.first, mt = cfg.second;
-          const double us = timed([&]() { fp8_gemm_cfg(dw, ds, N, K, rpg, act, M, dy, st, r, mt); });
-          fp8_gemm_cfg(dw, ds, N, K, rpg, act, M, dy, st, r, mt);
+          const int r = cfg[0], mt = cfg[1], mb = cfg[2];
+          const double us = timed([&]() { fp8_gemm_cfg(dw, ds, N, K, rpg, act, M, dy, st, r, mt, mb); });
+          fp8_gemm_cfg(dw, ds, N, K, rpg, act, M, dy, st, r, mt, mb);
           const long diff = check();
-          printf("  gemm %d/%d: %8.1f us (%.1fx) %s", r, mt, us, us8 / us, diff ? "DIFFERS" : "same");
+          printf("  gemm %d/%d/%d: %8.1f us (%.1fx) %s", r, mt, mb, us, us8 / us, diff ? "DIFFERS" : "same");
         }
         printf("\n");
         CHECK(hipFree(dy1));

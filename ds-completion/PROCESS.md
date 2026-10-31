@@ -278,6 +278,14 @@ Each rule is followed by where it mattered most.
   person's): document it with all the options (PLAN P1-P9), then first the pure optimizations
   (kernel tuning: P8, P5, P6) before restructuring.
 
+- **P8, kernel tuning (README step 40).** Each knob tested for speed and bit-identity together
+  (0 differences in ~400 configuration x tensor runs). Hypotheses tested and rejected: that
+  decoding the inputs per block was the limit (decoding once globally: not faster), that shared
+  memory capacity was (scales moved out: mixed). Kept only what helped (a register cap for the
+  narrow shapes); the rest was removed from the code and recorded in the results file, so the
+  reasoning survives without the dead code. Stopped at diminishing returns, since end to end the
+  CPU sets the pace.
+
 ## 4. Predictions against outcomes
 
 Estimates were made before measuring wherever possible; this is how they fared.
