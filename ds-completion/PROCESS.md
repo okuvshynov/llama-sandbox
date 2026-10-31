@@ -292,6 +292,13 @@ Each rule is followed by where it mattered most.
   an L1 capacity effect found on the way (16 tokens slower than 8) fixed by blocking the tokens.
   End to end the canonical prompt gained the same ~20%, since there the CPU is the limit.
 
+- **Docs check (the person's request).** QUICKSTART, the README status, OVERVIEW and PLAN still
+  described the prompt as token by token, the cache's startup as ~30-40 s (it is ~40-90 s and
+  stalls the GPUs) and `--canon` as ~2% slower (true for generation, not the prompt), and the
+  "fastest" command was not the fastest. QUICKSTART now gives the fastest settings per job
+  (long generation: `--spec --canon --cache-loads 200`; short runs and long prompts: `--spec`
+  without the cache and `--canon`).
+
 ## 4. Predictions against outcomes
 
 Estimates were made before measuring wherever possible; this is how they fared.

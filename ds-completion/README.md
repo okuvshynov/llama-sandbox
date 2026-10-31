@@ -4,15 +4,18 @@ Goal: `./ds-completion -m <model> -p "prompt"`. One model, one machine, one
 sequence. Priorities: correctness, clarity, then performance. Non-goals: other
 models, other quants, other hardware, serving features.
 
-Status, 2026-10-29 (sclk 2, 16 CPU threads; details in [OVERVIEW.md](OVERVIEW.md)):
+Status, 2026-10-30 (sclk 2, 16 CPU threads; details in [OVERVIEW.md](OVERVIEW.md)):
 
 - CPU only: 3.5 t/s decode, matching the reference (the llama.cpp fork: 3.5 t/s).
 - Own GPU runtime (exact fp8, deterministic), routed experts on the CPU: ~12 t/s.
 - The most-used experts placed on the 4 GPUs (`--placement placements/study30.txt`): 17.7-21.7 t/s.
 - Speculative decoding with the DSpark draft (`--dspark ... --spec`): +7% to +33% on held-out
   prompts, output byte-identical to plain greedy decoding.
-- In progress: an adaptive expert cache (PLAN.md "Adaptive expert cache"); phases 0-2 done
-  (steps 28-30), placement-invariant numerics in the runtime (`--canon`, step 31).
+- Placement-invariant numerics (`--canon`, step 31) and the adaptive expert cache
+  (`--cache-loads 200`, step 32): with `--spec`, 25.6 t/s mean on held-out prompts (29.1 at
+  sclk 8), every output byte-identical. The fastest settings per job: QUICKSTART.md.
+- Prompt processing in chunks of 512 (steps 37-41): ~17 -> 53-57 t/s (49-54 with `--canon`),
+  output byte-identical to token by token.
 - Long context: 65,536 tokens by default, up to 1M (step 34); gated against the reference at
   20,000 tokens: same greedy tokens, KL as at short context, indexer differences are near-ties
   (step 35).

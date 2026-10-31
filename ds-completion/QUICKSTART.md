@@ -4,8 +4,10 @@ DeepSeek-V4.1-Flash-1017 text completion on the Mac Pro (4x Vega II, 755 GB RAM)
 
 - Dense weights (attention, shared experts, head) run on one GPU through our own HIP kernels,
   in exact fp8.
-- Routed experts run on the CPU, through our own exact AVX-512 kernel.
-- Greedy decoding, one sequence, text only.
+- Routed experts: the most-used ones on the four GPUs, the rest on the CPU (our own exact
+  AVX-512 kernel); with the adaptive cache the GPUs follow the experts in use.
+- The prompt goes through in chunks of up to 512 tokens; generation one token at a time, or a
+  few at once with speculative decoding. Greedy, one sequence, text only.
 
 ## What it needs
 
@@ -26,20 +28,27 @@ bin/fp8pack -m $M -o ~/llms/ds-1017-fp8/dense-fp8.gguf   # lossless fp8 repack, 
 
 ## Run
 
-Fastest (dense part on GPU 0, the most-used routed experts on all four GPUs, the rest on the
-CPU; run from this directory, since the placement path is relative):
+Run from this directory (the placement path is relative). Which setting is fastest depends on
+the job (sclk 2; README steps 32, 37-41):
+
+**Long generation** (reasoning, long answers): speculative decoding + the adaptive expert cache.
+~25.6 t/s mean on held-out prompts (29.1 at sclk 8; a 9.8k-token reasoning run reached 31.7 at
+sclk 6). The cache first registers the experts' memory with the GPUs, which stalls the GPUs for
+~90 s at startup (PLAN item 30, open), so it pays off only for runs of a few minutes or more:
 
 ```bash
 cd ~/projects/llama-sandbox/ds-completion
 bin-hip/ds-completion -m $M --rt ~/llms/ds-1017-fp8/dense-fp8.gguf \
     --placement placements/study30.txt \
-    -p "Write a haiku about memory bandwidth." --chat -n 64
+    --dspark ~/llms/dspark/dspark-DeepSeek-V4.1-Flash-1017-BF16.gguf --spec \
+    --canon --cache-loads 200 \
+    -f prompt.txt --think --effort max -n 60000
 ```
 
-Without `--placement` every routed expert runs on the CPU (faster start, ~12 t/s).
-
-Faster still, with speculative decoding (same output, byte for byte; +22% on average, more on
-code and math, least on Chinese/Japanese):
+**Short runs and long prompts with short answers:** without the cache (no startup stall) and
+without `--canon` (the prompt runs ~10-15% faster: 53-57 t/s vs 49-54). Speculative decoding
+gives the same bytes as plain decoding, +22% on generation on average (more on code and math,
+least on Chinese/Japanese):
 
 ```bash
 bin-hip/ds-completion -m $M --rt ~/llms/ds-1017-fp8/dense-fp8.gguf \
@@ -47,6 +56,14 @@ bin-hip/ds-completion -m $M --rt ~/llms/ds-1017-fp8/dense-fp8.gguf \
     --dspark ~/llms/dspark/dspark-DeepSeek-V4.1-Flash-1017-BF16.gguf --spec \
     -p "Write a haiku about memory bandwidth." --chat -n 64
 ```
+
+Without `--dspark ... --spec`: 17.7-21.7 t/s generation, and 8.5 GB more GPU 0 memory for
+experts. Without `--placement` every routed expert runs on the CPU (faster start, ~12 t/s).
+A higher GPU clock helps both (sclk 8: +9-14%); the clock is set outside the program (sudo).
+
+After a memory-heavy job (anything that pushed the 474 GB model out of the page cache), the
+first run reads it back from disk; `cat ~/llms/UD-Q8_K_XL/*.gguf > /dev/null` first (2-4 min)
+keeps that out of a timed run.
 
 Options:
 
@@ -72,12 +89,14 @@ Options:
   per-step data.
 - `--canon`: placement-invariant expert numerics: the output no longer depends on where the
   experts run (any placement, any `--moe-dies`, with or without the draft, with or without the
-  cache give the same bytes); ~2% slower.
+  cache give the same bytes); generation ~2% slower, the prompt ~10-15% (its CPU expert kernel
+  is slower).
 - `--cache-loads R`: the adaptive expert cache (README step 32): the GPUs keep the experts used
   most in the last 256 tokens, loading up to R experts per second in the background (100 is a
   good default; 0 = the static placement). Use with `--canon`, or the output depends on load
-  timing. It starts loading ~30-40 s after startup (registering the model's expert memory with
-  the GPUs); `--cache-wait` waits for that before generating. `--cache-period N` (16) and
+  timing. It starts loading once the model's expert memory is registered with the GPUs (~40-90
+  s; meanwhile every GPU call stalls, PLAN item 30, and longer if the model must come back from
+  disk); `--cache-wait` waits for that before the prompt. `--cache-period N` (16) and
   `--cache-window N` (256) set how often it rebalances and over how many tokens it counts.
 - `--load-test R [--load-pinned]`: a measurement aid: loads random experts into spare GPU slots
   at R loads/s in the background, as the cache would (README step 30); output unchanged.
@@ -87,7 +106,7 @@ Without `--rt` (or with `bin/ds-completion`) everything runs on the CPU.
 With `--placement placements/study30.txt` the four GPUs hold the routed experts used most in
 the 30-prompt routing study (43% of all, 10-30 s upload); 17.7-21.7 t/s on the test prompts (README step 18).
 
-## Current results (2026-10-29)
+## Current results (2026-10-30)
 
 | mode | command | decode | KL vs reference*: median / mean without the near-tie step |
 |---|---|---|---|
@@ -106,19 +125,23 @@ Means over all 17 steps: 1.8e-2 to 2.5e-2 for every mode.
 
 - **The runtime is also gated per layer:** attention and FFN output within ~1e-7 of the fp32 +
   fake-quant reference. It has no inexact op left, and repeated runs are bit-identical.
-- **Prompt processing:** with `--rt` the prompt is decoded token by token, ~10 t/s; ~7.7 t/s
-  on the CPU (one chunk). The runtime's mean KL varies run to run with fp8 rounding flips (README
-  step 10); every exact mode scatters the same way.
-- **Where a runtime step (~100 ms) goes:** ~67 ms CPU routed experts, ~29-34 ms GPU and copies
-  (depends on the GPU clock level; README step 9).
-- **GPU memory with `--rt`:** 6.37 GiB fp8 + 1.68 GiB small weights on die 0.
+- **Prompt processing** (`--rt`, chunks of 512, the CPU's experts overlapped with the GPU's
+  work; README steps 37-41): 53-57 t/s, 49-54 with `--canon` (364- and 1,989-token prompts,
+  sclk 2), output byte-identical to token-by-token processing; ~7.7 t/s on the CPU path. The
+  runtime's mean KL varies run to run with fp8 rounding flips (README step 10); every exact mode
+  scatters the same way.
+- **Where a step goes** (`--spec`, cache, sclk 8; README step 33): a 6-token verify step ~111 ms
+  + the draft ~12 ms: dense part ~64%, CPU experts ~20%, draft ~10%, GPU experts ~3% visible.
+  Prompt (1,989 tokens): the CPU's experts ~30 s of ~36 s, the GPU busy ~27 s.
+- **GPU memory with `--rt`:** 6.37 GiB fp8 + 1.75 GiB small weights + ~1 GB of prompt-chunk
+  buffers on die 0; the rest holds experts (and the 8.5 GB draft with `--dspark`).
 
 ## Limits
 
 - Context with `--rt`: 65,536 tokens by default (prompt + generation), up to the model's
-  1,048,576 with `--max-ctx N` (~6.4 KB of GPU 0 memory per position). The prompt is processed
-  one token at a time (~16-17 t/s: a 30k-token prompt takes ~30 min). Without `--rt` (the CPU
-  path): 4,096 by default, at most 16k (no candidate-block selection there).
+  1,048,576 with `--max-ctx N` (~6.4 KB of GPU 0 memory per position). A 30k-token prompt takes
+  ~10 min at ~50 t/s (it took ~30 min token by token). Without `--rt` (the CPU path): 4,096 by
+  default, at most 16k (no candidate-block selection there).
 - The dense part uses one GPU; the others only hold experts with `--placement`.
 - Sampling is greedy only.
 

@@ -36,8 +36,10 @@ Decode speed (sclk level 2, 16 CPU threads, 128 generated tokens):
 
 (The speculative and cache numbers are 300-token runs on held-out prompts; README steps 26, 32.)
 
-Prompt processing runs token by token through the runtime: ~10-16 t/s. Startup: ~15 s, plus
-10-30 s to upload experts with a placement.
+Prompt processing (chunks of 512, README steps 37-41): 53-57 t/s, 49-54 with `--canon`, output
+byte-identical to token by token (which ran at ~17 t/s). Startup: ~15 s, plus 10-30 s to upload
+experts with a placement; with the cache, ~40-90 s more while the experts' memory is registered
+(the GPUs stall meanwhile: PLAN item 30). The fastest settings per job: QUICKSTART.md.
 
 Accuracy, against the official implementation run on the CPU in fp32:
 
@@ -77,7 +79,10 @@ token -> embedding (host) -> 40 x [ engram (layers 1, 14) -> attention block -> 
   and one for the CPU. One 20 KB copy brings the input and lists to host memory; dies 1-3 get it
   from there (cards are not peer-connected), GPU 0 runs its own list next to the shared expert,
   and the host runs only the CPU's misses. Nothing on the GPUs waits for the host.
-- **Prompt:** the same path, one token at a time.
+- **Prompt:** chunks of up to 512 tokens through the same path (README steps 37-41): the dense
+  projections as fp8 matrix multiplies, the CPU's experts batched per expert and computed for
+  one half of the chunk while the GPU runs the other half's attention; attention still per
+  token inside the chunk. Every result bit-identical to token by token.
 - **Speculative decoding** (`hip/dspark.cpp`, `Runtime::verify/commit`): the release's DSpark
   draft (3 small layers reading the main model's layers 37-39, 8.5 GB on GPU 0) guesses the
   next 5 tokens in ~12 ms. The main model then runs [last token, guesses] as one chunk:
@@ -200,13 +205,16 @@ experts ~3% visible.
    (for contexts far beyond 64k), faster prompt processing (in progress, README step 37:
    chunks of up to 512, CPU experts batched and overlapped with the GPU, an fp8 matrix-multiply
    kernel: ~17 -> 57 t/s so far, ~17 -> 49 with `--canon`).
-2. **Adaptive expert cache, tuning** (README steps 28-32): built and working (`--canon
+2. **Prompt processing, next** (PLAN "Prompt processing: where it stands and the options"): the
+   CPU's experts are the limit (~30 of 36 s for 1,989 tokens); options: larger chunks, streaming
+   the CPU's experts to the GPUs for long prompts, then the GPU side (batched attention core).
+3. **Adaptive expert cache, tuning** (README steps 28-32): built and working (`--canon
    --cache-loads R`: +28% with `--spec` at sclk 2, every output identical); left: the default
    rate, hysteresis so it settles in long runs, the fast path's CPU preparation (the same fix as
    the canonical one).
-2. **The rest of a verify step:** fp8 projections over 64-lane rows are still ~2x one token at
+4. **The rest of a verify step:** fp8 projections over 64-lane rows are still ~2x one token at
    6 tokens; the router's 6 top-k launches; attention core per token.
-3. **The ~35 ms floor:** a higher GPU clock (free, if the power is acceptable), fusing the router
+5. **The ~35 ms floor:** a higher GPU clock (free, if the power is acceptable), fusing the router
    and dispatch, fusing small kernels; tensor parallelism across dies last.
 
 Explored, not planned: a second machine (pipeline split; ~1-2 ms gain once the cache adapts),

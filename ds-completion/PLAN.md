@@ -1,9 +1,10 @@
 # ds-completion plan
 
 Status: **done**, **next** (agreed, in order), **planned** (agreed, later), **idea** (not
-decided). Today (sclk 2, 16 CPU threads, 128-token runs): no GPU experts ~12 t/s; the study30
-placement 17.7-21.7 t/s; perfect knowledge of the prompt (oracle placement) ~25 t/s. The cost
-model below says where a token's time goes.
+decided). Today (sclk 2, 16 CPU threads): generation with no GPU experts ~12 t/s; the study30
+placement 17.7-21.7 t/s; + `--spec` and the adaptive cache (`--canon --cache-loads 200`) 25.6
+t/s mean on held-out prompts (29.1 at sclk 8). Prompt processing 53-57 t/s (49-54 `--canon`).
+The cost model below (2026-10-27) says where a token's time went before the cache.
 
 ## Overview
 
@@ -247,7 +248,7 @@ Phases:
    every 16 tokens) beats LRU by 2.5-5.5 t/s at limited rates; rejected drafts do not pollute
    (load from all forwarded tokens); latency of 1-8 steps costs little.
 2. **Load path, measured alone.** **Done** (README step 30; `hip/expert_loader.{h,cpp}`):
-   direct copies from the registered mmap (registration ~40 s, in the background), at most 2
+   direct copies from the registered mmap (registration ~40 s, in the background; it turned out to stall the GPUs meanwhile: item 30), at most 2
    matrices in flight per loader, blocking waits. ~1,400 loads/s possible; live cost with
    `--spec` -1.1% at 100 loads/s, -5.2% at 200 (pinned: -9.0% at 100); output unchanged.
 3. **Cache manager on the host.** 3a **done** (README step 31): `--canon` in the runtime, each
@@ -255,7 +256,8 @@ Phases:
    order; the same output bytes with no placement, study30, an oracle placement, dies 1-3 only,
    and `--spec` at two placements. 3b **done** (README step 32;
    `hip/expert_cache.{h,cpp}`, `--cache-loads R`): frequency rebalance every 16 tokens over the
-   last 256, loads at R per second once the expert tensors are registered (~30-40 s; no pinned
+   last 256, loads at R per second once the expert tensors are registered (~40-90 s, stalling
+   the GPUs meanwhile: item 30; no pinned
    loads), victims leave the table before their slot is overwritten, newcomers are published
    when their load has finished; table changes only between forwards. Held-out `--spec`, sclk 2:
    fast static 19.97 -> 25.55 t/s at 200 loads/s (+28%); sclk 8: 22.19 -> 29.09 (+31%); every
@@ -388,8 +390,8 @@ compressor groups, indexer top-512, engram, the draft's window. What is missing:
    ~20K-token prompt (both ours, independent paths), plus greedy agreement on long documents.
 6. **Measure** (first points, step 34: 18.5 / 17.5 / 17.2 t/s at ~0.3k / 7.4k / 29.6k
    positions, fast static): decode speed against position (indexer scoring grows linearly with context);
-   prompt speed (token by token today: a 64K prompt takes 1-2 h, which makes item 20, batched
-   prompt processing, the next priority after this).
+   prompt speed (token by token then: a 64K prompt took 1-2 h, which made item 20, batched
+   prompt processing, the next priority; now ~50 t/s, README steps 37-41).
 
 ## Prompt processing: where it stands and the options (2026-10-30)
 
