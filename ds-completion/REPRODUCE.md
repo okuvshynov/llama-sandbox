@@ -77,6 +77,7 @@ Run from this directory (placement files are relative paths). How to run: [QUICK
 | `data/routing/study/` | routing logs of the 30 study prompts (plain): inputs of `placements/study30.txt` and the simulations | `scripts/routing-study.sh` (prompts in `prompts/routing-study.tsv`) | ~1 h |
 | `data/routing/oracle/` | routing logs of the 2 oracle prompts | README step 15 | minutes |
 | `data/routing/spec/` | routing logs of the 8 held-out prompts under `--spec` | `scripts/spec-routing.sh` | ~15 min |
+| `data/routing/prefill/` | two long prompts (`head -c 24000 prompts/ds-completion-readme-ddf9b43.md`, `head -c 32000 hip/rt.cpp` at e3542ac) and their routing logs | `--log-routing` (README step 42) | ~7 min |
 
 The routing logs (48 MB) are cheap to keep and should be archived with any publication: the
 placement and every simulation number depend on them, and regenerating them only reproduces
@@ -120,6 +121,7 @@ Unless stated: sclk 2, 16 CPU threads (32 before README step 18), the study30 pl
 | 30 | `bench-expert-load.txt`, `load-test/` | `bin-hip/bench-expert-load -m $M`, `scripts/load-test.sh` |
 | 31-32 | `canon-gate.txt`, `canon-gate/` | `scripts/canon-gate.sh` (rerun for step 32) |
 | 34 | `check-topk.txt` | `~/venvs/ds-ref/bin/python ref/check_topk.py` (runs `bin-hip/test-topk`) |
+| 42 | `prefill/stream-sim.txt` | routing logs of `data/routing/prefill/{readme24k,rtcpp32k}.txt` (`--log-routing`, commands in the file), then `scripts/prefill_stream_sim.py [--cpu-scale 1.65] [--load-rate 1000] [--canon]`; the calibration run is the same prompt with `--profile` |
 | 41 | `prefill/bench-cpu-moe-batch.txt` (rerun), `prefill/canon-e2e.txt` | `bin/bench-cpu-moe -m $M -t 16 --check-layers "" --batch T`; `bin-hip/ds-completion ... --canon -f results/prefill/gate/pN.txt -n 32 [--profile]` |
 | 40 | `prefill/bench-fp8-gemm-tuning.txt` | experimental builds (variants removed; described in the file); `prefill/bench-fp8-gemm.txt` rerun with the kept choice: `bin-hip/bench-fp8 $F8 --gemm --ms 64,256,512` |
 | 39 | `prefill/bench-fp8-gemm.txt` | `bin-hip/bench-fp8 $F8 --gemm --ms 256 --sweep`, then `--gemm --ms 64,512` |

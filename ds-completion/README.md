@@ -1830,3 +1830,40 @@ End to end with `--canon` (`results/prefill/canon-e2e.txt`, output identical to 
 build): 364 tokens 46.5 -> 53.6 t/s, 1,989 tokens 40.4 -> 48.8 t/s. The canonical kernel is still
 ~1.6x the fast one: 3 integer digit passes and 2 shifts per block pair on one port, against 3
 fp32 operations on two.
+
+## Step 42: stream the CPU's experts to the GPUs for the prompt? Measured routing, modelled cost (PLAN P1)
+
+Step 41 left the prompt limited by the CPU's experts. Whether loading them to the GPUs instead
+pays depends on how many tokens each non-resident expert gets per chunk: a load costs a fixed
+~0.7 ms of host-link time per expert (1,437 loads/s over the four dies, step 30), the CPU a weight
+read plus a cost per token. Routing logs of two long prompts (README prose, 7,369 tokens; C++ code,
+11,286) and `scripts/prefill_stream_sim.py` model three policies per chunk and layer: all on the
+CPU (today, on the overlap's half-chunks), all streamed, and a hybrid (the most-used non-resident
+experts streamed, the rest on the CPU, split so the two take equally long; they run in
+parallel).
+
+Calibration: on the same README prompt (`--profile`, 58.5 t/s) the runtime's CPU experts took
+14.4 ms per token where the benchmark-based model says 8.7: the benchmark routes every token to
+the same 6 experts, the runtime pays for uneven counts, grouping and per-layer synchronization.
+The model's CPU costs are scaled by that 1.65. `results/prefill/stream-sim.txt`:
+
+| chunk | non-resident experts per layer | tokens each | CPU, today | all streamed | hybrid (share streamed) |
+|---|---|---|---|---|---|
+| 256 | 82-89 | 6-7 | 16.6-19.5 ms per token | 9.0-9.7 | 4.1-4.4 (45%) |
+| 512 | 109-116 | 9-11 | 14.4-16.9 | 6.0-6.3 | 2.8-3.0 (47%) |
+| 1,024 | 136-141 | 15-18 | 12.7-15.0 | 3.7-3.8 | 1.8-1.9 (49%) |
+| 2,048 | 156-161 | 24-29 | 11.5-13.7 | 2.4 | 1.2 (51%) |
+
+(fast numerics; canonical: CPU 22-27 ms at 512, hybrid 3.0-3.2; at 1,000 loads/s the hybrid at 512
+is 3.4-3.6.) One long document uses fewer experts than the per-token average suggests: ~110 of the
+~220 non-resident ones per layer at 512, with ~10 tokens each (estimated before: ~6).
+
+So at today's chunk size the hybrid brings the expert side from ~15 to ~3 ms per prompt token in
+both numerics, and the GPU's own work (11.3 ms per token measured here) becomes the limit: ~58 ->
+~80 t/s fast, ~49 -> ~80 canonical. A design constraint: layer L + 1's routing depends on layer L's
+output, so loads cannot run a layer ahead; they start when a half-chunk's routing is known and
+overlap the other half's attention, as the CPU's experts do today. The expert side needs no
+tensor parallelism (each die takes whole experts; all four dies count because each card's x16
+link carries its share of the loads). Splitting the dense part (TP2 within an XGMI pair, or a
+layer pipeline) is the lever after that. Caveats: the load rate was measured alone; the CPU
+calibration is from one prompt; direct loads need the registration stall fixed (P3).

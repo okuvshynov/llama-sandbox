@@ -299,6 +299,15 @@ Each rule is followed by where it mattered most.
   (long generation: `--spec --canon --cache-loads 200`; short runs and long prompts: `--spec`
   without the cache and `--canon`).
 
+- **P1, streaming the experts: measure before building (README step 42).** The person asked about
+  the design (does parallelism matter; TP2 over the XGMI pairs?). Answered from the structure
+  (experts are independent: no TP on the expert side; the dense part is where TP2 or a pipeline
+  would go), then measured what the estimate had assumed: real routing of two long prompts.
+  **Found:** a long document uses fewer experts with more tokens each than the per-token average
+  (10 vs 6 at 512), which favours streaming. **Calibrated** the model against a profiled run
+  of the same prompt before trusting it (the CPU model was 1.65x optimistic), and tried a lower
+  load rate for sensitivity. **Decided:** the hybrid at today's chunk size; P3 first.
+
 ## 4. Predictions against outcomes
 
 Estimates were made before measuring wherever possible; this is how they fared.
