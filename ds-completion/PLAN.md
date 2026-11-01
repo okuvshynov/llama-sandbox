@@ -3,7 +3,7 @@
 Status: **done**, **next** (agreed, in order), **planned** (agreed, later), **idea** (not
 decided). Today (sclk 2, 16 CPU threads): generation with no GPU experts ~12 t/s; the study30
 placement 17.7-21.7 t/s; + `--spec` and the adaptive cache (`--canon --cache-loads 200`) 25.6
-t/s mean on held-out prompts (29.1 at sclk 8). Prompt processing 53-57 t/s (49-54 `--canon`).
+t/s mean on held-out prompts (29.1 at sclk 8). Prompt processing 76 t/s (57-62 `--canon`; sclk 6).
 The cost model below (2026-10-27) says where a token's time went before the cache.
 
 ## Overview
@@ -456,7 +456,9 @@ token counts on a long prompt before building it (cheap: a routing log and a scr
 | P9 | dense work of a chunk on several dies (layer pipeline over dies, or splitting the matrix rows) | GPU | up to ~2-4x on the GPU side | large; XGMI pairs only (0-1, 2-3), cross-pair copies over PCIe | P6-P8 first |
 
 Order: P1 and P3 done; P2 tried and dropped (README step 44: no dynamic expert loading during the
-prompt). Left: P4 (larger chunks), P6, P7, P9 (the GPU side), P8 as needed; to be discussed.
+prompt); the CPU kernel's in-place overhead found and fixed (README step 45: the runtime was
+built with -O2; 55.5 -> 76.0 t/s fast, 48.7 -> 56.7 canonical). Left: P4 (larger chunks), P6, P7,
+P9 (the GPU side, which is now close to the limit in the fast numerics), P8 as needed.
 
 ## History
 

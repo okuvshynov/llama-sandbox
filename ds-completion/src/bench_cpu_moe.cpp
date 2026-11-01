@@ -5,6 +5,9 @@
 //
 // --batch T: prompt chunks (forward_batch): T tokens all routed to the same k experts per layer,
 // batched against T one-token calls, fast and canonical, outputs compared bit for bit.
+// --replay LOG [--placement FILE --resident N --half 256]: the runtime's prompt workload: the
+// prompt tokens of a --log-routing file in half-chunks, per layer forward_batch on the pairs whose
+// expert is not among the placement's top N (the CPU's); random inputs; time per phase.
 // -k: experts per layer in the speed part (the runtime's CPU usually gets 1-2: its misses)
 //
 // Accuracy: for a few layers, both against the double reference (same fp8 fake quantization of
@@ -109,7 +112,8 @@ static double rel(const std::vector<float>& a, const std::vector<float>& b) {
 int main(int argc, char** argv) {
   setvbuf(stdout, nullptr, _IOLBF, 0);
   std::string path;
-  int threads = 32, tokens = 5, kspeed = 0, batch = 0;
+  int threads = 32, tokens = 5, kspeed = 0, batch = 0, resident_n = 6578, half = 256;
+  std::string replay, placement_path = "placements/study30.txt";
   std::vector<int> check = {0, 20, 39};
   for (int i = 1; i < argc; i++) {
     std::string a = argv[i];
@@ -118,6 +122,10 @@ int main(int argc, char** argv) {
     else if (a == "--tokens") tokens = atoi(argv[++i]);
     else if (a == "-k") kspeed = atoi(argv[++i]);
     else if (a == "--batch") batch = atoi(argv[++i]);
+    else if (a == "--replay") replay = argv[++i];
+    else if (a == "--placement") placement_path = argv[++i];
+    else if (a == "--resident") resident_n = atoi(argv[++i]);
+    else if (a == "--half") half = atoi(argv[++i]);
     else if (a == "--check-layers") { check.clear(); for (char* p = argv[++i]; *p;) { check.push_back((int)strtol(p, &p, 10)); if (*p == ',') p++; } }
   }
   Model m;
@@ -179,6 +187,75 @@ int main(int argc, char** argv) {
   }
 
   const int KS = kspeed > 0 && kspeed <= K ? kspeed : K;
+  if (!replay.empty()) {
+    // resident pairs: the placement's top N
+    std::vector<char> res((size_t)hp.n_layer * hp.n_expert, 0);
+    {
+      FILE* pf = fopen(placement_path.c_str(), "r");
+      if (!pf) { perror(placement_path.c_str()); return 1; }
+      char line[256];
+      int n = 0;
+      while (n < resident_n && fgets(line, sizeof line, pf)) {
+        int L, e;
+        if (line[0] == '#' || sscanf(line, "%d %d", &L, &e) != 2) continue;
+        if (L < hp.n_layer) res[(size_t)L * hp.n_expert + e] = 1;
+        n++;
+      }
+      fclose(pf);
+    }
+    // the routing log (version 2): header "DSRT" v n_layer k, records pos token prompt step ids[L][k] w[L][k]
+    FILE* lf = fopen(replay.c_str(), "rb");
+    if (!lf) { perror(replay.c_str()); return 1; }
+    char magic[4];
+    int32_t hdr[3];
+    if (fread(magic, 1, 4, lf) != 4 || memcmp(magic, "DSRT", 4) || fread(hdr, 4, 3, lf) != 3 || hdr[0] != 2) { fprintf(stderr, "not a v2 routing log\n"); return 1; }
+    const int nl = hdr[1], kk = hdr[2];
+    std::vector<std::vector<int16_t>> ids;  // per prompt token [nl * kk]
+    std::vector<std::vector<float>> ws;
+    for (;;) {
+      int32_t h4[4];
+      std::vector<int16_t> id((size_t)nl * kk);
+      std::vector<float> w((size_t)nl * kk);
+      if (fread(h4, 4, 4, lf) != 4 || fread(id.data(), 2, id.size(), lf) != id.size() || fread(w.data(), 4, w.size(), lf) != w.size()) break;
+      if (h4[2]) ids.push_back(id), ws.push_back(w);
+    }
+    fclose(lf);
+    const int T = (int)ids.size();
+    printf("# replay %s: %d prompt tokens, halves of %d, the placement's top %d resident\n", replay.c_str(), T, half, resident_n);
+    std::vector<float> x((size_t)half * E);
+    for (auto& v : x) v = nd(rng);
+    std::vector<float> out((size_t)half * KS * E);
+    for (int canon = 0; canon < 2; canon++) {
+      kern.bstats = {};
+      auto t0 = Clock::now();
+      for (int h0 = 0; h0 < T; h0 += half) {
+        const int n = std::min(half, T - h0);
+        for (int L = 0; L < hp.n_layer && L < nl; L++) {
+          std::vector<int> cid((size_t)n * K);
+          std::vector<float> cw((size_t)n * K);
+          std::vector<CpuMoeKernel::CpuRoute> r(n);
+          for (int t = 0; t < n; t++) {
+            int c = 0;
+            for (int j = 0; j < kk; j++) {
+              const int e = ids[h0 + t][(size_t)L * kk + j];
+              if (e < 0 || res[(size_t)L * hp.n_expert + e]) continue;
+              cid[(size_t)t * K + c] = e;
+              cw[(size_t)t * K + c] = ws[h0 + t][(size_t)L * kk + j];
+              c++;
+            }
+            r[t] = {cid.data() + (size_t)t * K, cw.data() + (size_t)t * K, c};
+          }
+          const CpuExperts ex = {m.layers[L].gate_exps, m.layers[L].up_exps, m.layers[L].down_exps, hp.swiglu_clamp[L]};
+          kern.forward_batch(ex, x.data(), n, r.data(), canon, out.data());
+        }
+      }
+      const double ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+      const auto& b = kern.bstats;
+      printf("%s: %.0f ms, %ld pairs over %ld experts (%.3f ms per pair); ms: prep %.0f inputs %.0f gate_up %.0f act %.0f down %.0f sum %.0f\n",
+             canon ? "canonical" : "fast", ms, b.pairs, b.experts, ms / b.pairs, b.prep, b.inputs, b.gate_up, b.act, b.down, b.sum);
+    }
+    return 0;
+  }
   if (batch > 0) {
     const int T = batch;
     printf("# batch: %d tokens x the same %d experts, all %d layers\n", T, KS, hp.n_layer);

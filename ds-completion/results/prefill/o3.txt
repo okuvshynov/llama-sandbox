@@ -1,0 +1,14 @@
+# the CPU expert kernel in place vs in the benchmark, and CXXFLAGS -O2 -> -O3 (README step 45)
+# bench: bin/bench-cpu-moe -m $M -t 16 --check-layers "" --replay data/routing/prefill/readme24k.bin (the runtime's CPU pairs of that prompt, half-chunks of 256); runtime: bin-hip/ds-completion -m $M --rt $F8 --placement placements/study30.txt [--canon] -f results/prefill/gate/pN.txt -n 32 --profile
+# commit 5e07249 + forward_batch phase timing, bench --replay, -O3; sclk 6 (manual, all four cards; set before the session); 2026-11-01
+## the same pairs: bench (-O3) vs the runtime (-O2), readme24k, 590k pairs
+bench replay, fast: 65.6 s (0.111 ms per pair); canonical 90.7 s (0.154)
+runtime -O2, fast: CPU experts 106.0 s (0.18 ms per pair)
+## runtime phases, p6000 (1,989 tokens), -O2: fast gate_up 18,490 + down 10,583 ms, the rest 1,650 ms (0.161 ms per pair); --no-overlap the same per pair (0.165); OMP_PLACES=cores OMP_PROC_BIND=close the same (0.157)
+## runtime -O3 (only CXXFLAGS changed)
+p1200 --canon: 61.51 t/s (0.156 ms per pair), output vs the token-by-token baseline identical
+p6000 --canon: 56.71 t/s (0.156 ms per pair), output vs the token-by-token baseline identical
+p6000 fast: 76.00 t/s (0.107 ms per pair), output vs the -O2 build identical
+## -O2 at the same sitting (p6000): fast 55.5 t/s, --canon 48.7 t/s (profile runs)
+## generation, 128 tokens, TCP/UDP chat prompt: -O3 --canon 20.02, fast 19.08 t/s; -O2 19.45 / 19.37 (noise); outputs identical in both modes
+## canonical placement gate rerun with -O3: PASS; all 18 outputs byte-identical to the committed ones (-O2): results/canon-gate.txt, results/canon-gate/

@@ -1,7 +1,7 @@
 # the registration stall in the runtime, before and after registering in 64 MB pieces (README step 43)
 # before: commit 149e700: bin-hip/ds-completion -m $M --rt $F8 --placement placements/study30.txt --canon --cache-loads 200 -p "What are the differences between TCP and UDP?" --chat -n 8 --profile
 # after: P3 build: the same with -p "What are the differences between TCP and UDP, and when would you choose each?" -n 1500; and --dspark $D --spec --canon [--cache-loads 200 --cache-wait] -p "Implement an LRU cache in Python with O(1) get and put, and add a few unit tests." --chat -n 300
-# sclk 2 (manual, all four cards); 2026-11-01
+# sclk 6 (manual, all four cards; set before the session, read afterwards); 2026-11-01
 ## before (one hipHostRegister per merged range, up to ~48 GB)
 # expert loader: 288.8 GB of expert tensors registered in 91.5 s
 # prompt profile: 1 chunks of up to 512, 91966 ms (cpu experts 16931, waiting for the GPU 26080); GPU timeline: attn.q 27362 engram.fetch 21530 ffn.router 26096 (host-side waits; the GPU work itself is microseconds)

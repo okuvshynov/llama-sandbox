@@ -598,6 +598,13 @@ Runtime::~Runtime() {
             cs.swaps_planned, cs.loads_started, cs.loads_published);
     cache.reset();
   }
+  if (profile && cpu_moe && cpu_moe->bstats.calls) {
+    const auto& b = cpu_moe->bstats;
+    fprintf(stderr, "# CPU experts, batched: %ld calls, %ld pairs over %ld experts (by tokens: 1 %ld, 2-3 %ld, 4-7 %ld, 8-15 %ld, 16+ %ld); "
+            "ms: prep %.0f inputs %.0f gate_up %.0f act %.0f down %.0f sum %.0f (%.3f ms per pair)\n",
+            b.calls, b.pairs, b.experts, b.by_tokens[0], b.by_tokens[1], b.by_tokens[2], b.by_tokens[3], b.by_tokens[4], b.prep,
+            b.inputs, b.gate_up, b.act, b.down, b.sum, (b.prep + b.inputs + b.gate_up + b.act + b.down + b.sum) / b.pairs);
+  }
   dspark.reset();
   cpu_moe.reset();
   for (Die& d : dies) {

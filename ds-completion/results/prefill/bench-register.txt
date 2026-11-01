@@ -1,5 +1,5 @@
 # bin-hip/bench-register $SHARD7 --gb 8 --pieces 0,1024,256,64 --faults $SHARD6 (shards of the model; README step 43)
-# commit 149e700 + P3 (uncommitted at the time); sclk 2 (manual, all four cards); 2026-11-01
+# commit 149e700 + P3 (uncommitted at the time); sclk 6 (manual, all four cards; set before the session, read afterwards); 2026-11-01
 # /home/oleksandr/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00007-of-00009.gguf: 8.0 GB registered per run (a fresh region each), probe on device 0
   piece MB register s probe p50 ms probe max ms    blocked s       pieces   faults: GB/s during registration, longest page wait ms
          0        2.5        0.038          3.5          0.0            1     15.19        0.1   mmap+munmap: 189 calls, longest 1696.2 ms

@@ -16,7 +16,7 @@ BIN = bin
 endif
 
 CXX      = g++
-CXXFLAGS = -std=c++17 -O2 -g -march=native -fopenmp -Wall -Wextra -Wno-unused-parameter \
+CXXFLAGS = -std=c++17 -O3 -g -march=native -fopenmp -Wall -Wextra -Wno-unused-parameter \
            -I$(FORK)/ggml/include -I$(FORK)/include -Isrc
 LDLIBS   = $(GGML_LIBS) -fopenmp -lpthread -ldl
 

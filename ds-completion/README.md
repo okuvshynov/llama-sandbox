@@ -14,7 +14,7 @@ Status, 2026-10-30 (sclk 2, 16 CPU threads; details in [OVERVIEW.md](OVERVIEW.md
 - Placement-invariant numerics (`--canon`, step 31) and the adaptive expert cache
   (`--cache-loads 200`, step 32): with `--spec`, 25.6 t/s mean on held-out prompts (29.1 at
   sclk 8), every output byte-identical. The fastest settings per job: QUICKSTART.md.
-- Prompt processing in chunks of 512 (steps 37-41): ~17 -> 53-57 t/s (49-54 with `--canon`),
+- Prompt processing in chunks of 512 (steps 37-45): ~17 -> 76 t/s (57-62 with `--canon`; sclk 6),
   output byte-identical to token by token.
 - Long context: 65,536 tokens by default, up to 1M (step 34); gated against the reference at
   20,000 tokens: same greedy tokens, KL as at short context, indexer differences are near-ties
@@ -1919,17 +1919,49 @@ host waited for them (16-22 s of a 30-36 s prompt):
 
 | stage | prompt t/s (`--canon`) | per load |
 |---|---|---|
-| without streaming (step 41) | 48.8 | - |
+| without streaming (step 41, sclk 2; today at sclk 6: 48.7) | 48.8 | - |
 | streaming, direct loads | 55.5 | 2.27 ms |
 | the home die left out | 48.8 | 2.36 |
 | loader pipelined (no wait per request) | 55.9 | 2.25 |
 | CPU kernel on 12 threads | 56.0 | 2.25 |
 | the loads' streams at high priority | 65.3 | 1.87 |
 
-What limits it is contention inside the dies: a load is a copy and an unpack kernel, and the
+(Steps 42-44 ran at sclk 6, set before that session; the prompt is CPU-bound, so the clock
+level hardly changes these numbers.) What limits it is contention inside the dies: a load is a copy and an unpack kernel, and the
 unpack queued behind the die's own compute kernels (raising the loads' priority was the one
 change that helped). Separate copy and unpack streams with more staging buffers was the next
 step; the attempt was stopped there. Dropped (the person's decision) as too complicated for its
 gain: it needs spare slots, a second loader, a per-layer schedule and per-half buffers, and its
 benefit depends on load timing under contention that a standalone benchmark does not show. The
 code was removed; registration in pieces (step 43) stays.
+
+## Step 45: the CPU expert kernel ran 1.6x slower in the runtime than in its benchmark: -O2
+
+Step 42's calibration found the runtime's CPU experts 1.65x slower than the benchmark-based
+model. Measured in place (`forward_batch` now times its phases; `--profile` prints them):
+gate/up and down were 29 of 31 s, the grouping, inputs, activations and sums ~1.7 s, so the
+time was in the kernels. Ruled out one at a time (`results/prefill/o3.txt`):
+
+- **The workload** (32% of a half-chunk's experts have one token, 26% two or three; the
+  benchmark had 6 equal groups): `bench-cpu-moe --replay LOG` runs exactly the runtime's CPU
+  pairs of a logged prompt: 0.111 ms per pair, against the runtime's 0.18 on the same pairs.
+- **The overlap with the GPU's work:** `--no-overlap` the same per pair (0.165).
+- **Thread placement:** one OpenMP thread pinned per core, the same (0.157).
+- **The build:** the benchmark is compiled with `-O3`, the runtime binaries with the common
+  `CXXFLAGS`, `-O2`. At `-O2` GCC does not fully unroll the tiled kernels' small loops over their
+  accumulator arrays, so the accumulators live in memory.
+
+`CXXFLAGS` is now `-O3` for every binary. In place (sclk 6, set before this session):
+
+| 1,989-token prompt | -O2 | -O3 |
+|---|---|---|
+| fast | 55.5 t/s (0.161 ms per pair) | **76.0 t/s** (0.107) |
+| `--canon` | 48.7 t/s (0.187) | **56.7 t/s** (0.156) |
+| `--canon`, 364 tokens | 53.6 (step 41, sclk 2) | 61.5 |
+
+No output changed: the canonical prompts are byte-identical to the token-by-token build, the
+fast prompt to the `-O2` build, generation in both modes too (its one-token kernel was not
+affected: 19-20 t/s either way), and the canonical placement gate passes with all 18 outputs
+identical to the committed ones (`results/canon-gate.txt`). At sclk 2 the fast prompt may be
+somewhat lower than 76 t/s: with the CPU this much faster, the GPU's own work (~13.6 ms per
+prompt token at sclk 2, step 39) gets close to setting the pace.

@@ -47,8 +47,8 @@ bin-hip/ds-completion -m $M --rt ~/llms/ds-1017-fp8/dense-fp8.gguf \
 ```
 
 **Short runs and long prompts with short answers:** without the cache (it would not start
-loading before the run ends) and without `--canon` (the prompt runs ~10-15% faster: 53-57 t/s
-vs 49-54). Speculative decoding
+loading before the run ends) and without `--canon` (the prompt runs ~25% faster: 76 t/s vs
+57-62 at sclk 6). Speculative decoding
 gives the same bytes as plain decoding, +22% on generation on average (more on code and math,
 least on Chinese/Japanese):
 
@@ -91,8 +91,8 @@ Options:
   per-step data.
 - `--canon`: placement-invariant expert numerics: the output no longer depends on where the
   experts run (any placement, any `--moe-dies`, with or without the draft, with or without the
-  cache give the same bytes); generation ~2% slower, the prompt ~10-15% (its CPU expert kernel
-  is slower).
+  cache give the same bytes); generation ~2% slower, the prompt ~25% (its CPU expert kernel is
+  slower).
 - `--cache-loads R`: the adaptive expert cache (README step 32): the GPUs keep the experts used
   most in the last 256 tokens, loading up to R experts per second in the background (100 is a
   good default; 0 = the static placement). Use with `--canon`, or the output depends on load
@@ -128,8 +128,8 @@ Means over all 17 steps: 1.8e-2 to 2.5e-2 for every mode.
 - **The runtime is also gated per layer:** attention and FFN output within ~1e-7 of the fp32 +
   fake-quant reference. It has no inexact op left, and repeated runs are bit-identical.
 - **Prompt processing** (`--rt`, chunks of 512, the CPU's experts overlapped with the GPU's
-  work; README steps 37-41): 53-57 t/s, 49-54 with `--canon` (364- and 1,989-token prompts,
-  sclk 2), output byte-identical to token-by-token processing; ~7.7 t/s on the CPU path. The
+  work; README steps 37-45): 76 t/s, 57-62 with `--canon` (364- and 1,989-token prompts, sclk 6),
+  output byte-identical to token-by-token processing; ~7.7 t/s on the CPU path. The
   runtime's mean KL varies run to run with fp8 rounding flips (README step 10); every exact mode
   scatters the same way.
 - **Where a step goes** (`--spec`, cache, sclk 8; README step 33): a 6-token verify step ~111 ms
@@ -142,7 +142,7 @@ Means over all 17 steps: 1.8e-2 to 2.5e-2 for every mode.
 
 - Context with `--rt`: 65,536 tokens by default (prompt + generation), up to the model's
   1,048,576 with `--max-ctx N` (~6.4 KB of GPU 0 memory per position). A 30k-token prompt takes
-  ~10 min at ~50 t/s (it took ~30 min token by token). Without `--rt` (the CPU path): 4,096 by
+  ~7-9 min at 57-76 t/s (it took ~30 min token by token). Without `--rt` (the CPU path): 4,096 by
   default, at most 16k (no candidate-block selection there).
 - The dense part uses one GPU; the others only hold experts with `--placement`.
 - Sampling is greedy only.

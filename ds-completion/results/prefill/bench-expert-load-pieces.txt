@@ -1,5 +1,5 @@
 # bin-hip/bench-expert-load -m $M, with the expert tensors registered in 64 MB pieces and copies split at piece boundaries (README step 43; step 30: results/bench-expert-load.txt)
-# commit 149e700 + P3 (uncommitted at the time); sclk 2 (manual, all four cards); 2026-11-01
+# commit 149e700 + P3 (uncommitted at the time); sclk 6 (manual, all four cards; set before the session, read afterwards); 2026-11-01
 # expert: 3 x 6.27 MB; 40 layers with experts
 # direct: registered 288.8 GB of expert tensors in 135.7 s
 

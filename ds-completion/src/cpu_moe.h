@@ -37,6 +37,13 @@ class CpuMoeKernel {
   // token its sum [T][E] (tokens without experts: untouched).
   struct CpuRoute { const int* ids; const float* w; int count; };
   void forward_batch(const CpuExperts& L, const float* x, int T, const CpuRoute* routes, bool canon, float* out);
+  // forward_batch's time by phase (wall clock, ms, summed over calls; the master thread's view at
+  // each loop's barrier) and its work: calls, pairs, experts, and experts by tokens (1, 2-3,
+  // 4-7, 8-15, 16+)
+  struct BatchStats {
+    double prep = 0, inputs = 0, gate_up = 0, act = 0, down = 0, sum = 0;
+    long calls = 0, pairs = 0, experts = 0, by_tokens[5] = {};
+  } bstats;
   // control for the benchmark: the same tasks and rows, only reading the bytes
   uint64_t touch(const CpuExperts& L, const int* ids, int k);
 

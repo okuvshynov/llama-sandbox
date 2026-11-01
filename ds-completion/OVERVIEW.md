@@ -36,8 +36,8 @@ Decode speed (sclk level 2, 16 CPU threads, 128 generated tokens):
 
 (The speculative and cache numbers are 300-token runs on held-out prompts; README steps 26, 32.)
 
-Prompt processing (chunks of 512, README steps 37-41): 53-57 t/s, 49-54 with `--canon`, output
-byte-identical to token by token (which ran at ~17 t/s). Startup: ~15 s, plus 10-30 s to upload
+Prompt processing (chunks of 512, README steps 37-45): 76 t/s, 57-62 with `--canon` (sclk 6),
+output byte-identical to token by token (which ran at ~17 t/s). Startup: ~15 s, plus 10-30 s to upload
 experts with a placement; with the cache, its loads start after the experts' memory is registered
 (~95-135 s in the background; README step 43). The fastest settings per job: QUICKSTART.md.
 
@@ -204,10 +204,10 @@ experts ~3% visible.
    reference's greedy tokens with short-context KL (step 35). Left: compressed caches in fp8/fp4
    (for contexts far beyond 64k), faster prompt processing (in progress, README step 37:
    chunks of up to 512, CPU experts batched and overlapped with the GPU, an fp8 matrix-multiply
-   kernel: ~17 -> 57 t/s so far, ~17 -> 49 with `--canon`).
+   kernel, the runtime built with -O3: ~17 -> 76 t/s so far, ~17 -> 57 with `--canon`).
 2. **Prompt processing, next** (PLAN "Prompt processing: where it stands and the options"): the
-   CPU's experts are the limit (~30 of 36 s for 1,989 tokens); options: larger chunks, streaming
-   the CPU's experts to the GPUs for long prompts, then the GPU side (batched attention core).
+   CPU's experts and the GPU's own work are now close (streaming the experts was tried and
+   dropped, README step 44); options: larger chunks, then the GPU side (batched attention core).
 3. **Adaptive expert cache, tuning** (README steps 28-32): built and working (`--canon
    --cache-loads R`: +28% with `--spec` at sclk 2, every output identical); left: the default
    rate, hysteresis so it settles in long runs, the fast path's CPU preparation (the same fix as

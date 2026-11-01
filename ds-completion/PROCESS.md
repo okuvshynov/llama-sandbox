@@ -325,6 +325,15 @@ Each rule is followed by where it mattered most.
   **Lesson:** a unit cost measured alone (the load rate) does not carry over to a resource
   shared with the work it overlaps; measure it in place before building on it.
 
+- **The CPU kernel's in-place overhead (README step 45).** The cheapest option on the list,
+  chosen after P2. Instrumented first (time per phase): the overhead theories (grouping,
+  barriers) were wrong, the kernels themselves were slow. Then each difference between the
+  benchmark and the runtime was removed one at a time: the workload (a replay of the runtime's
+  exact pairs), the overlap, thread placement, and the build flags, which were it. **Lesson:** a
+  benchmark is only a proxy if it is built the same way as the program it stands for; the
+  runtime had been 1.6x slower than its own kernel's benchmark since step 37. Checked after:
+  every gate and output byte-identical.
+
 ## 4. Predictions against outcomes
 
 Estimates were made before measuring wherever possible; this is how they fared.
@@ -343,6 +352,7 @@ Estimates were made before measuring wherever possible; this is how they fared.
 | cache, `--spec`, 100 loads/s (29 -> 32) | ~28.9 t/s, 87% hits (1,024 tokens, no canonical cost) | 24.5 t/s, 80% hits (300 tokens) | shorter runs adapt for a larger share of the run |
 | CPU/GPU overlap of two half-chunks (38) | up to ~2x | 1.5x | half the tokens per CPU expert; both sides now ~33 s |
 | chunks of 64 share CPU expert reads (37) | most of the 53% saved | nothing | 384 experts: ~1 token per CPU expert per chunk; then compute-bound until tiled |
+| runtime's CPU experts = the benchmark x 1.65 (42) | overhead around the kernel | the build: -O2 vs -O3 | the runtime was compiled with the common CXXFLAGS (-O2) |
 | loads hidden behind the GPU's work (42 -> 44) | ~0.7 ms per load (standalone rate) | 1.9-2.4 ms | the unpack kernels queue behind the dies' own compute |
 | reference run, 20k tokens (35) | 6-10 h (scaled from 1,100 tokens) | 42 min | the 1,100-token run was mostly fixed cost |
 

@@ -1,6 +1,6 @@
 # prompt streaming (PLAN P2, README step 44): an attempt, since removed from the code
 # bin-hip/ds-completion -m $M --rt $F8 --placement placements/study30.txt --canon --prefill-stream 48 [--stream-home] [--cache-wait] [-t N] -f results/prefill/gate/p6000.txt -n 32 (1,989 tokens; output compared with the token-by-token baseline p6000-base-canon.out)
-# commit 7009e55 + the P2 code at each stage (not in the repository); sclk 2 (manual, all four cards); 2026-11-01
+# commit 7009e55 + the P2 code at each stage (not in the repository); sclk 6 (manual, all four cards; set before the session, read afterwards); 2026-11-01
 # without streaming (step 41): --canon 48.8 t/s; the fast numerics 53-57
 stage                                              prompt t/s  output     loads: submit->done (per load), waited after the CPU's share (the CPU's share)
 1 stream, pinned loads (registration not done)          54.20  identical  (not instrumented)

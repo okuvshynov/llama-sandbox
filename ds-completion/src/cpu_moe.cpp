@@ -7,6 +7,7 @@
 #include <omp.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -303,6 +304,9 @@ uint64_t CpuMoeKernel::touch(const CpuExperts& L, const int* ids, int k) {
 
 void CpuMoeKernel::forward_batch(const CpuExperts& L, const float* x, int T, const CpuRoute* routes, bool canon, float* out) {
   constexpr int CH = 32;  // rows per task
+  using Clk = std::chrono::steady_clock;
+  auto ms = [](Clk::time_point a, Clk::time_point b) { return std::chrono::duration<double, std::milli>(b - a).count(); };
+  const auto t_start = Clk::now();
   // (token, expert) pairs in token order, then list order; grouped by expert
   std::vector<int> pair_tok, pair_j, first(T + 1, 0);
   for (int t = 0; t < T; t++) {
@@ -318,6 +322,13 @@ void CpuMoeKernel::forward_batch(const CpuExperts& L, const float* x, int T, con
   std::vector<Group> groups;
   for (auto& [e, ps] : by_expert) groups.push_back({e, ps});
   const int G = (int)groups.size();
+  bstats.calls++;
+  bstats.pairs += P;
+  bstats.experts += G;
+  for (auto& g : groups) {
+    const int n = (int)g.pairs.size();
+    bstats.by_tokens[n == 1 ? 0 : n < 4 ? 1 : n < 8 ? 2 : n < 16 ? 3 : 4]++;
+  }
 
   b_gate.resize((size_t)P * F);
   b_up.resize((size_t)P * F);
@@ -354,6 +365,8 @@ void CpuMoeKernel::forward_batch(const CpuExperts& L, const float* x, int T, con
     for (int g = 0; g < G; g++)
       for (int p : groups[g].pairs) ga[g].push_back(b_act.data() + (size_t)p * 2 * F + F);
   }
+  Clk::time_point tp[6];
+  tp[0] = Clk::now();
 #pragma omp parallel num_threads(n_threads)
   {
     // the inputs: forward()'s fq8 + lane order, or forward_canon_rows' digits
@@ -370,6 +383,8 @@ void CpuMoeKernel::forward_batch(const CpuExperts& L, const float* x, int T, con
         permute_blocks(q, q + E, E);
       }
     }
+#pragma omp master
+    tp[1] = Clk::now();
     // gate and up rows: per expert, every row once for all its tokens
 #pragma omp for schedule(dynamic)
     for (int task = 0; task < G * 2 * per_f; task++) {
@@ -380,6 +395,8 @@ void CpuMoeKernel::forward_batch(const CpuExperts& L, const float* x, int T, con
       if (canon) canon_dot_rows_multi(base, gu_row, gxc[g].data(), nx, c * CH, (c + 1) * CH, ys);
       else dot_range_multi(base, gu_row, nb_e, gx[g].data(), nx, ys, c * CH, (c + 1) * CH);
     }
+#pragma omp master
+    tp[2] = Clk::now();
     // the activation of every pair (forward()'s / forward_canon_rows' expressions)
 #pragma omp for schedule(static)
     for (int p = 0; p < P; p++) {
@@ -406,6 +423,8 @@ void CpuMoeKernel::forward_batch(const CpuExperts& L, const float* x, int T, con
         permute_blocks(a, a + F, F);
       }
     }
+#pragma omp master
+    tp[3] = Clk::now();
     // down rows: per expert, every row once for all its tokens
 #pragma omp for schedule(dynamic)
     for (int task = 0; task < G * per_e; task++) {
@@ -415,6 +434,8 @@ void CpuMoeKernel::forward_batch(const CpuExperts& L, const float* x, int T, con
       if (canon) canon_dot_rows_multi(base, d_row, gac[g].data(), nx, c * CH, (c + 1) * CH, gd[g].data());
       else dot_range_multi(base, d_row, nb_f, ga[g].data(), nx, gd[g].data(), c * CH, (c + 1) * CH);
     }
+#pragma omp master
+    tp[4] = Clk::now();
     // fast: each token's sum over its experts, in list order (forward()'s)
     if (!canon) {
 #pragma omp for schedule(static)
@@ -429,4 +450,11 @@ void CpuMoeKernel::forward_batch(const CpuExperts& L, const float* x, int T, con
       }
     }
   }
+  tp[5] = Clk::now();
+  bstats.prep += ms(t_start, tp[0]);
+  bstats.inputs += ms(tp[0], tp[1]);
+  bstats.gate_up += ms(tp[1], tp[2]);
+  bstats.act += ms(tp[2], tp[3]);
+  bstats.down += ms(tp[3], tp[4]);
+  bstats.sum += ms(tp[4], tp[5]);
 }

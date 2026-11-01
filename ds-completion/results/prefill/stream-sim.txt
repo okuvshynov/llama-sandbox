@@ -1,6 +1,6 @@
 # ~/venvs/ds-ref/bin/python scripts/prefill_stream_sim.py [--cpu-scale 1.65] [--load-rate 1000] [--canon] data/routing/prefill/{readme24k,rtcpp32k}.bin
 # routing logs: bin-hip/ds-completion -m $M --rt $F8 --placement placements/study30.txt -f data/routing/prefill/P.txt -n 1 --max-ctx 16384 --log-routing data/routing/prefill/P.bin; readme24k.txt = head -c 24000 prompts/ds-completion-readme-ddf9b43.md, rtcpp32k.txt = head -c 32000 hip/rt.cpp at e3542ac
-# commit e3542ac + the script; model only (unit costs from README steps 30, 37, 41); sclk 2 for the calibration run; 2026-11-01
+# commit e3542ac + the script; model only (unit costs from README steps 30, 37, 41); sclk 6 for the calibration run (set before the session, read afterwards); 2026-11-01
 # calibration (same prompt, --profile, no routing log): readme24k 7,369 tokens in 125.9 s = 58.5 t/s; cpu experts 106.0 s = 14.4 ms per token (the uncalibrated model: 8.7) -> --cpu-scale 1.65; GPU own work ~83 s = 11.3 ms per token
 # resident: the placement's top 6578 pairs; CPU costs fast x 1.0; 1437 loads/s
 
