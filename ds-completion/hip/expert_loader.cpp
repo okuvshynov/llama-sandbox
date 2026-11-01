@@ -6,12 +6,18 @@
 #include <random>
 #include <stdexcept>
 #include <string>
+#include <thread>
+#include <vector>
 
 #define CHECK(x)                                                                                   \
   do {                                                                                             \
     hipError_t e_ = (x);                                                                           \
     if (e_ != hipSuccess) throw std::runtime_error(std::string(#x) + ": " + hipGetErrorString(e_)); \
   } while (0)
+
+// the end address of every registered piece, sorted (register_expert_tensors; read-only once
+// the loader's direct path is on)
+static std::vector<uintptr_t> g_piece_ends;
 
 LoadStage load_stage_create(int dev, size_t bytes, int priority) {
   LoadStage st;
@@ -56,7 +62,17 @@ void load_expert(LoadStage& st, ExpertPool& p, int slot, const Layer& l, int e, 
       memcpy(st.host[b], src, bytes);
       src = st.host[b];
     }
-    CHECK(hipMemcpyAsync(st.dstage[b], src, bytes, hipMemcpyHostToDevice, st.s));
+    if (direct) {  // one copy per registered piece the matrix touches (a copy may not span two)
+      const uintptr_t a0 = (uintptr_t)src, a1 = a0 + bytes;
+      uintptr_t a = a0;
+      for (auto it = std::upper_bound(g_piece_ends.begin(), g_piece_ends.end(), a0); a < a1; ++it) {
+        const uintptr_t e = it == g_piece_ends.end() ? a1 : std::min(*it, a1);
+        CHECK(hipMemcpyAsync(st.dstage[b] + (a - a0), (const void*)a, e - a, hipMemcpyHostToDevice, st.s));
+        a = e;
+      }
+    } else {
+      CHECK(hipMemcpyAsync(st.dstage[b], src, bytes, hipMemcpyHostToDevice, st.s));
+    }
     fp4_unpack(st.dstage[b], n_blocks, mat->codes + base, mat->scales + base, st.s);
     CHECK(hipEventRecord(st.free[b], st.s));
   }
@@ -73,18 +89,30 @@ size_t register_expert_tensors(const Model& m) {
   for (auto& x : r)
     if (!merged.empty() && x.first <= merged.back().second) merged.back().second = std::max(merged.back().second, x.second);
     else merged.push_back(x);
+  // in pieces (README step 43): one hipHostRegister call holds the process's memory-map lock for
+  // its whole duration (~2.7 GB/s), and any mmap / munmap meanwhile (malloc of a large block, the
+  // HIP runtime) waits for it, and the page faults queued behind that writer: a 48 GB range
+  // stalled the runtime's host thread for many seconds at a time. 64 MB pieces hold it ~25 ms,
+  // and a short pause lets a waiting writer in.
+  constexpr size_t kPiece = 64ull << 20;
+  std::vector<std::pair<uintptr_t, uintptr_t>> done;
   size_t n = 0;
-  for (auto& [a, b] : merged) {
-    if (hipHostRegister((void*)a, b - a, hipHostRegisterReadOnly | hipHostRegisterPortable) != hipSuccess) {
-      (void)hipGetLastError();
-      for (auto& [a2, b2] : merged) {  // undo the ones that worked
-        if (a2 == a) break;
-        (void)hipHostUnregister((void*)a2);
+  for (auto& [a, b] : merged)
+    for (uintptr_t p = a; p < b; p += kPiece) {
+      const uintptr_t e = std::min(b, p + kPiece);
+      if (hipHostRegister((void*)p, e - p, hipHostRegisterReadOnly | hipHostRegisterPortable) != hipSuccess) {
+        (void)hipGetLastError();
+        for (auto& [p2, e2] : done) (void)hipHostUnregister((void*)p2);  // undo the ones that worked
+        return 0;
       }
-      return 0;
+      done.push_back({p, e});
+      n += e - p;
+      std::this_thread::sleep_for(std::chrono::microseconds(500));
     }
-    n += b - a;
-  }
+  std::vector<uintptr_t> ends;
+  for (auto& [p, e] : done) ends.push_back(e);
+  std::sort(ends.begin(), ends.end());
+  g_piece_ends = std::move(ends);  // before the caller turns direct loads on
   return n;
 }
 

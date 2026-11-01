@@ -308,6 +308,13 @@ Each rule is followed by where it mattered most.
   of the same prompt before trusting it (the CPU model was 1.65x optimistic), and tried a lower
   load rate for sensitivity. **Decided:** the hybrid at today's chunk size; P3 first.
 
+- **P3, the registration stall (README step 43).** Three hypotheses, each tested by a probe in
+  a standalone benchmark before changing the runtime: HIP calls blocked (no), page faults blocked
+  (no), mmap/munmap blocked (yes, seconds). The runtime's own profile had pointed at the host
+  (microsecond GPU groups taking 20+ s), which is what made the third hypothesis worth testing.
+  Also found by the benchmark: a copy may not span two registrations, which the fix (pieces)
+  had to handle. Checked after: no stall, loads still work and are as fast, output unchanged.
+
 ## 4. Predictions against outcomes
 
 Estimates were made before measuring wherever possible; this is how they fared.

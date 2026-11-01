@@ -44,7 +44,9 @@ void load_stage_free(LoadStage& st);
 void load_expert(LoadStage& st, ExpertPool& pool, int slot, const Layer& l, int e, bool direct);
 
 // Registers every loaded layer's expert tensors with HIP (read-only; neighbouring tensors'
-// page-aligned ranges merged). Returns the bytes registered, 0 on failure.
+// page-aligned ranges merged), in 64 MB pieces so no call holds the memory-map lock for long; a
+// copy from the registered memory must not span two pieces (load_expert splits it). Returns the
+// bytes registered, 0 on failure.
 size_t register_expert_tensors(const Model& m);
 
 // One loader thread per die, each with its own LoadStage, fed by a queue.

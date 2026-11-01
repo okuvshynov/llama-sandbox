@@ -38,8 +38,8 @@ Decode speed (sclk level 2, 16 CPU threads, 128 generated tokens):
 
 Prompt processing (chunks of 512, README steps 37-41): 53-57 t/s, 49-54 with `--canon`, output
 byte-identical to token by token (which ran at ~17 t/s). Startup: ~15 s, plus 10-30 s to upload
-experts with a placement; with the cache, ~40-90 s more while the experts' memory is registered
-(the GPUs stall meanwhile: PLAN item 30). The fastest settings per job: QUICKSTART.md.
+experts with a placement; with the cache, its loads start after the experts' memory is registered
+(~95-135 s in the background; README step 43). The fastest settings per job: QUICKSTART.md.
 
 Accuracy, against the official implementation run on the CPU in fp32:
 

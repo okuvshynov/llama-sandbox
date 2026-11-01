@@ -35,7 +35,7 @@ endif
 
 all: $(BIN)/ds-completion $(BIN)/ds-inspect $(BIN)/ds-test $(BIN)/test-fakequant $(BIN)/llama-logits $(BIN)/fp8pack $(BIN)/bench-cpu-moe
 ifeq ($(HIP),1)
-all: $(BIN)/bench-fp8 $(BIN)/bench-kernels $(BIN)/bench-fp4-moe $(BIN)/bench-expert-pool $(BIN)/bench-expert-load $(BIN)/test-topk
+all: $(BIN)/bench-fp8 $(BIN)/bench-kernels $(BIN)/bench-fp4-moe $(BIN)/bench-expert-pool $(BIN)/bench-expert-load $(BIN)/test-topk $(BIN)/bench-register
 endif
 
 # our own HIP kernels (PLAN.md B1 onwards)
@@ -59,6 +59,10 @@ $(BIN)/ds-test: src/ds_test.cpp $(CORE) $(CORE_H) $(RT_OBJ)
 $(BIN)/bench-kernels: hip/bench_kernels.cpp hip/kernels.hip hip/fp8_gemv.hip hip/kernels.h hip/fp8_gemv.h
 	@mkdir -p $(BIN)
 	$(HIPCC) $(HIPFLAGS) -o $@ hip/bench_kernels.cpp hip/kernels.hip hip/fp8_gemv.hip
+
+$(BIN)/bench-register: hip/bench_register.cpp
+	@mkdir -p $(BIN)
+	$(HIPCC) $(HIPFLAGS) -o $@ hip/bench_register.cpp
 
 $(BIN)/test-topk: hip/test_topk.cpp hip/kernels.hip hip/kernels.h
 	@mkdir -p $(BIN)

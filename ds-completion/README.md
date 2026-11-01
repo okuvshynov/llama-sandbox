@@ -1867,3 +1867,41 @@ tensor parallelism (each die takes whole experts; all four dies count because ea
 link carries its share of the loads). Splitting the dense part (TP2 within an XGMI pair, or a
 layer pipeline) is the lever after that. Caveats: the load rate was measured alone; the CPU
 calibration is from one prompt; direct loads need the registration stall fixed (P3).
+
+## Step 43: the registration stall, found and fixed (PLAN item 30, P3)
+
+With `--cache-loads`, a run's first ~90 s did nothing: the loader registers the 289 GB of expert
+tensors with HIP (`hipHostRegister`, for direct loads), and a 13-token prompt took 92 s. The
+profile put the time in groups that are microseconds of GPU work (`attn.q` 27 s, `ffn.router`
+26 s, `engram.fetch` 22 s): the GPU idled, waiting for the host thread to submit.
+
+`bin-hip/bench-register` (`results/prefill/bench-register.txt`) tested the hypotheses in turn,
+registering 8 GB of a model shard per run (a fresh region each: pages pinned once pin again
+faster) while probes run:
+
+- **Does registration block other HIP calls?** No: a kernel + two small copies + an event
+  synchronize kept their ~0.04 ms round trip (worst 3.5 ms) even with the whole range in one call.
+- **Does it block page faults on the model?** No: a reader of another, not yet mapped shard kept
+  13-16 GB/s (kernel 6.10 handles faults under per-area locks).
+- **Does it block `mmap` / `munmap`?** Yes: one 1 MB map + unmap waited up to **1.7 s** while
+  8 GB registered in one call. A registration holds the process's memory-map lock for its whole
+  duration (~2.7 GB/s), and anything that maps or unmaps memory (malloc of a large block, the HIP
+  runtime's own allocations) waits for it. The runtime registered ranges of up to ~48 GB, so its
+  host thread stalled for many seconds at a time.
+
+| piece | longest mmap + munmap during the registration |
+|---|---|
+| whole 8 GB | 1,696 ms |
+| 1 GB | 328 ms |
+| 256 MB | 93 ms |
+| 64 MB | 49 ms |
+
+The loader now registers 64 MB pieces with a short pause between them. A copy may not span two
+registrations ("invalid argument"), so `load_expert` splits a matrix's copy at piece boundaries
+(the split copies run at full speed: 13.4 vs 13.6 GB/s). `results/prefill/register-stall.txt`:
+the same short prompt with the cache now takes 0.86 s (was 92 s), and generation during the
+registration runs at full speed (17.3 t/s, `--canon` plain). With `--cache-wait` the cache loads
+as before (2,429 loads in a 300-token `--spec` run, GPU share of the experts 65.6% -> 81.8%),
+output identical to the run without the cache. Load throughput is unchanged (1,440 loads/s over
+the four dies, `results/prefill/bench-expert-load-pieces.txt`). The registration itself still
+takes ~95-135 s, now in the background; the cache starts loading only after it.

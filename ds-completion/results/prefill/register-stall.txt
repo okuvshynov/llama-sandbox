@@ -1,0 +1,18 @@
+# the registration stall in the runtime, before and after registering in 64 MB pieces (README step 43)
+# before: commit 149e700: bin-hip/ds-completion -m $M --rt $F8 --placement placements/study30.txt --canon --cache-loads 200 -p "What are the differences between TCP and UDP?" --chat -n 8 --profile
+# after: P3 build: the same with -p "What are the differences between TCP and UDP, and when would you choose each?" -n 1500; and --dspark $D --spec --canon [--cache-loads 200 --cache-wait] -p "Implement an LRU cache in Python with O(1) get and put, and add a few unit tests." --chat -n 300
+# sclk 2 (manual, all four cards); 2026-11-01
+## before (one hipHostRegister per merged range, up to ~48 GB)
+# expert loader: 288.8 GB of expert tensors registered in 91.5 s
+# prompt profile: 1 chunks of up to 512, 91966 ms (cpu experts 16931, waiting for the GPU 26080); GPU timeline: attn.q 27362 engram.fetch 21530 ffn.router 26096 (host-side waits; the GPU work itself is microseconds)
+# prompt: 13 tokens in 92.06 s = 0.14 t/s
+## after (64 MB pieces)
+# prompt: 20 tokens in 0.86 s = 23.31 t/s; generation: 579 tokens in 33.45 s = 17.31 t/s
+# expert loader: 288.8 GB of expert tensors registered in 94.7 s (direct loads from now)
+## after, loads working (cache with --cache-wait vs no cache, both --canon --spec): output identical
+cache --cache-wait: # expert loader: 288.8 GB of expert tensors registered in 103.1 s (direct loads from now)
+cache --cache-wait: # routed experts: 81.8% on GPUs (68702 of 84000)
+cache --cache-wait: # prompt: 27 tokens in 0.93 s = 29.08 t/s; generation: 300 tokens in 12.04 s = 24.91 t/s
+cache --cache-wait: # expert cache: 19 rebalances, 14925 swaps planned, 2429 loads started, 2411 published
+no cache: # routed experts: 65.6% on GPUs (52767 of 80400)
+no cache: # prompt: 27 tokens in 0.74 s = 36.39 t/s; generation: 300 tokens in 12.84 s = 23.36 t/s

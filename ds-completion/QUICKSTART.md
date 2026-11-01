@@ -33,8 +33,9 @@ the job (sclk 2; README steps 32, 37-41):
 
 **Long generation** (reasoning, long answers): speculative decoding + the adaptive expert cache.
 ~25.6 t/s mean on held-out prompts (29.1 at sclk 8; a 9.8k-token reasoning run reached 31.7 at
-sclk 6). The cache first registers the experts' memory with the GPUs, which stalls the GPUs for
-~90 s at startup (PLAN item 30, open), so it pays off only for runs of a few minutes or more:
+sclk 6). The cache first registers the experts' memory with the GPUs (~95-135 s in the
+background; generation runs at the static placement's speed meanwhile), so it pays off for runs
+of a few minutes or more:
 
 ```bash
 cd ~/projects/llama-sandbox/ds-completion
@@ -45,8 +46,9 @@ bin-hip/ds-completion -m $M --rt ~/llms/ds-1017-fp8/dense-fp8.gguf \
     -f prompt.txt --think --effort max -n 60000
 ```
 
-**Short runs and long prompts with short answers:** without the cache (no startup stall) and
-without `--canon` (the prompt runs ~10-15% faster: 53-57 t/s vs 49-54). Speculative decoding
+**Short runs and long prompts with short answers:** without the cache (it would not start
+loading before the run ends) and without `--canon` (the prompt runs ~10-15% faster: 53-57 t/s
+vs 49-54). Speculative decoding
 gives the same bytes as plain decoding, +22% on generation on average (more on code and math,
 least on Chinese/Japanese):
 
@@ -94,9 +96,9 @@ Options:
 - `--cache-loads R`: the adaptive expert cache (README step 32): the GPUs keep the experts used
   most in the last 256 tokens, loading up to R experts per second in the background (100 is a
   good default; 0 = the static placement). Use with `--canon`, or the output depends on load
-  timing. It starts loading once the model's expert memory is registered with the GPUs (~40-90
-  s; meanwhile every GPU call stalls, PLAN item 30, and longer if the model must come back from
-  disk); `--cache-wait` waits for that before the prompt. `--cache-period N` (16) and
+  timing. It starts loading once the model's expert memory is registered with the GPUs (~95-135
+  s in the background, longer if the model must come back from disk; README step 43);
+  `--cache-wait` waits for that before the prompt. `--cache-period N` (16) and
   `--cache-window N` (256) set how often it rebalances and over how many tokens it counts.
 - `--load-test R [--load-pinned]`: a measurement aid: loads random experts into spare GPU slots
   at R loads/s in the background, as the cache would (README step 30); output unchanged.
