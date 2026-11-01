@@ -1,0 +1,7 @@
+# P4, chunks of 1,024 (README step 46): kChunk 1024, bin-hip/ds-completion -m $M --rt $F8 --placement placements/study30.txt [--canon] --prefill-chunk {1024,512} -f data/routing/prefill/readme24k.txt --max-ctx 16384 -n 1 --profile (reverted afterwards)
+# commit 0d234ea + kChunk 1024; sclk 6 (manual, all four cards); 2026-11-01
+fast chunk 1024: prompt: 7369 tokens in 99.90 s = 73.77 t/s | cpu experts 64069, waiting for the GPU 249 | GPU ffn.wait_for_cpu_experts 16500 | 0.107 ms per pair
+fast chunk 512: prompt: 7369 tokens in 93.70 s = 78.64 t/s | cpu experts 68227, waiting for the GPU 3620 | GPU ffn.wait_for_cpu_experts 8759 | 0.114 ms per pair
+--canon chunk 1024: prompt: 7369 tokens in 134.14 s = 54.94 t/s | cpu experts 99053, waiting for the GPU 185 | GPU ffn.wait_for_cpu_experts 42513 | 0.162 ms per pair
+--canon chunk 512: prompt: 7369 tokens in 117.40 s = 62.77 t/s | cpu experts 95869, waiting for the GPU 1646 | GPU ffn.wait_for_cpu_experts 27057 | 0.157 ms per pair
+# die 0 expert slots: 1,242 with kChunk 1024, 1,254 with 512

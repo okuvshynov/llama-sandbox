@@ -352,6 +352,20 @@ needs its own measurement first. Order: after "Long context".
 - TP does not fit a 3-layer latency-bound model; batching it with the verify (one forward for
   both) is the bigger structural idea, and the hardest.
 
+**E. Build-level specialization** (2026-11-01, after README step 45's -O2 finding)
+- PGO (`-fprofile-generate`, a prompt or two, `-fprofile-use`) for the host code. Expected
+  small (0-5%): the hot CPU loops are hand-written AVX-512 whose instruction mix the numerics
+  fix; PGO helps inlining, branch layout and unroll choices, which mattered once (-O2) and is
+  fixed. Risk: GCC fuses multiply-adds by default (`-ffp-contract=fast`) and PGO changes
+  inlining, so plain C++ numeric code (SiLU, fake quantization) could change bits between
+  builds; the canonical numerics must stay bit-identical to the GPU's, so every PGO build
+  would need the gates. First `-ffp-contract=off` on the numeric files (bits independent of the
+  optimization level), then a ~30-minute experiment (speed and output bytes).
+- Compile-time shapes (E = 5120, F = 2304, 6 experts per token) as template constants in the CPU
+  kernels: full unrolling without runtime bounds; cheap, deterministic per build.
+- The GPU side has no practical PGO in ROCm's device compiler; its equivalent is the kernel
+  sweeps already done (README steps 39-40).
+
 ## Long context: plan (2026-10-29; before any further cache tuning)
 
 The model supports 1,048,576 positions (YaRN: a 65,536-token training context x 16). The runtime
@@ -448,7 +462,7 @@ token counts on a long prompt before building it (cheap: a routing log and a scr
 | P1 | measure tokens per non-resident expert per chunk size on a long prompt | estimate | done (README step 42): at 512-token chunks ~110 non-resident experts per layer with ~10 tokens each; the hybrid (47% streamed) brings the expert side ~15 -> ~3 ms per token, the GPU's own work (~11 ms) then the limit: ~58 -> ~80 t/s, canonical too | - | - |
 | P2 | stream non-resident experts to the GPUs for prompt chunks (hybrid: hottest streamed, rare ones on the CPU) | CPU experts | tried and dropped (README step 44): correct, 48.8 -> 65.3 t/s (`--canon`) at best, but loads ran 3x slower than standalone (unpacks queued behind the dies' compute); too complicated for the gain; code removed | - | - |
 | P3 | fix the registration stall | infrastructure | done (README step 43; item 30) | - | - |
-| P4 | larger chunks (1,024+) | CPU experts | ~2x tokens per CPU expert per half: CPU 30 s -> ~20-24 s | ~1 GB more on die 0 per 512 tokens (fewer decode slots) unless prompt buffers are freed after the prompt | - |
+| P4 | larger chunks (1,024+) | CPU experts | tried, slower (README step 46): after step 45 the CPU kernel is arithmetic-bound per pair (0.114 -> 0.107 ms), and the overlap gets coarser; 78.6 -> 73.8 t/s fast | - | - |
 | P5 | canonical CPU kernel tiled (rows x tokens, as the fast one) | CPU experts, canonical | done (README step 41): 0.17-0.19 -> 0.14 ms per expert-token, `--canon` prompt 40.4 -> 48.8 t/s, bit-identical | - | - |
 | P6 | batched attention core (many queries per call; the window ring needs a separate staging area for the chunk's own keys) | GPU | attention core 10.2 s -> ~1-2 s | medium-large; outputs must stay bit-identical per query | - |
 | P7 | batched router, indexer and compressor (per-token loops today) | GPU | ~7 s -> ~2 s | medium | - |
@@ -457,8 +471,10 @@ token counts on a long prompt before building it (cheap: a routing log and a scr
 
 Order: P1 and P3 done; P2 tried and dropped (README step 44: no dynamic expert loading during the
 prompt); the CPU kernel's in-place overhead found and fixed (README step 45: the runtime was
-built with -O2; 55.5 -> 76.0 t/s fast, 48.7 -> 56.7 canonical). Left: P4 (larger chunks), P6, P7,
-P9 (the GPU side, which is now close to the limit in the fast numerics), P8 as needed.
+built with -O2; 55.5 -> 76.0 t/s fast, 48.7 -> 56.7 canonical); P4 tried, slower (step 46). Now
+the fast numerics are balanced (CPU ~20.5 s, GPU ~21.5 s for 1,989 tokens at sclk 6) and `--canon`
+is CPU-bound: further gains need the CPU kernel's arithmetic (its instruction mix) and the GPU
+side (P6, P7) together; P9 last.
 
 ## History
 

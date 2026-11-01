@@ -1965,3 +1965,13 @@ affected: 19-20 t/s either way), and the canonical placement gate passes with al
 identical to the committed ones (`results/canon-gate.txt`). At sclk 2 the fast prompt may be
 somewhat lower than 76 t/s: with the CPU this much faster, the GPU's own work (~13.6 ms per
 prompt token at sclk 2, step 39) gets close to setting the pace.
+
+## Step 46: chunks of 1,024: slower, reverted (PLAN P4)
+
+The idea (step 37's reasoning): twice the tokens per chunk gives each CPU expert twice the tokens
+per half-chunk, so fewer weight reads per pair. Measured on the 7,369-token README prompt
+(`results/prefill/chunk1024.txt`, sclk 6): fast 78.6 -> 73.8 t/s, `--canon` 62.8 -> 54.9. The CPU's
+cost per pair barely moved (0.114 -> 0.107 ms fast): since step 45 the kernel is limited by its
+arithmetic per pair, not by reading the weights, so sharing a read across more tokens saves
+little. Meanwhile the overlap gets coarser (the GPU waited 16.5 s for the CPU instead of 8.8), and
+die 0 holds 12 fewer experts. `kChunk` stays 512.

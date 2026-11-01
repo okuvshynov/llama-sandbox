@@ -334,6 +334,11 @@ Each rule is followed by where it mattered most.
   runtime had been 1.6x slower than its own kernel's benchmark since step 37. Checked after:
   every gate and output byte-identical.
 
+- **P4, chunks of 1,024 (README step 46).** Predicted from step 37's reasoning (more tokens per
+  weight read); measured slower. The premise had changed with step 45: the kernel became
+  arithmetic-bound, so the per-pair saving was ~6%, outweighed by a coarser overlap. Reverted;
+  a reminder that an option's expected gain must be re-derived after the profile changes.
+
 ## 4. Predictions against outcomes
 
 Estimates were made before measuring wherever possible; this is how they fared.
@@ -352,6 +357,7 @@ Estimates were made before measuring wherever possible; this is how they fared.
 | cache, `--spec`, 100 loads/s (29 -> 32) | ~28.9 t/s, 87% hits (1,024 tokens, no canonical cost) | 24.5 t/s, 80% hits (300 tokens) | shorter runs adapt for a larger share of the run |
 | CPU/GPU overlap of two half-chunks (38) | up to ~2x | 1.5x | half the tokens per CPU expert; both sides now ~33 s |
 | chunks of 64 share CPU expert reads (37) | most of the 53% saved | nothing | 384 experts: ~1 token per CPU expert per chunk; then compute-bound until tiled |
+| chunks of 1,024 cut CPU expert time 20-30% (46) | 20-30% | ~6% per pair, prompt 6-12% slower | the kernel had become arithmetic-bound (step 45) |
 | runtime's CPU experts = the benchmark x 1.65 (42) | overhead around the kernel | the build: -O2 vs -O3 | the runtime was compiled with the common CXXFLAGS (-O2) |
 | loads hidden behind the GPU's work (42 -> 44) | ~0.7 ms per load (standalone rate) | 1.9-2.4 ms | the unpack kernels queue behind the dies' own compute |
 | reference run, 20k tokens (35) | 6-10 h (scaled from 1,100 tokens) | 42 min | the 1,100-token run was mostly fixed cost |
