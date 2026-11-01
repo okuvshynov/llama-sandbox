@@ -315,6 +315,16 @@ Each rule is followed by where it mattered most.
   Also found by the benchmark: a copy may not span two registrations, which the fix (pieces)
   had to handle. Checked after: no stall, loads still work and are as fast, output unchanged.
 
+- **P2, streaming during the prompt: tried and dropped (README step 44).** Built behind a flag
+  and kept correct from the first run (canonical output byte-identical), so every stage was a
+  pure speed question. The model from step 42 had used the standalone load rate; in the runtime
+  the loads were 3x slower and the instrumentation (time from submit to done, time waited after
+  the CPU's share) showed it at once. Four fixes were tried one at a time against that number
+  (home die out, loader pipelining, fewer CPU threads, stream priority); one helped. **Decided
+  (the person's):** too complicated for its gain; removed, documented with its measurements.
+  **Lesson:** a unit cost measured alone (the load rate) does not carry over to a resource
+  shared with the work it overlaps; measure it in place before building on it.
+
 ## 4. Predictions against outcomes
 
 Estimates were made before measuring wherever possible; this is how they fared.
@@ -333,6 +343,7 @@ Estimates were made before measuring wherever possible; this is how they fared.
 | cache, `--spec`, 100 loads/s (29 -> 32) | ~28.9 t/s, 87% hits (1,024 tokens, no canonical cost) | 24.5 t/s, 80% hits (300 tokens) | shorter runs adapt for a larger share of the run |
 | CPU/GPU overlap of two half-chunks (38) | up to ~2x | 1.5x | half the tokens per CPU expert; both sides now ~33 s |
 | chunks of 64 share CPU expert reads (37) | most of the 53% saved | nothing | 384 experts: ~1 token per CPU expert per chunk; then compute-bound until tiled |
+| loads hidden behind the GPU's work (42 -> 44) | ~0.7 ms per load (standalone rate) | 1.9-2.4 ms | the unpack kernels queue behind the dies' own compute |
 | reference run, 20k tokens (35) | 6-10 h (scaled from 1,100 tokens) | 42 min | the 1,100-token run was mostly fixed cost |
 
 ## 5. Mistakes and how they were caught

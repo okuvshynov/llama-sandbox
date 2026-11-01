@@ -446,7 +446,7 @@ token counts on a long prompt before building it (cheap: a routing log and a scr
 | # | option | part | expected | cost / risk | depends on |
 |---|---|---|---|---|---|
 | P1 | measure tokens per non-resident expert per chunk size on a long prompt | estimate | done (README step 42): at 512-token chunks ~110 non-resident experts per layer with ~10 tokens each; the hybrid (47% streamed) brings the expert side ~15 -> ~3 ms per token, the GPU's own work (~11 ms) then the limit: ~58 -> ~80 t/s, canonical too | - | - |
-| P2 | stream non-resident experts to the GPUs for prompt chunks (hybrid: hottest streamed, rare ones on the CPU) | CPU experts | CPU out of the prompt path: ~57 -> ~65-70 t/s now (canonical ~40 -> ~65), more as the GPU side speeds up | large: spare slots, a per-layer load schedule ahead of compute, the loader at full rate | P1, P3 |
+| P2 | stream non-resident experts to the GPUs for prompt chunks (hybrid: hottest streamed, rare ones on the CPU) | CPU experts | tried and dropped (README step 44): correct, 48.8 -> 65.3 t/s (`--canon`) at best, but loads ran 3x slower than standalone (unpacks queued behind the dies' compute); too complicated for the gain; code removed | - | - |
 | P3 | fix the registration stall | infrastructure | done (README step 43; item 30) | - | - |
 | P4 | larger chunks (1,024+) | CPU experts | ~2x tokens per CPU expert per half: CPU 30 s -> ~20-24 s | ~1 GB more on die 0 per 512 tokens (fewer decode slots) unless prompt buffers are freed after the prompt | - |
 | P5 | canonical CPU kernel tiled (rows x tokens, as the fast one) | CPU experts, canonical | done (README step 41): 0.17-0.19 -> 0.14 ms per expert-token, `--canon` prompt 40.4 -> 48.8 t/s, bit-identical | - | - |
@@ -455,10 +455,8 @@ token counts on a long prompt before building it (cheap: a routing log and a scr
 | P8 | fp8_gemm tuning | GPU | done as far as cheap knobs go (README step 40): 8/16-lane shapes +0.3-0.4x; 64-lane shapes unchanged (~20% of `dot2` peak at sclk 2; the instruction mix caps ~40%); no end-to-end change while the CPU is the limit | further gains need a different weight decode / formulation | worth more once the GPU is the limit |
 | P9 | dense work of a chunk on several dies (layer pipeline over dies, or splitting the matrix rows) | GPU | up to ~2-4x on the GPU side | large; XGMI pairs only (0-1, 2-3), cross-pair copies over PCIe | P6-P8 first |
 
-Order, as it looks now: P1 (done: the hybrid at 512-token chunks), P3 (needed for direct loads),
-P2 as the hybrid (loads start when a half-chunk's routing is known, overlapping the other half's
-attention; layer L + 1's routing is not known ahead); then the GPU side (P6, P7, P9: the dense
-part is the limit after P2; TP2 within an XGMI pair or a layer pipeline), P8 as needed.
+Order: P1 and P3 done; P2 tried and dropped (README step 44: no dynamic expert loading during the
+prompt). Left: P4 (larger chunks), P6, P7, P9 (the GPU side), P8 as needed; to be discussed.
 
 ## History
 

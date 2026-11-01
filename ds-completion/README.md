@@ -1905,3 +1905,31 @@ as before (2,429 loads in a 300-token `--spec` run, GPU share of the experts 65.
 output identical to the run without the cache. Load throughput is unchanged (1,440 loads/s over
 the four dies, `results/prefill/bench-expert-load-pieces.txt`). The registration itself still
 takes ~95-135 s, now in the background; the cache starts loading only after it.
+
+## Step 44: streaming the CPU's experts during the prompt, tried and dropped (PLAN P2)
+
+Built as step 42 proposed, behind a flag: per half-chunk and layer, the CPU's most-used experts
+loaded into spare GPU slots and computed there, the rest on the CPU, the split by the calibrated
+cost model; canonical rows scattered into the places the CPU's rows would have had, so the
+combine and the output stay the same. It was correct (with `--canon` every run byte-identical to
+the token-by-token build) and reached 65.3 t/s on the 1,989-token prompt, against 48.8 without
+it (`results/prefill/stream-attempt.txt`). But the model's assumption failed: loads ran at 1.9-2.4
+ms each instead of the benchmark's 0.70, and finished mostly after the CPU's share, so the
+host waited for them (16-22 s of a 30-36 s prompt):
+
+| stage | prompt t/s (`--canon`) | per load |
+|---|---|---|
+| without streaming (step 41) | 48.8 | - |
+| streaming, direct loads | 55.5 | 2.27 ms |
+| the home die left out | 48.8 | 2.36 |
+| loader pipelined (no wait per request) | 55.9 | 2.25 |
+| CPU kernel on 12 threads | 56.0 | 2.25 |
+| the loads' streams at high priority | 65.3 | 1.87 |
+
+What limits it is contention inside the dies: a load is a copy and an unpack kernel, and the
+unpack queued behind the die's own compute kernels (raising the loads' priority was the one
+change that helped). Separate copy and unpack streams with more staging buffers was the next
+step; the attempt was stopped there. Dropped (the person's decision) as too complicated for its
+gain: it needs spare slots, a second loader, a per-layer schedule and per-half buffers, and its
+benefit depends on load timing under contention that a standalone benchmark does not show. The
+code was removed; registration in pieces (step 43) stays.

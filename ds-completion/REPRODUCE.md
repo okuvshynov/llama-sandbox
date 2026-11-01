@@ -121,6 +121,7 @@ Unless stated: sclk 2, 16 CPU threads (32 before README step 18), the study30 pl
 | 30 | `bench-expert-load.txt`, `load-test/` | `bin-hip/bench-expert-load -m $M`, `scripts/load-test.sh` |
 | 31-32 | `canon-gate.txt`, `canon-gate/` | `scripts/canon-gate.sh` (rerun for step 32) |
 | 34 | `check-topk.txt` | `~/venvs/ds-ref/bin/python ref/check_topk.py` (runs `bin-hip/test-topk`) |
+| 44 | `prefill/stream-attempt.txt` | the removed P2 code at each stage (commands and stages in the file; the code is not in the repository) |
 | 43 | `prefill/bench-register.txt` | `bin-hip/bench-register $SHARD7 --gb 8 --pieces 0,1024,256,64 --faults $SHARD6` |
 | 43 | `prefill/bench-expert-load-pieces.txt`, `prefill/register-stall.txt` | `bin-hip/bench-expert-load -m $M`; the runtime commands in the file |
 | 42 | `prefill/stream-sim.txt` | routing logs of `data/routing/prefill/{readme24k,rtcpp32k}.txt` (`--log-routing`, commands in the file), then `scripts/prefill_stream_sim.py [--cpu-scale 1.65] [--load-rate 1000] [--canon]`; the calibration run is the same prompt with `--profile` |
