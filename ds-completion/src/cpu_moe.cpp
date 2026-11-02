@@ -408,7 +408,10 @@ void CpuMoeKernel::forward_batch(const CpuExperts& L, const float* x, int T, con
       const uint8_t* base = expert_base(m ? L.up : L.gate, groups[g].e);
       float* const* ys = (m ? gu[g] : gg[g]).data();
       const int nx = (int)groups[g].pairs.size();
-      if (canon) canon_dot_rows_multi(base, gu_row, gxc[g].data(), nx, c * CH, (c + 1) * CH, ys);
+      // one token: the one-token routine (canon_dot_rows_multi's L1 round trip of the decoded
+      // weights and 2 rows per step cost 35% at one expert; README step 57); the same bits
+      if (canon && nx == 1) canon_dot_rows(base, gu_row, *gxc[g][0], c * CH, (c + 1) * CH, ys[0]);
+      else if (canon) canon_dot_rows_multi(base, gu_row, gxc[g].data(), nx, c * CH, (c + 1) * CH, ys);
       else dot_range_multi(base, gu_row, nb_e, gx[g].data(), nx, ys, c * CH, (c + 1) * CH);
     }
 #pragma omp master
@@ -448,7 +451,8 @@ void CpuMoeKernel::forward_batch(const CpuExperts& L, const float* x, int T, con
       const int g = task / per_e, c = task % per_e;
       const uint8_t* base = expert_base(L.down, groups[g].e);
       const int nx = (int)groups[g].pairs.size();
-      if (canon) canon_dot_rows_multi(base, d_row, gac[g].data(), nx, c * CH, (c + 1) * CH, gd[g].data());
+      if (canon && nx == 1) canon_dot_rows(base, d_row, *gac[g][0], c * CH, (c + 1) * CH, gd[g][0]);
+      else if (canon) canon_dot_rows_multi(base, d_row, gac[g].data(), nx, c * CH, (c + 1) * CH, gd[g].data());
       else dot_range_multi(base, d_row, nb_f, ga[g].data(), nx, gd[g].data(), c * CH, (c + 1) * CH);
     }
 #pragma omp master

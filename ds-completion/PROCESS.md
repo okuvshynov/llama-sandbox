@@ -400,6 +400,12 @@ Each rule is followed by where it mattered most.
   honest; the change, the runtime flag and the settings were all removed, and the benchmark mode
   that found it stays. The person applied the sudo settings one at a time, as with the GPU clock.
 
+- **Split a cost before naming it (README step 57).** Step 56 called the one-expert call's extra
+  0.25 ms "fixed per-call cost" and listed wake-ups and barriers; splitting the call into its
+  phases next to the one-token kernel and an empty parallel region showed neither: one phase on
+  the wrong routine. The fix was two lines; the end-to-end gain (+1.1%) was a fraction of the
+  per-call one, as the layers without CPU experts predict.
+
 ## 4. Predictions against outcomes
 
 Estimates were made before measuring wherever possible; this is how they fared.
@@ -419,6 +425,7 @@ Estimates were made before measuring wherever possible; this is how they fared.
 | CPU/GPU overlap of two half-chunks (38) | up to ~2x | 1.5x | half the tokens per CPU expert; both sides now ~33 s |
 | chunks of 64 share CPU expert reads (37) | most of the 53% saved | nothing | 384 experts: ~1 token per CPU expert per chunk; then compute-bound until tiled |
 | one CPU miss per layer hides behind the GPU's work (50) | partly | 0.05-0.15 of ~0.35-0.48 ms | the GPU's work alongside (shared expert, each die's experts) is shorter than one miss |
+| one-token groups on the one-token routine (57) | the ~0.25 ms "fixed cost" removed | -35% per one-expert call, +1.1% end to end | the cost was one phase (down) on the wrong routine, not fixed overhead |
 | static schedule for verify-step CPU experts (56) | ~7% of a code step | 15-22% in the benchmark, 0-1% slower end to end | the benchmark lacked the gap before each call and the runtime's other threads |
 | reading each expert once on the dies (55) | ~20 us saved per shared pair | -21% at heavy sharing, +23% without | a pair's cost was not the weight reads (a fit read as a mechanism) |
 | batched router top-k (53) | ~4% (5-6 ms per code step) | +4.6% held-out, +1-4% prompt | as estimated; the prompt hides most of it behind the CPU |

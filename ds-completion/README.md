@@ -2279,3 +2279,27 @@ CPU settings were reverted.
 Still open: a call with one expert costs ~0.6 ms in the benchmark under every setting, about
 0.25 ms more than per-expert streaming explains: fixed per-call work (wake-up, four barriers, the
 grouping's allocations), worth finding before anything else on the CPU side.
+
+## Step 57: a verify step's one-token expert groups on the one-token routine
+
+Step 56 left a puzzle: a call with one expert cost ~0.6 ms, ~0.25 ms more than streaming 18.8 MB
+explains. `bench-cpu-moe --decode` now splits a call into its phases and sets the one-token
+kernel and an empty parallel region beside it (`results/cpu-decode/per-call.txt`). There is no
+fixed overhead (the team's fork and join: 3 us; grouping, inputs, activation: ~0.03 ms): the
+**down phase** took 0.32 ms for 6.3 MB, longer than gate + up's 12.5 MB, and the one-token kernel
+did the whole expert in 0.34 ms. The batch path ran every group through `canon_dot_rows_multi`,
+written for many tokens per row: 2 rows per step (the one-token routine: 4) and each block's
+decoded weights stored to an L1 buffer and read back per token, a round trip that buys nothing
+for one token, which is 83% of a verify step's CPU groups.
+
+One-token groups now take `canon_dot_rows` (the multi routine's header promises the same bits;
+`--batch 1` and `--batch 3` against one token at a time: 0 of 40 layers differ). Per call: 1
+expert 0.622 -> 0.405 ms, 2 experts 0.776 -> 0.616, 6 experts 1.786 -> 1.656. Groups of 2-4 tokens
+on the one-token routine once per token: within noise of the multi routine (+3, -7, +4%), not
+kept. Plain one-token steps already used the one-token kernel.
+
+Held-out generation (`results/spec-measure-sclk6-cacheloads800cacheperiod8-nx1/`): mean
+**31.69 -> 32.03 t/s (+1.1%)**, code and structured prompts +0.9 to +1.5%, tcp-udp flat; outputs
+identical. Smaller than the per-call gain because many layers have no CPU experts and part of the
+CPU's time hides behind the GPU's. Only the canonical path changed (the fast path's
+`dot_range_multi` is the analogue, unmeasured).

@@ -1,0 +1,22 @@
+# where a verify step's CPU call goes (README step 57): forward_batch's phases per call, the one-token kernel
+# (forward_canon_rows, plain decode's path) on the same experts, an empty parallel region of 16 threads
+# bin/bench-cpu-moe -m $M -t 16 --check-layers "" --decode 1,2,6 --steps 20 (the per-call part); CPU defaults; 2026-11-02
+# commit d68da00 (+ the per-call printout) ; then + one-token groups on canon_dot_rows
+## before (canon_dot_rows_multi for every group), gap 0
+D 1: forward_batch 0.622 = prep 0.001 + inputs 0.014 + gate_up 0.273 + act 0.012 + down 0.321 + sum 0.001 | one-token kernel 0.338 | empty parallel region 0.003
+D 2: forward_batch 0.776 = prep 0.001 + inputs 0.020 + gate_up 0.380 + act 0.020 + down 0.352 + sum 0.001 | one-token kernel 0.509 | empty parallel region 0.003
+D 6: forward_batch 1.786 = prep 0.004 + inputs 0.052 + gate_up 1.007 + act 0.039 + down 0.679 + sum 0.001 | one-token kernel 1.274 | empty parallel region 0.003
+## before, gap 1500 us
+D 1: forward_batch 0.652 = prep 0.005 + inputs 0.030 + gate_up 0.279 + act 0.021 + down 0.312 + sum 0.001 | one-token kernel 0.535 | empty parallel region 0.003
+D 2: forward_batch 0.795 = prep 0.002 + inputs 0.026 + gate_up 0.405 + act 0.031 + down 0.328 + sum 0.001 | one-token kernel 0.786 | empty parallel region 0.004
+D 6: forward_batch 1.993 = prep 0.009 + inputs 0.105 + gate_up 1.077 + act 0.086 + down 0.709 + sum 0.001 | one-token kernel 2.097 | empty parallel region 0.002
+## after (one-token groups on canon_dot_rows), gap 0
+D 1: forward_batch 0.405 = prep 0.001 + inputs 0.013 + gate_up 0.204 + act 0.012 + down 0.174 + sum 0.001 | one-token kernel 0.343 | empty parallel region 0.003
+D 2: forward_batch 0.616 = prep 0.001 + inputs 0.018 + gate_up 0.319 + act 0.017 + down 0.258 + sum 0.001 | one-token kernel 0.538 | empty parallel region 0.003
+D 6: forward_batch 1.656 = prep 0.004 + inputs 0.056 + gate_up 0.857 + act 0.042 + down 0.694 + sum 0.001 | one-token kernel 1.474 | empty parallel region 0.003
+## bits: bin/bench-cpu-moe -m $M -t 16 --check-layers "" --batch T (forward_batch vs one token at a time, all 40 layers), after
+# batch: 1 tokens x the same 6 experts: fast layers differing 0; canonical 0.268 vs 0.258 ms per expert-token, layers differing 0
+# batch: 3 tokens x the same 6 experts: fast 0; canonical 0.230 vs 0.197, layers differing 0
+## groups of 2-4 tokens: canon_dot_rows once per token instead of the multi routine (tried, not kept), --batch T canonical batched ms
+T 2: multi 89.7, per token 92.7 | T 3: multi 143.4, per token 132.7 | T 4: multi 161.7, per token 167.7 (layers differing 0 in all)
+## end to end: results/spec-measure-sclk6-cacheloads800cacheperiod8-nx1/ (mean 32.03 t/s vs 31.69, step 53)

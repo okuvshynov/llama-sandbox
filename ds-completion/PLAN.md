@@ -327,7 +327,8 @@ expert) pair, but reading each expert once for all its tokens (bit-identical) ga
 heavy sharing (-21%) and lost without (+23%): reverted, documented in `results/fp4-grouped/`.
 Step 56: the CPU's verify-step experts on a static schedule (15-22% faster in a benchmark), 2 MB
 pages (no change) and CPU settings (performance governor, C6 off: nothing end to end) all
-dropped; next on the CPU side: the ~0.25 ms fixed cost of a call (`bench-cpu-moe --decode 1`).
+dropped. Step 57: that "fixed cost" was the multi-token dot routine on one-token groups; those
+now use the one-token routine (bit-identical): +1.1%, held-out mean 32.0 t/s.
 
 **A. Tuning the expert cache** (the CPU experts' ~25 ms)
 - Hysteresis: a newcomer must beat its victim by a margin, so the cache settles in long runs

@@ -37,6 +37,7 @@
 #include <set>
 #include <sys/mman.h>
 #include <thread>
+#include <omp.h>
 
 using Clock = std::chrono::steady_clock;
 
@@ -295,6 +296,48 @@ int main(int argc, char** argv) {
       }
       kern.batch_sched = sched;
       printf("# static vs dynamic, 3 tokens sharing experts, fast and canonical, %d layers: %ld differ\n", NL, diff);
+    }
+    // where a call's time goes (README step 57): forward_batch's phases per call, the one-token
+    // kernel on the same experts, and an empty parallel region (fork + join of the thread team)
+    for (int gap : {0, 1500}) {
+      printf("# per call, gap %d us: ms\n", gap);
+      for (int D : decode) {
+        if (D < 1 || D > 8) continue;
+        std::vector<float> out((size_t)D * E);
+        std::mt19937 r2(2000 + D);
+        double wall_b = 0, wall_1 = 0, wall_e = 0;
+        const int n = dec_steps * NL;
+        kern.bstats = {};
+        for (int pass = 0; pass < 3; pass++)
+          for (int st = 0; st < dec_steps; st++)
+            for (int L = 0; L < NL; L++) {
+              std::set<int> sset;
+              while ((int)sset.size() < D) sset.insert((int)(r2() % hp.n_expert));
+              std::vector<int> ids(sset.begin(), sset.end());
+              std::vector<float> w(D, 0.5f);
+              const CpuExperts ex = {m.layers[L].gate_exps, m.layers[L].up_exps, m.layers[L].down_exps, hp.swiglu_clamp[L]};
+              auto t0 = Clock::now();
+              if (pass == 0) {
+                std::vector<CpuMoeKernel::CpuRoute> r(D);
+                for (int t = 0; t < D; t++) r[t] = {ids.data() + t, w.data() + t, 1};
+                kern.forward_batch(ex, x.data(), D, r.data(), true, out.data());
+              } else if (pass == 1) {
+                kern.forward_canon_rows(ex, x.data(), ids.data(), w.data(), D, out.data());  // one token, D experts
+              } else {
+                volatile int sink = 0;
+#pragma omp parallel num_threads(threads)
+                { if (omp_get_thread_num() == 0) sink = 1; }
+                (void)sink;
+              }
+              const double ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+              (pass == 0 ? wall_b : pass == 1 ? wall_1 : wall_e) += ms;
+              if (gap) std::this_thread::sleep_for(std::chrono::microseconds(gap));
+            }
+        const auto& b = kern.bstats;
+        printf("D %d: forward_batch %.3f = prep %.3f + inputs %.3f + gate_up %.3f + act %.3f + down %.3f + sum %.3f | "
+               "one-token kernel %.3f | empty parallel region %.3f\n", D, wall_b / n, b.prep / n, b.inputs / n,
+               b.gate_up / n, b.act / n, b.down / n, b.sum / n, wall_1 / n, wall_e / n);
+      }
     }
     return 0;
   }
