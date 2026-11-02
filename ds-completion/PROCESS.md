@@ -347,6 +347,22 @@ Each rule is followed by where it mattered most.
 - **TIMING.md (the person's request):** a one-page "where the time goes", for a reader who wants
   the feel of the numbers (what a millisecond is worth, what-ifs) before the details.
 
+- **The live speculation measurement (README step 48).** Planned to answer "does it adapt?"
+  (calibration, behaviour over time, distance to the best choice per step, momentum), and it
+  did. It also turned up two things nobody asked about:
+  - **A repetition loop.** I first called it greedy behaviour without checking; the person
+    asked whether it was a bug. The checks then separated the parts: plain vs speculative (same
+    bytes), old vs new build (same bytes), and the independent CPU path on the same context
+    (also loops). On the way, a prefix ending in a space looked like evidence against the loop
+    until the token boundary was fixed. **Lesson:** "it's the model" is a claim to test, and the
+    referee must see exactly the same tokens.
+  - **A speed regression since step 37,** visible only because the per-prompt numbers were
+    compared with step 32's. Separated from run-to-run noise (up to ~20% between single runs) by
+    repeating old and new builds three times each, then traced to a per-step copy sized by the
+    largest chunk. **Lesson:** the byte gates protect correctness, not speed: a change that
+    grows a buffer must also be checked for the copies sized by it, and generation speed belongs
+    in the checks after any change to shared code.
+
 ## 4. Predictions against outcomes
 
 Estimates were made before measuring wherever possible; this is how they fared.
@@ -365,6 +381,7 @@ Estimates were made before measuring wherever possible; this is how they fared.
 | cache, `--spec`, 100 loads/s (29 -> 32) | ~28.9 t/s, 87% hits (1,024 tokens, no canonical cost) | 24.5 t/s, 80% hits (300 tokens) | shorter runs adapt for a larger share of the run |
 | CPU/GPU overlap of two half-chunks (38) | up to ~2x | 1.5x | half the tokens per CPU expert; both sides now ~33 s |
 | chunks of 64 share CPU expert reads (37) | most of the 53% saved | nothing | 384 experts: ~1 token per CPU expert per chunk; then compute-bound until tiled |
+| the long proof's loop is a bug (48) | possible | the model's greedy behaviour | both implementations continue the loop from the same tokens |
 | chunks of 1,024 cut CPU expert time 20-30% (46) | 20-30% | ~6% per pair, prompt 6-12% slower | the kernel had become arithmetic-bound (step 45) |
 | runtime's CPU experts = the benchmark x 1.65 (42) | overhead around the kernel | the build: -O2 vs -O3 | the runtime was compiled with the common CXXFLAGS (-O2) |
 | loads hidden behind the GPU's work (42 -> 44) | ~0.7 ms per load (standalone rate) | 1.9-2.4 ms | the unpack kernels queue behind the dies' own compute |

@@ -55,7 +55,7 @@ Features and limits
 | 26 | Context above 4096 with the runtime | done | 65,536 by default, 1M with `--max-ctx`; see "Long context" below (README step 34) |
 | 27 | Candidate-block selection (>16k tokens) | done (runtime) | the reference's layer-20 path, checked against its own function; the CPU path still stops at 16k |
 | 28 | Full 1017 checkpoint | waiting | download pending (user); needed for item 19 and exact safetensors refs |
-| 29 | Sampling beyond greedy | idea | temperature/top-p; a non-goal so far |
+| 29 | Sampling beyond greedy | idea | temperature/top-p; a non-goal so far. Greedy loops on some long reasoning (README step 48) |
 
 ## Current cost model (2026-10-27, sclk 2, 16 CPU threads)
 
@@ -342,8 +342,10 @@ needs its own measurement first. Order: after "Long context".
 - Per-prompt-type expectations: code accepts ~2x more than chat; nothing to tune, but the
   held-out mix decides the average.
 - Momentum (trust drafts more after recent successes): checked and rejected (README step 47):
-  past success adds nothing beyond the confidence head on the calibration logs; recheck on long
-  reasoning runs with the cache, together with the head's calibration there.
+  past success adds nothing beyond the confidence head; rechecked live with the cache (step 48):
+  the same, and the head stays calibrated.
+- The rule is at 94% of a hindsight lower bound per step (step 48): little left in draft-length
+  choices; the cost side (verify step, draft) is where speculation still gains.
 
 **D. A faster draft** (~12 ms per step: 3 layers, dense BF16, 128 experts top-3, on die 0)
 - fp8 for the draft's dense weights if the release is fp8 (an exact repack, as the main model).

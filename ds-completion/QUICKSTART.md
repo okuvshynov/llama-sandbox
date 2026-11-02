@@ -32,8 +32,8 @@ Run from this directory (the placement path is relative). Which setting is faste
 the job (sclk 2; README steps 32, 37-41):
 
 **Long generation** (reasoning, long answers): speculative decoding + the adaptive expert cache.
-~25.6 t/s mean on held-out prompts (29.1 at sclk 8; a 9.8k-token reasoning run reached 31.7 at
-sclk 6). The cache first registers the experts' memory with the GPUs (~95-135 s in the
+~25.6 t/s mean on held-out prompts (28.0 at sclk 6, 29.1 at sclk 8; a 9.8k-token reasoning run
+reached 31.7 at sclk 6). The cache first registers the experts' memory with the GPUs (~95-135 s in the
 background; generation runs at the static placement's speed meanwhile), so it pays off for runs
 of a few minutes or more:
 
@@ -145,6 +145,8 @@ Means over all 17 steps: 1.8e-2 to 2.5e-2 for every mode.
   ~7-9 min at 57-76 t/s (it took ~30 min token by token). Without `--rt` (the CPU path): 4,096 by
   default, at most 16k (no candidate-block selection there).
 - The dense part uses one GPU; the others only hold experts with `--placement`.
-- Sampling is greedy only.
+- Sampling is greedy only. Greedy decoding can fall into a repetition loop on long reasoning
+  (README step 48: a proof prompt repeats one line after ~800 tokens; the model's behaviour, not
+  a bug).
 
 Details: [TIMING.md](TIMING.md) (where the time goes, one page), [OVERVIEW.md](OVERVIEW.md) (a 20-minute summary), [README.md](README.md) (all measurements and checks), [PLAN.md](PLAN.md) (what's next).

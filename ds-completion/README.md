@@ -1993,3 +1993,60 @@ without the cache; long reasoning runs are not checked yet.)
 **[TIMING.md](TIMING.md):** where the time goes in generation and in the prompt, on one page, with
 what a millisecond is worth (~0.25 t/s per ms of a speculative step) and what-ifs (a 1 ms draft:
 +11%; both prompt sides 2x faster: 76 -> ~150 t/s).
+
+## Step 48: speculation with the cache, measured per step; a regression since step 37 fixed
+
+`scripts/spec-measure.sh` runs the 8 held-out prompts and one long reasoning prompt with
+`--spec --canon --cache-loads 200 --cache-wait --spec-log`; `scripts/spec_analysis.py` reads the
+per-step logs (`results/spec-measure-sclk6/`, sclk 6). All 8 held-out outputs are byte-identical
+to step 32's plain static `--canon` runs.
+
+| prompt | t/s | tokens per step |
+|---|---|---|
+| tcp-udp | 26.2 | 2.16 |
+| py-lru | 29.3 | 3.12 |
+| cpp-matrix | 30.6 | 4.35 |
+| sql-report | 28.5 | 3.66 |
+| geometry | 33.5 | 4.11 |
+| zh-travel | 23.7 | 1.70 |
+| ja-email | 25.0 | 2.03 |
+| summary-json | 26.9 | 3.50 |
+| **mean** | **28.0** | |
+
+(Step 32: 25.6 at sclk 2, 29.1 at sclk 8.)
+
+- **The confidence head stays calibrated** in live runs with the cache: predicted vs observed
+  acceptance 0.53/0.51, 0.71/0.70, 0.85/0.87, 0.98/0.99 by bin, within 0.04 per run.
+- **The rule is near the best choice per step:** 94% of a hindsight lower bound (29.3 vs 31.2
+  tokens per second of step time, pooled; 91-96% per run). The bound takes, per step, the number
+  of drafts that turned out to be accepted, at the run's own fitted cost.
+- **Momentum again adds nothing** (step 47's test: 0.2649 without, 0.2655 with).
+- **The verify cost follows the cache:** in the long prompt the verify step falls from ~94 to
+  ~57 ms over the first ~150 steps as the cache warms. The fitted lines with the cache are
+  38-77 + 11-21 n ms.
+
+**The long reasoning prompt loops.** Its greedy output repeats "What about (45,0). What about
+(0,45)." from ~800 tokens on to the 3,000-token limit, with correct reasoning before it.
+Checked as a possible bug (`results/spec-loop-check.txt`):
+
+- plain decoding gives the same bytes, so speculation and the cache are not the cause;
+- the build from before the prompt-processing work (73b6891) gives the same bytes, so nothing
+  since has changed it;
+- the independent CPU path (ggml, fast numerics) diverges early on a near tie, then does not
+  loop;
+- given the GPU's own text up to the loop as a prompt, both the CPU path and the runtime
+  continue with the same loop.
+
+It is the model's greedy behaviour on this prompt; the official evaluations sample at
+temperature 1.0, and sampling is a non-goal here. One trap on the way: the prompt prefix must end
+where the generated token did. With a trailing space (a separate token), both implementations
+continued without the loop.
+
+**A regression since step 37, found by this measurement.** The first run of these prompts was
+~10% slower than step 32 at the same acceptance. Builds compared on the same prompt and clock
+(`results/engram-copy-fix.txt`): with the cache, the build from before the prompt work did
+26.5-26.9 t/s, the current one 25.6-25.7. The cause: `fetch_engram_rows` copied all `kChunk`
+token rows of every engram slot to the GPU each step, 512 rows since step 37 for a step that
+needs 1-6. Copying only the forward's rows: 26.1-26.4 t/s, output identical (the rest, ~0.5 ms
+per step, is die 0's ~70 fewer expert slots). The byte gates could not catch this: the output
+never changed, only the time.

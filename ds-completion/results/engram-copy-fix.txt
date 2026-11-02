@@ -1,0 +1,8 @@
+# generation steps slower since README step 37: the engram rows copy (README step 48)
+# bin-hip/ds-completion -m $M --rt $F8 --placement placements/study30.txt --dspark $D --spec --canon [--cache-loads 200 --cache-wait] -p "What are the differences between TCP and UDP, and when would you choose each?" --chat -n 300
+# builds: 73b6891 (old), cda964f (current), cda964f + fix; sclk 6 (manual, all four cards); 2026-11-01
+static placement: old 22.24 t/s (verify fit 44.4 + 30.2 n ms), current 22.16 (46.2 + 29.3 n)
+cache, 3 runs each: old 26.71 / 26.88 / 26.53 t/s (verify fit 36.1-36.5 + 22.5-22.6 n), current 25.70 / 25.59 / 25.68 (38.8-39.8 + 22.6-23.2 n)
+cause: fetch_engram_rows copied all kChunk (512 since step 37) token rows of every engram slot each step
+fixed (only the forward's rows), 2 runs: 26.06 / 26.35 t/s (verify fit 37.0-37.1 + 23.0-23.3 n), output identical to before the fix
+the rest (~0.5 ms per step): die 0 holds ~70 fewer expert slots since step 37 (810 vs 879)

@@ -1,0 +1,14 @@
+# is long-proof's repetition loop a bug? (README step 48)
+# prompt: the long-proof line of scripts/spec-measure.sh, --think --effort max -n 3000; GPU: bin-hip/ds-completion -m $M --rt $F8 --placement placements/study30.txt --canon [--dspark $D --spec --cache-loads 200 --cache-wait]; CPU: bin/ds-completion -m $M (the ggml CPU path, fast numerics)
+# commit cda964f (+ the engram-copy fix for the last part); old build: 73b6891; sclk 6 (manual, all four cards); 2026-11-01
+1. plain decoding (no draft, no cache) vs --spec + cache, current build: output identical (the loop is in both)
+2. old build 73b6891 (before the prompt-processing work) vs current, plain: output identical
+   the loop starts at byte 2926 of 8489 of the GPU output: 'What about (9,? no), (12,?1881 no), (15,? no), (18,? no), (27,36). Also (0,45). ' -> 'What about (45,0). What about (0,45). ...' until the 3,000-token limit
+3. the CPU path on the same prompt: diverges after byte 172 (a near-tie decided differently), then no loop in 3,000 tokens
+4. referee: the GPU output up to the loop (a) and after 3 repetitions (b) as a raw prompt (the chat template written out), 40 tokens:
+   (a) GPU --canon:  What about (45,0). What about (0,45). What about (45,0). What about (0,45). What about (4
+   (a) CPU path:     What about (45,0). What about (0,45). What about (45,0). What about (0,45). What about (4
+   (b) GPU --canon:  What about (45,0). What about (0,45). What about (45,0). What about (0,45). What about (4
+   (b) CPU path:     What about (45,0). What about (0,45). What about (45,0). What about (0,45). What about (4
+   (with a trailing space after the prefix, i.e. a different token context, both continue without the loop: the context must end where the generation's token did)
+=> both implementations continue the loop from the same context: the model's greedy behaviour on this prompt, not a bug

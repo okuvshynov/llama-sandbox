@@ -121,6 +121,8 @@ Unless stated: sclk 2, 16 CPU threads (32 before README step 18), the study30 pl
 | 30 | `bench-expert-load.txt`, `load-test/` | `bin-hip/bench-expert-load -m $M`, `scripts/load-test.sh` |
 | 31-32 | `canon-gate.txt`, `canon-gate/` | `scripts/canon-gate.sh` (rerun for steps 32 and 45) |
 | 34 | `check-topk.txt` | `~/venvs/ds-ref/bin/python ref/check_topk.py` (runs `bin-hip/test-topk`) |
+| 48 | `spec-measure-sclk6/` (summary, per-prompt logs, `analysis.txt`) | `scripts/spec-measure.sh`, then `scripts/spec_analysis.py --max-steps 400 results/spec-measure-sclk6/*.log` |
+| 48 | `spec-loop-check.txt`, `engram-copy-fix.txt` | commands in the files (the old build: a worktree at 73b6891) |
 | 47 | `spec-momentum.txt` | `~/venvs/ds-ref/bin/python scripts/spec_momentum.py 'results/spec-conf/*-n5.log'`; TIMING.md quotes steps 25-26, 32-33, 45-46 |
 | 46 | `prefill/chunk1024.txt` | `kChunk = 1024` (reverted), then the commands in the file |
 | 45 | `prefill/o3.txt`, `canon-gate.txt` + `canon-gate/` (rerun) | `bin/bench-cpu-moe -m $M -t 16 --check-layers "" --replay data/routing/prefill/readme24k.bin`; `bin-hip/ds-completion ... --profile` (commands in the file); `scripts/canon-gate.sh` |

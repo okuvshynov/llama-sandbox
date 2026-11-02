@@ -712,7 +712,11 @@ void Runtime::fetch_engram_rows(const std::vector<int32_t>& chunk) {
         to_float((const char*)tab->data + (size_t)rows[c] * tab->nb[1], h_erows + ((size_t)e * kChunk + t) * n + (size_t)c * D, D);
     }
   }
-  CHECK(hipMemcpyAsync(erows, h_erows, (size_t)n_slots * kChunk * n * 4, hipMemcpyHostToDevice, s));
+  // only this forward's rows of each slot (README step 48: copying all kChunk rows cost a decode
+  // step ~2 ms once kChunk grew to 512)
+  for (int e = 0; e < n_slots; e++)
+    CHECK(hipMemcpyAsync(erows + (size_t)e * kChunk * n, h_erows + (size_t)e * kChunk * n, chunk.size() * n * 4,
+                         hipMemcpyHostToDevice, s));
 }
 
 void Runtime::engram(int L, int M) {

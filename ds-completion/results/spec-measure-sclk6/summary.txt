@@ -1,0 +1,11 @@
+# scripts/spec-measure.sh, commit cda964f+changes, sclk 6, 2026-11-01T21:35:22-05:00
+# name: generation t/s, tokens per step, drafts accepted per step, output vs results/cache-test/plain-canon-static
+tcp-udp: 26.22 t/s, 2.16 tokens per step, 1.15 accepted, output same
+py-lru: 29.25 t/s, 3.12 tokens per step, 2.11 accepted, output same
+cpp-matrix: 30.60 t/s, 4.35 tokens per step, 3.41 accepted, output same
+sql-report: 28.52 t/s, 3.66 tokens per step, 2.68 accepted, output same
+geometry: 33.53 t/s, 4.11 tokens per step, 3.12 accepted, output same
+zh-travel: 23.67 t/s, 1.70 tokens per step, 0.71 accepted, output same
+ja-email: 24.98 t/s, 2.03 tokens per step, 1.03 accepted, output same
+summary-json: 26.89 t/s, 3.50 tokens per step, 2.54 accepted, output same
+long-proof: 42.13 t/s, 3.85 tokens per step, 2.84 accepted, output n/a

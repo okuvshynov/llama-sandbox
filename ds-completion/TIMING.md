@@ -12,7 +12,8 @@ A step drafts up to 5 tokens, then verifies the anchor and n drafts in one forwa
 
 and yields the accepted drafts plus one token of its own: **2-4 tokens per step** (code and
 structured text high, chat ~2-3, Chinese/Japanese ~2). A typical step, 2.6 drafts verified and
-3.2 tokens: 12 + 50 + 52 = **~114 ms -> ~28 t/s**. Without speculation a token costs ~49 ms
+3.2 tokens: 12 + 50 + 52 = **~114 ms -> ~28 t/s** (measured: 25.6 t/s mean on the held-out
+prompts at sclk 2, 28.0 at sclk 6; README steps 32, 48). Without speculation a token costs ~49 ms
 (~20 t/s with the cache); without the cache ~55-60 ms (~17-18 t/s).
 (README steps 25-26, 32; fitted verify lines 41-68 + 15-24 n ms per prompt.)
 
