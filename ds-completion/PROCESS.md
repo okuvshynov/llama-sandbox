@@ -419,6 +419,10 @@ Estimates were made before measuring wherever possible; this is how they fared.
   speculation slower than plain at full hits) and against independent per-step data.
 - **Unbounded asynchronous queues** and **spinning waits**: caught only by measuring under
   load, not by unit tests.
+- **A trace that looked right but did not nest** (README step 51): a check over every span found
+  ~1% of groups 0.1 us past their layer, from rounding start and length separately; and a run
+  ~15% slower than the day before was a cold page cache after a reboot, not the change (rerun:
+  back to the earlier speed).
 - **False alarms from the measuring scripts** (a trailing newline in a prefix comparison):
   every "differs" was investigated before being believed or dismissed.
 

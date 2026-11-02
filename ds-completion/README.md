@@ -2141,11 +2141,15 @@ misses is the target (the hit rate), not their spread over layers.
 `--trace FILE` (implies `--profile`) writes a Chrome trace of every step; open it in
 ui.perfetto.dev. Tracks: steps (drafts, verify steps), the host thread (per layer the wait for
 the staged block and the CPU's experts, with distinct experts / pairs / tokens as arguments), die
-0's main stream (the profile groups per layer), die 0's expert stream and dies 1-3 (each die's
-experts per layer, copies included). GPU events are placed on the host clock by a reference event
+0's main stream (a "layer N" span per layer with the profile groups nested under it; engram
+before layer 0 and the head after the last stay outside), die 0's expert stream and dies 1-3 (each
+die's experts per layer, copies included). GPU events are placed on the host clock by a reference event
 per device at each step's start (the dies are idle then): aligned to ~0.1 ms, enough to see
 overlap, not to compare microseconds across tracks. `results/trace/` holds the two runs gzipped
-(chat and code, 300 tokens; Perfetto opens `.json.gz`). Cost: ~1-3% of speed; outputs identical.
+(chat and code, 300 tokens; Perfetto opens `.json.gz`; download them raw, not GitHub's file page).
+A layer on die 0 takes a median 1.6 ms on chat (p90 2.7) and 2.5 ms on code (p90 4.0). Cost:
+~1-3% of speed; outputs identical. (Right after a reboot runs are ~15% slower until the model's
+files are back in the page cache: the CPU's experts are read from them.)
 
 A 4-token code step, layers 0-2: the CPU 1,380 / 804 / 489 us, die 0 waiting 1,313 / 614 / 404
 us, the four dies' experts 152-318 / 184-348 / 178-343 us, all starting together after routing.

@@ -426,6 +426,7 @@ std::vector<int32_t> Runtime::forward_chunk(const std::vector<int32_t>& toks, bo
   } else {
     for (int L = 0; L < hp.n_layer; L++) block(L, nullptr, M);
   }
+  cur_layer = -1;
   chunked = false;
   std::vector<int32_t> next;
   if (head) {
@@ -782,13 +783,24 @@ void Runtime::trace_step_begin() {
 // at a step's end (its events have completed): die 0's groups per layer, the dies' expert spans
 void Runtime::trace_step_end() {
   if (trace_path.empty() || marks.empty()) return;
-  for (size_t i = 0; i + 1 < marks.size(); i++) {
-    float a, d;
+  // each group ends where the next begins, so a layer's span (its groups in a row; the prompt's
+  // two halves interleave, giving two per layer) contains them exactly and Perfetto nests them
+  std::vector<double> at(marks.size());
+  for (size_t i = 0; i < marks.size(); i++) {
+    float a;
     CHECK(hipEventElapsedTime(&a, marks[0].second, marks[i].second));
-    CHECK(hipEventElapsedTime(&d, marks[i].second, marks[i + 1].second));
+    at[i] = step_t0_us + a * 1000.0;
+  }
+  for (size_t i = 0; i + 1 < marks.size(); i++) {
+    const int L = mark_layer[i];
+    if (L >= 0 && (i == 0 || mark_layer[i - 1] != L)) {
+      size_t j = i;
+      while (j + 1 < marks.size() && mark_layer[j] == L) j++;
+      trace_evs.push_back({"layer " + std::to_string(L), 2, at[i], at[j] - at[i], ""});
+    }
     std::string name = marks[i].first;
-    if (mark_layer[i] >= 0) name += " L" + std::to_string(mark_layer[i]);
-    trace_evs.push_back({name, 2, step_t0_us + a * 1000.0, d * 1000.0, ""});
+    if (L >= 0) name += " L" + std::to_string(L);
+    trace_evs.push_back({name, 2, at[i], at[i + 1] - at[i], ""});
   }
   for (size_t i = 0; i < die_trace.size(); i++) {
     DieTrace& t = die_trace[i];
@@ -817,9 +829,12 @@ void Runtime::trace_write() {
   meta(2, "GPU " + std::to_string(opt.gpu) + " main stream (dense part)");
   for (size_t i = 0; i < dies.size(); i++)
     meta(10 + (int)i, "GPU " + std::to_string(dies[i].dev) + (dies[i].st ? " experts" : " experts (second stream)"));
-  for (const TraceEv& e : trace_evs)
-    fprintf(f, ",\n{\"name\":\"%s\",\"ph\":\"X\",\"pid\":1,\"tid\":%d,\"ts\":%.1f,\"dur\":%.1f%s%s%s}", e.name.c_str(), e.tid, e.ts,
-            e.dur, e.args.empty() ? "" : ",\"args\":{", e.args.c_str(), e.args.empty() ? "" : "}");
+  // start and end rounded to 0.1 us each, so a span that ends where its parent ends still nests
+  for (const TraceEv& e : trace_evs) {
+    const double a = std::round(e.ts * 10) / 10, b = std::round((e.ts + e.dur) * 10) / 10;
+    fprintf(f, ",\n{\"name\":\"%s\",\"ph\":\"X\",\"pid\":1,\"tid\":%d,\"ts\":%.1f,\"dur\":%.1f%s%s%s}", e.name.c_str(), e.tid, a,
+            b - a, e.args.empty() ? "" : ",\"args\":{", e.args.c_str(), e.args.empty() ? "" : "}");
+  }
   fprintf(f, "\n]}\n");
   fclose(f);
   fprintf(stderr, "# trace: %zu events in %s (open in ui.perfetto.dev)\n", trace_evs.size(), trace_path.c_str());
@@ -1436,6 +1451,7 @@ std::vector<float> Runtime::decode(int32_t tok, bool want_logits) {
   CHECK(hipMemcpyAsync(pre, one_hot.data(), HC * 4, hipMemcpyHostToDevice, s));
   k_repeat(x, E, HC, h, s);
   for (int L = 0; L < hp.n_layer; L++) block(L, nullptr);
+  cur_layer = -1;
   if (dspark) dspark->seed(pos);  // this position's K/V into the draft's window rings
   if (!want_logits) {
     end_step();
