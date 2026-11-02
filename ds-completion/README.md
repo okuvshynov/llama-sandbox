@@ -2407,3 +2407,24 @@ experts, all resident. Freeing them would mean computing them elsewhere: on the 
 shared with the main model's experts would keep them anyway (they are used every step). Left as
 is. So GPU memory is experts (the main model's and the draft's) plus ~10 GB of dense weights and
 buffers on GPU 0.
+
+## Step 62: the output head through LDS
+
+The draft's profile (`DS_DRAFT_PROFILE=1`, cpp-matrix) put its output head first: 3.5 of ~13 ms
+per call, the main model's bf16 head (129,280 x 5,120, 1.32 GB) read for the draft's 5 tokens at
+~375 GB/s. The same kernel computes a verify step's logits. Expert parallelism for the draft was
+weighed and set aside: its experts are 2.1 ms of the 13, a cross-die exchange per layer would
+take back half, and moving them off GPU 0 frees no memory in total.
+
+`bench-kernels --bitwise` (`results/head-lds.txt`) showed why the head was slow from 4 inputs:
+each wave of the multi-input GEMV re-read every input's activations from L2 for its 2 rows.
+`gemv_head_m_kernel` (bf16, >= 16,384 rows, one K chunk): a block of 8 waves (16 at 8 inputs)
+loads each 512-element step of all inputs' activations into LDS once; each lane then applies the
+same `dotw` to the same k in the same order, so the logits are bit-identical (28 of 28 cases
+against the single-input kernel). Head time at 2-8 inputs: 1838 / 1964 / 2882 / **3340** / **4035**
+/ 5589 / 7701 -> 1732 / 1836 / 1969 / **2231** / **2467** / 2718 / 3119 us (5 = the draft, 6 = a code
+verify step).
+
+Held-out generation (`results/spec-measure-sclk6-cacheloads800cacheperiod8-head/`): mean
+**32.03 -> 32.48 t/s (+1.4%)**, code and structured prompts +1.7 to +2.1%, outputs identical. The
+draft's Markov head stays token by token: each token's bias needs the previous argmax.

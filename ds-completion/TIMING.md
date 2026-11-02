@@ -21,7 +21,8 @@ typical steps, from the held-out run (README step 57):
 | code (cpp-matrix), mostly 6 tokens verified | 4.48 | 12 ms | ~109 ms | 121 ms | 36.9 |
 | chat (tcp-udp), mostly 2-3 verified | 2.16 | 10 ms | ~65 ms | 75 ms | 28.9 |
 
-Held-out mean: 32.0 t/s (26.7-38.6). For scale: step 48 measured 28.0 at the same clock before
+Held-out mean: 32.0 t/s (26.7-38.6); 32.5 since the output head reads its inputs through LDS
+(README step 62: -1.1 ms per draft call, -1.6 ms per 6-token verify step). For scale: step 48 measured 28.0 at the same clock before
 the cache tuning and the router and CPU-routine fixes (steps 50, 53, 57).
 
 **What a millisecond is worth:** on the code step 1 ms is 0.8% (~0.3 t/s), on the chat step 1.3%

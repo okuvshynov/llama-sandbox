@@ -333,7 +333,8 @@ counts equal the window, hysteresis margins only cost, a lower candidate thresho
 1`) gains hits but loses ~0.7% live: the policy stays; more GPU slots are the cache's lever.
 Step 60: the memory ledger. Experts are 84% of GPU memory; 64k context costs only 21 slots;
 the draft's 8 GB on GPU 0 is 7.2 GB of its own mxfp4 experts, its dense part already fp8 (step
-61: nothing cheap to free).
+61: nothing cheap to free). Step 62: the output head's multi-input GEMV shares activations
+through LDS (bit-identical): head 3.3 -> 2.2 ms at 5 inputs, +1.4% held-out (32.5 t/s).
 
 **A. Tuning the expert cache** (the CPU experts' ~25 ms)
 - Hysteresis: a newcomer must beat its victim by a margin, so the cache settles in long runs

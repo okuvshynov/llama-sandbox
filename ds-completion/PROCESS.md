@@ -418,6 +418,11 @@ Each rule is followed by where it mattered most.
   The ledger's own follow-up then made the mistake it had caught: the draft's 8 GB was called
   bf16 from its file's name; reading the loader (step 61) showed fp8 and mxfp4 already.
 
+- **Profile the part before parallelizing it (README step 62).** The person proposed expert
+  parallelism for the draft; its existing per-part profile showed the experts at 16% and the
+  output head at 27%, and the head's slowness was the same L2-bound pattern as before: inputs
+  re-read per wave. The fix kept every row's arithmetic, so the gate was one benchmark mode.
+
 ## 4. Predictions against outcomes
 
 Estimates were made before measuring wherever possible; this is how they fared.
@@ -438,6 +443,8 @@ Estimates were made before measuring wherever possible; this is how they fared.
 | chunks of 64 share CPU expert reads (37) | most of the 53% saved | nothing | 384 experts: ~1 token per CPU expert per chunk; then compute-bound until tiled |
 | one CPU miss per layer hides behind the GPU's work (50) | partly | 0.05-0.15 of ~0.35-0.48 ms | the GPU's work alongside (shared expert, each die's experts) is shorter than one miss |
 | fp8 compressed caches free expert slots (59 -> 60) | the next lever | 21 slots at 64k | the caches are small; the draft is 8 GB |
+| expert parallelism for the draft (62) | proposed by the person | ~1 ms at best | experts are 16% of the draft; the head (27%) was the item |
+| the head through LDS (62) | ~1-2% | +1.4% held-out, +2% on code | as estimated from the per-part times |
 | the draft in fp8 frees ~4 GB (60 -> 61) | ~210 slots | nothing | its dense part was already fp8 and its experts mxfp4: assumed from the file's name |
 | decayed counts / hysteresis for the cache (59) | settle the churn, some gain | decay = window, margins lose | the loads they skip were useful; misses left are unpredictable |
 | one-token groups on the one-token routine (57) | the ~0.25 ms "fixed cost" removed | -35% per one-expert call, +1.1% end to end | the cost was one phase (down) on the wrong routine, not fixed overhead |

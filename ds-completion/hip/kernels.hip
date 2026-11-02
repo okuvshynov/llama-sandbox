@@ -230,6 +230,60 @@ __global__ void split_sum_m_kernel(const float* partial, int N, int splits, floa
   y[(size_t)m * N + n] = v;
 }
 
+// The head (bf16, many rows, one K chunk; README step 62): the block's waves share each step's
+// activations through LDS, loaded once per block instead of once per wave from L2. Per lane and
+// row the same dotw over the same k in the same order as gemv_partial_m_kernel: the same bits.
+template <int M, int R, int WAVES>
+__global__ void __launch_bounds__(64 * WAVES) gemv_head_m_kernel(const uint16_t* W, int N, int K, const float* x,
+                                                                 float* partial) {
+  constexpr int STEP = 64 * 8;  // elements per load step (64 lanes x 8 bf16)
+  __shared__ float4 xs[M][STEP / 4];
+  const int lane = threadIdx.x & 63, row0 = (blockIdx.x * WAVES + (threadIdx.x >> 6)) * R;
+  float acc[R][M];
+#pragma unroll
+  for (int r = 0; r < R; r++)
+#pragma unroll
+    for (int m = 0; m < M; m++) acc[r][m] = 0;
+  for (int k = 0; k < K; k += STEP) {
+    __syncthreads();
+    for (int i = threadIdx.x; i < M * (STEP / 4); i += blockDim.x) {
+      const int m = i / (STEP / 4), j = i - m * (STEP / 4);
+      xs[m][j] = *(const float4*)(x + (size_t)m * K + k + j * 4);
+    }
+    __syncthreads();
+    if (row0 < N) {  // no early return: every wave takes part in the barriers
+      XV<uint16_t> xv[M];
+#pragma unroll
+      for (int m = 0; m < M; m++) xv[m] = {xs[m][lane * 2], xs[m][lane * 2 + 1]};
+#pragma unroll
+      for (int r = 0; r < R; r++) {
+        const uint16_t* wr = W + (size_t)min(row0 + r, N - 1) * K;
+#pragma unroll
+        for (int m = 0; m < M; m++) acc[r][m] += dotw<uint16_t>(wr, k + lane * 8, xv[m]);
+      }
+    }
+  }
+  if (row0 >= N) return;
+#pragma unroll
+  for (int r = 0; r < R; r++)
+#pragma unroll
+    for (int m = 0; m < M; m++) {
+      const float v = warp_sum(acc[r][m]);
+      if (lane == 0 && row0 + r < N) partial[(size_t)m * N + row0 + r] = v;
+    }
+}
+
+template <int R, int WAVES>
+static bool gemv_head_launch(const uint16_t* W, int N, int K, const float* x, int M, float* partial, hipStream_t s) {
+  const dim3 grid(cdiv(N, WAVES * R));
+  switch (M) {
+#define HC(mm) case mm: gemv_head_m_kernel<mm, R, WAVES><<<grid, 64 * WAVES, 0, s>>>(W, N, K, x, partial); return true;
+    HC(1) HC(2) HC(3) HC(4) HC(5) HC(6) HC(7) HC(8)
+#undef HC
+    default: return false;
+  }
+}
+
 template <typename T, int VEC>
 static void gemv_m(const T* W, int N, int K, const float* x, int M, float* y, float* partial, hipStream_t s) {
   int splits = 1;  // exactly as gemv()
@@ -239,6 +293,18 @@ static void gemv_m(const T* W, int N, int K, const float* x, int M, float* y, fl
   // several rows per wave only when the rows alone fill the GPU many times over (the head)
   // several rows per wave only when the rows alone fill the GPU many times over (the head);
   // measured on the head (bench-kernels --bitwise): 4 rows best up to 3 inputs, 2 above
+  if constexpr (sizeof(T) == 2) {
+    // measured (bench-kernels --bitwise, the head at 2-8 inputs): 2 rows per wave, 8 waves per
+    // block (16 at 8 inputs, where 8 waves spill); 4 / 8 rows per wave or 4 / 16 waves were slower
+    if (N >= 16384 && splits == 1 && K % 512 == 0) {
+      const bool ok = M == 8 ? gemv_head_launch<2, 16>((const uint16_t*)W, N, K, x, M, partial, s)
+                             : gemv_head_launch<2, 8>((const uint16_t*)W, N, K, x, M, partial, s);
+      if (ok) {
+        split_sum_m_kernel<<<dim3(cdiv(N, 256), M), 256, 0, s>>>(partial, N, 1, y);
+        return;
+      }
+    }
+  }
   const int R = N < 16384 ? 1 : M <= 3 ? 4 : 2;
   const dim3 grid(cdiv(N, 4 * R), splits);
   switch (M * 8 + R) {

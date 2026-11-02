@@ -1,0 +1,39 @@
+# the head GEMV (bf16 129280 x 5120) at 2-8 inputs: the activations through LDS, shared by a block's waves (README step 62)
+# bin-hip/bench-kernels --bitwise (every M-input kernel against its single-input version, bit for bit; 20 runs each); sclk 6; 2026-11-02
+## before (commit c71b17c): head M=2..8: 1838 1964 2882 3340 4035 5589 7701 us
+## tried: rows per wave / waves per block (all bit-identical), us at M=2..8
+R2 W8 : 1749 1843 1977 2236 2464 2722 5015
+R4 W8 : 1799 1837 2434 3437 4032 4135 4300
+R2 W16: 2078 2147 2224 2358 2604 2866 3123
+R4 W4 : 1784 1858 2288 2082 2807 3358 3489
+R1 W16: 1769 1966 3695 3903 4227 4668 4934
+R8 W4 : 1837 1859 1963 2537 5365 5842 6104
+## kept: R2 W8 (W16 at M=8); the full --bitwise output:
+head bf16 129280 x 5120      M=2: bit-identical  1732 us
+head bf16 129280 x 5120      M=3: bit-identical  1836 us
+head bf16 129280 x 5120      M=4: bit-identical  1969 us
+head bf16 129280 x 5120      M=5: bit-identical  2231 us
+head bf16 129280 x 5120      M=6: bit-identical  2467 us
+head bf16 129280 x 5120      M=7: bit-identical  2718 us
+head bf16 129280 x 5120      M=8: bit-identical  3119 us
+hc_fn f32 24 x 20480         M=2: bit-identical  13 us
+hc_fn f32 24 x 20480         M=3: bit-identical  15 us
+hc_fn f32 24 x 20480         M=4: bit-identical  16 us
+hc_fn f32 24 x 20480         M=5: bit-identical  16 us
+hc_fn f32 24 x 20480         M=6: bit-identical  18 us
+hc_fn f32 24 x 20480         M=7: bit-identical  19 us
+hc_fn f32 24 x 20480         M=8: bit-identical  19 us
+router f32 384 x 5120        M=2: bit-identical  22 us
+router f32 384 x 5120        M=3: bit-identical  28 us
+router f32 384 x 5120        M=4: bit-identical  31 us
+router f32 384 x 5120        M=5: bit-identical  38 us
+router f32 384 x 5120        M=6: bit-identical  38 us
+router f32 384 x 5120        M=7: bit-identical  41 us
+router f32 384 x 5120        M=8: bit-identical  38 us
+idx_proj bf16 32 x 5120      M=2: bit-identical  9 us
+idx_proj bf16 32 x 5120      M=3: bit-identical  10 us
+idx_proj bf16 32 x 5120      M=4: bit-identical  11 us
+idx_proj bf16 32 x 5120      M=5: bit-identical  12 us
+idx_proj bf16 32 x 5120      M=6: bit-identical  14 us
+idx_proj bf16 32 x 5120      M=7: bit-identical  15 us
+idx_proj bf16 32 x 5120      M=8: bit-identical  15 us
