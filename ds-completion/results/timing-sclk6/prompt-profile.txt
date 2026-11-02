@@ -1,0 +1,7 @@
+# the 1,989-token prompt with --profile (TIMING.md; README step 58)
+# bin-hip/ds-completion -m $M --rt $F8 --placement placements/study30.txt -f results/prefill/gate/p6000.txt -n 32 --profile [--canon]
+# commit c33e006; sclk 6; CPU defaults; 2026-11-02
+## fast: prompt: 1989 tokens in 25.68 s = 77.46 t/s; generation: 32 tokens in 1.73 s = 18.45 t/s
+# prompt profile: 4 chunks of up to 512, 25618 ms (cpu experts 20626, waiting for the GPU 245; expert-tokens gpu 286206 cpu 190914); GPU timeline: attn.compressor 1401 attn.core 7941 attn.indexer 2028 attn.kv 117 attn.out 2708 attn.q 1074 engram 312 engram.fetch 515 ffn.add 500 ffn.dispatch 132 ffn.router 374 ffn.shared 1389 ffn.wait_for_cpu_experts 6044 ffn.wait_for_gpu_experts 368 hc 557
+## --canon: prompt: 1989 tokens in 34.62 s = 57.45 t/s; generation: 32 tokens in 1.82 s = 17.56 t/s
+# prompt profile: 4 chunks of up to 512, 34553 ms (cpu experts 29855, waiting for the GPU 139; expert-tokens gpu 285136 cpu 191984); GPU timeline: attn.compressor 1413 attn.core 7851 attn.indexer 2026 attn.kv 100 attn.out 2707 attn.q 939 engram 303 engram.fetch 554 ffn.add 106 ffn.dispatch 133 ffn.router 374 ffn.shared 3513 ffn.wait_for_cpu_experts 13480 ffn.wait_for_gpu_experts 377 hc 520

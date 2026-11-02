@@ -462,6 +462,9 @@ Estimates were made before measuring wherever possible; this is how they fared.
 - **An overhead claimed without a like-for-like run** (README step 58): the trace's cost was
   written as 1-3% from runs of different days; measured properly (untraced, `--profile`,
   `--trace` on the same prompts and build) it is ~7%, most of it the profile's events.
+- **A summary document goes stale quietly** (README step 58): TIMING.md's tables kept numbers
+  from four clock settings and a dozen steps back while every later step appended a sentence; the
+  person noticed. Refreshed from one build and one clock, with the data in `results/`.
 - **False alarms from the measuring scripts** (a trailing newline in a prefix comparison):
   every "differs" was investigated before being believed or dismissed.
 

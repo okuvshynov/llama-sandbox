@@ -2323,3 +2323,11 @@ comparing its traced runs (26.2 / 32.9 t/s) with nothing measured alike; the ste
 runs (27.8 / 35.0) show the same ~6% then. A trace's times are therefore a few percent long, and
 its proportions hold. TIMING.md now points at the traces.
 
+TIMING.md's generation and prompt sections were still the step 25-46 numbers (sclk 2 and 8, the
+cache at 200 loads/s, before the router and CPU-routine fixes); they are now from this build at
+sclk 6 (`results/timing-sclk6/`: the verify steps' and the 1,989-token prompt's `--profile`
+breakdowns). A code step: 12 ms draft + ~109 ms verify for 4.5 tokens (36.9 t/s), a chat step
+10 + ~65 ms for 2.2 (28.9 t/s); a 6-token verify step is attention 39%, the other dense parts
+24%, the CPU's experts 22%, the draft 10%, the dies' experts 5%. On the prompt the router went
+from 1.1 to 0.2 ms per token, leaving the GPU side (9.6 ms) just under the CPU's (10.4).
+
