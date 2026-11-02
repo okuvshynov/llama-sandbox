@@ -86,6 +86,20 @@ fast one per (token, expert) pair, so only the CPU side helps there.
 **Scale:** a 30,000-token document takes ~6.5 min at 76 t/s (it took ~30 min token by token).
 10,000 tokens of reasoning take ~6 min at ~28 t/s.
 
+## Seeing a step: traces
+
+`results/trace/tcp-udp.json.gz` (chat) and `cpp-matrix.json.gz` (code), 300 tokens each with
+speculation and the tuned cache (README steps 51, 58), open in ui.perfetto.dev. Per layer: die
+0's "layer N" span with its groups nested (attention, router, shared expert, the wait for the
+CPU, the sum); the host's "CPU experts" span with how many experts and tokens; each die's routed
+experts with theirs. The things above show up directly: a verify step is ~40 layers of 1.6-2.5
+ms; in a layer with CPU experts die 0 sits in `ffn.wait_for_cpu_experts` for most of the CPU's
+span, while the dies' experts finish in 0.1-0.35 ms.
+
+Measuring costs time: `--profile` 5-6% of generation speed, `--trace` 7% (28.9 / 36.9 t/s
+untraced vs 26.8 / 34.5 traced; README step 58), so a trace's times run a few percent long; its
+proportions hold. `--trace FILE` writes the file for any run.
+
 ## Fixed costs
 
 Model load ~9-20 s (from the page cache; minutes if it must come back from disk), expert upload

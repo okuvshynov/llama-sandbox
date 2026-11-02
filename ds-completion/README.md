@@ -2154,7 +2154,8 @@ early, putting layer 13's experts inside layer 14. The prompt's chunks still use
 halves make the per-layer bound ambiguous.) `results/trace/` holds the two runs gzipped
 (chat and code, 300 tokens; Perfetto opens `.json.gz`; download them raw, not GitHub's file page).
 A layer on die 0 takes a median 1.6 ms on chat (p90 2.7) and 2.5 ms on code (p90 4.0). Cost:
-~1-3% of speed; outputs identical. (Right after a reboot runs are ~15% slower until the model's
+~7% of speed (first written as 1-3%, against the wrong baseline; README step 58); outputs
+identical. (Right after a reboot runs are ~15% slower until the model's
 files are back in the page cache: the CPU's experts are read from them.)
 
 A 4-token code step, layers 0-2: the CPU 1,380 / 804 / 489 us, die 0 waiting 1,313 / 614 / 404
@@ -2303,3 +2304,22 @@ Held-out generation (`results/spec-measure-sclk6-cacheloads800cacheperiod8-nx1/`
 identical. Smaller than the per-call gain because many layers have no CPU experts and part of the
 CPU's time hides behind the GPU's. Only the canonical path changed (the fast path's
 `dot_range_multi` is the analogue, unmeasured).
+
+## Step 58: traces of today's build, and what tracing costs
+
+`results/trace/` regenerated with the build of step 57 (same commands, sclk 6; outputs identical;
+alignment as in step 51: die 0's wait for the CPU ends 31-69 us after the CPU's experts). What
+measuring costs, the same two prompts (step 57's untraced run, then `--profile`, then `--trace`):
+
+| t/s | untraced | `--profile` | `--trace` |
+|---|---|---|---|
+| tcp-udp | 28.86 | 27.33 (-5.3%) | 26.79 (-7.2%) |
+| cpp-matrix | 36.90 | 34.66 (-6.1%) | 34.46 (-6.6%) |
+
+Most of it is `--profile` itself (an event per group on die 0, ~70 per layer, read back after
+every step, and the per-layer miss and prediction bookkeeping); the trace's own work (the dies'
+events, the per-step clock anchors, the spans) adds 0.5-2%. Step 51 had put the trace at 1-3%,
+comparing its traced runs (26.2 / 32.9 t/s) with nothing measured alike; the step-50 untraced
+runs (27.8 / 35.0) show the same ~6% then. A trace's times are therefore a few percent long, and
+its proportions hold. TIMING.md now points at the traces.
+

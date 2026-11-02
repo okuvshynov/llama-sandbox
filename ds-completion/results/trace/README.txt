@@ -1,6 +1,6 @@
 # Chrome traces of generation (README step 51): open the .json.gz in ui.perfetto.dev ("Open trace file")
 # bin-hip/ds-completion -m $M --rt $F8 --placement placements/study30.txt --dspark $D --spec --canon --cache-loads 800 --cache-period 8 --cache-wait -p <prompt> --chat -n 300 --trace <name>.json
-# prompts: tcp-udp, cpp-matrix of results/spec-heldout/prompts.txt; commit 8693707 + clock anchoring; sclk 6 (manual, all four cards); 2026-11-02; 26.21 and 32.94 t/s, outputs identical
+# prompts: tcp-udp, cpp-matrix of results/spec-heldout/prompts.txt; commit d1a2de8 (README step 58); sclk 6 (manual, all four cards); CPU defaults; 2026-11-02; 26.79 and 34.46 t/s traced (28.86 and 36.90 untraced in step 57), outputs identical
 # tracks: steps (host): drafts and verify steps; host thread: per layer the wait for the staged block and the CPU's experts
 # (args: distinct experts, pairs, tokens); GPU 0 main stream: a "layer N" span per layer with the --profile groups
 # nested under it (engram and head outside); GPU 0 experts (second

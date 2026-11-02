@@ -459,6 +459,9 @@ Estimates were made before measuring wherever possible; this is how they fared.
   The person then spotted layer 13's experts inside layer 14's span: die 0's track was anchored
   at the time its first event was issued, 0.3-0.4 ms before it ran. Fixed by anchoring where the
   host waits on the GPU anyway, and checked by causality (a wait ends after what it waits for).
+- **An overhead claimed without a like-for-like run** (README step 58): the trace's cost was
+  written as 1-3% from runs of different days; measured properly (untraced, `--profile`,
+  `--trace` on the same prompts and build) it is ~7%, most of it the profile's events.
 - **False alarms from the measuring scripts** (a trailing newline in a prefix comparison):
   every "differs" was investigated before being believed or dismissed.
 
