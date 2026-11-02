@@ -146,6 +146,15 @@ int main(int argc, char** argv) {
   time("hc_post 5120", R, [&] { k_hc_post(x, h, small, small, E, h2, s); });
   time("gemv_f32 router 384 x 5120", R, [&] { k_gemv_f32(wf, 384, E, x, small, part, s); });
   time("router top-6 of 384", R, [&] { k_router(small, small, 384, 6, true, 1.5f, ids, small + 512, s); });
+  {  // a 6-token verify step: one launch per token (before README step 53) vs all in one
+    float* lg = dmalloc<float>(6 * 384);
+    float* rw6 = dmalloc<float>(6 * 8);
+    int* id6 = dmalloc<int>(6 * 8);
+    time("router top-6 of 384, 6 tokens, 6 launches", R, [&] {
+      for (int t = 0; t < 6; t++) k_router(lg + t * 384, small, 384, 6, true, 1.5f, id6 + t * 8, rw6 + t * 8, s);
+    });
+    time("router top-6 of 384, 6 tokens, 1 launch", R, [&] { k_router(lg, small, 384, 6, true, 1.5f, id6, rw6, s, 6, 8); });
+  }
   time("swiglu 2304", R, [&] { k_swiglu(x, y, 10.0f, 2304, h2, s); });
   time("attn_decode 64 heads, 128 + 0 keys", R, [&] { k_attn_decode(y, NH, HD, ring, W, 200, comp, topk, 0, sinks, 0.044f, h2, scratch, s); });
   time("attn_decode 64 heads, 128 + 512 keys", R, [&] { k_attn_decode(y, NH, HD, ring, W, 2000, comp, topk, K, sinks, 0.044f, h2, scratch, s); });

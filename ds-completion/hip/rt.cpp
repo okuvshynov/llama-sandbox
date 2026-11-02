@@ -1052,9 +1052,8 @@ void Runtime::moe_launch(int L, int M) {
   const float* xin = d_moe.x;  // [M][E]
   mark("ffn.router");
   k_gemv_f32_m(w.gate_inp, hp.n_expert, E, xin, M, router_logits, partial, s);
-  for (int t = 0; t < M; t++)
-    k_router(router_logits + (size_t)t * hp.n_expert, w.gate_bias, hp.n_expert, KE, hp.expert_weights_norm,
-             hp.expert_weights_scale, rids + t * kMoeIdStride, rw + t * kMoeIdStride, s);
+  k_router(router_logits, w.gate_bias, hp.n_expert, KE, hp.expert_weights_norm, hp.expert_weights_scale, rids, rw, s, M,
+           kMoeIdStride);
   if (route_log)  // ids and weights next to each other per token and layer: [ids 8 | weights 8]
     for (int t = 0; t < M; t++) {
       int* dst = d_route + ((size_t)t * hp.n_layer + L) * 16;

@@ -93,9 +93,10 @@ void k_compress_pool(const float* kv_state, const float* score_state, int ratio,
 // ---- MoE (Gate, Expert) ----
 
 // scores = sqrt(softplus(logits)); ids = top-k of scores + bias; w = scores[ids] (normalized
-// with + 1e-20 if norm), times route_scale. Single block, n_expert <= 1024, k <= 8.
+// with + 1e-20 if norm), times route_scale. n_expert <= 1024, k <= 8. M tokens in one launch
+// (one wave each): logits at + t * n_expert, ids / w at + t * id_stride.
 void k_router(const float* logits, const float* bias, int n_expert, int k, bool norm, float route_scale, int* ids,
-              float* w, hipStream_t s);
+              float* w, hipStream_t s, int M = 1, int id_stride = 8);
 // out = silu(min(gate, lim)) * clamp(up, -lim, lim) * (weight ? *weight : 1)
 void k_swiglu(const float* gate, const float* up, float lim, int n, float* out, hipStream_t s);
 

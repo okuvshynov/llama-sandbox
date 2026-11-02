@@ -1,0 +1,13 @@
+# the prompt with the batched router vs the previous commit (README step 53)
+# OLD: a build of 97844c8, NEW: 97844c8 + step 53; bin-hip/ds-completion -m $M --rt $F8 --placement placements/study30.txt -f <first N bytes of prompts/ds-completion-readme-ddf9b43.md> -n 4 [--canon]
+# twice each, alternating; prompt t/s (tokens); outputs compared byte for byte; sclk 6 (manual, all four cards); page cache warm; 2026-11-02
+p1200 fast: OLD 82.18 (364 tokens) NEW 82.97 (364 tokens) OLD 82.16 (364 tokens) NEW 82.97 (364 tokens); output same
+p1200 canon: OLD 65.19 (364 tokens) NEW 65.72 (364 tokens) OLD 65.31 (364 tokens) NEW 65.36 (364 tokens); output same
+p6000 fast: OLD 83.14 (1989 tokens) NEW 85.53 (1989 tokens) OLD 79.90 (1989 tokens) NEW 81.51 (1989 tokens); output same
+p6000 canon: OLD 58.57 (1989 tokens) NEW 59.67 (1989 tokens) OLD 58.56 (1989 tokens) NEW 59.46 (1989 tokens); output same
+p20000 fast: OLD 83.64 (6106 tokens) NEW 87.30 (6106 tokens) OLD 83.70 (6106 tokens) NEW 87.13 (6106 tokens); output same
+p20000 canon: OLD 66.18 (6106 tokens) NEW 68.11 (6106 tokens) OLD 66.86 (6106 tokens) NEW 68.19 (6106 tokens); output same
+## prompt gate prompts (results/prefill/gate), NEW vs the saved token-by-token baseline (73b6891):
+p1200: canon 512 vs saved baseline (token by token, 73b6891): same (42.26 t/s, before 30.71); fast 1 vs 512: same (83.72 t/s, before 37.05)
+p6000: canon 512 vs saved baseline (token by token, 73b6891): same (45.16 t/s, before 26.34); fast 1 vs 512: same (85.88 t/s, before 34.97)
+py-lru: 27.85 t/s, 3.33 tokens per step, 2.32 accepted, output same

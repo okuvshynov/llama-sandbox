@@ -366,8 +366,7 @@ DraftResult DSpark::draft(int32_t anchor, int pos, bool keep_logits) {
     keep(l, 2, xa);
     mark("ffn.routed");
     k_gemv_f32_m(w.gate_inp, n_expert, E, xa, B, rlog, rt.partial, s);
-    for (int j = 0; j < B; j++)
-      k_router(rlog + (size_t)j * n_expert, w.gate_bias, n_expert, n_used, route_norm, route_scale, rids + j * 8, rw + j * 8, s);
+    k_router(rlog, w.gate_bias, n_expert, n_used, route_norm, route_scale, rids, rw, s, B, 8);
     fp4_moe_chunk(w.ex, xa, ExpertSel{rids, rw, nullptr, 8}, n_used, B, w.clamp, yr, moe_scratch, s);
     mark("ffn.shared");
     rt.quant(xa, E, rt.A, B);

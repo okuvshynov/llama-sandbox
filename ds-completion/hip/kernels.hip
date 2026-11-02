@@ -709,11 +709,15 @@ void k_compress_pool(const float* kv_state, const float* score_state, int ratio,
 // ================================================================== MoE
 
 // one wave: every lane holds n/64 experts; K rounds of wave argmax (ties to the lower index).
-// K and the per-lane count are compile-time so every array stays in registers.
-template <int K>
+// K and the per-lane count are compile-time so every array stays in registers. PER: candidates
+// per lane, >= n / 64 (a larger PER only adds -inf candidates: the same picks, the same bits).
+// One wave per token (blockIdx.x), all tokens in one launch.
+template <int K, int PER>
 __global__ void router_kernel(const float* logits, const float* bias, int n, bool norm, float route_scale, int* ids,
-                              float* w) {
-  constexpr int PER = 16;  // n <= 1024
+                              float* w, int id_stride) {
+  logits += (size_t)blockIdx.x * n;
+  ids += (size_t)blockIdx.x * id_stride;
+  w += (size_t)blockIdx.x * id_stride;
   const int lane = threadIdx.x;
   float sc[PER], sel[PER];
 #pragma unroll
@@ -753,13 +757,28 @@ __global__ void router_kernel(const float* logits, const float* bias, int n, boo
 }
 
 void k_router(const float* logits, const float* bias, int n_expert, int k, bool norm, float route_scale, int* ids,
-              float* w, hipStream_t s) {
+              float* w, hipStream_t s, int M, int id_stride) {
+  if (M < 1) return;
+  if (n_expert > 1024) throw std::runtime_error("k_router: n_expert > 1024");
+  const int need = (n_expert + 63) / 64;
+  const int per = need <= 2 ? 2 : need <= 4 ? 4 : need <= 6 ? 6 : need <= 8 ? 8 : 16;
+#define ROUTER(KK, PP) router_kernel<KK, PP><<<M, 64, 0, s>>>(logits, bias, n_expert, norm, route_scale, ids, w, id_stride)
+#define ROUTER_K(KK)                \
+  switch (per) {                    \
+    case 2: ROUTER(KK, 2); break;   \
+    case 4: ROUTER(KK, 4); break;   \
+    case 6: ROUTER(KK, 6); break;   \
+    case 8: ROUTER(KK, 8); break;   \
+    default: ROUTER(KK, 16); break; \
+  }
   switch (k) {
-    case 3: router_kernel<3><<<1, 64, 0, s>>>(logits, bias, n_expert, norm, route_scale, ids, w); break;  // DSpark draft
-    case 6: router_kernel<6><<<1, 64, 0, s>>>(logits, bias, n_expert, norm, route_scale, ids, w); break;
-    case 8: router_kernel<8><<<1, 64, 0, s>>>(logits, bias, n_expert, norm, route_scale, ids, w); break;
+    case 3: ROUTER_K(3); break;  // DSpark draft
+    case 6: ROUTER_K(6); break;
+    case 8: ROUTER_K(8); break;
     default: throw std::runtime_error("k_router: no instance for k = " + std::to_string(k));
   }
+#undef ROUTER_K
+#undef ROUTER
 }
 
 __global__ void swiglu_kernel(const float* gate, const float* up, float lim, int n, float* out) {

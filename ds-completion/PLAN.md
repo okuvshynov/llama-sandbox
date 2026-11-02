@@ -320,7 +320,10 @@ bandwidth), then the batched attention core.
 at 800 loads/s and every 8 tokens (+5.6%; held-out mean 30.3 t/s at sclk 6), a per-layer miss
 histogram (cost is linear, ~0.27 ms per distinct CPU expert, little hidden: the hit rate is the
 target), `--trace` for Perfetto, and a prefetch of the next layer's likely CPU expert measured
-and not built (the guess is right ~20-28% of the time).
+and not built (the guess is right ~20-28% of the time). Step 53: the router's top-k in one launch
+for all tokens (+4.6%, held-out mean 31.7 t/s). Step 54: co-selection is too weak to place by
+(at most 1-3% even with perfect balance); a die's expert time is ~30 us per (token, expert) pair,
+so an fp4 kernel that reads each expert once for all its tokens is the next GPU-side item.
 
 **A. Tuning the expert cache** (the CPU experts' ~25 ms)
 - Hysteresis: a newcomer must beat its victim by a margin, so the cache settles in long runs

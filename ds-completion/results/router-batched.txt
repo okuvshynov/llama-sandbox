@@ -1,0 +1,7 @@
+# the router's top-k: one launch for all tokens, sized to the expert count (README step 53)
+# bin-hip/bench-kernels (router lines); commit 97844c8 + step 53; sclk 6 (manual, all four cards); 2026-11-02
+# before: "router top-6 of 384" 22.2 us per token, one launch per token (6 tokens: 75.2 us)
+gemv_f32 router 384 x 5120                       19.1 us
+router top-6 of 384                              12.2 us
+router top-6 of 384, 6 tokens, 6 launches        75.4 us
+router top-6 of 384, 6 tokens, 1 launch          12.4 us

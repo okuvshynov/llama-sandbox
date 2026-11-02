@@ -121,6 +121,8 @@ Unless stated: sclk 2, 16 CPU threads (32 before README step 18), the study30 pl
 | 30 | `bench-expert-load.txt`, `load-test/` | `bin-hip/bench-expert-load -m $M`, `scripts/load-test.sh` |
 | 31-32 | `canon-gate.txt`, `canon-gate/` | `scripts/canon-gate.sh` (rerun for steps 32 and 45) |
 | 34 | `check-topk.txt` | `~/venvs/ds-ref/bin/python ref/check_topk.py` (runs `bin-hip/test-topk`) |
+| 54 | `coselect.txt` | `~/venvs/ds-ref/bin/python scripts/coselect.py data/routing/study/*.bin --placement placements/study30.txt --trace results/trace/cpp-matrix.json.gz` |
+| 53 | `router-batched.txt`, `spec-measure-sclk6-cacheloads800cacheperiod8-router/`, `prefill/router-batched-ab.txt` | `bin-hip/bench-kernels`; `CACHE="--cache-loads 800 --cache-period 8" scripts/spec-measure.sh` (page cache warm first: `cat ~/llms/UD-Q8_K_XL/*.gguf > /dev/null`; the run writes the step-50 directory, copied); the A/B commands in the file (old build: a worktree at 97844c8) |
 | 52 | `prefetch-prediction-sclk6.txt` | the `--profile` output of the step 51 runs (commands in `trace/README.txt`) |
 | 51 | `trace/` | `bin-hip/ds-completion ... --spec --canon --cache-loads 800 --cache-period 8 --cache-wait --chat -n 300 --trace <name>.json` (in `trace/README.txt`), then `gzip -9` |
 | 50 | `cpu-moe-parallel-act.txt` | `bin/bench-cpu-moe -m $M -t 16 --tokens 8 --check-layers 2 -k N`; `... --check-layers "" --batch 6` |

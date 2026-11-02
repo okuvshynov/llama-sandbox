@@ -2178,3 +2178,50 @@ The CPU's experts are the long tail the cache did not keep, so they are the hard
 ~25% a prefetch would save ~1% of a step while evicting useful data on every wrong guess. Not
 built (the bar set beforehand was ~60%). The measurement stays in `--profile`
 (`ExpertCache::top_nonresident`).
+
+## Step 53: the router's top-k in one launch
+
+The code trace showed the router (`ffn.router` on die 0) at 72 us per layer for one token and
++26 us per extra token: 202 us at 6, more than die 0's own experts. Its matrix is small (384 x
+5,120 f32, 7.9 MB, one pass for all tokens: 18 us); the time was the top-6 selection, one launch
+per token in a row, each a single 64-lane wave on a 64-CU die, and each lane looping over 16
+candidates (sized for 1,024 experts) where this model has 6. Now one launch for all of a forward's
+tokens (one wave each) and the per-lane count sized to the expert count; the same comparisons in
+the same order, so the same bits. Main model and draft both (`k_router(..., M, id_stride)`).
+
+`results/router-batched.txt` (sclk 6): top-6 for one token 22.2 -> 12.2 us; 6 tokens 75.2 -> 12.4.
+
+Held-out generation (`results/spec-measure-sclk6-cacheloads800cacheperiod8-router/`, the page
+cache warm): mean **30.29 -> 31.69 t/s (+4.6%)**, every prompt +3-7%, every output identical to
+step 32's. The prompt (`results/prefill/router-batched-ab.txt`, against a build of the previous
+commit, alternating): +1% at 364 tokens, +2-3% at 1,989, +4.3% fast / +2.6% `--canon` at 6,106
+(87 / 68 t/s); outputs identical, and the prompt gate's `--canon` chunks still equal the saved
+token-by-token output.
+
+**Cold page cache:** the first measurement after a reboot came out 5-15% slow on the prompts not
+run since: only 18 of shard 8's 189 GB were cached, and the CPU's experts and the engram rows are
+read from the mapped files. `cat ~/llms/UD-Q8_K_XL/*.gguf > /dev/null` (508 GB, ~3 min) before
+measuring; `fincore` shows what is resident.
+
+## Step 54: experts chosen together: some affinity, nothing to place by
+
+Could co-selection guide the split over the CPU and the dies (`scripts/coselect.py`,
+`results/coselect.txt`; the 30-prompt study's logs, generated tokens)?
+
+- **Within a token**, per layer, pairs common enough to judge: the median pair is chosen together
+  0.33x as often as independent choices would, p99 7.3x, the strongest 51x; pairs at >= 3x carry
+  27.5% of all co-selections, >= 10x 5.2%. Affinities, but no tight clusters.
+- **Neighbouring tokens:** 6 consecutive tokens need 21.1 distinct experts per layer, shuffled
+  25.5 (17% fewer; 2 tokens 9%): verify steps already get this.
+- **Dealing the GPU-resident experts to the dies** against co-selection (fitted on half the
+  prompts, scored on the other; same experts, same count per layer and die) vs today's
+  round-robin: -0.0 to -0.3% per layer; even a perfect balance of every step would gain only
+  0.8-3.1%, since a layer with CPU experts waits for the CPU. On the CPU, grouping would save at
+  most the fixed ~0.1 ms of a layer with misses (step 50).
+
+**A finding on the way:** a die's expert time per layer (fitted on the code trace's spans) is
+~90-100 us + **~30 us per (token, expert) pair**, almost nothing per distinct expert (1-7 us):
+the fp4 kernel does not share an expert's weight reads across its tokens, so an expert used by 3
+tokens costs ~3x one (its weights alone are ~20 us of HBM). Batching tokens per expert would make
+multi-token steps cheaper on the dies; it matters in layers without CPU experts, more of them as
+the cache improves.

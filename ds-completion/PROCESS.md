@@ -380,6 +380,14 @@ Each rule is followed by where it mattered most.
   see than to tabulate. The baseline run separating the kernel gain from the cache gain was lost
   once to a waiting loop whose `pgrep -f` matched itself (as `pkill -f` had before).
 
+- **Look at the picture, then ask what the slow thing is (README steps 53-54).** The trace made
+  the router stand out (as slow as an expert); its size said it should not be, so the cause had
+  to be structure: one single-wave launch per token. The person then asked whether co-selected
+  experts form clusters to place by; the analysis set its own bar (a perfect balance) before any
+  build and showed at most 1-3%, and its cost fit exposed the real GPU-side item (an expert's
+  reads are not shared across its tokens). A cold page cache after a reboot was caught by a
+  mixed result (two prompts faster, three slower, outputs identical) and `fincore`.
+
 ## 4. Predictions against outcomes
 
 Estimates were made before measuring wherever possible; this is how they fared.
@@ -399,6 +407,8 @@ Estimates were made before measuring wherever possible; this is how they fared.
 | CPU/GPU overlap of two half-chunks (38) | up to ~2x | 1.5x | half the tokens per CPU expert; both sides now ~33 s |
 | chunks of 64 share CPU expert reads (37) | most of the 53% saved | nothing | 384 experts: ~1 token per CPU expert per chunk; then compute-bound until tiled |
 | one CPU miss per layer hides behind the GPU's work (50) | partly | 0.05-0.15 of ~0.35-0.48 ms | the GPU's work alongside (shared expert, each die's experts) is shorter than one miss |
+| batched router top-k (53) | ~4% (5-6 ms per code step) | +4.6% held-out, +1-4% prompt | as estimated; the prompt hides most of it behind the CPU |
+| co-selected experts on different dies (54) | some gain if clusters exist | <= 0.3% (bound 1-3%) | weak affinities; the CPU sets a layer's pace |
 | next layer's CPU expert guessable for a prefetch (52) | >= 60% needed | 17-28% (top-1) | the CPU's experts are the tail the cache did not keep |
 | the long proof's loop is a bug (48) | possible | the model's greedy behaviour | both implementations continue the loop from the same tokens |
 | chunks of 1,024 cut CPU expert time 20-30% (46) | 20-30% | ~6% per pair, prompt 6-12% slower | the kernel had become arithmetic-bound (step 45) |

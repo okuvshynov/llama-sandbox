@@ -1,0 +1,30 @@
+# which experts are chosen together, and would dealing them to the dies by it help? (README step 54)
+# ~/venvs/ds-ref/bin/python scripts/coselect.py data/routing/study/*.bin --placement placements/study30.txt --trace results/trace/cpp-matrix.json.gz
+# commit 97844c8 + steps 53-54; 2026-11-02
+# 30 logs, 20919 generated tokens, 40 routed layers, top-6
+# die cost per layer, fitted on the trace's die spans:
+  die 0: 86 + 7 x distinct + 29 x pairs us (n=2371, residual sd 16 us)
+  dies 1-3: 101 + 1 x distinct + 32 x pairs us (n=7920, residual sd 47 us)
+
+## 1. within a token: lift of expert pairs (both chosen vs independent choices)
+20919 tokens x 40 layers; pairs with >= 5 expected co-selections: 747786
+lift: median 0.33, p90 1.97, p99 7.31, p99.9 16.59, max 51.4
+share of all co-selections in pairs with lift >= 3: 27.5%, >= 10: 5.2% (mean over layers)
+strongest pairs: L31 273+320: 273 vs 5.3 expected; L35 67+189: 221 vs 5.6 expected; L0 128+379: 438 vs 11.2 expected; L13 292+348: 362 vs 9.4 expected; L3 139+366: 262 vs 6.9 expected
+
+## 2. neighbouring tokens: distinct experts per layer in a window of w tokens
+w   in order   shuffled   saved by neighbours
+2      9.79      10.79     9.2%
+3     13.03      14.96    12.9%
+4     15.93      18.75    15.0%
+6     21.11      25.47    17.1%
+
+## 3. dealing the GPU-resident experts to the dies (held out: fit on half the prompts, score on the other)
+resident: 6105 pairs; per die [np.int64(810), np.int64(1765), np.int64(1765), np.int64(1765)]
+w   half   round-robin   anti-affinity   perfect balance (bound)   ms per layer
+1   0      0.453         0.452 (-0.3%)    0.439 (-3.1%)
+1   1      0.478         0.477 (-0.2%)    0.465 (-2.6%)
+3   0      0.926         0.925 (-0.1%)    0.915 (-1.2%)
+3   1      1.001         1.000 (-0.1%)    0.992 (-0.9%)
+6   0      1.541         1.540 (-0.1%)    1.525 (-1.1%)
+6   1      1.680         1.679 (-0.0%)    1.666 (-0.8%)

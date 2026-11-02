@@ -49,8 +49,9 @@ code, where a step verifies 6 tokens more often, the CPU's misses are larger: 50
 sclk 6 (README step 49). Kernel launches (~3,000-3,900 per step at ~2.4 us) are at most 7-12%.
 Per layer, a CPU miss costs ~0.27 ms per distinct expert plus ~0.1 ms for having any, and only
 ~0.05-0.15 ms of it hides behind the GPUs' work (README step 50): every miss avoided is ~0.27 ms
-off the step. With the cache tuned (800 loads/s, every 8 tokens) the held-out mean is 30.3 t/s
-at sclk 6. To see a step: `--trace` (README step 51).
+off the step. With the cache tuned (800 loads/s, every 8 tokens) and the router's top-k in one
+launch the held-out mean is 31.7 t/s at sclk 6 (README steps 50, 53). On the dies an expert costs
+~30 us per (token, expert) pair: tokens sharing an expert do not share its reads (step 54). To see a step: `--trace` (README step 51).
 
 ## Prompt (chunks of 512 tokens)
 
