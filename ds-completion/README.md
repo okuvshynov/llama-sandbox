@@ -2381,7 +2381,7 @@ recommended command, `-n 1`); a chart of it: a private dashboard ("GPU memory le
 | small weights (embeddings, output head 1.3, norms) | 1.90 | |
 | activations, scratch (512-token chunks) | 0.80 | |
 | sequence state at 4k / 16k / 64k | 0.04 / 0.12 / 0.43 | |
-| draft (DSpark, bf16) | **8.02** | |
+| draft (DSpark: 7.2 its 384 mxfp4 experts, ~0.5 fp8 dense, ~0.3 the rest) | **8.02** | |
 | expert path buffers | 0.13 | 0.32 |
 | expert slots | 15.6 (831 slots at 4k) | 33.2 (1,765) |
 | free (the 0.75 GB reserve) | 0.75 | 0.76 |
@@ -2391,7 +2391,19 @@ recommended command, `-n 1`); a chart of it: a private dashboard ("GPU memory le
 - **Long context is cheap**: 64k instead of 4k costs 0.39 GB, 21 slots (6,126 -> 6,105). The
   compressed caches are sized for 1/4 or 1/128 of the positions; fp8 for them (step 59's
   candidate lever) would win back almost nothing.
-- **The draft is the largest item besides the experts**: 8.0 GB on GPU 0, ~430 slots (7% more
-  than today). Its weights are bf16; fp8 would free ~4 GB (~210 slots, +3.4%) without touching
-  the output (the draft only proposes), possibly changing acceptance. Next come the dense fp8
-  weights (6.85) and the bf16 output head (1.3).
+- **The draft is the largest item besides the main model's experts**: 8.0 GB on GPU 0. (First
+  written here as bf16 weights that fp8 could halve; the loader already repacks its dense
+  matrices to fp8 exactly and its experts are mxfp4, README step 61.) 7.2 GB of it are the draft's
+  own 3 x 128 routed experts, the size of 384 expert slots. Next come the dense fp8 weights
+  (6.85) and the bf16 output head (1.3).
+
+## Step 61: the draft's memory, corrected; nothing cheap to free
+
+Step 60 proposed the draft in fp8. Reading its loader (`hip/dspark.cpp`): its attention,
+shared-expert and `fc` matrices are already repacked from bf16 to fp8 at load (exact in 32 x 32
+blocks), and its routed experts are mxfp4, as the main model's. Of its 8.0 GB, 7.2 are those 384
+experts, all resident. Freeing them would mean computing them elsewhere: on the CPU a draft step
+(5 tokens x 3 experts x 3 layers) would add up to ~12 ms to its ~10-12, and an adaptive cache
+shared with the main model's experts would keep them anyway (they are used every step). Left as
+is. So GPU memory is experts (the main model's and the draft's) plus ~10 GB of dense weights and
+buffers on GPU 0.

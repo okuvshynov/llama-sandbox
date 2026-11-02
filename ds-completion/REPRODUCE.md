@@ -121,6 +121,7 @@ Unless stated: sclk 2, 16 CPU threads (32 before README step 18), the study30 pl
 | 30 | `bench-expert-load.txt`, `load-test/` | `bin-hip/bench-expert-load -m $M`, `scripts/load-test.sh` |
 | 31-32 | `canon-gate.txt`, `canon-gate/` | `scripts/canon-gate.sh` (rerun for steps 32 and 45) |
 | 34 | `check-topk.txt` | `~/venvs/ds-ref/bin/python ref/check_topk.py` (runs `bin-hip/test-topk`) |
+| 61 | (none: a reading of `hip/dspark.cpp`) | the draft's loader: `fp8(...)` for its dense matrices, `fp4_upload(...)` for its experts |
 | 60 | `gpu-memory/` | the command in `gpu-memory/README.txt` at each `--max-ctx` (the ledger is printed at startup) |
 | 59 | `cache-decay/` | `~/venvs/ds-ref/bin/python scripts/cache_sim.py --decay` (`sweep.txt`); `threshold.txt`: `cs.run(..., rate=800, period=8, [half_life=H], min_count=M)` over the same logs (see its header); `live-min.txt`: the command in the file with `--cache-min 2` and `1` |
 | 58 | `trace/` (regenerated), `timing-sclk6/` | the commands in `trace/README.txt`, then `gzip -9`; the `--profile` comparison and `timing-sclk6/verify-profile.txt`: the same command with `--profile` instead of `--trace`, then `scripts/profile_verify.py`; `timing-sclk6/prompt-profile.txt`: the command in the file |

@@ -415,6 +415,8 @@ Each rule is followed by where it mattered most.
   cache lever was assumed to be fp8 compressed caches; a ledger from the driver's own numbers
   (per startup phase, three context lengths) showed them at 0.04-0.43 GB and the draft at 8 GB.
   The person asked for the visualization first, which is what found it.
+  The ledger's own follow-up then made the mistake it had caught: the draft's 8 GB was called
+  bf16 from its file's name; reading the loader (step 61) showed fp8 and mxfp4 already.
 
 ## 4. Predictions against outcomes
 
@@ -436,6 +438,7 @@ Estimates were made before measuring wherever possible; this is how they fared.
 | chunks of 64 share CPU expert reads (37) | most of the 53% saved | nothing | 384 experts: ~1 token per CPU expert per chunk; then compute-bound until tiled |
 | one CPU miss per layer hides behind the GPU's work (50) | partly | 0.05-0.15 of ~0.35-0.48 ms | the GPU's work alongside (shared expert, each die's experts) is shorter than one miss |
 | fp8 compressed caches free expert slots (59 -> 60) | the next lever | 21 slots at 64k | the caches are small; the draft is 8 GB |
+| the draft in fp8 frees ~4 GB (60 -> 61) | ~210 slots | nothing | its dense part was already fp8 and its experts mxfp4: assumed from the file's name |
 | decayed counts / hysteresis for the cache (59) | settle the churn, some gain | decay = window, margins lose | the loads they skip were useful; misses left are unpredictable |
 | one-token groups on the one-token routine (57) | the ~0.25 ms "fixed cost" removed | -35% per one-expert call, +1.1% end to end | the cost was one phase (down) on the wrong routine, not fixed overhead |
 | static schedule for verify-step CPU experts (56) | ~7% of a code step | 15-22% in the benchmark, 0-1% slower end to end | the benchmark lacked the gap before each call and the runtime's other threads |
