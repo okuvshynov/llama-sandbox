@@ -394,6 +394,12 @@ Each rule is followed by where it mattered most.
   decoding once) ruled out the obvious alternatives. With no profiler for this runtime the next
   step would have been guessing, so the attempt was reverted and kept as a patch with its numbers.
 
+- **Make the benchmark look like the runtime before trusting it (README step 56).** The static
+  schedule won 15-22% back to back; adding the runtime's idle gap reversed it, CPU settings
+  restored it, and the runtime still showed nothing. Each step was cheap and kept the result
+  honest; the change, the runtime flag and the settings were all removed, and the benchmark mode
+  that found it stays. The person applied the sudo settings one at a time, as with the GPU clock.
+
 ## 4. Predictions against outcomes
 
 Estimates were made before measuring wherever possible; this is how they fared.
@@ -413,6 +419,7 @@ Estimates were made before measuring wherever possible; this is how they fared.
 | CPU/GPU overlap of two half-chunks (38) | up to ~2x | 1.5x | half the tokens per CPU expert; both sides now ~33 s |
 | chunks of 64 share CPU expert reads (37) | most of the 53% saved | nothing | 384 experts: ~1 token per CPU expert per chunk; then compute-bound until tiled |
 | one CPU miss per layer hides behind the GPU's work (50) | partly | 0.05-0.15 of ~0.35-0.48 ms | the GPU's work alongside (shared expert, each die's experts) is shorter than one miss |
+| static schedule for verify-step CPU experts (56) | ~7% of a code step | 15-22% in the benchmark, 0-1% slower end to end | the benchmark lacked the gap before each call and the runtime's other threads |
 | reading each expert once on the dies (55) | ~20 us saved per shared pair | -21% at heavy sharing, +23% without | a pair's cost was not the weight reads (a fit read as a mechanism) |
 | batched router top-k (53) | ~4% (5-6 ms per code step) | +4.6% held-out, +1-4% prompt | as estimated; the prompt hides most of it behind the CPU |
 | co-selected experts on different dies (54) | some gain if clusters exist | <= 0.3% (bound 1-3%) | weak affinities; the CPU sets a layer's pace |

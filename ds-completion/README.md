@@ -2244,3 +2244,38 @@ weight reads are not what a pair costs; the per-pair work is the canonical kerne
 arithmetic and latency, and without a working profiler (step 49) the next guess would be a
 guess. Reverted: the gain does not pay for a sort kernel and two kernel variants. The die
 expert time is off the critical path in most layers anyway (step 50).
+
+## Step 56: the CPU's verify-step experts: schedule, pages and CPU settings, measured and dropped
+
+A verify step's CPU experts run in `forward_batch`: pairs grouped by expert (each expert read
+once for all its tokens; 83% serve one token), then all experts' gate + up rows in one parallel
+phase (32-row tasks handed out dynamically), the activation, then the down rows. In the code
+trace that was 0.34 ms per expert (gate + up at 62 GB/s, down at 55) against a read-only control
+of 82-93 GB/s (~0.21 ms): ~35-40% headroom, ~7% of a code step if half of it were closed. Three
+candidates, measured with a new `bench-cpu-moe --decode D` (D tokens per call, each its own
+fresh expert, as a verify step's misses; `results/cpu-decode/`):
+
+- **Static schedule** (each thread a contiguous range of rows, so its 16 KB-ahead prefetch runs
+  in its own rows; the dynamic schedule hands the next rows to another core): 15-22% faster per
+  expert at D = 2-6, the same bits. But 2.2-2.6x slower on prompt chunks (`--replay`: groups of
+  1 to hundreds of tokens), and slower than dynamic after a 1.5 ms idle gap between calls (the
+  runtime's wait for the GPU): 0.46 vs 0.33 ms at D = 6.
+- **2 MB pages** (a copy of 4 layers' experts with `MADV_HUGEPAGE`; the model's mapping uses 4 KB
+  pages, where the hardware prefetchers stop): no change for the kernel or the control.
+- **CPU settings** with the gap: one worker per core (`OMP_PLACES=cores OMP_PROC_BIND=spread`) and
+  spinning workers (`OMP_WAIT_POLICY=active`) did not help; the performance governor brought
+  static level with dynamic, and with C6 also disabled static kept its 16-18% lead (0.254 vs
+  0.304 ms at D = 6).
+
+End to end with the performance governor and C6 off (`runtime-ab.txt`, outputs identical): static
+28.5 / 36.1-36.4 t/s vs dynamic 28.7-28.8 / 36.3-36.4 on tcp-udp / cpp-matrix, and the settings
+themselves gave nothing (28.94 / 36.46 with the defaults, step 53). The runtime has company the
+benchmark lacks (the cache's loader threads, ~300 loads/s, and the host thread driving the GPUs);
+a static split waits for its slowest thread, so a guess is that a worker sharing a core with them
+cancels the gain. Not pursued: the runtime keeps the dynamic schedule and no flag; the benchmark
+keeps the switch (`--static`) and the decode mode (`--gap-us`, the 2 MB copy, the control). The
+CPU settings were reverted.
+
+Still open: a call with one expert costs ~0.6 ms in the benchmark under every setting, about
+0.25 ms more than per-expert streaming explains: fixed per-call work (wake-up, four barriers, the
+grouping's allocations), worth finding before anything else on the CPU side.

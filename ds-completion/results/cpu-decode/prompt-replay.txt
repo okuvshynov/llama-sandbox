@@ -1,0 +1,8 @@
+# forward_batch's schedule on prompt chunks (README step 56): bin/bench-cpu-moe -m $M -t 16 --check-layers "" --replay data/routing/prefill/readme24k.bin [--static]
+# commit d466fc3 + the static switch and bench-cpu-moe --decode (README step 56); GPUs at sclk 6; 2026-11-02; CPU defaults
+== schedule dynamic
+fast: 64175 ms, 590582 pairs over 95484 experts (0.109 ms per pair); ms: prep 385 inputs 1444 gate_up 38903 act 1993 down 21061 sum 281
+canonical: 90293 ms, 590582 pairs over 95484 experts (0.153 ms per pair); ms: prep 380 inputs 1622 gate_up 56767 act 2612 down 28781 sum 2
+== schedule --static
+fast: 141504 ms, 590582 pairs over 95484 experts (0.240 ms per pair); ms: prep 404 inputs 3012 gate_up 86984 act 5024 down 45558 sum 399
+canonical: 232402 ms, 590582 pairs over 95484 experts (0.394 ms per pair); ms: prep 439 inputs 3806 gate_up 147558 act 7376 down 73045 sum 35

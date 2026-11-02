@@ -325,6 +325,9 @@ for all tokens (+4.6%, held-out mean 31.7 t/s). Step 54: co-selection is too wea
 (at most 1-3% even with perfect balance). Step 55: a die's expert time is ~30 us per (token,
 expert) pair, but reading each expert once for all its tokens (bit-identical) gained only with
 heavy sharing (-21%) and lost without (+23%): reverted, documented in `results/fp4-grouped/`.
+Step 56: the CPU's verify-step experts on a static schedule (15-22% faster in a benchmark), 2 MB
+pages (no change) and CPU settings (performance governor, C6 off: nothing end to end) all
+dropped; next on the CPU side: the ~0.25 ms fixed cost of a call (`bench-cpu-moe --decode 1`).
 
 **A. Tuning the expert cache** (the CPU experts' ~25 ms)
 - Hysteresis: a newcomer must beat its victim by a margin, so the cache settles in long runs

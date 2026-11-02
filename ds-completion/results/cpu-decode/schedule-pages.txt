@@ -1,0 +1,10 @@
+# a verify step's CPU experts: dynamic vs static schedule, 4 KB vs 2 MB pages (README step 56)
+# bin/bench-cpu-moe -m $M -t 16 --check-layers "" --decode 1,2,4,6 (30 steps x 4 layers, calls back to back); CPU: powersave governor, C6 on (defaults)
+# commit d466fc3 + the static switch and bench-cpu-moe --decode (README step 56); GPUs at sclk 6; 2026-11-02
+# ms per expert (GB/s); control = read-only pass over the same experts
+D 1: 4 KB pages: dynamic 0.589 ( 32)  static 0.518 ( 36)  control 0.187 (101) | 2 MB pages: dynamic 0.622 ( 30)  static 0.572 ( 33)  control 0.221 ( 85)
+D 2: 4 KB pages: dynamic 0.391 ( 48)  static 0.322 ( 58)  control 0.187 (101) | 2 MB pages: dynamic 0.391 ( 48)  static 0.331 ( 57)  control 0.192 ( 98)
+D 4: 4 KB pages: dynamic 0.328 ( 57)  static 0.255 ( 74)  control 0.179 (105) | 2 MB pages: dynamic 0.321 ( 59)  static 0.256 ( 73)  control 0.180 (104)
+D 6: 4 KB pages: dynamic 0.301 ( 62)  static 0.256 ( 73)  control 0.178 (106) | 2 MB pages: dynamic 0.310 ( 61)  static 0.256 ( 74)  control 0.179 (105)
+# static vs dynamic, 3 tokens sharing experts, fast and canonical, 4 layers: 0 differ
+# 2 MB pages: anonymous huge pages 0 -> 27552 MB for the 28.9 GB copy (madvise(MADV_HUGEPAGE), THP "madvise")

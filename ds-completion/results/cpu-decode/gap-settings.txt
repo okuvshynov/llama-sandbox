@@ -1,0 +1,42 @@
+# the same with an idle gap between calls (the runtime's wait for the GPU) and OpenMP / CPU settings (README step 56)
+# bin/bench-cpu-moe -m $M -t 16 --check-layers "" --decode 1,2,6 --steps 20 [--gap-us 1500], env as named
+# commit d466fc3 + the static switch and bench-cpu-moe --decode (README step 56); GPUs at sclk 6; 2026-11-02
+## CPU defaults (intel_pstate powersave, EPP balance_performance, C6 enabled)
+== no gap
+D 1: 4 KB pages: dynamic 0.589 ( 32)  static 0.586 ( 32)  control 0.195 ( 96)
+D 2: 4 KB pages: dynamic 0.382 ( 49)  static 0.304 ( 62)  control 0.181 (104)
+D 6: 4 KB pages: dynamic 0.298 ( 63)  static 0.241 ( 78)  control 0.177 (106)
+== gap 1500 us
+D 1: 4 KB pages: dynamic 0.571 ( 33)  static 0.632 ( 30)  control 0.248 ( 76)
+D 2: 4 KB pages: dynamic 0.390 ( 48)  static 0.557 ( 34)  control 0.242 ( 78)
+D 6: 4 KB pages: dynamic 0.328 ( 57)  static 0.456 ( 41)  control 0.191 ( 98)
+== gap 1500 us, OMP_PLACES=cores OMP_PROC_BIND=spread
+D 1: 4 KB pages: dynamic 0.673 ( 28)  static 0.835 ( 23)  control 0.209 ( 90)
+D 2: 4 KB pages: dynamic 0.452 ( 42)  static 0.619 ( 30)  control 0.196 ( 96)
+D 6: 4 KB pages: dynamic 0.331 ( 57)  static 0.370 ( 51)  control 0.190 ( 99)
+== gap 1500 us, OMP_WAIT_POLICY=active
+D 1: 4 KB pages: dynamic 0.562 ( 33)  static 0.808 ( 23)  control 0.203 ( 92)
+D 2: 4 KB pages: dynamic 0.383 ( 49)  static 0.575 ( 33)  control 0.190 ( 99)
+D 6: 4 KB pages: dynamic 0.326 ( 58)  static 0.458 ( 41)  control 0.210 ( 90)
+== gap 1500 us, both
+D 1: 4 KB pages: dynamic 0.607 ( 31)  static 0.775 ( 24)  control 0.210 ( 90)
+D 2: 4 KB pages: dynamic 0.429 ( 44)  static 0.438 ( 43)  control 0.196 ( 96)
+D 6: 4 KB pages: dynamic 0.324 ( 58)  static 0.459 ( 41)  control 0.190 ( 99)
+## governor performance (echo performance > .../cpufreq/scaling_governor, all CPUs)
+== governor performance, gap 0 us
+D 1: 4 KB pages: dynamic 0.598 ( 31)  static 0.531 ( 35)  control 0.176 (107)
+D 2: 4 KB pages: dynamic 0.376 ( 50)  static 0.299 ( 63)  control 0.172 (110)
+D 6: 4 KB pages: dynamic 0.293 ( 64)  static 0.250 ( 75)  control 0.164 (114)
+== governor performance, gap 1500 us
+D 1: 4 KB pages: dynamic 0.606 ( 31)  static 0.628 ( 30)  control 0.242 ( 78)
+D 2: 4 KB pages: dynamic 0.401 ( 47)  static 0.450 ( 42)  control 0.199 ( 94)
+D 6: 4 KB pages: dynamic 0.301 ( 62)  static 0.303 ( 62)  control 0.169 (111)
+## governor performance + C6 disabled (echo 1 > .../cpuidle/state3/disable, all CPUs)
+== performance + C6 off, gap 0 us
+D 1: 4 KB pages: dynamic 0.583 ( 32)  static 0.582 ( 32)  control 0.196 ( 96)
+D 2: 4 KB pages: dynamic 0.384 ( 49)  static 0.318 ( 59)  control 0.181 (104)
+D 6: 4 KB pages: dynamic 0.299 ( 63)  static 0.247 ( 76)  control 0.184 (102)
+== performance + C6 off, gap 1500 us
+D 1: 4 KB pages: dynamic 0.595 ( 32)  static 0.612 ( 31)  control 0.245 ( 77)
+D 2: 4 KB pages: dynamic 0.400 ( 47)  static 0.328 ( 57)  control 0.189 (100)
+D 6: 4 KB pages: dynamic 0.304 ( 62)  static 0.254 ( 74)  control 0.182 (103)

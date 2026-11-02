@@ -9,6 +9,11 @@
 // prompt tokens of a --log-routing file in half-chunks, per layer forward_batch on the pairs whose
 // expert is not among the placement's top N (the CPU's); random inputs; time per phase.
 // -k: experts per layer in the speed part (the runtime's CPU usually gets 1-2: its misses)
+// --decode D[,D...] [--layers 4] [--steps 30]: a verify step's CPU work (README step 56): per layer
+// one forward_batch (canonical) of D tokens, each with its own fresh expert; the dynamic vs a
+// static schedule, on the model's mapping (4 KB pages) vs a copy of the first --layers layers'
+// experts in 2 MB pages (madvise(MADV_HUGEPAGE)); the read-only control on both. --gap-us N: idle
+// N us between calls (the runtime's host waits ~1-2 ms per layer for the GPU; workers may sleep).
 //
 // Accuracy: for a few layers, both against the double reference (same fp8 fake quantization of
 // the inputs, exact fp4 weights). Speed: a "token" = all 40 layers in sequence, 6 random experts
@@ -30,6 +35,8 @@
 #include <memory>
 #include <random>
 #include <set>
+#include <sys/mman.h>
+#include <thread>
 
 using Clock = std::chrono::steady_clock;
 
@@ -112,7 +119,10 @@ static double rel(const std::vector<float>& a, const std::vector<float>& b) {
 int main(int argc, char** argv) {
   setvbuf(stdout, nullptr, _IOLBF, 0);
   std::string path;
-  int threads = 32, tokens = 5, kspeed = 0, batch = 0, resident_n = 6578, half = 256;
+  int threads = 32, tokens = 5, kspeed = 0, batch = 0, resident_n = 6578, half = 256, dec_layers = 4, dec_steps = 30;
+  std::vector<int> decode;
+  CpuMoeKernel::Sched sched = CpuMoeKernel::kDynamic;
+  int gap_us = 0;
   std::string replay, placement_path = "placements/study30.txt";
   std::vector<int> check = {0, 20, 39};
   for (int i = 1; i < argc; i++) {
@@ -126,6 +136,11 @@ int main(int argc, char** argv) {
     else if (a == "--placement") placement_path = argv[++i];
     else if (a == "--resident") resident_n = atoi(argv[++i]);
     else if (a == "--half") half = atoi(argv[++i]);
+    else if (a == "--decode") { for (char* q = argv[++i]; *q;) { decode.push_back((int)strtol(q, &q, 10)); if (*q == ',') q++; } }
+    else if (a == "--layers") dec_layers = atoi(argv[++i]);
+    else if (a == "--steps") dec_steps = atoi(argv[++i]);
+    else if (a == "--gap-us") gap_us = atoi(argv[++i]);  // --decode: idle between calls (the GPU's part of a layer)
+    else if (a == "--static") sched = CpuMoeKernel::kStatic;  // forward_batch's schedule (--replay, --batch)
     else if (a == "--check-layers") { check.clear(); for (char* p = argv[++i]; *p;) { check.push_back((int)strtol(p, &p, 10)); if (*p == ',') p++; } }
   }
   Model m;
@@ -187,6 +202,102 @@ int main(int argc, char** argv) {
   }
 
   const int KS = kspeed > 0 && kspeed <= K ? kspeed : K;
+  kern.batch_sched = sched;
+  if (!decode.empty()) {
+    const int NL = std::min(dec_layers, hp.n_layer);
+    auto anon_huge_kb = [] {
+      FILE* f = fopen("/proc/meminfo", "r");
+      char line[256];
+      long v = -1;
+      while (f && fgets(line, sizeof line, f)) if (sscanf(line, "AnonHugePages: %ld kB", &v) == 1) break;
+      if (f) fclose(f);
+      return v;
+    };
+    // the 2 MB-page copy of the first NL layers' expert tensors
+    constexpr size_t kHuge = 2u << 20;
+    std::vector<ggml_tensor> huge(3 * NL);
+    size_t total = 0;
+    for (int L = 0; L < NL; L++)
+      for (const ggml_tensor* t : {m.layers[L].gate_exps, m.layers[L].up_exps, m.layers[L].down_exps})
+        total += (ggml_nbytes(t) + kHuge - 1) / kHuge * kHuge;
+    const long hp0 = anon_huge_kb();
+    uint8_t* hb = (uint8_t*)mmap(nullptr, total + kHuge, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (hb == MAP_FAILED) { perror("mmap"); return 1; }
+    hb = (uint8_t*)(((uintptr_t)hb + kHuge - 1) / kHuge * kHuge);
+    if (madvise(hb, total, MADV_HUGEPAGE)) perror("madvise");
+    size_t off = 0;
+    for (int L = 0; L < NL; L++) {
+      const ggml_tensor* src[3] = {m.layers[L].gate_exps, m.layers[L].up_exps, m.layers[L].down_exps};
+      for (int i = 0; i < 3; i++) {
+        huge[3 * L + i] = *src[i];
+        huge[3 * L + i].data = hb + off;
+        memcpy(hb + off, src[i]->data, ggml_nbytes(src[i]));
+        off += (ggml_nbytes(src[i]) + kHuge - 1) / kHuge * kHuge;
+      }
+    }
+    printf("# decode: %d layers' experts copied (%.1f GB); anonymous huge pages %ld -> %ld MB\n", NL, total / 1e9,
+           hp0 / 1024, anon_huge_kb() / 1024);
+    const double ex_bytes = 3.0 * ggml_nbytes(m.layers[0].gate_exps) / hp.n_expert;
+    printf("# per call: D tokens, each its own fresh expert (%.1f MB); %d steps x %d layers; ms per expert (GB/s)\n",
+           ex_bytes / 1e6, dec_steps, NL);
+    std::vector<float> x((size_t)8 * E);
+    for (auto& v : x) v = nd(rng);
+    for (int D : decode) {
+      if (D < 1 || D > 8) continue;
+      std::vector<float> out((size_t)D * E);
+      double res[2][3];  // [pages][dynamic, static, control]
+      for (int rep = 0; rep < 2; rep++)  // twice, the same experts, interleaved; the second counts
+        for (int pg = 0; pg < 2; pg++)
+          for (int v = 0; v < 3; v++) {
+            std::mt19937 r2(1000 + D);
+            kern.batch_sched = v == 1 ? CpuMoeKernel::kStatic : CpuMoeKernel::kDynamic;
+            double ms = 0;
+            for (int st = 0; st < dec_steps; st++)
+              for (int L = 0; L < NL; L++) {
+                std::set<int> s;
+                while ((int)s.size() < D) s.insert((int)(r2() % hp.n_expert));
+                std::vector<int> ids(s.begin(), s.end());
+                std::vector<float> w(D, 0.5f);
+                const CpuExperts ex = pg ? CpuExperts{&huge[3 * L], &huge[3 * L + 1], &huge[3 * L + 2], hp.swiglu_clamp[L]}
+                                         : CpuExperts{m.layers[L].gate_exps, m.layers[L].up_exps, m.layers[L].down_exps, hp.swiglu_clamp[L]};
+                std::vector<CpuMoeKernel::CpuRoute> r(D);
+                for (int t = 0; t < D; t++) r[t] = {ids.data() + t, w.data() + t, 1};
+                auto t0 = Clock::now();
+                if (v < 2) kern.forward_batch(ex, x.data(), D, r.data(), true, out.data());
+                else { volatile uint64_t sink = kern.touch(ex, ids.data(), D); (void)sink; }
+                ms += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+                if (gap_us) std::this_thread::sleep_for(std::chrono::microseconds(gap_us));
+              }
+            res[pg][v] = ms / (dec_steps * NL * D);
+          }
+      kern.batch_sched = sched;
+      auto f = [&](double ms) { char b[64]; snprintf(b, sizeof b, "%.3f (%3.0f)", ms, ex_bytes / ms / 1e6); return std::string(b); };
+      printf("D %d: 4 KB pages: dynamic %s  static %s  control %s | 2 MB pages: dynamic %s  static %s  control %s\n", D,
+             f(res[0][0]).c_str(), f(res[0][1]).c_str(), f(res[0][2]).c_str(), f(res[1][0]).c_str(), f(res[1][1]).c_str(),
+             f(res[1][2]).c_str());
+    }
+    // the static schedule gives the same bits (every row's arithmetic is unchanged)
+    {
+      std::vector<int> ids = {3, 77, 150, 299};
+      std::vector<float> w = {0.3f, 0.2f, 0.4f, 0.1f};
+      std::vector<CpuMoeKernel::CpuRoute> r = {{ids.data(), w.data(), 2}, {ids.data() + 1, w.data() + 1, 3}, {ids.data(), w.data(), 4}};
+      long diff = 0;
+      for (int L = 0; L < NL; L++) {
+        const CpuExperts ex = {m.layers[L].gate_exps, m.layers[L].up_exps, m.layers[L].down_exps, hp.swiglu_clamp[L]};
+        std::vector<float> a(9 * E), b(9 * E);
+        for (int canon = 0; canon < 2; canon++) {
+          kern.batch_sched = CpuMoeKernel::kDynamic;
+          kern.forward_batch(ex, x.data(), 3, r.data(), canon, a.data());
+          kern.batch_sched = CpuMoeKernel::kStatic;
+          kern.forward_batch(ex, x.data(), 3, r.data(), canon, b.data());
+          diff += memcmp(a.data(), b.data(), (canon ? 9 : 3) * E * 4) != 0;
+        }
+      }
+      kern.batch_sched = sched;
+      printf("# static vs dynamic, 3 tokens sharing experts, fast and canonical, %d layers: %ld differ\n", NL, diff);
+    }
+    return 0;
+  }
   if (!replay.empty()) {
     // resident pairs: the placement's top N
     std::vector<char> res((size_t)hp.n_layer * hp.n_expert, 0);

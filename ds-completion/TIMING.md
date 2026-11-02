@@ -51,7 +51,9 @@ Per layer, a CPU miss costs ~0.27 ms per distinct expert plus ~0.1 ms for having
 ~0.05-0.15 ms of it hides behind the GPUs' work (README step 50): every miss avoided is ~0.27 ms
 off the step. With the cache tuned (800 loads/s, every 8 tokens) and the router's top-k in one
 launch the held-out mean is 31.7 t/s at sclk 6 (README steps 50, 53). On the dies an expert costs
-~30 us per (token, expert) pair, mostly arithmetic rather than weight reads (steps 54-55). To see a step: `--trace` (README step 51).
+~30 us per (token, expert) pair, mostly arithmetic rather than weight reads (steps 54-55). On
+the CPU a verify step's expert streams at ~55-62 GB/s against ~90-105 GB/s for a plain read; a
+static schedule, 2 MB pages and CPU power settings did not close it end to end (step 56). To see a step: `--trace` (README step 51).
 
 ## Prompt (chunks of 512 tokens)
 

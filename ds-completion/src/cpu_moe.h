@@ -37,6 +37,12 @@ class CpuMoeKernel {
   // token its sum [T][E] (tokens without experts: untouched).
   struct CpuRoute { const int* ids; const float* w; int count; };
   void forward_batch(const CpuExperts& L, const float* x, int T, const CpuRoute* routes, bool canon, float* out);
+  // forward_batch's gate/up and down phases (README step 56; the same bits either way): dynamic
+  // (the runtime), or static (each thread a contiguous range of rows; bench-cpu-moe --decode).
+  // Static was 15-22% faster in the benchmark, 0-1% slower in the runtime, 2.2-2.6x slower on
+  // prompt chunks.
+  enum Sched { kDynamic, kStatic };
+  Sched batch_sched = kDynamic;
   // forward_batch's time by phase (wall clock, ms, summed over calls; the master thread's view at
   // each loop's barrier) and its work: calls, pairs, experts, and experts by tokens (1, 2-3,
   // 4-7, 8-15, 16+)

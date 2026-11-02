@@ -381,6 +381,7 @@ void CpuMoeKernel::forward_batch(const CpuExperts& L, const float* x, int T, con
   }
   Clk::time_point tp[6];
   tp[0] = Clk::now();
+  omp_set_schedule(batch_sched == kStatic ? omp_sched_static : omp_sched_dynamic, 0);  // the two weight phases (schedule(runtime))
 #pragma omp parallel num_threads(n_threads)
   {
     // the inputs: forward()'s fq8 + lane order, or forward_canon_rows' digits; a few blocks of
@@ -401,7 +402,7 @@ void CpuMoeKernel::forward_batch(const CpuExperts& L, const float* x, int T, con
 #pragma omp master
     tp[1] = Clk::now();
     // gate and up rows: per expert, every row once for all its tokens
-#pragma omp for schedule(dynamic)
+#pragma omp for schedule(runtime)
     for (int task = 0; task < G * 2 * per_f; task++) {
       const int g = task / (2 * per_f), m = (task / per_f) % 2, c = task % per_f;
       const uint8_t* base = expert_base(m ? L.up : L.gate, groups[g].e);
@@ -442,7 +443,7 @@ void CpuMoeKernel::forward_batch(const CpuExperts& L, const float* x, int T, con
 #pragma omp master
     tp[3] = Clk::now();
     // down rows: per expert, every row once for all its tokens
-#pragma omp for schedule(dynamic)
+#pragma omp for schedule(runtime)
     for (int task = 0; task < G * per_e; task++) {
       const int g = task / per_e, c = task % per_e;
       const uint8_t* base = expert_base(L.down, groups[g].e);

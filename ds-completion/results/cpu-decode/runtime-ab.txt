@@ -1,0 +1,6 @@
+# the runtime with the verify steps' CPU experts on a static schedule (README step 56; the flag was removed after this)
+# bin-hip/ds-completion -m $M --rt $F8 --placement placements/study30.txt --dspark $D --spec --canon --cache-loads 800 --cache-period 8 --cache-wait [--cpu-static] -p <prompt> --chat -n 300
+# commit d466fc3 + the static switch and bench-cpu-moe --decode (README step 56); GPUs at sclk 6; 2026-11-02; CPU: governor performance, C6 disabled; order dynamic, static, static, dynamic; output vs step 48
+tcp-udp: dynamic 28.81 t/s (same); --cpu-static 28.55 t/s (same); --cpu-static 28.51 t/s (same); dynamic 28.70 t/s (same);
+cpp-matrix: dynamic 36.39 t/s (same); --cpu-static 36.08 t/s (same); --cpu-static 36.37 t/s (same); dynamic 36.33 t/s (same);
+# for comparison, the same prompts with CPU defaults (README step 53): tcp-udp 28.94, cpp-matrix 36.46 t/s
