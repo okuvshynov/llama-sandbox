@@ -425,6 +425,9 @@ Estimates were made before measuring wherever possible; this is how they fared.
   back to the earlier speed).
   The per-die expert counts added later were checked the same way: in every layer the dies' and
   the CPU's pairs add up to 6 x tokens.
+  The person then spotted layer 13's experts inside layer 14's span: die 0's track was anchored
+  at the time its first event was issued, 0.3-0.4 ms before it ran. Fixed by anchoring where the
+  host waits on the GPU anyway, and checked by causality (a wait ends after what it waits for).
 - **False alarms from the measuring scripts** (a trailing newline in a prefix comparison):
   every "differs" was investigated before being believed or dismissed.
 

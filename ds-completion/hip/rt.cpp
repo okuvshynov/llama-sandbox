@@ -740,6 +740,7 @@ void Runtime::set_trace(const std::string& path) {
   trace_path = path;
   profile = true;
   trace_epoch = Clock::now();
+  CHECK(hipEventCreate(&tr_staged));
   die_trace.resize(dies.size());
   for (size_t i = 0; i < dies.size(); i++) {
     DieTrace& t = die_trace[i];
@@ -766,16 +767,23 @@ hipEvent_t Runtime::trace_ev(int die) {
   return t.pool[t.used++];
 }
 
-// at a step's start: a reference event on every die's expert stream, with the host time
+// at a step's start: a reference event on every die's expert stream. The other devices' streams
+// are idle then, so the host waits for the event and reads its clock (exact to the wake-up); the
+// home die's second stream shares die 0's clock and is placed from die 0's anchor at the end.
 void Runtime::trace_step_begin() {
   if (trace_path.empty()) return;
+  step_anchor_us = 1e300;
   for (size_t i = 0; i < die_trace.size(); i++) {
     DieTrace& t = die_trace[i];
     t.used = 0;
     t.spans.clear();
     CHECK(hipSetDevice(dies[i].dev));
     CHECK(hipEventRecord(t.base, t.st));
-    t.base_us = std::chrono::duration<double, std::micro>(Clock::now() - trace_epoch).count();
+  }
+  for (size_t i = 0; i < die_trace.size(); i++) {
+    if (!dies[i].st) continue;
+    CHECK(hipEventSynchronize(die_trace[i].base));
+    die_trace[i].base_us = std::chrono::duration<double, std::micro>(Clock::now() - trace_epoch).count();
   }
   CHECK(hipSetDevice(opt.gpu));
 }
@@ -785,12 +793,19 @@ void Runtime::trace_step_end() {
   if (trace_path.empty() || marks.empty()) return;
   // each group ends where the next begins, so a layer's span (its groups in a row; the prompt's
   // two halves interleave, giving two per layer) contains them exactly and Perfetto nests them
+  const double t0 = step_anchor_us < 1e299 ? step_anchor_us : step_t0_us;
   std::vector<double> at(marks.size());
   for (size_t i = 0; i < marks.size(); i++) {
     float a;
     CHECK(hipEventElapsedTime(&a, marks[0].second, marks[i].second));
-    at[i] = step_t0_us + a * 1000.0;
+    at[i] = t0 + a * 1000.0;
   }
+  for (size_t i = 0; i < die_trace.size(); i++)
+    if (!dies[i].st) {
+      float a;
+      CHECK(hipEventElapsedTime(&a, marks[0].second, die_trace[i].base));
+      die_trace[i].base_us = t0 + a * 1000.0;
+    }
   for (size_t i = 0; i + 1 < marks.size(); i++) {
     const int L = mark_layer[i];
     if (L >= 0 && (i == 0 || mark_layer[i - 1] != L)) {
@@ -1056,6 +1071,7 @@ void Runtime::moe_launch(int L, int M) {
   CHECK(hipMemcpyAsync(h_moe.lists, d_moe.lists, lists_bytes, hipMemcpyDeviceToHost, s));
   CHECK(hipMemcpyAsync(h_moe.x, d_moe.x, (size_t)M * E * 4, hipMemcpyDeviceToHost, s));
   CHECK(hipEventRecord(ev_staged, s));
+  if (!trace_path.empty() && !in_prefill) CHECK(hipEventRecord(tr_staged, s));
   constexpr int LS = kMoeListStride * (int)(sizeof(MoeList) / 4);  // a token's lists, in ints
   auto sel = [&](const MoeList* lists, int die) {  // die `die`'s list of every token
     return ExpertSel{lists[die].ids, lists[die].w, &lists[die].count, LS};
@@ -1123,6 +1139,13 @@ void Runtime::moe_finish(int L, float* out, int M, Taps* taps) {
   CHECK(hipEventSynchronize(ev_staged));
   last.wait_ms += ms_since(t0);
   trace_host("wait for the staged block", t0, Clock::now(), 1);
+  if (!trace_path.empty() && !in_prefill && !marks.empty()) {  // die 0's clock vs the host's (above)
+    CHECK(hipEventSynchronize(tr_staged));
+    const double now = std::chrono::duration<double, std::micro>(Clock::now() - trace_epoch).count();
+    float el;
+    CHECK(hipEventElapsedTime(&el, marks[0].second, tr_staged));
+    step_anchor_us = std::min(step_anchor_us, now - el * 1000.0);
+  }
   // each die's experts this layer (slots: one per expert), for its span; generation only (the
   // prompt's two halves interleave, so the latest span may be the other half's)
   if (!trace_path.empty() && !in_prefill) {

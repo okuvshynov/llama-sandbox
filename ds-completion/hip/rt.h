@@ -297,7 +297,11 @@ class Runtime {
   std::chrono::steady_clock::time_point trace_epoch;
   struct TraceEv { std::string name; int tid; double ts, dur; std::string args; };
   std::vector<TraceEv> trace_evs;
-  double step_t0_us = 0;  // host time of the step's first mark
+  // host time of the step's first mark on die 0: issued at step_t0_us, but it may run later. In
+  // generation each layer's wait for the staged lists bounds it from above (the host wakes just
+  // after the GPU passes tr_staged); the smallest bound of the step is used (else the issue time)
+  double step_t0_us = 0, step_anchor_us = 0;
+  hipEvent_t tr_staged = nullptr;
   struct DieTrace {
     hipStream_t st = nullptr;
     hipEvent_t base = nullptr;
