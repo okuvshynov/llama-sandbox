@@ -147,4 +147,4 @@ Means over all 17 steps: 1.8e-2 to 2.5e-2 for every mode.
 - The dense part uses one GPU; the others only hold experts with `--placement`.
 - Sampling is greedy only.
 
-Details: [OVERVIEW.md](OVERVIEW.md) (a 20-minute summary), [README.md](README.md) (all measurements and checks), [PLAN.md](PLAN.md) (what's next).
+Details: [TIMING.md](TIMING.md) (where the time goes, one page), [OVERVIEW.md](OVERVIEW.md) (a 20-minute summary), [README.md](README.md) (all measurements and checks), [PLAN.md](PLAN.md) (what's next).

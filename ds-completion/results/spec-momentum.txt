@@ -1,0 +1,15 @@
+# ~/venvs/ds-ref/bin/python scripts/spec_momentum.py 'results/spec-conf/*-n5.log' (README step 47)
+# commit 32cdd59 + the script; logs from README step 25 (sclk 2, study30, --spec-n 5); 2026-11-01
+# 1443 reached drafts over 6 prompts: cubic french-rev py-intervals story translate zh-quantum
+log-loss of sigmoid(conf) as is: 0.3897
+features                                 coefficients                 in-sample left-out prompts
+confidence                               [0.249 1.067]                   0.3851           0.3872
++ previous step's draft-0 surprise       [0.249 1.068 0.1  ]             0.3850           0.3888
++ previous step's accepted fraction      [0.158 1.053 0.26 ]             0.3846           0.3879
++ running average of accepted fractions  [0.166 1.053 0.235]             0.3850           0.3896
+observed acceptance per sigmoid(conf) bin, after a poor (< 0.5 accepted) / good previous step:
+  0.0-0.3: predicted 0.21, after poor 0.28 (n=165), after good 0.23 (n=43)
+  0.3-0.5: predicted 0.40, after poor 0.39 (n=181), after good 0.49 (n=65)
+  0.5-0.7: predicted 0.60, after poor 0.63 (n=172), after good 0.69 (n=70)
+  0.7-0.9: predicted 0.81, after poor 0.86 (n=138), after good 0.87 (n=95)
+  0.9-1.0: predicted 0.98, after poor 0.97 (n=158), after good 0.99 (n=356)

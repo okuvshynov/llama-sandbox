@@ -20,7 +20,8 @@ Status, 2026-10-30 (sclk 2, 16 CPU threads; details in [OVERVIEW.md](OVERVIEW.md
   20,000 tokens: same greedy tokens, KL as at short context, indexer differences are near-ties
   (step 35).
 
-How to run it: [QUICKSTART.md](QUICKSTART.md). Plans and cost models: [PLAN.md](PLAN.md).
+How to run it: [QUICKSTART.md](QUICKSTART.md). Where the time goes, on one page:
+[TIMING.md](TIMING.md). Plans and cost models: [PLAN.md](PLAN.md).
 Operand types and accumulation: [NUMERICS.md](NUMERICS.md). A 20-minute overview:
 [OVERVIEW.md](OVERVIEW.md). How the work was approached, decision by decision:
 [PROCESS.md](PROCESS.md). How to rebuild the setup and rerun every result:
@@ -1975,3 +1976,20 @@ cost per pair barely moved (0.114 -> 0.107 ms fast): since step 45 the kernel is
 arithmetic per pair, not by reading the weights, so sharing a read across more tokens saves
 little. Meanwhile the overlap gets coarser (the GPU waited 16.5 s for the CPU instead of 8.8), and
 die 0 holds 12 fewer experts. `kChunk` stays 512.
+
+## Step 47: no momentum needed in the draft-length rule; a one-page timing summary
+
+**Momentum?** Should the draft-length rule (step 25) trust speculation more after recent
+successes? Only if past success predicts acceptance beyond the draft's own confidence head. On the
+step-25 calibration logs (every draft verified; 1,443 reached drafts, 6 prompts;
+`scripts/spec_momentum.py`, `results/spec-momentum.txt`), adding the previous step's accepted
+fraction, its surprise, or a running average to a fit on the confidence improves the fit on its own
+data by a hair and makes predictions for left-out prompts slightly worse (log-loss 0.3872 without,
+0.3879-0.3896 with). Within confidence bins, acceptance after a poor and after a good step differs
+little and in both directions. The head reads the main model's last layers at the current
+position, so an easy stretch of text already shows in its confidence. Not added. (Short runs
+without the cache; long reasoning runs are not checked yet.)
+
+**[TIMING.md](TIMING.md):** where the time goes in generation and in the prompt, on one page, with
+what a millisecond is worth (~0.25 t/s per ms of a speculative step) and what-ifs (a 1 ms draft:
++11%; both prompt sides 2x faster: 76 -> ~150 t/s).

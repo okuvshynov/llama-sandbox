@@ -341,6 +341,9 @@ needs its own measurement first. Order: after "Long context".
   the budget), so only the smallest trees are worth a test.
 - Per-prompt-type expectations: code accepts ~2x more than chat; nothing to tune, but the
   held-out mix decides the average.
+- Momentum (trust drafts more after recent successes): checked and rejected (README step 47):
+  past success adds nothing beyond the confidence head on the calibration logs; recheck on long
+  reasoning runs with the cache, together with the head's calibration there.
 
 **D. A faster draft** (~12 ms per step: 3 layers, dense BF16, 128 experts top-3, on die 0)
 - fp8 for the draft's dense weights if the release is fp8 (an exact repack, as the main model).

@@ -339,6 +339,14 @@ Each rule is followed by where it mattered most.
   arithmetic-bound, so the per-pair saving was ~6%, outweighed by a coarser overlap. Reverted;
   a reminder that an option's expected gain must be re-derived after the profile changes.
 
+- **Q (the person's): does speculation need momentum, or does the draft handle it?** Answered by
+  a test on existing logs rather than by argument: does past success add predictive power beyond
+  the confidence head, judged on prompts left out of the fit (so an in-sample improvement from an
+  extra parameter is not mistaken for signal)? It does not. Recorded as a checked-and-rejected
+  idea, with what is still unchecked (long runs, the cache).
+- **TIMING.md (the person's request):** a one-page "where the time goes", for a reader who wants
+  the feel of the numbers (what a millisecond is worth, what-ifs) before the details.
+
 ## 4. Predictions against outcomes
 
 Estimates were made before measuring wherever possible; this is how they fared.
