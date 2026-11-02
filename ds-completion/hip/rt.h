@@ -56,7 +56,7 @@ struct RtOptions {
   // adaptive expert cache (expert_cache.h): > 0 = load rate in experts per second, rebalancing
   // every cache_period tokens by use over the last cache_window; 0 = the static placement
   double cache_loads = 0;
-  int cache_period = 16, cache_window = 256;
+  int cache_period = 16, cache_window = 256, cache_min = 2;
   bool cache_wait = false;  // wait at startup until the cache can load (expert_cache.h)
   bool load_pinned = false;  // the load test's path: pinned staging instead of direct (expert_loader.h)
 };

@@ -1,0 +1,26 @@
+# the candidate threshold (a newcomer's least count or score) for window and decay (README step 59)
+# the runner in this header's next line, using scripts/cache_sim.py's functions (rate 800, rebalance every 8 tokens)
+# python: cs.run(traces, warm, label, tm, rate=800, period=8, [half_life=H], min_count=M) over the held-out --spec logs (warm study30) and the study logs (leave-one-out)
+# commit 3a16731 + the options; 2026-11-02
+## --spec, held-out (8 logs), rate 800, rebalance every 8 tokens
+policy                                   hit:commit fwd   CPU exp/tok  loads/tok GB/s   t/s:free charged
+window W=256 (min 2: today)               92.9%  92.8%    16.8    6.90  4.17   32.2  30.4
+window W=256 min 1                        93.6%  93.5%    15.1   10.62  6.53   32.7  29.9
+window W=256 min 1.5                      92.9%  92.8%    16.8    6.90  4.17   32.2  30.4
+decay hl=128 min 1                        93.5%  93.4%    15.4    9.65  5.91   32.6  30.1
+decay hl=128 min 1.5                      92.8%  92.7%    17.0    6.42  3.88   32.1  30.5
+decay hl=256 min 1                        93.4%  93.3%    15.5    8.91  5.45   32.6  30.2
+decay hl=256 min 1.5                      93.0%  92.9%    16.6    7.35  4.46   32.3  30.3
+decay hl=512 min 1                        93.3%  93.2%    15.8    8.22  5.02   32.5  30.3
+decay hl=512 min 1.5                      92.9%  92.8%    16.7    7.29  4.41   32.2  30.3
+## plain, study (30 logs), rate 800, rebalance every 8 tokens
+policy                                   hit:commit fwd   CPU exp/tok  loads/tok GB/s   t/s:free charged
+window W=256 (min 2: today)               93.7%  93.7%    15.1    5.60  2.67   25.3  24.4
+window W=256 min 1                        94.2%  94.2%    13.9    9.77  4.66   25.4  23.8
+window W=256 min 1.5                      93.7%  93.7%    15.1    5.60  2.67   25.3  24.4
+decay hl=128 min 1                        94.1%  94.1%    14.3    7.33  3.49   25.4  24.1
+decay hl=128 min 1.5                      93.6%  93.6%    15.3    5.23  2.49   25.3  24.4
+decay hl=256 min 1                        94.0%  94.0%    14.5    6.81  3.24   25.3  24.2
+decay hl=256 min 1.5                      93.7%  93.7%    15.1    5.88  2.80   25.3  24.3
+decay hl=512 min 1                        93.8%  93.8%    14.9    6.20  2.95   25.3  24.3
+decay hl=512 min 1.5                      93.6%  93.6%    15.2    5.88  2.80   25.3  24.3

@@ -39,6 +39,10 @@ Model, per log (a fresh run each):
     swap only if the newcomer was used more), through the same queue and rate.
   - Source: which tokens drive recency, admission and rebalance counts: all forwarded tokens
     (rejected drafts included) or committed ones only (known when the verify step ends).
+  - Decay (README step 59, --decay): the rebalance's counts as exponentially decayed scores
+    (each use +1, every committed token multiplies all scores by 2^(-1/half_life)) instead of a
+    hard window; margin: a newcomer must beat its victim by more than `margin` (hysteresis);
+    min_count: a newcomer's least count or score (2: the runtime's).
 """
 import argparse
 import glob
@@ -156,7 +160,8 @@ HEADER = "hit:commit fwd   CPU exp/tok  loads/tok GB/s   t/s:free charged"
 # CPU exp/tok: distinct missed experts per step, per committed token (the CPU's weight reads)
 
 
-def simulate(tr, warm, rate, tm, latency=1, k=1, window=256, source="all", period=0, rb_window=256):
+def simulate(tr, warm, rate, tm, latency=1, k=1, window=256, source="all", period=0, rb_window=256, half_life=0,
+             margin=0.0, min_count=2.0):
     """rate: loads per second (0 = static, None = unlimited)"""
     n = tr.n_pairs
     C = len(warm)
@@ -171,7 +176,8 @@ def simulate(tr, warm, rate, tm, latency=1, k=1, window=256, source="all", perio
     queue = deque()                   # (key, victim or -1, step queued)
     flight = deque()                  # (step resident, key)
     misses = {}                       # key -> deque of committed-token times of its misses
-    rb_counts = np.zeros(n, np.int64)
+    rb_counts = np.zeros(n, np.float64 if half_life else np.int64)
+    decay = 2.0 ** (-1.0 / half_life) if half_life else 1.0
     rb_hist = deque()
     t_tok = 0                         # committed tokens so far (prompt included)
     next_rb = period
@@ -234,21 +240,25 @@ def simulate(tr, warm, rate, tm, latency=1, k=1, window=256, source="all", perio
                 queue.append((x, -1, step))
         else:  # rebalance: counts over the last rb_window committed tokens
             ks = src.ravel()
-            np.add.at(rb_counts, ks, 1)
-            rb_hist.append((t_tok, ks))
-            while rb_hist and rb_hist[0][0] <= t_tok - rb_window:
-                np.add.at(rb_counts, rb_hist.popleft()[1], -1)
+            if half_life:  # decayed scores: age everything by this step's committed tokens, then count
+                rb_counts *= decay ** int(comm.sum())
+                np.add.at(rb_counts, ks, 1.0)
+            else:
+                np.add.at(rb_counts, ks, 1)
+                rb_hist.append((t_tok, ks))
+                while rb_hist and rb_hist[0][0] <= t_tok - rb_window:
+                    np.add.at(rb_counts, rb_hist.popleft()[1], -1)
             if t_tok >= next_rb:
                 next_rb = t_tok + period
                 for x, _, _ in queue:
                     pending[x] = False
                 queue.clear()
-                cand = np.flatnonzero((rb_counts >= 2) & ~resident & ~pending)
+                cand = np.flatnonzero((rb_counts >= min_count) & ~resident & ~pending)
                 cand = cand[np.argsort(-rb_counts[cand], kind="stable")]
                 res = np.flatnonzero(resident)
                 res = res[np.lexsort((last_use[res], rb_counts[res]))]
                 for c, v in zip(cand, res):
-                    if rb_counts[c] <= rb_counts[v]:
+                    if rb_counts[c] <= rb_counts[v] + margin:
                         break
                     pending[c] = True
                     queue.append((int(c), int(v), step))
@@ -310,11 +320,38 @@ def calibrate(runs, warm_of):
     return tm
 
 
+def decay_sweep(spec, study, w30, tm, slots):
+    """README step 59: window counts vs decayed counts, with and without a hysteresis margin, at
+    the runtime's settings (rebalance every 8 tokens; 200 / 400 / 800 loads per second)"""
+    counts = {t.name: np.bincount(t.committed_keys().ravel(), minlength=t.n_pairs) for t in study}
+    allc = sum(counts.values())
+    warm = {t.name: np.lexsort((np.arange(len(allc)), -(allc - counts[t.name])))[:slots] for t in study}
+    wl = lambda tr: warm[tr.name]  # noqa: E731
+    sets = [(f"--spec, held-out prompts ({len(spec)} logs), warm start study30", spec, w30),
+            (f"plain decoding, study prompts ({len(study)} logs), warm start leave-one-out", study, wl)]
+    for title, traces, warm_of in sets:
+        print(f"\n## {title}")
+        print(f"{'policy':40s} {HEADER}")
+        run(traces, warm_of, "static", tm, rate=0)
+        for rr in [200, 400, 800]:
+            for W in [128, 256, 512]:
+                run(traces, warm_of, f"window W={W} rate {rr}", tm, rate=rr, period=8, rb_window=W)
+            for hl in [64, 128, 256, 512]:
+                run(traces, warm_of, f"decay half-life {hl} rate {rr}", tm, rate=rr, period=8, half_life=hl)
+            for mc in [1.0, 1.5]:
+                run(traces, warm_of, f"decay hl=256 min {mc} rate {rr}", tm, rate=rr, period=8, half_life=256, min_count=mc)
+                run(traces, warm_of, f"window W=256 min {mc:g} rate {rr}", tm, rate=rr, period=8, min_count=mc)
+            for m in [1, 2, 4]:
+                run(traces, warm_of, f"window W=256 margin {m} rate {rr}", tm, rate=rr, period=8, margin=m)
+                run(traces, warm_of, f"decay hl=128 margin {m} rate {rr}", tm, rate=rr, period=8, half_life=128, margin=m)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--placement", default=f"{ROOT}/placements/study30.txt")
     ap.add_argument("--slots", type=int, default=SLOTS)
     ap.add_argument("--quick", action="store_true", help="fewer configurations")
+    ap.add_argument("--decay", action="store_true", help="only the decay / hysteresis sweep (README step 59)")
     a = ap.parse_args()
 
     study30 = read_placement(a.placement)[:a.slots]
@@ -333,6 +370,9 @@ def main():
     tm = calibrate(cal, w30)
 
     INF = None
+    if a.decay:
+        decay_sweep(spec, study, w30, tm, a.slots)
+        return
     rates = [0, 25, 50, 100, 200, 400, INF] if not a.quick else [0, 100, INF]
     mid = [50, 100, 200] if not a.quick else [100]
 

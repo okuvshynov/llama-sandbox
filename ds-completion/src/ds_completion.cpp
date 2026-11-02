@@ -2,7 +2,7 @@
 //
 //   ds-completion -m <model-00001-of-000NN.gguf> (-p "prompt" | -f prompt.txt) [--chat | --think [--effort 75]] [-n 128]
 //                 [-t 16] [--no-quant] [--max-ctx 4096]
-//                 [--rt <dense-fp8.gguf> [--gpu D] [--placement file [--moe-dies 0,1,2,3] [--load-test R [--load-pinned]] [--cache-loads R [--cache-period N] [--cache-window N] [--cache-wait]]] [--canon] [--profile]]
+//                 [--rt <dense-fp8.gguf> [--gpu D] [--placement file [--moe-dies 0,1,2,3] [--load-test R [--load-pinned]] [--cache-loads R [--cache-period N] [--cache-window N] [--cache-min N] [--cache-wait]]] [--canon] [--profile]]
 //
 // The prompt is fed as one chunk (prefill), then one token per step, greedy. --chat wraps the
 // prompt as one user turn in the model's chat format without thinking, --think with it (the
@@ -69,7 +69,7 @@ int main(int argc, char** argv) {
   [[maybe_unused]] int prefill_chunk = 512;
   [[maybe_unused]] bool prefill_overlap = true;
   [[maybe_unused]] double cache_loads = 0;
-  [[maybe_unused]] int cache_period = 16, cache_window = 256;
+  [[maybe_unused]] int cache_period = 16, cache_window = 256, cache_min = 2;
   [[maybe_unused]] bool cache_wait = false;
   [[maybe_unused]] std::string dspark_path;
   bool spec = false;
@@ -110,6 +110,7 @@ int main(int argc, char** argv) {
     else if (a == "--cache-loads") cache_loads = atof(next());  // runtime: adaptive expert cache (expert_cache.h)
     else if (a == "--cache-period") cache_period = atoi(next());
     else if (a == "--cache-window") cache_window = atoi(next());
+    else if (a == "--cache-min") cache_min = atoi(next());  // runtime: a newcomer's least uses in the window
     else if (a == "--cache-wait") cache_wait = true;
     else if (a == "--moe-dies") {
       moe_dies.clear();
@@ -126,7 +127,7 @@ int main(int argc, char** argv) {
     else { fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
   }
   if (model_path.empty() || prompt.empty()) {
-    fprintf(stderr, "usage: ds-completion -m <model.gguf> (-p \"prompt\" | -f prompt.txt) [--chat|--think [--effort 1-100|low|high|max]] [-n N] [-t N] [--no-quant] [--max-ctx N] [--rt dense-fp8.gguf [--gpu D] [--placement file [--moe-dies 0,1,2,3] [--load-test R [--load-pinned]] [--cache-loads R [--cache-period N] [--cache-window N] [--cache-wait]]] [--canon] [--profile]]\n");
+    fprintf(stderr, "usage: ds-completion -m <model.gguf> (-p \"prompt\" | -f prompt.txt) [--chat|--think [--effort 1-100|low|high|max]] [-n N] [-t N] [--no-quant] [--max-ctx N] [--rt dense-fp8.gguf [--gpu D] [--placement file [--moe-dies 0,1,2,3] [--load-test R [--load-pinned]] [--cache-loads R [--cache-period N] [--cache-window N] [--cache-min N] [--cache-wait]]] [--canon] [--profile]]\n");
     return 2;
   }
 
@@ -194,6 +195,7 @@ int main(int argc, char** argv) {
     ro.cache_loads = cache_loads;
     ro.cache_period = cache_period;
     ro.cache_window = cache_window;
+    ro.cache_min = cache_min;
     ro.cache_wait = cache_wait;
     ro.dspark = dspark_path;
     if (spec && dspark_path.empty()) { fprintf(stderr, "--spec needs --dspark\n"); return 2; }

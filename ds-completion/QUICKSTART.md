@@ -101,7 +101,8 @@ Options:
   timing. It starts loading once the model's expert memory is registered with the GPUs (~95-135
   s in the background, longer if the model must come back from disk; README step 43);
   `--cache-wait` waits for that before the prompt. `--cache-period N` (16) and
-  `--cache-window N` (256) set how often it rebalances and over how many tokens it counts.
+  `--cache-window N` (256) set how often it rebalances and over how many tokens it counts;
+  `--cache-min N` (2) the uses a newcomer needs (1 was ~0.7% slower, README step 59).
 - `--load-test R [--load-pinned]`: a measurement aid: loads random experts into spare GPU slots
   at R loads/s in the background, as the cache would (README step 30); output unchanged.
 

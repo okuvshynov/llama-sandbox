@@ -45,7 +45,7 @@ void ExpertCache::rebalance() {
   for (int k = 0; k < n_pairs; k++) {
     if (loading[k]) continue;
     if (table[k] >= 0) res.push_back(k);
-    else if (count[k] >= 2) cand.push_back(k);
+    else if (count[k] >= opt.min_count) cand.push_back(k);
   }
   // newcomers: most used first (ties: most recent); victims: least used first (ties: least recent)
   std::sort(cand.begin(), cand.end(), [&](int a, int b) { return count[a] != count[b] ? count[a] > count[b] : last_use[a] > last_use[b]; });

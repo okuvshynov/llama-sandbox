@@ -2331,3 +2331,38 @@ breakdowns). A code step: 12 ms draft + ~109 ms verify for 4.5 tokens (36.9 t/s)
 24%, the CPU's experts 22%, the draft 10%, the dies' experts 5%. On the prompt the router went
 from 1.1 to 0.2 ms per token, leaving the GPU side (9.6 ms) just under the CPU's (10.4).
 
+
+## Step 59: the cache's counting: decay, hysteresis and the threshold, simulated and checked live
+
+The cache counts each expert's uses over the last 256 forwarded tokens and, every 8 tokens, swaps
+the most used non-resident experts (at least 2 uses) for the least used residents. Would decayed
+counts (each use +1, every token multiplying all scores by 2^(-1/half-life)) or hysteresis (a
+newcomer must beat its victim by a margin) do better? `scripts/cache_sim.py --decay` (step 29's
+simulator with `half_life`, `margin` and `min_count`; its time model is the sclk-2 fit, so
+policies are compared, not absolute t/s): `results/cache-decay/sweep.txt`, `threshold.txt`.
+
+At 800 loads/s, rebalance every 8 (est. t/s with loads free / charged like a missed expert):
+
+| policy | held-out `--spec` | study prompts, plain |
+|---|---|---|
+| window 256, min 2 (today) | 92.9% hits, 6.9 loads/token, 32.2 / 30.4 | 93.7%, 5.6, 25.3 / 24.4 |
+| window 128 or 512 | 92.7-92.8%, 32.1 / 30.4 | 93.6%, 25.3 / 24.3-24.5 |
+| decay, half-life 128-512, min 1.5 | 92.8-93.0%, 32.1-32.3 / 30.3-30.5 | 93.6-93.7%, 25.3 / 24.3-24.4 |
+| decay, half-life 128-512, min 1 | 93.3-93.5%, 8.2-9.7 loads, 32.5-32.6 / 30.1-30.3 | 93.8-94.1%, 25.3-25.4 / 24.1-24.3 |
+| window 256, min 1 | 93.6%, 10.6 loads, 32.7 / 29.9 | 94.2%, 9.8 loads, 25.4 / 23.8 |
+| margin 1 / 2 / 4 | 92.8 / 91.6 / 89.0%, 32.2 / 31.4 / 29.8 free | 93.7 / 92.7 / 90.6%, 25.3 / 25.2 / 24.8 free |
+
+- **Decay is the window again.** At first it looked worse (91.1-91.9%), but "at least 2" is a
+  stricter bar for decayed scores; with the bar matched, every half-life lands within 0.4 est.
+  t/s of the window. Window length (128-512) does not matter either.
+- **Hysteresis only costs.** Margins cut loads by up to 55%, but every load they skip was a
+  useful one: even with loads charged, no margin is best. These runs are up to ~1,000 tokens;
+  very long ones are not covered by the logs.
+- **The threshold moves hits**, +0.5-0.7 points at min 1 for 50-75% more loads, and the
+  simulator cannot say whether that pays. Checked live (`--cache-min N`, new, default 2;
+  `results/cache-decay/live-min.txt`, outputs identical): tcp-udp 28.84 / 29.20 t/s at min 2,
+  28.65 / 28.67 at min 1 (on GPUs 87.7 -> 88.7%, loads 3,200 -> 5,200); cpp-matrix 37.01 / 37.03
+  vs 36.72 / 36.79 (86.1 -> 87.7%, 3,700 -> 5,470). Loads are not free: min 2 stays.
+
+The cache serves ~93% of expert uses in simulation (86-88% live); the rest are experts no
+counting predicts. More GPU slots, not a different policy, is the lever left on this side.

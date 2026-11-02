@@ -580,7 +580,7 @@ void Runtime::setup_experts() {
     if (opt.load_test >= 0) throw std::runtime_error("--load-test and the expert cache are exclusive");
     std::vector<ExpertPool*> pools;
     for (Die& d : dies) pools.push_back(&d.pool);
-    cache.reset(new ExpertCache(m, pools, h_table, d_table, X, {opt.cache_loads, opt.cache_period, opt.cache_window, opt.cache_wait}));
+    cache.reset(new ExpertCache(m, pools, h_table, d_table, X, {opt.cache_loads, opt.cache_period, opt.cache_window, opt.cache_wait, opt.cache_min}));
     fprintf(stderr, "# expert cache: up to %.0f loads/s, rebalance every %d tokens over the last %d%s\n", opt.cache_loads,
             opt.cache_period, opt.cache_window, opt.canon ? "" : " (without --canon the output depends on load timing)");
     CHECK(hipSetDevice(home));

@@ -328,7 +328,9 @@ heavy sharing (-21%) and lost without (+23%): reverted, documented in `results/f
 Step 56: the CPU's verify-step experts on a static schedule (15-22% faster in a benchmark), 2 MB
 pages (no change) and CPU settings (performance governor, C6 off: nothing end to end) all
 dropped. Step 57: that "fixed cost" was the multi-token dot routine on one-token groups; those
-now use the one-token routine (bit-identical): +1.1%, held-out mean 32.0 t/s.
+now use the one-token routine (bit-identical): +1.1%, held-out mean 32.0 t/s. Step 59: decayed
+counts equal the window, hysteresis margins only cost, a lower candidate threshold (`--cache-min
+1`) gains hits but loses ~0.7% live: the policy stays; more GPU slots are the cache's lever.
 
 **A. Tuning the expert cache** (the CPU experts' ~25 ms)
 - Hysteresis: a newcomer must beat its victim by a margin, so the cache settles in long runs

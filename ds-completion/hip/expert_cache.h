@@ -38,6 +38,7 @@ class ExpertCache {
     // ~40 s, and until then no load starts (pinned loads would cost ~9%, README step 30).
     // wait = block in the constructor until it is done (for measurements)
     bool wait = false;
+    int min_count = 2;  // a newcomer's least uses in the window (README step 59)
   };
   // table: the host copy of the runtime's [n_layer][n_expert] table (die << 16 | slot, or -1),
   // filled by the static placement; d_table its device copy (uploaded by step())
