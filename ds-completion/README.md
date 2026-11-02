@@ -2428,3 +2428,9 @@ verify step).
 Held-out generation (`results/spec-measure-sclk6-cacheloads800cacheperiod8-head/`): mean
 **32.03 -> 32.48 t/s (+1.4%)**, code and structured prompts +1.7 to +2.1%, outputs identical. The
 draft's Markov head stays token by token: each token's bias needs the previous argmax.
+
+TIMING.md has a section on the cache's background loads: what one costs (~2 ms of one GPU's copy
+engine, 1,437 loads/s over the four), how many the cache starts (310-465 loads/s, ~11-12 per
+token in this step's runs, from their `expert cache:` lines), and what they cost generation
+(steps 30, 59).
+

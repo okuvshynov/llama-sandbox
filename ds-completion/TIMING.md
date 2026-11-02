@@ -105,6 +105,40 @@ Measuring costs time: `--profile` 5-6% of generation speed, `--trace` 7% (28.9 /
 untraced vs 26.8 / 34.5 traced; README step 58), so a trace's times run a few percent long; its
 proportions hold. `--trace FILE` writes the file for any run.
 
+## Background expert loads (the adaptive cache)
+
+A load copies one expert (gate, up, down: 3 x 6.27 MB = 18.8 MB of mxfp4) from the model file in
+the page cache to a GPU over PCIe and unpacks it into a free slot, on a low-priority stream; one
+loader thread per GPU (README steps 30, 32). The copy engine reads host memory directly (the
+expert tensors are registered with HIP), so the CPU only issues API calls (~1 ms per load).
+
+| | per load | rate |
+|---|---|---|
+| one GPU alone | ~2 ms (9.2 GB/s) | 491 loads/s |
+| all four GPUs | ~0.7 ms of host-link time each | 1,437 loads/s (27 GB/s) |
+| during the prompt, competing with its copies | 1.9-2.4 ms | |
+
+(Standalone at sclk 2, README steps 30, 42-44.) A loaded expert is used from the next forward
+after its copy and unpack finish; its victim leaves the routing table before its slot is
+overwritten, so outputs never depend on load timing.
+
+**What the cache asks for:** every 8 tokens it swaps the most-used experts not on a GPU for the
+least-used ones that are, at up to 800 loads/s. In 300-token runs it starts 310-465 loads/s,
+**~11-12 per generated token**, about a quarter of what the links could carry (README step 62's
+runs). A token takes ~31 ms; a missed expert costs the CPU ~0.27 ms on the critical path, a load
+~2 ms of one GPU's copy engine in the background.
+
+**What loads cost generation:** not nothing. Loading at 100 / 200 loads/s cost a decode 1-2% / 5%
+when only loads were added (README step 30), and the copies share the PCIe links and host memory
+with the CPU's expert reads. Letting the cache load ~60% more often (`--cache-min 1`) gained 1-1.6
+points of experts on GPUs and lost ~0.7% (README step 59). The tuned rate and threshold are where
+loads still pay.
+
+**At startup:** before the first load the 289 GB of expert tensors must be registered with HIP,
+~95-135 s in the background (103 s today; 64 MB pieces so the rest of the process is not
+stalled, README step 43); generation runs meanwhile on the startup placement. `--cache-wait`
+waits for it, for measurements.
+
 ## Memory
 
 Expert slots fill 84% of the four GPUs (6,126 slots of 18.8 MB at 4k context). GPU 0 also holds

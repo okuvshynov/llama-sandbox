@@ -484,6 +484,10 @@ Estimates were made before measuring wherever possible; this is how they fared.
 - **An overhead claimed without a like-for-like run** (README step 58): the trace's cost was
   written as 1-3% from runs of different days; measured properly (untraced, `--profile`,
   `--trace` on the same prompts and build) it is ~7%, most of it the profile's events.
+- **Each summary answers a question someone asked** (README step 62): TIMING.md gained a
+  section on background loads when the person asked how long moving an expert takes; every
+  number in it was already measured (steps 30, 42-44, 59) except today's load rate, read from
+  the latest runs' logs.
 - **A summary document goes stale quietly** (README step 58): TIMING.md's tables kept numbers
   from four clock settings and a dozen steps back while every later step appended a sentence; the
   person noticed. Refreshed from one build and one clock, with the data in `results/`.
