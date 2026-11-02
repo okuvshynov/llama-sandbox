@@ -304,7 +304,8 @@ class Runtime {
     double base_us = 0;
     std::vector<hipEvent_t> pool;
     size_t used = 0;
-    std::vector<std::pair<int, std::pair<hipEvent_t, hipEvent_t>>> spans;  // (layer, (start, end))
+    struct Span { int L; hipEvent_t a, b; std::string args; };  // args: the die's experts and pairs
+    std::vector<Span> spans;
   };
   std::vector<DieTrace> die_trace;  // per die
   hipEvent_t trace_ev(int die);    // an event from the die's pool (current device = its)

@@ -423,6 +423,8 @@ Estimates were made before measuring wherever possible; this is how they fared.
   ~1% of groups 0.1 us past their layer, from rounding start and length separately; and a run
   ~15% slower than the day before was a cold page cache after a reboot, not the change (rerun:
   back to the earlier speed).
+  The per-die expert counts added later were checked the same way: in every layer the dies' and
+  the CPU's pairs add up to 6 x tokens.
 - **False alarms from the measuring scripts** (a trailing newline in a prefix comparison):
   every "differs" was investigated before being believed or dismissed.
 

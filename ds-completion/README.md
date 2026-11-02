@@ -2143,7 +2143,8 @@ ui.perfetto.dev. Tracks: steps (drafts, verify steps), the host thread (per laye
 the staged block and the CPU's experts, with distinct experts / pairs / tokens as arguments), die
 0's main stream (a "layer N" span per layer with the profile groups nested under it; engram
 before layer 0 and the head after the last stay outside), die 0's expert stream and dies 1-3 (each
-die's experts per layer, copies included). GPU events are placed on the host clock by a reference event
+die's experts per layer, copies included; in generation with distinct experts / pairs / tokens as
+arguments: per layer the dies' and the CPU's pairs add up to 6 x tokens in both traces). GPU events are placed on the host clock by a reference event
 per device at each step's start (the dies are idle then): aligned to ~0.1 ms, enough to see
 overlap, not to compare microseconds across tracks. `results/trace/` holds the two runs gzipped
 (chat and code, 300 tokens; Perfetto opens `.json.gz`; download them raw, not GitHub's file page).

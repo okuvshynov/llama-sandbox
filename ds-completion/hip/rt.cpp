@@ -805,12 +805,12 @@ void Runtime::trace_step_end() {
   for (size_t i = 0; i < die_trace.size(); i++) {
     DieTrace& t = die_trace[i];
     CHECK(hipSetDevice(dies[i].dev));
-    for (auto& [L, ab] : t.spans) {
+    for (const DieTrace::Span& sp : t.spans) {
       float a, d;
-      CHECK(hipEventSynchronize(ab.second));
-      CHECK(hipEventElapsedTime(&a, t.base, ab.first));
-      CHECK(hipEventElapsedTime(&d, ab.first, ab.second));
-      trace_evs.push_back({"experts L" + std::to_string(L), 10 + (int)i, t.base_us + a * 1000.0, d * 1000.0, ""});
+      CHECK(hipEventSynchronize(sp.b));
+      CHECK(hipEventElapsedTime(&a, t.base, sp.a));
+      CHECK(hipEventElapsedTime(&d, sp.a, sp.b));
+      trace_evs.push_back({"experts L" + std::to_string(sp.L), 10 + (int)i, t.base_us + a * 1000.0, d * 1000.0, sp.args});
     }
   }
   CHECK(hipSetDevice(opt.gpu));
@@ -1077,7 +1077,7 @@ void Runtime::moe_launch(int L, int M) {
       if (tr_a) {
         hipEvent_t tr_b = trace_ev(i);
         CHECK(hipEventRecord(tr_b, s_local));
-        die_trace[i].spans.push_back({L, {tr_a, tr_b}});
+        die_trace[i].spans.push_back({L, tr_a, tr_b, ""});
       }
       continue;
     }
@@ -1099,7 +1099,7 @@ void Runtime::moe_launch(int L, int M) {
     if (tr_a) {  // copy in and the kernel (fast: and the copy back)
       hipEvent_t tr_b = trace_ev(i);
       CHECK(hipEventRecord(tr_b, d.st));
-      die_trace[i].spans.push_back({L, {tr_a, tr_b}});
+      die_trace[i].spans.push_back({L, tr_a, tr_b, ""});
     }
     CHECK(hipSetDevice(opt.gpu));
   }
@@ -1123,6 +1123,22 @@ void Runtime::moe_finish(int L, float* out, int M, Taps* taps) {
   CHECK(hipEventSynchronize(ev_staged));
   last.wait_ms += ms_since(t0);
   trace_host("wait for the staged block", t0, Clock::now(), 1);
+  // each die's experts this layer (slots: one per expert), for its span; generation only (the
+  // prompt's two halves interleave, so the latest span may be the other half's)
+  if (!trace_path.empty() && !in_prefill) {
+    for (int i = 0; i < n_dies; i++) {
+      if (die_trace[i].spans.empty() || die_trace[i].spans.back().L != L) continue;
+      std::set<int> slots;
+      int pairs = 0;
+      for (int t = 0; t < M; t++) {
+        const MoeList& l = h_moe.lists[(size_t)t * kMoeListStride + i];
+        for (int j = 0; j < l.count; j++) slots.insert(l.ids[j]);
+        pairs += l.count;
+      }
+      die_trace[i].spans.back().args = "\"distinct experts\":" + std::to_string(slots.size()) +
+                                       ",\"pairs\":" + std::to_string(pairs) + ",\"tokens\":" + std::to_string(M);
+    }
+  }
   // the place's rows of this chunk (canon): the counts are known now
   std::vector<int> n_rows(n_dies + 1, 0);
   for (int t = 0; t < M; t++) {
