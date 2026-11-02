@@ -1,0 +1,39 @@
+# CPU experts per layer during generation and what they cost (README step 50): --profile histogram
+# bin-hip/ds-completion -m $M --rt $F8 --placement placements/study30.txt --dspark $D --spec --canon --cache-loads 800 --cache-period 8 --cache-wait -p <tcp-udp | cpp-matrix> --chat -n 300 --profile
+# commit 0ec746d + the parallel CPU activation, the histogram; sclk 6 (manual, all four cards); 2026-11-01
+# CPU ms: the host computing that layer's CPU experts; GPU waits: the layer's ffn.wait_for_cpu_experts interval on the GPU timeline (what was not hidden)
+## tcp-udp: 26.19 t/s (with --profile), output identical to step 48
+#     1 tokens,   0 experts:    627 layers (11.5%),  0.00 pairs, CPU  0.000 ms, GPU waits  0.000 ms
+#     1 tokens,   1 experts:    264 layers ( 4.9%),  1.00 pairs, CPU  0.344 ms, GPU waits  0.344 ms
+#     1 tokens,   2 experts:     53 layers ( 1.0%),  2.00 pairs, CPU  0.568 ms, GPU waits  0.566 ms
+#     1 tokens,   3 experts:     14 layers ( 0.3%),  3.00 pairs, CPU  0.725 ms, GPU waits  0.725 ms
+#     1 tokens,   4 experts:      2 layers ( 0.0%),  4.00 pairs, CPU  0.864 ms, GPU waits  0.843 ms
+#   2-3 tokens,   0 experts:   1162 layers (21.4%),  0.00 pairs, CPU  0.000 ms, GPU waits  0.000 ms
+#   2-3 tokens,   1 experts:   1164 layers (21.4%),  1.10 pairs, CPU  0.429 ms, GPU waits  0.375 ms
+#   2-3 tokens,   2 experts:    650 layers (11.9%),  2.19 pairs, CPU  0.738 ms, GPU waits  0.687 ms
+#   2-3 tokens,   3 experts:    285 layers ( 5.2%),  3.31 pairs, CPU  1.005 ms, GPU waits  0.955 ms
+#   2-3 tokens,   4 experts:    150 layers ( 2.8%),  4.37 pairs, CPU  1.295 ms, GPU waits  1.268 ms
+#   2-3 tokens, 5-7 experts:    103 layers ( 1.9%),  6.10 pairs, CPU  1.760 ms, GPU waits  1.738 ms
+#   2-3 tokens,  8+ experts:      6 layers ( 0.1%),  9.17 pairs, CPU  2.610 ms, GPU waits  2.595 ms
+#   4-6 tokens,   0 experts:    165 layers ( 3.0%),  0.00 pairs, CPU  0.000 ms, GPU waits  0.000 ms
+#   4-6 tokens,   1 experts:    217 layers ( 4.0%),  1.17 pairs, CPU  0.438 ms, GPU waits  0.295 ms
+#   4-6 tokens,   2 experts:    183 layers ( 3.4%),  2.22 pairs, CPU  0.716 ms, GPU waits  0.587 ms
+#   4-6 tokens,   3 experts:    117 layers ( 2.2%),  3.53 pairs, CPU  1.023 ms, GPU waits  0.903 ms
+#   4-6 tokens,   4 experts:     89 layers ( 1.6%),  4.72 pairs, CPU  1.304 ms, GPU waits  1.196 ms
+#   4-6 tokens, 5-7 experts:    134 layers ( 2.5%),  7.19 pairs, CPU  1.850 ms, GPU waits  1.763 ms
+#   4-6 tokens,  8+ experts:     55 layers ( 1.0%), 13.36 pairs, CPU  3.336 ms, GPU waits  3.269 ms
+## cpp-matrix: 32.96 t/s (with --profile), output identical to step 48
+#   2-3 tokens,   0 experts:     40 layers ( 1.5%),  0.00 pairs, CPU  0.000 ms, GPU waits  0.000 ms
+#   2-3 tokens,   1 experts:     66 layers ( 2.5%),  1.20 pairs, CPU  0.475 ms, GPU waits  0.414 ms
+#   2-3 tokens,   2 experts:    107 layers ( 4.0%),  2.39 pairs, CPU  0.740 ms, GPU waits  0.681 ms
+#   2-3 tokens,   3 experts:     72 layers ( 2.7%),  3.39 pairs, CPU  1.001 ms, GPU waits  0.952 ms
+#   2-3 tokens,   4 experts:     39 layers ( 1.5%),  4.49 pairs, CPU  1.314 ms, GPU waits  1.277 ms
+#   2-3 tokens, 5-7 experts:     31 layers ( 1.2%),  6.48 pairs, CPU  1.829 ms, GPU waits  1.828 ms
+#   2-3 tokens,  8+ experts:      5 layers ( 0.2%),  9.00 pairs, CPU  2.828 ms, GPU waits  2.798 ms
+#   4-6 tokens,   0 experts:    212 layers ( 7.9%),  0.00 pairs, CPU  0.000 ms, GPU waits  0.000 ms
+#   4-6 tokens,   1 experts:    424 layers (15.8%),  1.18 pairs, CPU  0.475 ms, GPU waits  0.328 ms
+#   4-6 tokens,   2 experts:    440 layers (16.4%),  2.27 pairs, CPU  0.750 ms, GPU waits  0.614 ms
+#   4-6 tokens,   3 experts:    390 layers (14.6%),  3.53 pairs, CPU  1.039 ms, GPU waits  0.907 ms
+#   4-6 tokens,   4 experts:    298 layers (11.1%),  4.77 pairs, CPU  1.343 ms, GPU waits  1.245 ms
+#   4-6 tokens, 5-7 experts:    430 layers (16.0%),  6.87 pairs, CPU  1.879 ms, GPU waits  1.807 ms
+#   4-6 tokens,  8+ experts:    126 layers ( 4.7%), 10.75 pairs, CPU  2.860 ms, GPU waits  2.791 ms

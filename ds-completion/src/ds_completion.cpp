@@ -58,6 +58,7 @@ int main(int argc, char** argv) {
   Options opt;
   [[maybe_unused]] int gpu = 0;
   [[maybe_unused]] bool profile = false;
+  [[maybe_unused]] std::string trace_path;
   std::string route_log;
   std::string placement;
   std::vector<int> moe_dies = {0, 1, 2, 3};
@@ -115,6 +116,7 @@ int main(int argc, char** argv) {
       for (char* q = (char*)next(); *q;) { moe_dies.push_back((int)strtol(q, &q, 10)); if (*q == ',') q++; }
     }
     else if (a == "--profile") profile = true;
+    else if (a == "--trace") trace_path = next();  // runtime: a Chrome trace of every step (ui.perfetto.dev)
     else if (a == "--rt") rt_path = next();
     else if (a == "--log-routing") route_log = next();  // runtime: every token's experts per layer
     else if (a == "--no-quant") opt.exact_quant = false;
@@ -197,6 +199,7 @@ int main(int argc, char** argv) {
     if (spec && dspark_path.empty()) { fprintf(stderr, "--spec needs --dspark\n"); return 2; }
     rt.reset(new Runtime(m, ro, rt_path));
     rt->profile = profile;
+    if (!trace_path.empty()) rt->set_trace(trace_path);
     if (!route_log.empty()) rt->log_routing(route_log);
   }
 #else

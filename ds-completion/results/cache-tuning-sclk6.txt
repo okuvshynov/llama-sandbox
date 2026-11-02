@@ -1,0 +1,20 @@
+# the adaptive cache's settings, generation (README step 50)
+# bin-hip/ds-completion -m $M --rt $F8 --placement placements/study30.txt --dspark $D --spec --canon --cache-loads R [--cache-period P] [--cache-window W] --cache-wait -p <tcp-udp | cpp-matrix> --chat -n 300; then CACHE="..." scripts/spec-measure.sh for the full set
+# commit 0ec746d + the parallel CPU activation (step 50); sclk 6 (manual, all four cards); 2026-11-02
+## two prompts: t/s | routed expert uses on GPUs | loads | output vs step 48
+200 (period 16) tcp-udp: 25.70 t/s | routed experts: 85.6% on GPUs | 2386 loads started | (profile run)
+200 (period 16) cpp-matrix: 30.46 t/s | routed experts: 79.9% on GPUs | 2023 loads started | (profile run)
+400 tcp-udp: 27.00 t/s | routed experts: 86.7% on GPUs | 3140 loads started | same
+400 cpp-matrix: 33.43 t/s | routed experts: 84.3% on GPUs | 3575 loads started | same
+800 tcp-udp: 27.50 t/s | routed experts: 87.0% on GPUs | 3225 loads started | same
+800 cpp-matrix: 33.96 t/s | routed experts: 85.4% on GPUs | 3682 loads started | same
+800 --cache-period 8 tcp-udp: 27.67 t/s | routed experts: 87.5% on GPUs | 3177 loads started | output same
+800 --cache-period 8 cpp-matrix: 35.02 t/s | routed experts: 86.1% on GPUs | 3693 loads started | output same
+800 --cache-window 128 tcp-udp: 27.54 t/s | routed experts: 87.0% on GPUs | 3066 loads started | output same
+800 --cache-window 128 cpp-matrix: 34.62 t/s | routed experts: 85.2% on GPUs | 3503 loads started | output same
+800 --cache-period 8 --cache-window 128 tcp-udp: 27.74 t/s | routed experts: 87.4% on GPUs | 3043 loads started | output same
+800 --cache-period 8 --cache-window 128 cpp-matrix: 35.08 t/s | routed experts: 85.9% on GPUs | 3524 loads started | output same
+## the 8 held-out prompts (scripts/spec-measure.sh): mean t/s
+results/spec-measure-sclk6: 8 prompts, mean 27.96 t/s, 8 outputs identical to step 32's plain --canon
+results/spec-measure-sclk6-cacheloads200cacheperiod16: 8 prompts, mean 28.69 t/s, 8 outputs identical to step 32's plain --canon
+results/spec-measure-sclk6-cacheloads800cacheperiod8: 8 prompts, mean 30.29 t/s, 8 outputs identical to step 32's plain --canon

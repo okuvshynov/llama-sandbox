@@ -121,6 +121,12 @@ Unless stated: sclk 2, 16 CPU threads (32 before README step 18), the study30 pl
 | 30 | `bench-expert-load.txt`, `load-test/` | `bin-hip/bench-expert-load -m $M`, `scripts/load-test.sh` |
 | 31-32 | `canon-gate.txt`, `canon-gate/` | `scripts/canon-gate.sh` (rerun for steps 32 and 45) |
 | 34 | `check-topk.txt` | `~/venvs/ds-ref/bin/python ref/check_topk.py` (runs `bin-hip/test-topk`) |
+| 52 | `prefetch-prediction-sclk6.txt` | the `--profile` output of the step 51 runs (commands in `trace/README.txt`) |
+| 51 | `trace/` | `bin-hip/ds-completion ... --spec --canon --cache-loads 800 --cache-period 8 --cache-wait --chat -n 300 --trace <name>.json` (in `trace/README.txt`), then `gzip -9` |
+| 50 | `cpu-moe-parallel-act.txt` | `bin/bench-cpu-moe -m $M -t 16 --tokens 8 --check-layers 2 -k N`; `... --check-layers "" --batch 6` |
+| 50 | `cache-tuning-sclk6.txt`, `spec-measure-sclk6-cacheloads200cacheperiod16/`, `spec-measure-sclk6-cacheloads800cacheperiod8/` | the two-prompt command in the file with each setting; `CACHE="--cache-loads 200 --cache-period 16" scripts/spec-measure.sh`, `CACHE="--cache-loads 800 --cache-period 8" scripts/spec-measure.sh` |
+| 50 | `miss-histogram-sclk6.txt` | the command in the file (`--profile`) |
+| 49 | `decode-profile-sclk6.txt` | the command in the file under `LD_PRELOAD` of `scripts/hip_count_shim.c` (`gcc -O2 -shared -fPIC -o shim.so scripts/hip_count_shim.c -ldl`), `scripts/profile_verify.py`, `bin-hip/bench-launch` |
 | 48 | `spec-measure-sclk6/` (summary, per-prompt logs, `analysis.txt`) | `scripts/spec-measure.sh`, then `scripts/spec_analysis.py --max-steps 400 results/spec-measure-sclk6/*.log` |
 | 48 | `spec-loop-check.txt`, `engram-copy-fix.txt` | commands in the files (the old build: a worktree at 73b6891) |
 | 47 | `spec-momentum.txt` | `~/venvs/ds-ref/bin/python scripts/spec_momentum.py 'results/spec-conf/*-n5.log'`; TIMING.md quotes steps 25-26, 32-33, 45-46 |

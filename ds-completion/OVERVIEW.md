@@ -31,7 +31,7 @@ Decode speed (sclk level 2, 16 CPU threads, 128 generated tokens):
 | ours, own GPU runtime, routed experts on the CPU | ~12 t/s |
 | ours, + most-used experts placed on the 4 GPUs (`--placement`) | 17.7-21.7 t/s |
 | ours, + speculative decoding with the model's DSpark draft (`--dspark ... --spec`) | 16-24 t/s; +22% (geometric mean) on 8 held-out prompts, +7% to +33% |
-| **ours, + adaptive expert cache (`--canon --cache-loads 200`)** | **mean 25.6 t/s with `--spec` on the 8 held-out prompts (+28% over the line above); 29.1 at sclk 8; 20.4 plain at 100 loads/s** |
+| **ours, + adaptive expert cache (`--canon --cache-loads 800 --cache-period 8`)** | **mean 30.3 t/s with `--spec` on the 8 held-out prompts at sclk 6 (README step 50); at 200 loads/s 25.6 at sclk 2 (+28% over the line above), 28.0 at sclk 6; 20.4 plain at 100 loads/s** |
 | upper bound: placement from the prompt's own routing (perfect knowledge) | ~25 t/s plain; 29-41 t/s with `--spec` |
 
 (The speculative and cache numbers are 300-token runs on held-out prompts; README steps 26, 32.)
@@ -209,9 +209,10 @@ experts ~3% visible.
    CPU's experts and the GPU's own work are now close (streaming the experts was tried and
    dropped, README step 44); options: larger chunks, then the GPU side (batched attention core).
 3. **Adaptive expert cache, tuning** (README steps 28-32): built and working (`--canon
-   --cache-loads R`: +28% with `--spec` at sclk 2, every output identical); left: the default
-   rate, hysteresis so it settles in long runs, the fast path's CPU preparation (the same fix as
-   the canonical one).
+   --cache-loads R`: +28% with `--spec` at sclk 2, every output identical); rate and period
+   tuned and the CPU kernel's preparation parallel (README step 50: +8% at sclk 6); left:
+   hysteresis so it settles in long runs. A miss costs ~0.27 ms, linear and barely hidden, and
+   the next layer's CPU expert is too unpredictable to prefetch (steps 50, 52).
 4. **The rest of a verify step:** fp8 projections over 64-lane rows are still ~2x one token at
    6 tokens; the router's 6 top-k launches; attention core per token.
 5. **The ~35 ms floor:** a higher GPU clock (free, if the power is acceptable), fusing the router

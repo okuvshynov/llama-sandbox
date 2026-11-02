@@ -363,6 +363,23 @@ Each rule is followed by where it mattered most.
     grows a buffer must also be checked for the copies sized by it, and generation speed belongs
     in the checks after any change to shared code.
 
+- **A fresh decode profile before choosing (README step 49).** Step 33's breakdown was four
+  builds old; the person asked for the ideas not yet explored, and the answer depended on
+  numbers I did not have (launch overhead was a guess). The installed profiler could not trace
+  the runtime, so the two missing numbers were measured directly: a launch counter (LD_PRELOAD
+  shim) and a launch microbenchmark. **Found:** the CPU's misses had grown back to the largest
+  item on code (step 33 measured chat); launches matter less than the count suggested.
+
+- **Ask what a cost depends on before optimizing it (README steps 50-52).** Two plausible ideas
+  were checked by measurement before any build: the person suspected one miss per layer would
+  hide behind the GPU's work and several would not; a per-layer histogram showed the cost is
+  linear and almost nothing hides, which pointed back to the hit rate (the cache tuning: +5.6%).
+  The person proposed prefetching the next layer's likeliest CPU expert; a bar was set first
+  (~60% right), the predictability was logged in the existing profile, and it came out ~20-28%:
+  not built. A trace (`--trace`, Perfetto) was added because the overlap question was easier to
+  see than to tabulate. The baseline run separating the kernel gain from the cache gain was lost
+  once to a waiting loop whose `pgrep -f` matched itself (as `pkill -f` had before).
+
 ## 4. Predictions against outcomes
 
 Estimates were made before measuring wherever possible; this is how they fared.
@@ -381,6 +398,8 @@ Estimates were made before measuring wherever possible; this is how they fared.
 | cache, `--spec`, 100 loads/s (29 -> 32) | ~28.9 t/s, 87% hits (1,024 tokens, no canonical cost) | 24.5 t/s, 80% hits (300 tokens) | shorter runs adapt for a larger share of the run |
 | CPU/GPU overlap of two half-chunks (38) | up to ~2x | 1.5x | half the tokens per CPU expert; both sides now ~33 s |
 | chunks of 64 share CPU expert reads (37) | most of the 53% saved | nothing | 384 experts: ~1 token per CPU expert per chunk; then compute-bound until tiled |
+| one CPU miss per layer hides behind the GPU's work (50) | partly | 0.05-0.15 of ~0.35-0.48 ms | the GPU's work alongside (shared expert, each die's experts) is shorter than one miss |
+| next layer's CPU expert guessable for a prefetch (52) | >= 60% needed | 17-28% (top-1) | the CPU's experts are the tail the cache did not keep |
 | the long proof's loop is a bug (48) | possible | the model's greedy behaviour | both implementations continue the loop from the same tokens |
 | chunks of 1,024 cut CPU expert time 20-30% (46) | 20-30% | ~6% per pair, prompt 6-12% slower | the kernel had become arithmetic-bound (step 45) |
 | runtime's CPU experts = the benchmark x 1.65 (42) | overhead around the kernel | the build: -O2 vs -O3 | the runtime was compiled with the common CXXFLAGS (-O2) |

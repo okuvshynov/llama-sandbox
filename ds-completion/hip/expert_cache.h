@@ -50,6 +50,9 @@ class ExpertCache {
   // rebalance when due, start loads within the rate
   void step(int M);
 
+  // the n most used (in the window) experts of layer L that are not on a GPU, most used first
+  // (ties: most recently used); read-only (README step 52's prefetch prediction)
+  std::vector<int> top_nonresident(int L, int n) const;
   struct Stats { long loads_started = 0, loads_published = 0, rebalances = 0, swaps_planned = 0; };
   Stats stats() const { return st; }
 

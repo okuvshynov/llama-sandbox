@@ -231,14 +231,22 @@ void CpuMoeKernel::forward_canon_rows(const CpuExperts& L, const float* x, const
 
 void CpuMoeKernel::forward(const CpuExperts& L, const float* x, const int* ids, const float* w, int k, float* y) {
   constexpr int CH = 32;  // rows per task
-  fq_fp8_host(x, xq.data(), E);
-  permute_blocks(xq.data(), xq.data() + E, E);  // the second half of xq holds the lane-ordered copy
-  const float* xl = xq.data() + E;
+  constexpr int AB = 8;   // blocks of 32 values per task in the element-wise phases (README step 50:
+                          // one task per expert left 15 of 16 threads idle with one expert)
+  const float* xl = xq.data() + E;  // the second half of xq holds the lane-ordered copy
   const size_t gu_row = L.gate->nb[1], d_row = L.down->nb[1];
   const int nb_e = E / QB, nb_f = F / QB;
   const int gu_tasks = k * 2 * (F / CH), d_tasks = k * (E / CH);
+  const int x_tasks = nb_e / AB, a_per = nb_f / AB, a_tasks = k * a_per;  // E / 32 and F / 32 are multiples of 8
 #pragma omp parallel num_threads(n_threads)
   {
+    // the input: fq8, then lane order (both per block of 32)
+#pragma omp for schedule(static)
+    for (int t = 0; t < x_tasks; t++) {
+      const int o = t * AB * QB;
+      fq_fp8_host(x + o, xq.data() + o, AB * QB);
+      permute_blocks(xq.data() + o, xq.data() + E + o, AB * QB);
+    }
     // phase 1: gate and up rows of every routed expert
 #pragma omp for schedule(static)
     for (int t = 0; t < gu_tasks; t++) {
@@ -247,17 +255,19 @@ void CpuMoeKernel::forward(const CpuExperts& L, const float* x, const int* ids, 
       float* out = (m ? up_out.data() : gate_out.data()) + (size_t)j * F;
       dot_range(expert_base(W, ids[j]), gu_row, nb_e, xl, c * CH, (c + 1) * CH, out);
     }
-    // swiglu_clamp, the routing weight (before w2, as the reference), then fq8 for w2's input
+    // swiglu_clamp, the routing weight (before w2, as the reference), then fq8 for w2's input;
+    // a few blocks of one expert per task (every step is per element or per block of 32)
 #pragma omp for schedule(static)
-    for (int j = 0; j < k; j++) {
-      float* a = act_q.data() + (size_t)j * F;
-      for (int i = 0; i < F; i++) {
-        const float g = std::min(gate_out[(size_t)j * F + i], L.limit);
-        const float u = std::clamp(up_out[(size_t)j * F + i], -L.limit, L.limit);
+    for (int t = 0; t < a_tasks; t++) {
+      const int j = t / a_per, o = (t % a_per) * AB * QB;
+      float* a = act_q.data() + (size_t)j * F + o;
+      for (int i = 0; i < AB * QB; i++) {
+        const float g = std::min(gate_out[(size_t)j * F + o + i], L.limit);
+        const float u = std::clamp(up_out[(size_t)j * F + o + i], -L.limit, L.limit);
         a[i] = w[j] * (g / (1.0f + expf(-g)) * u);
       }
-      fq_fp8_host(a, a, F);
-      permute_blocks(a, act_l.data() + (size_t)j * F, F);
+      fq_fp8_host(a, a, AB * QB);
+      permute_blocks(a, act_l.data() + (size_t)j * F + o, AB * QB);
     }
     // phase 2: down rows of every routed expert
 #pragma omp for schedule(static)
@@ -332,9 +342,13 @@ void CpuMoeKernel::forward_batch(const CpuExperts& L, const float* x, int T, con
 
   b_gate.resize((size_t)P * F);
   b_up.resize((size_t)P * F);
+  constexpr int AB = 8;  // blocks of 32 per task in the element-wise phases
+  const int x_per = E / QB / AB, a_per = F / QB / AB;
   if (canon) {
     b_xc.resize(T);
     b_ac.resize(P);
+    for (int t = 0; t < T; t++) if (routes[t].count) canon_act_size(E, b_xc[t]);
+    for (int p = 0; p < P; p++) canon_act_size(F, b_ac[p]);
   } else {
     b_xl.resize((size_t)T * 2 * E);
     b_act.resize((size_t)P * 2 * F);
@@ -369,18 +383,19 @@ void CpuMoeKernel::forward_batch(const CpuExperts& L, const float* x, int T, con
   tp[0] = Clk::now();
 #pragma omp parallel num_threads(n_threads)
   {
-    // the inputs: forward()'s fq8 + lane order, or forward_canon_rows' digits
+    // the inputs: forward()'s fq8 + lane order, or forward_canon_rows' digits; a few blocks of
+    // one token per task (README step 50: per token, a verify chunk's few tokens left most threads idle)
 #pragma omp for schedule(static)
-    for (int t = 0; t < T; t++) {
+    for (int task = 0; task < T * x_per; task++) {
+      const int t = task / x_per, b0 = (task % x_per) * AB;
       if (!routes[t].count) continue;
       const float* xt = x + (size_t)t * E;
       if (canon) {
-        canon_act_size(E, b_xc[t]);
-        canon_act_blocks(xt, 0, E / QB, b_xc[t]);
+        canon_act_blocks(xt, b0, b0 + AB, b_xc[t]);
       } else {
-        float* q = b_xl.data() + (size_t)t * 2 * E;
-        fq_fp8_host(xt, q, E);
-        permute_blocks(q, q + E, E);
+        float* q = b_xl.data() + (size_t)t * 2 * E + b0 * QB;
+        fq_fp8_host(xt + b0 * QB, q, AB * QB);
+        permute_blocks(q, q + E, AB * QB);
       }
     }
 #pragma omp master
@@ -397,30 +412,31 @@ void CpuMoeKernel::forward_batch(const CpuExperts& L, const float* x, int T, con
     }
 #pragma omp master
     tp[2] = Clk::now();
-    // the activation of every pair (forward()'s / forward_canon_rows' expressions)
+    // the activation of every pair (forward()'s / forward_canon_rows' expressions), a few blocks
+    // of one pair per task (every step is per element or per block of 32)
 #pragma omp for schedule(static)
-    for (int p = 0; p < P; p++) {
+    for (int task = 0; task < P * a_per; task++) {
+      const int p = task / a_per, b0 = (task % a_per) * AB, o = b0 * QB;
       const float wj = routes[pair_tok[p]].w[pair_j[p]];
-      const float* gt = b_gate.data() + (size_t)p * F;
-      const float* ut = b_up.data() + (size_t)p * F;
+      const float* gt = b_gate.data() + (size_t)p * F + o;
+      const float* ut = b_up.data() + (size_t)p * F + o;
       if (canon) {
         float* a = b_gate.data() + (size_t)p * F;  // in place: each element read before written
-        for (int i = 0; i < F; i++) {
+        for (int i = 0; i < AB * QB; i++) {
           const float g = std::min(gt[i], L.limit);
           const float u = std::clamp(ut[i], -L.limit, L.limit);
-          a[i] = wj * (canon_silu(g) * u);
+          a[o + i] = wj * (canon_silu(g) * u);
         }
-        canon_act_size(F, b_ac[p]);
-        canon_act_blocks(a, 0, F / QB, b_ac[p]);
+        canon_act_blocks(a, b0, b0 + AB, b_ac[p]);
       } else {
-        float* a = b_act.data() + (size_t)p * 2 * F;
-        for (int i = 0; i < F; i++) {
+        float* a = b_act.data() + (size_t)p * 2 * F + o;
+        for (int i = 0; i < AB * QB; i++) {
           const float g = std::min(gt[i], L.limit);
           const float u = std::clamp(ut[i], -L.limit, L.limit);
           a[i] = wj * (g / (1.0f + expf(-g)) * u);
         }
-        fq_fp8_host(a, a, F);
-        permute_blocks(a, a + F, F);
+        fq_fp8_host(a, a, AB * QB);
+        permute_blocks(a, a + F, AB * QB);
       }
     }
 #pragma omp master

@@ -17,6 +17,7 @@
 #include <cmath>
 #include <cstring>
 #include <stdexcept>
+#include <set>
 #include <thread>
 
 #define CHECK(x)                                                                                   \
@@ -368,7 +369,9 @@ std::vector<int32_t> Runtime::verify(const std::vector<int32_t>& chunk, bool hea
     CHECK(hipMemcpyAsync(cmp_backup[L] + (size_t)r * HD, S[L].cmp_score, (size_t)r * HD * 4, hipMemcpyDeviceToDevice, s));
   }
   verifying = true;
+  const auto t_v = Clock::now();
   std::vector<int32_t> next = forward_chunk(chunk, head);
+  trace_host(("verify " + std::to_string(M) + " tokens").c_str(), t_v, Clock::now(), 3);
   verifying = false;
   return next;
 }
@@ -387,6 +390,8 @@ std::vector<int32_t> Runtime::forward_chunk(const std::vector<int32_t>& toks, bo
   std::fill(cand_cur.begin(), cand_cur.end(), nullptr);
   last = Times{};
   marks.clear();
+  cur_layer = -1;
+  trace_step_begin();
   mark("engram.fetch");
   fetch_engram_rows(toks);
   std::vector<float> emb((size_t)M * E), one_hot((size_t)M * HC, 0.0f);
@@ -451,6 +456,8 @@ std::vector<int32_t> Runtime::forward_chunk(const std::vector<int32_t>& toks, bo
       last_groups[marks[i].first] += ms;
     }
   }
+  if (profile) fold_misses();
+  trace_step_end();
   last.total_ms = ms_since(t0);
   return next;
 }
@@ -489,7 +496,10 @@ void Runtime::commit(int n_keep) {
 
 DraftResult Runtime::draft(int32_t anchor, bool keep_logits) {
   if (!dspark) throw std::runtime_error("no DSpark draft loaded");
-  return dspark->draft(anchor, n_past_ - 1, keep_logits);
+  const auto t0 = Clock::now();
+  DraftResult r = dspark->draft(anchor, n_past_ - 1, keep_logits);
+  trace_host("draft", t0, Clock::now(), 3);
+  return r;
 }
 
 // The placement's top pairs into the dies' free memory (after everything else is allocated),
@@ -588,6 +598,7 @@ void Runtime::setup_experts() {
 
 Runtime::~Runtime() {
   (void)hipStreamSynchronize(s);
+  trace_write();
   if (loader) {
     fprintf(stderr, "# load test: %ld loads\n", loader->loads());
     loader.reset();
@@ -597,6 +608,40 @@ Runtime::~Runtime() {
     fprintf(stderr, "# expert cache: %ld rebalances, %ld swaps planned, %ld loads started, %ld published\n", cs.rebalances,
             cs.swaps_planned, cs.loads_started, cs.loads_published);
     cache.reset();
+  }
+  if (profile) {
+    long tot = 0;
+    for (auto& row : miss_hist) for (auto& c : row) tot += c.n;
+    if (tot) {
+      static const char* mn[4] = {"1", "2-3", "4-6", "7+"};
+      static const char* dn[7] = {"0", "1", "2", "3", "4", "5-7", "8+"};
+      fprintf(stderr, "# CPU experts per layer (generation): tokens in the forward, distinct CPU experts: layers, mean pairs, "
+              "CPU ms, the GPU's wait ms (mean per layer)\n");
+      for (int a = 0; a < 4; a++)
+        for (int b = 0; b < 7; b++) {
+          const MissCell& c = miss_hist[a][b];
+          if (!c.n) continue;
+          fprintf(stderr, "#   %3s tokens, %3s experts: %6ld layers (%4.1f%%), %5.2f pairs, CPU %6.3f ms, GPU waits %6.3f ms\n", mn[a], dn[b],
+                  c.n, 100.0 * c.n / tot, (double)c.pairs / c.n, c.cpu_ms / c.n, c.wait_ms / c.n);
+        }
+    }
+  }
+  if (profile) {
+    long tot = 0;
+    for (auto& p : pred_hist) tot += p.layers;
+    if (tot) {
+      static const char* mn[4] = {"1", "2-3", "4-6", "7+"};
+      fprintf(stderr, "# prefetch prediction (generation): tokens in the forward: layers, with CPU experts; the guess among them: "
+              "cache's top-1 non-resident, any of its top 3, previous forward's top CPU expert; guesses on layers without any\n");
+      for (int a = 0; a < 4; a++) {
+        const PredCell& p = pred_hist[a];
+        if (!p.layers) continue;
+        const double w = std::max(1L, p.with_cpu);
+        fprintf(stderr, "#   %3s tokens: %6ld layers, %6ld with CPU experts (%4.1f%%); top-1 %4.1f%%, top-3 %4.1f%%, previous %4.1f%%; "
+                "wasted on %4.1f%% of layers\n", mn[a], p.layers, p.with_cpu, 100.0 * p.with_cpu / p.layers, 100.0 * p.freq1 / w,
+                100.0 * p.freq3 / w, 100.0 * p.prev1 / w, 100.0 * p.wasted / p.layers);
+      }
+    }
   }
   if (profile && cpu_moe && cpu_moe->bstats.calls) {
     const auto& b = cpu_moe->bstats;
@@ -671,6 +716,115 @@ void Runtime::gemv8(const Fp8W& w, Codes c, float* yout, int rows_per_group, int
              yout + (size_t)m0 * w.N, s);
 }
 
+// profile: each layer's GPU wait for the CPU (its "ffn.wait_for_cpu_experts" interval) next to
+// what the CPU had to do there, folded into the histogram (call once the step's marks are done)
+void Runtime::fold_misses() {
+  for (const MissRec& r : miss_recs) {
+    float w = 0;
+    if (r.mark >= 0 && r.mark + 1 < (int)marks.size()) CHECK(hipEventElapsedTime(&w, marks[r.mark].second, marks[r.mark + 1].second));
+    const int mb = r.M == 1 ? 0 : r.M <= 3 ? 1 : r.M <= 6 ? 2 : 3;
+    const int db = r.distinct <= 4 ? r.distinct : r.distinct <= 7 ? 5 : 6;
+    MissCell& c = miss_hist[mb][db];
+    c.n++;
+    c.pairs += r.pairs;
+    c.cpu_ms += r.cpu_ms;
+    c.wait_ms += w;
+  }
+  miss_recs.clear();
+}
+
+// ------------------------------------------------------------------ trace (README step 51)
+
+void Runtime::set_trace(const std::string& path) {
+  trace_path = path;
+  profile = true;
+  trace_epoch = Clock::now();
+  die_trace.resize(dies.size());
+  for (size_t i = 0; i < dies.size(); i++) {
+    DieTrace& t = die_trace[i];
+    t.st = dies[i].st ? dies[i].st : s_local;
+    CHECK(hipSetDevice(dies[i].dev));
+    CHECK(hipEventCreate(&t.base));
+  }
+  CHECK(hipSetDevice(opt.gpu));
+}
+
+void Runtime::trace_host(const char* name, Clock::time_point a, Clock::time_point b, int tid, const std::string& args) {
+  if (trace_path.empty()) return;
+  const double ts = std::chrono::duration<double, std::micro>(a - trace_epoch).count();
+  trace_evs.push_back({name, tid, ts, std::chrono::duration<double, std::micro>(b - a).count(), args});
+}
+
+hipEvent_t Runtime::trace_ev(int die) {
+  DieTrace& t = die_trace[die];
+  if (t.used == t.pool.size()) {
+    hipEvent_t e;
+    CHECK(hipEventCreate(&e));
+    t.pool.push_back(e);
+  }
+  return t.pool[t.used++];
+}
+
+// at a step's start: a reference event on every die's expert stream, with the host time
+void Runtime::trace_step_begin() {
+  if (trace_path.empty()) return;
+  for (size_t i = 0; i < die_trace.size(); i++) {
+    DieTrace& t = die_trace[i];
+    t.used = 0;
+    t.spans.clear();
+    CHECK(hipSetDevice(dies[i].dev));
+    CHECK(hipEventRecord(t.base, t.st));
+    t.base_us = std::chrono::duration<double, std::micro>(Clock::now() - trace_epoch).count();
+  }
+  CHECK(hipSetDevice(opt.gpu));
+}
+
+// at a step's end (its events have completed): die 0's groups per layer, the dies' expert spans
+void Runtime::trace_step_end() {
+  if (trace_path.empty() || marks.empty()) return;
+  for (size_t i = 0; i + 1 < marks.size(); i++) {
+    float a, d;
+    CHECK(hipEventElapsedTime(&a, marks[0].second, marks[i].second));
+    CHECK(hipEventElapsedTime(&d, marks[i].second, marks[i + 1].second));
+    std::string name = marks[i].first;
+    if (mark_layer[i] >= 0) name += " L" + std::to_string(mark_layer[i]);
+    trace_evs.push_back({name, 2, step_t0_us + a * 1000.0, d * 1000.0, ""});
+  }
+  for (size_t i = 0; i < die_trace.size(); i++) {
+    DieTrace& t = die_trace[i];
+    CHECK(hipSetDevice(dies[i].dev));
+    for (auto& [L, ab] : t.spans) {
+      float a, d;
+      CHECK(hipEventSynchronize(ab.second));
+      CHECK(hipEventElapsedTime(&a, t.base, ab.first));
+      CHECK(hipEventElapsedTime(&d, ab.first, ab.second));
+      trace_evs.push_back({"experts L" + std::to_string(L), 10 + (int)i, t.base_us + a * 1000.0, d * 1000.0, ""});
+    }
+  }
+  CHECK(hipSetDevice(opt.gpu));
+}
+
+void Runtime::trace_write() {
+  if (trace_path.empty()) return;
+  FILE* f = fopen(trace_path.c_str(), "w");
+  if (!f) return;
+  fprintf(f, "{\"traceEvents\":[\n");
+  auto meta = [&](int tid, const std::string& name, bool first = false) {
+    fprintf(f, "%s{\"name\":\"thread_name\",\"ph\":\"M\",\"pid\":1,\"tid\":%d,\"args\":{\"name\":\"%s\"}}", first ? "" : ",\n", tid, name.c_str());
+  };
+  meta(1, "host thread", true);
+  meta(3, "steps (host)");
+  meta(2, "GPU " + std::to_string(opt.gpu) + " main stream (dense part)");
+  for (size_t i = 0; i < dies.size(); i++)
+    meta(10 + (int)i, "GPU " + std::to_string(dies[i].dev) + (dies[i].st ? " experts" : " experts (second stream)"));
+  for (const TraceEv& e : trace_evs)
+    fprintf(f, ",\n{\"name\":\"%s\",\"ph\":\"X\",\"pid\":1,\"tid\":%d,\"ts\":%.1f,\"dur\":%.1f%s%s%s}", e.name.c_str(), e.tid, e.ts,
+            e.dur, e.args.empty() ? "" : ",\"args\":{", e.args.c_str(), e.args.empty() ? "" : "}");
+  fprintf(f, "\n]}\n");
+  fclose(f);
+  fprintf(stderr, "# trace: %zu events in %s (open in ui.perfetto.dev)\n", trace_evs.size(), trace_path.c_str());
+}
+
 void Runtime::mark(const char* group) {
   if (!profile) return;
   if (marks.size() == ev_pool.size()) {
@@ -679,8 +833,11 @@ void Runtime::mark(const char* group) {
     ev_pool.push_back(e);
   }
   hipEvent_t e = ev_pool[marks.size()];
+  if (marks.empty()) step_t0_us = std::chrono::duration<double, std::micro>(Clock::now() - trace_epoch).count();
   CHECK(hipEventRecord(e, s));
   marks.emplace_back(group, e);
+  if (mark_layer.size() < marks.size()) mark_layer.resize(marks.size());
+  mark_layer[marks.size() - 1] = cur_layer;
 }
 
 void Runtime::tap(Taps* taps, const char* name, const float* d, std::vector<int64_t> ne) {
@@ -895,16 +1052,25 @@ void Runtime::moe_launch(int L, int M) {
     if (!d.st) {  // the home die: its lists on the second stream, next to the shared expert
       local = true;
       CHECK(hipStreamWaitEvent(s_local, ev_dispatched, 0));
+      hipEvent_t tr_a = nullptr;
+      if (!trace_path.empty()) CHECK(hipEventRecord(tr_a = trace_ev(i), s_local));
       if (opt.canon)
         fp4_moe_canon_rows(d.pool.view, xin, sel(d_moe.lists, i), KE, M, hp.swiglu_clamp[L], place_rows(i), d.scratch, s_local);
       else
         fp4_moe_chunk(d.pool.view, xin, sel(d_moe.lists, i), KE, M, hp.swiglu_clamp[L], d.y_home, d.scratch, s_local);
       CHECK(hipEventRecord(ev_local, s_local));
+      if (tr_a) {
+        hipEvent_t tr_b = trace_ev(i);
+        CHECK(hipEventRecord(tr_b, s_local));
+        die_trace[i].spans.push_back({L, {tr_a, tr_b}});
+      }
       continue;
     }
     // another die: starts when the block is in host memory, no host involvement
     CHECK(hipSetDevice(d.dev));
     CHECK(hipStreamWaitEvent(d.st, ev_staged, 0));
+    hipEvent_t tr_a = nullptr;
+    if (!trace_path.empty()) CHECK(hipEventRecord(tr_a = trace_ev(i), d.st));
     CHECK(hipMemcpyAsync(d.d_in, h_moe.lists, lists_bytes, hipMemcpyHostToDevice, d.st));
     CHECK(hipMemcpyAsync(d.d_in + moe_lists_bytes, h_moe.x, (size_t)M * E * 4, hipMemcpyHostToDevice, d.st));
     const float* dx = (const float*)(d.d_in + moe_lists_bytes);
@@ -914,6 +1080,11 @@ void Runtime::moe_launch(int L, int M) {
       fp4_moe_chunk(d.pool.view, dx, sel((const MoeList*)d.d_in, i), KE, M, hp.swiglu_clamp[L], d.d_y, d.scratch, d.st);
       CHECK(hipMemcpyAsync(d.h_y, d.d_y, (size_t)M * E * 4, hipMemcpyDeviceToHost, d.st));
       CHECK(hipEventRecord(d.done, d.st));
+    }
+    if (tr_a) {  // copy in and the kernel (fast: and the copy back)
+      hipEvent_t tr_b = trace_ev(i);
+      CHECK(hipEventRecord(tr_b, d.st));
+      die_trace[i].spans.push_back({L, {tr_a, tr_b}});
     }
     CHECK(hipSetDevice(opt.gpu));
   }
@@ -936,6 +1107,7 @@ void Runtime::moe_finish(int L, float* out, int M, Taps* taps) {
   auto t0 = Clock::now();
   CHECK(hipEventSynchronize(ev_staged));
   last.wait_ms += ms_since(t0);
+  trace_host("wait for the staged block", t0, Clock::now(), 1);
   // the place's rows of this chunk (canon): the counts are known now
   std::vector<int> n_rows(n_dies + 1, 0);
   for (int t = 0; t < M; t++) {
@@ -963,6 +1135,8 @@ void Runtime::moe_finish(int L, float* out, int M, Taps* taps) {
   std::vector<char> has_cpu(M, 0);
   bool any_cpu = false;
   int cpu_row = 0;
+  const size_t mk0 = marks.size();  // profile: the next mark is this layer's wait for the CPU
+  const auto t_cpu0 = Clock::now();
   if (M > 1) {
     std::vector<CpuMoeKernel::CpuRoute> routes(M);
     for (int t = 0; t < M; t++) {
@@ -996,6 +1170,45 @@ void Runtime::moe_finish(int L, float* out, int M, Taps* taps) {
       cpu_moe->forward(ce, h_moe.x + (size_t)t * E, lc.ids, lc.w, lc.count, h_yr + (size_t)t * E);
     }
     last.cpu_moe_ms += ms_since(t1c);
+  }
+  if (profile && !in_prefill) {
+    std::set<int> distinct;
+    int pairs = 0;
+    for (int t = 0; t < M; t++) {
+      const MoeList& lc = h_moe.lists[(size_t)t * kMoeListStride + n_dies];
+      for (int j = 0; j < lc.count; j++) distinct.insert(lc.ids[j]);
+      pairs += lc.count;
+    }
+    miss_recs.push_back({M, (int)distinct.size(), pairs, any_cpu ? ms_since(t_cpu0) : 0.0, any_cpu ? (int)mk0 : -1});
+    if (cache) {  // the prefetch prediction (README step 52)
+      if (prev_top.empty()) prev_top.assign(hp.n_layer, -1);
+      const std::vector<int> f3 = cache->top_nonresident(L, 3);
+      PredCell& pc = pred_hist[M == 1 ? 0 : M <= 3 ? 1 : M <= 6 ? 2 : 3];
+      pc.layers++;
+      if (distinct.empty()) {
+        pc.wasted++;
+      } else {
+        pc.with_cpu++;
+        pc.freq1 += !f3.empty() && distinct.count(f3[0]);
+        bool any3 = false;
+        for (int e : f3) any3 |= distinct.count(e) > 0;
+        pc.freq3 += any3;
+        pc.prev1 += prev_top[L] >= 0 && distinct.count(prev_top[L]);
+      }
+      std::map<int, int> uses;  // this forward's most used CPU expert of the layer, for the next
+      for (int t = 0; t < M; t++) {
+        const MoeList& lc = h_moe.lists[(size_t)t * kMoeListStride + n_dies];
+        for (int j = 0; j < lc.count; j++) uses[lc.ids[j]]++;
+      }
+      int best = -1, bn = 0;
+      for (auto& [e, n] : uses)
+        if (n > bn) best = e, bn = n;
+      prev_top[L] = best;
+    }
+    if (any_cpu)
+      trace_host(("CPU experts L" + std::to_string(L)).c_str(), t_cpu0, Clock::now(), 1,
+                 "\"distinct experts\":" + std::to_string(distinct.size()) + ",\"pairs\":" + std::to_string(pairs) +
+                 ",\"tokens\":" + std::to_string(M));
   }
   if (any_cpu) {
     if (opt.canon) CHECK(hipMemcpyAsync(place_rows(n_dies), h_yr, (size_t)cpu_row * E * 4, hipMemcpyHostToDevice, s));
@@ -1041,6 +1254,7 @@ void Runtime::block(int L, Taps* taps, int M) {
 
 // up to the routed experts started (GPU work only: the host does not wait)
 void Runtime::block_pre(int L, Taps* taps, int M) {
+  cur_layer = L;
   const LayerW& w = W[L];
   const int E = hp.n_embd, HC = hp.hc_mult, MIX = (2 + HC) * HC;
   const float eps = hp.rms_eps;
@@ -1075,6 +1289,7 @@ void Runtime::block_pre(int L, Taps* taps, int M) {
 
 // from the CPU's experts (the host computes them) to the block output
 void Runtime::block_post(int L, Taps* taps, int M) {
+  cur_layer = L;
   const int E = hp.n_embd, HC = hp.hc_mult;
   moe_finish(L, y, M, taps);
   tap(taps, "ffn_out", y, {E, 1});
@@ -1108,6 +1323,8 @@ void Runtime::begin_step(int32_t tok) {
   std::fill(cand_cur.begin(), cand_cur.end(), nullptr);
   last = Times{};
   marks.clear();
+  cur_layer = -1;
+  trace_step_begin();
   mark("engram.fetch");
   fetch_engram_rows({tok});
 }
@@ -1223,6 +1440,7 @@ std::vector<float> Runtime::decode(int32_t tok, bool want_logits) {
   if (!want_logits) {
     end_step();
     last.total_ms = ms_since(t0);
+    trace_host("decode (no logits)", t0, Clock::now(), 3);
     return {};
   }
   // head: collapse with the last pre-mix, norm, logits
@@ -1242,6 +1460,9 @@ std::vector<float> Runtime::decode(int32_t tok, bool want_logits) {
       last_groups[marks[i].first] += ms;
     }
   }
+  if (profile) fold_misses();
+  trace_step_end();
   last.total_ms = ms_since(t0);
+  trace_host("decode", t0, Clock::now(), 3);
   return logits;
 }

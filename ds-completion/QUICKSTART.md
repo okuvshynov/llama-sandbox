@@ -42,7 +42,7 @@ cd ~/projects/llama-sandbox/ds-completion
 bin-hip/ds-completion -m $M --rt ~/llms/ds-1017-fp8/dense-fp8.gguf \
     --placement placements/study30.txt \
     --dspark ~/llms/dspark/dspark-DeepSeek-V4.1-Flash-1017-BF16.gguf --spec \
-    --canon --cache-loads 200 \
+    --canon --cache-loads 800 --cache-period 8 \
     -f prompt.txt --think --effort max -n 60000
 ```
 
@@ -80,7 +80,9 @@ Options:
 - `--no-overlap`: prompt chunks without the CPU/GPU overlap (slower; for comparisons).
 - `-t`: CPU threads; the default 16 (one per physical core) is best with `--rt`. 32 leaves no
   CPU for the host thread and the HIP runtime and is much slower (README step 18).
-- `--profile`: a per-step time breakdown.
+- `--profile`: a per-step time breakdown, the CPU's misses per layer and what they cost (README
+  step 50).
+- `--trace FILE`: a Chrome trace of every step (open in ui.perfetto.dev; README step 51).
 - `--gpu D`: the die for the runtime (default 0).
 - `--placement FILE`: routed experts on GPUs, the file's top-ranked ones that fit (10-30 s upload).
 - `--moe-dies 0,1,2,3`: the dies that hold experts (default all four).
@@ -94,8 +96,8 @@ Options:
   cache give the same bytes); generation ~2% slower, the prompt ~25% (its CPU expert kernel is
   slower).
 - `--cache-loads R`: the adaptive expert cache (README step 32): the GPUs keep the experts used
-  most in the last 256 tokens, loading up to R experts per second in the background (100 is a
-  good default; 0 = the static placement). Use with `--canon`, or the output depends on load
+  most in the last 256 tokens, loading up to R experts per second in the background (800 with
+  `--cache-period 8` is the fastest measured, README step 50; 0 = the static placement). Use with `--canon`, or the output depends on load
   timing. It starts loading once the model's expert memory is registered with the GPUs (~95-135
   s in the background, longer if the model must come back from disk; README step 43);
   `--cache-wait` waits for that before the prompt. `--cache-period N` (16) and
@@ -112,7 +114,7 @@ the 30-prompt routing study (43% of all, 10-30 s upload); 17.7-21.7 t/s on the t
 
 | mode | command | decode | KL vs reference*: median / mean without the near-tie step |
 |---|---|---|---|
-| **+ adaptive expert cache** | `... --placement placements/study30.txt --dspark ... --spec --canon --cache-loads 200` | **19.9-30.6 t/s, mean 25.6** (300 tokens, held-out prompts; 29.1 at sclk 8) | output byte-identical to the plain `--canon` run |
+| **+ adaptive expert cache** | `... --placement placements/study30.txt --dspark ... --spec --canon --cache-loads 800 --cache-period 8` | **25.6-36.3 t/s, mean 30.3** at sclk 6 (300 tokens, held-out prompts; README step 50; `--cache-loads 200`: 25.6 at sclk 2, 28.0 at sclk 6) | output byte-identical to the plain `--canon` run |
 | + speculative decoding | `... --placement placements/study30.txt --dspark ... --spec` | 16-24 t/s (300 tokens, held-out prompts; +22% geometric mean) | output byte-identical to the row below |
 | own runtime + experts placed on GPUs | `bin-hip/ds-completion --rt ... --placement placements/study30.txt` | 17.7-21.7 t/s (128 tokens) | same numerics: per-layer gate identical to below |
 | own runtime, dense on GPU 0 | `bin-hip/ds-completion --rt ...` | 12.0-12.5 t/s | 5.9e-6 / 4.8e-3 (earlier run 1.7e-5 / 6.3e-4) |

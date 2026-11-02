@@ -44,7 +44,13 @@ token at 6, and more experts miss the GPUs. A 6-token verify step at sclk 8 (REA
 | GPU experts (visible part) | 4 | 3% |
 | **step + draft** | **~122** | |
 
-So the dense part is two thirds of a step; the cache cut the CPU experts from 78 ms to 25.
+So the dense part is two thirds of a step; the cache cut the CPU experts from 78 ms to 25. On
+code, where a step verifies 6 tokens more often, the CPU's misses are larger: 50 of 134 ms at
+sclk 6 (README step 49). Kernel launches (~3,000-3,900 per step at ~2.4 us) are at most 7-12%.
+Per layer, a CPU miss costs ~0.27 ms per distinct expert plus ~0.1 ms for having any, and only
+~0.05-0.15 ms of it hides behind the GPUs' work (README step 50): every miss avoided is ~0.27 ms
+off the step. With the cache tuned (800 loads/s, every 8 tokens) the held-out mean is 30.3 t/s
+at sclk 6. To see a step: `--trace` (README step 51).
 
 ## Prompt (chunks of 512 tokens)
 

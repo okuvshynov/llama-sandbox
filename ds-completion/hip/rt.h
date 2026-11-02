@@ -113,6 +113,28 @@ class Runtime {
   // profile = true: GPU events between groups of launches; per group, the GPU time of the
   // last step (gaps included: a group charged with idle time was waiting on the host)
   bool profile = false;
+  // profile, generation only (README step 50): per layer of every forward its CPU experts and
+  // what they cost; MissRec per layer of the current forward, folded into miss_hist at its end:
+  // [tokens in the forward: 1, 2-3, 4-6, 7+][distinct CPU experts: 0, 1, 2, 3, 4, 5-7, 8+]
+  struct MissRec { int M, distinct, pairs; double cpu_ms; int mark; };
+  std::vector<MissRec> miss_recs;
+  struct MissCell { long n = 0, pairs = 0; double cpu_ms = 0, wait_ms = 0; } miss_hist[4][7];
+  void fold_misses();
+  // profile, generation (README step 52): could the next layer's CPU expert be guessed early
+  // (to prefetch it into the CPU's caches)? Per token-count bucket: layers, layers with CPU
+  // experts, guesses that were among them (the cache's most used non-resident expert; the top 3;
+  // the previous forward's most used CPU expert of the layer), guesses on layers without any
+  struct PredCell { long layers = 0, with_cpu = 0, freq1 = 0, freq3 = 0, prev1 = 0, wasted = 0; } pred_hist[4];
+  std::vector<int> prev_top;  // [layer] the previous forward's most used CPU expert, or -1
+
+  // --trace FILE (README step 51): a Chrome trace (open in ui.perfetto.dev) of every step: the
+  // host thread (steps, per layer the wait for the staged block and the CPU's experts), die 0's
+  // main stream (the profile groups per layer), die 0's expert stream and the other dies (their
+  // experts per layer). GPU times come from events, placed on the host clock by a reference
+  // event per device recorded when the step starts (the devices are idle then).
+  void set_trace(const std::string& path);
+  void trace_host(const char* name, std::chrono::steady_clock::time_point a, std::chrono::steady_clock::time_point b,
+                  int tid, const std::string& args = "");
   // routing log (scripts/route_stats.py reads it): opens `path` and appends one record per token
   // forwarded (prompt tokens and rejected drafts included): its position, id, whether it is a
   // prompt token, the forward it ran in, and per layer the router's expert ids and weights.
@@ -267,5 +289,26 @@ class Runtime {
   void tap(Taps* taps, const char* name, const float* d, std::vector<int64_t> ne);
   void mark(const char* group);
   std::vector<std::pair<const char*, hipEvent_t>> marks;
+  std::vector<int> mark_layer;  // the layer of each mark (trace)
+  int cur_layer = -1;
   std::vector<hipEvent_t> ev_pool;
+  // trace state
+  std::string trace_path;
+  std::chrono::steady_clock::time_point trace_epoch;
+  struct TraceEv { std::string name; int tid; double ts, dur; std::string args; };
+  std::vector<TraceEv> trace_evs;
+  double step_t0_us = 0;  // host time of the step's first mark
+  struct DieTrace {
+    hipStream_t st = nullptr;
+    hipEvent_t base = nullptr;
+    double base_us = 0;
+    std::vector<hipEvent_t> pool;
+    size_t used = 0;
+    std::vector<std::pair<int, std::pair<hipEvent_t, hipEvent_t>>> spans;  // (layer, (start, end))
+  };
+  std::vector<DieTrace> die_trace;  // per die
+  hipEvent_t trace_ev(int die);    // an event from the die's pool (current device = its)
+  void trace_step_begin();
+  void trace_step_end();
+  void trace_write();
 };

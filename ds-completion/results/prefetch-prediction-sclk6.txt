@@ -1,0 +1,10 @@
+# could the next layer's CPU expert be guessed early, to prefetch it into the CPU's caches? (README step 52)
+# the --profile output of the two runs in results/trace/README.txt (same commands); sclk 6 (manual, all four cards); 2026-11-02
+# per token count of the forward: layers; layers with CPU experts; how often the guess was among them: the cache's most used non-resident expert of the layer (top-1), any of its top 3, the previous forward's most used CPU expert of the layer; guesses on layers without CPU experts
+## tcp-udp: 25.69 t/s (--trace), output identical to step 48
+#     1 tokens:    680 layers,    258 with CPU experts (37.9%); top-1 17.4%, top-3 28.7%, previous 19.8%; wasted on 62.1% of layers
+#   2-3 tokens:   3480 layers,   2294 with CPU experts (65.9%); top-1 19.7%, top-3 34.3%, previous 15.9%; wasted on 34.1% of layers
+#   4-6 tokens:   1120 layers,    922 with CPU experts (82.3%); top-1 28.1%, top-3 42.2%, previous 21.5%; wasted on 17.7% of layers
+## cpp-matrix: 32.65 t/s (--trace), output identical to step 48
+#   2-3 tokens:    600 layers,    510 with CPU experts (85.0%); top-1 19.6%, top-3 32.7%, previous 15.7%; wasted on 15.0% of layers
+#   4-6 tokens:   2160 layers,   1954 with CPU experts (90.5%); top-1 23.4%, top-3 40.6%, previous 20.3%; wasted on  9.5% of layers

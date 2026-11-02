@@ -34,7 +34,7 @@ Speed
 | 14 | HIP graphs + kernel fusion (D) | started | engram per step + experts mapped at load done (~1%); graphs save little on this ROCm, fusion ~37 -> ~22 launches per layer for ~2-3 ms (README step 12) |
 | 15 | Per-layer expert split, CPU and all dies concurrently (A1/EP) | done | `--placement`: fixed set from the study; 17.7-21.7 t/s (README steps 14-18) |
 | 15a | Expert path fixes: no die waits for the host; faster small-count kernel; 16 threads | done | oracle bound 16 -> ~25 t/s (README steps 15-18) |
-| 16 | Adaptive expert cache (A1 + A2) | done; tuning planned | `--canon --cache-loads R`: frequency rebalance, held-out `--spec` +28% at sclk 2 (25.6 t/s), 29.1 at sclk 8, outputs identical (README steps 28-33); tuning: "Further optimization ideas" A |
+| 16 | Adaptive expert cache (A1 + A2) | done; rate and period tuned (step 50) | `--canon --cache-loads R`: frequency rebalance, held-out `--spec` +28% at sclk 2 (25.6 t/s), 29.1 at sclk 8, outputs identical (README steps 28-33); tuning: "Further optimization ideas" A |
 | 17 | Tensor parallelism, 2-way then 4-way (C1/C2) | planned | split the dense GEMVs over dies: ~-6..10 ms per step, matters once experts are mostly on GPUs |
 | 18 | Shared expert by TP, routed by EP (C4) | planned | the dense shared expert splits like any other GEMV under TP |
 | 19 | DSpark speculative decoding (E1) | done | `--dspark ... --spec`, output identical to plain greedy; held-out prompts +7% to +33% (geometric mean +22%), oracle placement +19% / +71% (README steps 19-26) |
@@ -308,6 +308,19 @@ simulation's 95% (rejected drafts, late loads).
 From the verify-step breakdown with the cache (README step 33: per verify step + draft ~122 ms
 at sclk 8: dense part ~64%, CPU experts ~20%, draft ~10%, GPU experts ~3% visible). Brief; each
 needs its own measurement first. Order: after "Long context".
+
+**Decode profile (README step 49, sclk 6, the cache warm):** a verify step is 62 ms (chat, 2
+tokens) to 134 ms (code, 6 tokens); the GPU waits 25-38% of it for the CPU's experts (~0.3 ms
+each, the single-token kernel reading at ~63 GB/s); then the attention core (per token, ~10% on
+code), the router (~4%), launches (at most 7-12%), the small-batch fp8 kernels (~5%). Order:
+the CPU's misses first (fewer: cache tuning, A; cheaper: the single-token CPU kernel's memory
+bandwidth), then the batched attention core.
+
+**Done since (README steps 50-52):** the CPU kernel's preparation in parallel (+2.6%), the cache
+at 800 loads/s and every 8 tokens (+5.6%; held-out mean 30.3 t/s at sclk 6), a per-layer miss
+histogram (cost is linear, ~0.27 ms per distinct CPU expert, little hidden: the hit rate is the
+target), `--trace` for Perfetto, and a prefetch of the next layer's likely CPU expert measured
+and not built (the guess is right ~20-28% of the time).
 
 **A. Tuning the expert cache** (the CPU experts' ~25 ms)
 - Hysteresis: a newcomer must beat its victim by a margin, so the cache settles in long runs

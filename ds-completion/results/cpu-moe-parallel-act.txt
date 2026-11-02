@@ -1,0 +1,29 @@
+# the CPU expert kernel with input preparation and the activation split over the threads (README step 50)
+# bin/bench-cpu-moe -m $M -t 16 --tokens 8 --check-layers 2 -k N; bin/bench-cpu-moe -m $M -t 16 --check-layers "" --batch 6
+# commit 0ec746d + step 50; 2026-11-02. Before (0ec746d, same commands, this session): fast k=1 17.6 ms, k=2 26.7 ms per 8 tokens
+## -k 1
+token 2: ours 13.7 ms (55 GB/s)   canonical 15.2 ms (49 GB/s)   read-only control 9.2 ms (82 GB/s)
+token 3: ours 14.7 ms (51 GB/s)   canonical 13.8 ms (54 GB/s)   read-only control 8.8 ms (85 GB/s)
+token 4: ours 11.6 ms (65 GB/s)   canonical 12.4 ms (60 GB/s)   read-only control 8.9 ms (84 GB/s)
+token 5: ours 12.2 ms (62 GB/s)   canonical 12.4 ms (61 GB/s)   read-only control 8.8 ms (85 GB/s)
+token 6: ours 11.7 ms (64 GB/s)   canonical 12.3 ms (61 GB/s)   read-only control 8.7 ms (86 GB/s)
+token 7: ours 11.6 ms (65 GB/s)   canonical 13.1 ms (58 GB/s)   read-only control 8.7 ms (86 GB/s)
+## -k 2
+token 2: ours 24.5 ms (61 GB/s)   canonical 27.1 ms (56 GB/s)   read-only control 18.1 ms (83 GB/s)
+token 3: ours 24.6 ms (61 GB/s)   canonical 22.7 ms (66 GB/s)   read-only control 16.1 ms (93 GB/s)
+token 4: ours 21.0 ms (72 GB/s)   canonical 24.2 ms (62 GB/s)   read-only control 16.2 ms (93 GB/s)
+token 5: ours 21.0 ms (72 GB/s)   canonical 22.6 ms (66 GB/s)   read-only control 16.2 ms (93 GB/s)
+token 6: ours 21.3 ms (71 GB/s)   canonical 22.9 ms (66 GB/s)   read-only control 16.1 ms (93 GB/s)
+token 7: ours 21.0 ms (72 GB/s)   canonical 23.5 ms (64 GB/s)   read-only control 16.0 ms (94 GB/s)
+## -k 6
+token 2: ours 59.9 ms (75 GB/s)   canonical 63.0 ms (72 GB/s)   read-only control 47.1 ms (96 GB/s)
+token 3: ours 58.7 ms (77 GB/s)   canonical 64.3 ms (70 GB/s)   read-only control 46.9 ms (96 GB/s)
+token 4: ours 60.4 ms (75 GB/s)   canonical 62.9 ms (72 GB/s)   read-only control 47.2 ms (96 GB/s)
+token 5: ours 62.1 ms (73 GB/s)   canonical 72.0 ms (63 GB/s)   read-only control 49.1 ms (92 GB/s)
+token 6: ours 66.9 ms (67 GB/s)   canonical 63.4 ms (71 GB/s)   read-only control 46.5 ms (97 GB/s)
+token 7: ours 59.7 ms (76 GB/s)   canonical 62.9 ms (72 GB/s)   read-only control 46.8 ms (96 GB/s)
+## --batch 6
+# accuracy vs the double-precision reference math
+# batch: 6 tokens x the same 6 experts, all 40 layers
+fast: one token at a time 296.7 ms, batched 142.5 ms (0.206 vs 0.099 ms per expert-token); layers differing: 0
+canonical: one token at a time 325.4 ms, batched 202.4 ms (0.226 vs 0.141 ms per expert-token); layers differing: 0

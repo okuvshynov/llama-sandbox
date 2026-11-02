@@ -2050,3 +2050,121 @@ token rows of every engram slot to the GPU each step, 512 rows since step 37 for
 needs 1-6. Copying only the forward's rows: 26.1-26.4 t/s, output identical (the rest, ~0.5 ms
 per step, is die 0's ~70 fewer expert slots). The byte gates could not catch this: the output
 never changed, only the time.
+
+## Step 49: a decode profile with speculation and the cache, and what launches cost
+
+`results/decode-profile-sclk6.txt` (sclk 6, `--spec --canon --cache-loads 200 --cache-wait
+--profile`, medians of the second half of a 300-token run, by tokens verified per step;
+`scripts/profile_verify.py`):
+
+| ms | chat, 2 tokens | chat, 4 tokens | code, 6 tokens |
+|---|---|---|---|
+| **step** | **61.8** | **91.2** | **133.6** |
+| the GPU waiting for the CPU's experts | 15.7 | 19.6 | **50.2** |
+| attention core (per token) | 5.5 | 11.3 | 17.6 |
+| attention output projection | 7.2 | 13.2 | 11.7 |
+| shared expert | 5.5 | 9.6 | 10.2 |
+| router | 4.0 | 6.2 | 8.2 |
+| q, compressor, indexer, kv | 9.0 | 12.6 | 15.8 |
+| hyper-connections, head, engram, dispatch, sum | ~11 | ~12 | ~13 |
+| waiting for the other dies' experts | 3.7 | 4.2 | 3.9 |
+
+Even with the cache warm (87% of expert uses on GPUs), the CPU's experts are again the largest
+item: a 6-token code step has ~185 of them, ~0.3 ms each. Most serve one token, so the kernel is
+bound by reading 18.8 MB per expert: ~63 GB/s, about half this machine's DDR4 peak (~140 GB/s).
+
+**Launches:** `scripts/hip_count_shim.c` (an LD_PRELOAD counter) counts ~2,450 kernel launches
+per plain decode step and ~3,000-3,900 per verify step (draft included); `bin-hip/bench-launch`
+measures ~2.2-2.5 us per launch back to back (~11.5 us for a launch plus a synchronize). So
+launches cost at most ~7-12% of a step, and part of that overlaps work.
+
+Levers by size (code / chat steps): the CPU's expert misses (38% / 25%: fewer misses, cheaper
+misses); a batched attention core for verify chunks (~10% / ~4%); a batched router (~4%); kernel
+fusion or graphs (at most 7-12%); the small-batch fp8 kernels (~5%). The ROCm 5.7 profiler
+installed cannot trace the 6.3.4 runtime ("no ROCm-capable device"), hence the shim.
+
+## Step 50: the CPU's misses: a cheaper kernel, a tuned cache, and how they cost per layer
+
+Step 49 put the CPU's expert misses first. Three changes and one measurement, all at sclk 6,
+every output byte-identical to step 32's plain `--canon` run:
+
+**The kernel's preparation, in parallel** (`src/cpu_moe.cpp`): the input's quantization and the
+activation (SwiGLU, quantize, permute) ran on one thread between the two matrix passes; they now
+run in blocks of 8x32 values over all threads, in both `forward` and `forward_batch` (bit-identical:
+each block's math is unchanged). `results/cpu-moe-parallel-act.txt`: one token, one expert 17.6 ->
+11.6-13.7 ms per 40 layers (2 experts 26.7 -> 21.0-24.5); batched output unchanged (0 layers
+differ). End to end ~+2.5%.
+
+**The cache's settings** (`results/cache-tuning-sclk6.txt`): two prompts at 200, 400, 800 loads
+per second, then the rebalance period and the window at 800. Faster loads let the cache follow
+the routing (the actual rate stays ~300/s: the ranking, not the limit, decides how many it
+swaps); rebalancing every 8 tokens adds a little more; a 128-token window does not. On the 8
+held-out prompts (`CACHE="..." scripts/spec-measure.sh`):
+
+| t/s, sclk 6 | step 48 (200 loads/s, period 16) | + parallel activation | + 800 loads/s, period 8 |
+|---|---|---|---|
+| tcp-udp | 26.22 | 26.93 | 27.75 |
+| py-lru | 29.25 | 29.66 | 31.82 |
+| cpp-matrix | 30.60 | 31.78 | 34.96 |
+| sql-report | 28.52 | 29.13 | 30.19 |
+| geometry | 33.53 | 34.26 | 36.32 |
+| zh-travel | 23.67 | 24.27 | 25.62 |
+| ja-email | 24.98 | 25.56 | 27.46 |
+| summary-json | 26.89 | 27.89 | 28.18 |
+| **mean** | **27.96** | **28.69 (+2.6%)** | **30.29 (+5.6%; +8.3% total)** |
+
+Recommended now: `--canon --cache-loads 800 --cache-period 8` (the defaults are unchanged, so
+older commands reproduce).
+
+**Misses per layer** (`results/miss-histogram-sclk6.txt`; `--profile` now prints, per token
+count of the forward, how many distinct experts each layer computed on the CPU, the CPU's time
+and how long die 0 waited). Does a single miss hide behind the GPU's work? Barely:
+
+| distinct CPU experts in the layer | code, 4-6 tokens: share of layers | CPU ms | die 0 waits ms |
+|---|---|---|---|
+| 0 | 7.9% | | |
+| 1 | 15.8% | 0.475 | 0.328 |
+| 2 | 16.4% | 0.750 | 0.614 |
+| 3 | 14.6% | 1.039 | 0.907 |
+| 4 | 11.1% | 1.343 | 1.245 |
+| 5-7 | 16.0% | 1.879 | 1.807 |
+| 8+ | 4.7% | 2.860 | 2.791 |
+
+A layer costs ~0.1 ms for having misses at all plus ~0.27 ms per distinct expert: linear, no
+penalty for clustering. The overlap is 0.05-0.15 ms because the work alongside is short: the
+shared expert on die 0's main stream (~0.1-0.15 ms) and each die's routed experts (~0.1-0.3 ms,
+step 51's trace) all finish while the CPU is still on its first expert. So the total number of
+misses is the target (the hit rate), not their spread over layers.
+
+## Step 51: a trace to look at: `--trace FILE`
+
+`--trace FILE` (implies `--profile`) writes a Chrome trace of every step; open it in
+ui.perfetto.dev. Tracks: steps (drafts, verify steps), the host thread (per layer the wait for
+the staged block and the CPU's experts, with distinct experts / pairs / tokens as arguments), die
+0's main stream (the profile groups per layer), die 0's expert stream and dies 1-3 (each die's
+experts per layer, copies included). GPU events are placed on the host clock by a reference event
+per device at each step's start (the dies are idle then): aligned to ~0.1 ms, enough to see
+overlap, not to compare microseconds across tracks. `results/trace/` holds the two runs gzipped
+(chat and code, 300 tokens; Perfetto opens `.json.gz`). Cost: ~1-3% of speed; outputs identical.
+
+A 4-token code step, layers 0-2: the CPU 1,380 / 804 / 489 us, die 0 waiting 1,313 / 614 / 404
+us, the four dies' experts 152-318 / 184-348 / 178-343 us, all starting together after routing.
+
+## Step 52: prefetching the next layer's CPU expert? Not predictable enough
+
+While die 0 runs the next layer's attention the CPU is idle for ~1-2 ms; it could read the next
+layer's most likely CPU expert into its caches (18.8 MB vs a 22 MB L3; a correct guess would save
+~0.15 ms of the ~0.3). Measured first (`--profile`, `results/prefetch-prediction-sclk6.txt`): how
+often a guess made before the layer is among its actual CPU experts:
+
+| tokens in the forward | layers with CPU experts | cache's top-1 non-resident | any of its top 3 | previous forward's top CPU expert |
+|---|---|---|---|---|
+| chat 1 | 38% | 17% | 29% | 20% |
+| chat 2-3 | 66% | 20% | 34% | 16% |
+| chat 4-6 | 82% | 28% | 42% | 22% |
+| code 4-6 | 90% | 23% | 41% | 20% |
+
+The CPU's experts are the long tail the cache did not keep, so they are the hardest to guess: at
+~25% a prefetch would save ~1% of a step while evicting useful data on every wrong guess. Not
+built (the bar set beforehand was ~60%). The measurement stays in `--profile`
+(`ExpertCache::top_nonresident`).

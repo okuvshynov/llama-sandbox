@@ -111,3 +111,18 @@ void ExpertCache::step(int M) {
   for (const ExpertLoader::Request& r : start) loader->submit(r);
   st.loads_started += (long)start.size();
 }
+
+std::vector<int> ExpertCache::top_nonresident(int L, int n) const {
+  std::vector<int> e;
+  for (int x = 0; x < n_expert; x++) {
+    const int k = L * n_expert + x;
+    if (table[k] < 0 && count[k] > 0) e.push_back(x);
+  }
+  const int n_take = std::min(n, (int)e.size());
+  std::partial_sort(e.begin(), e.begin() + n_take, e.end(), [&](int a, int b) {
+    const int ka = L * n_expert + a, kb = L * n_expert + b;
+    return count[ka] != count[kb] ? count[ka] > count[kb] : last_use[ka] > last_use[kb];
+  });
+  e.resize(n_take);
+  return e;
+}
