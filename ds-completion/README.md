@@ -2221,7 +2221,26 @@ Could co-selection guide the split over the CPU and the dies (`scripts/coselect.
 
 **A finding on the way:** a die's expert time per layer (fitted on the code trace's spans) is
 ~90-100 us + **~30 us per (token, expert) pair**, almost nothing per distinct expert (1-7 us):
-the fp4 kernel does not share an expert's weight reads across its tokens, so an expert used by 3
-tokens costs ~3x one (its weights alone are ~20 us of HBM). Batching tokens per expert would make
-multi-token steps cheaper on the dies; it matters in layers without CPU experts, more of them as
-the cache improves.
+an expert used by 3 tokens costs ~3x one. (I took this for the weights being read once per
+pair; step 55 tried sharing them and found the per-pair cost is mostly elsewhere.)
+
+## Step 55: an fp4 expert kernel that reads each expert once: tried, reverted
+
+Step 54's fit said a die pays ~30 us per (token, expert) pair and almost nothing per distinct
+expert, and I read that as the weights being read once per pair (~20 us of HBM each). The
+attempt (`results/fp4-grouped/`: numbers and `attempt.patch`): a one-block kernel sorts a
+chunk's (slot, pair) keys on the device (die 0 launches before the host sees the lists), and
+grouped gate/up and down kernels load each weight block once and apply it to the group's tokens,
+4 at a time, with every (row, token) computed by the one-pair kernel's operations in its order.
+The rows were bit-identical in every case (`bench-fp4-moe`'s new chunk test against the old
+kernels).
+
+Speed, 8 tokens: -21% when they all share 6 experts, **+23%** when they hardly share; real
+steps (~1.5-2.5 pairs per distinct expert on a die, the code trace) sit near break-even. Two
+probes of the hypothesis: more rows per 16-lane group (each activation load shared by more rows)
+is slower (244 -> 281 -> 322 us for one token's 6 experts at 2 / 4 / 8 rows), and decoding each
+weight block once for the group (more registers) is slower still (+50% without sharing). So the
+weight reads are not what a pair costs; the per-pair work is the canonical kernel's own
+arithmetic and latency, and without a working profiler (step 49) the next guess would be a
+guess. Reverted: the gain does not pay for a sort kernel and two kernel variants. The die
+expert time is off the critical path in most layers anyway (step 50).

@@ -322,8 +322,9 @@ histogram (cost is linear, ~0.27 ms per distinct CPU expert, little hidden: the 
 target), `--trace` for Perfetto, and a prefetch of the next layer's likely CPU expert measured
 and not built (the guess is right ~20-28% of the time). Step 53: the router's top-k in one launch
 for all tokens (+4.6%, held-out mean 31.7 t/s). Step 54: co-selection is too weak to place by
-(at most 1-3% even with perfect balance); a die's expert time is ~30 us per (token, expert) pair,
-so an fp4 kernel that reads each expert once for all its tokens is the next GPU-side item.
+(at most 1-3% even with perfect balance). Step 55: a die's expert time is ~30 us per (token,
+expert) pair, but reading each expert once for all its tokens (bit-identical) gained only with
+heavy sharing (-21%) and lost without (+23%): reverted, documented in `results/fp4-grouped/`.
 
 **A. Tuning the expert cache** (the CPU experts' ~25 ms)
 - Hysteresis: a newcomer must beat its victim by a margin, so the cache settles in long runs

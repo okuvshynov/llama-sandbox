@@ -1,0 +1,347 @@
+diff --git a/ds-completion/hip/bench_fp4_moe.cpp b/ds-completion/hip/bench_fp4_moe.cpp
+index f8ab14a..b2a5292 100644
+--- a/ds-completion/hip/bench_fp4_moe.cpp
++++ b/ds-completion/hip/bench_fp4_moe.cpp
+@@ -121,6 +121,66 @@ int main(int argc, char** argv) {
+   const double usc = ms * 1000 / reps;
+   printf("GPU %d canonical: %.1f us per layer = %.0f GB/s (%+.0f%%)\n", dev, usc, bytes / (usc * 1e-6) / 1e9, (usc / us - 1) * 100);
+   printf("for scale: the CPU kernel takes ~1650 us per layer (66 ms / 40)\n");
++
++  // chunks (README step 55): M tokens, each choosing its experts from a pool of `share` (small:
++  // tokens share experts), grouped by expert vs one pass per (token, expert) pair: the rows must
++  // be the same bits; then the time per layer
++  {
++    constexpr int ST = 8, MM = 8;  // entries per token (stride), the most tokens
++    void* rscratch;
++    CHECK(hipMalloc(&rscratch, fp4_moe_canon_rows_scratch_bytes(E, F, K, MM)));
++    float *xm, *ra, *rb, *wm;
++    int *idm, *cm;
++    CHECK(hipMalloc(&xm, (size_t)MM * E * 4));
++    CHECK(hipMalloc(&ra, (size_t)MM * K * E * 4));
++    CHECK(hipMalloc(&rb, (size_t)MM * K * E * 4));
++    CHECK(hipMalloc(&wm, MM * ST * 4));
++    CHECK(hipMalloc(&idm, MM * ST * 4));
++    CHECK(hipMalloc(&cm, MM * ST * 4));
++    std::vector<float> xh((size_t)MM * E);
++    for (auto& v : xh) v = nd(rng);
++    CHECK(hipMemcpy(xm, xh.data(), xh.size() * 4, hipMemcpyHostToDevice));
++    printf("# chunks: grouped by expert vs one pass per pair (us per layer; rows compared bit for bit)\n");
++    for (int M : {2, 4, 6, 8})
++      for (int share : {K, 12, X}) {
++        std::vector<int> ids(MM * ST, 0), cnt(MM * ST, 0);
++        std::vector<float> w(MM * ST, 0.0f);
++        int pairs = 0;
++        std::set<int> distinct;
++        for (int t = 0; t < M; t++) {
++          std::set<int> st;
++          while ((int)st.size() < K) st.insert((int)(rng() % share));
++          int j = 0;
++          for (int e : st) { ids[t * ST + j] = e; w[t * ST + j] = 0.1f + (rng() % 1000) / 1000.0f; distinct.insert(e); j++; }
++          cnt[t * ST] = 1 + (int)(rng() % K);  // 1..K entries used
++          pairs += cnt[t * ST];
++        }
++        CHECK(hipMemcpy(idm, ids.data(), ids.size() * 4, hipMemcpyHostToDevice));
++        CHECK(hipMemcpy(wm, w.data(), w.size() * 4, hipMemcpyHostToDevice));
++        CHECK(hipMemcpy(cm, cnt.data(), cnt.size() * 4, hipMemcpyHostToDevice));
++        const ExpertSel sel{idm, wm, cm, ST};
++        const float lim = hp.swiglu_clamp[layer];
++        fp4_moe_canon_rows(gx, xm, sel, K, M, lim, ra, rscratch, s, false);
++        fp4_moe_canon_rows(gx, xm, sel, K, M, lim, rb, rscratch, s, true);
++        std::vector<float> ha((size_t)pairs * E), hb((size_t)pairs * E);
++        CHECK(hipMemcpyAsync(ha.data(), ra, ha.size() * 4, hipMemcpyDeviceToHost, s));
++        CHECK(hipMemcpyAsync(hb.data(), rb, hb.size() * 4, hipMemcpyDeviceToHost, s));
++        CHECK(hipStreamSynchronize(s));
++        const bool same = memcmp(ha.data(), hb.data(), ha.size() * 4) == 0;
++        float t2[2];
++        for (int g = 0; g < 2; g++) {
++          const int R = 50;
++          CHECK(hipEventRecord(e0, s));
++          for (int r = 0; r < R; r++) fp4_moe_canon_rows(gx, xm, sel, K, M, lim, g ? rb : ra, rscratch, s, g == 1);
++          CHECK(hipEventRecord(e1, s));
++          CHECK(hipEventSynchronize(e1));
++          CHECK(hipEventElapsedTime(&ms, e0, e1));
++          t2[g] = ms * 1000 / R;
++        }
++        printf("M %d, experts from %3d: %2d pairs, %2zu distinct: per pair %6.1f us, grouped %6.1f us (%+.0f%%); rows %s\n", M,
++               share, pairs, distinct.size(), t2[0], t2[1], (t2[1] / t2[0] - 1) * 100, same ? "same" : "DIFFER");
++      }
++  }
+   fp4_free(gx.gate);
+   fp4_free(gx.up);
+   fp4_free(gx.down);
+diff --git a/ds-completion/hip/fp4_moe.h b/ds-completion/hip/fp4_moe.h
+index 849be1c..ec42faa 100644
+--- a/ds-completion/hip/fp4_moe.h
++++ b/ds-completion/hip/fp4_moe.h
+@@ -55,9 +55,13 @@ struct ExpertSel {
+ // Rows: M tokens (x [M][E]), token t's entries j < count_t (sel) -> rows[base_t + j] [E], where
+ // base_t = the counts of the tokens before t (compact; at most M * k rows). Each row is the same
+ // for any M and any chunk it is part of. scratch: fp4_moe_canon_rows_scratch_bytes(E, F, k, M).
++// grouped (M > 1, README step 55): the (token, entry) pairs are grouped by expert on the device
++// and each expert's weights are read once for all its tokens; every row's arithmetic is the
++// one-pair kernel's, so the bits are the same (grouped = false: one pass per pair, as before).
++// M * k <= 4096.
+ size_t fp4_moe_canon_rows_scratch_bytes(int E, int F, int k, int M);
+ void fp4_moe_canon_rows(const GpuExperts& ex, const float* x, ExpertSel sel, int k, int M, float limit, float* rows,
+-                        void* scratch, hipStream_t s);
++                        void* scratch, hipStream_t s, bool grouped = true);
+ // One token, its k experts summed in expert order (as CpuMoeKernel::forward_canon).
+ size_t fp4_moe_canon_scratch_bytes(int E, int F, int k);
+ void fp4_moe_canon(const GpuExperts& ex, const float* x, const int* ids, const float* w, int k, float limit, float* y,
+diff --git a/ds-completion/hip/fp4_moe.hip b/ds-completion/hip/fp4_moe.hip
+index 0b162d8..67222ea 100644
+--- a/ds-completion/hip/fp4_moe.hip
++++ b/ds-completion/hip/fp4_moe.hip
+@@ -323,6 +323,36 @@ __device__ inline CanonX canon_load(const int8_t* d0, const int8_t* d1, const in
+   return x;
+ }
+ 
++// a block's 16 code bytes as signed bytes 2 w: low nibbles (elements 0-15), high (16-31)
++struct CanonW { int lo[4], hi[4]; };
++__device__ inline CanonW canon_decode(uint4 w) {
++  const uint32_t wv[4] = {w.x, w.y, w.z, w.w};
++  CanonW d;
++#pragma unroll
++  for (int g = 0; g < 4; g++) {
++    d.lo[g] = canon_w4(wv[g] & 0x0F0F0F0Fu);
++    d.hi[g] = canon_w4((wv[g] >> 4) & 0x0F0F0F0Fu);
++  }
++  return d;
++}
++// canon_block on decoded weights: the same integer operations in the same order
++__device__ inline int canon_block_dec(const CanonW& d, const CanonX& x) {
++  const int* a0 = x.v[0][0]; const int* b0 = x.v[0][1];
++  const int* a1 = x.v[1][0]; const int* b1 = x.v[1][1];
++  const int* a2 = x.v[2][0]; const int* b2 = x.v[2][1];
++  int P0 = 0, P1 = 0, P2 = 0;
++#pragma unroll
++  for (int g = 0; g < 4; g++) {
++    P0 = __builtin_amdgcn_sdot4(d.lo[g], a0[g], P0, false);
++    P0 = __builtin_amdgcn_sdot4(d.hi[g], b0[g], P0, false);
++    P1 = __builtin_amdgcn_sdot4(d.lo[g], a1[g], P1, false);
++    P1 = __builtin_amdgcn_sdot4(d.hi[g], b1[g], P1, false);
++    P2 = __builtin_amdgcn_sdot4(d.lo[g], a2[g], P2, false);
++    P2 = __builtin_amdgcn_sdot4(d.hi[g], b2[g], P2, false);
++  }
++  return P0 + (P1 << 7) + (P2 << 14);
++}
++
+ // one block's exact sum: 16 code bytes against the digits of its 32 activations
+ __device__ inline int canon_block(uint4 w, const CanonX& x) {
+   const uint32_t wv[4] = {w.x, w.y, w.z, w.w};
+@@ -444,6 +474,173 @@ __global__ void __launch_bounds__(256) canon_down_kernel(GpuMatrix down, ExpertS
+   }
+ }
+ 
++// ---- grouped by expert (README step 55): an expert used by several tokens of a chunk is read
++// once for all of them. canon_group_kernel sorts the chunk's (slot, pair) keys (pair = t k + j)
++// in one block and marks the runs of equal slots; the grouped kernels then run one block row per
++// group, loading each weight block once and applying it to the group's tokens kCanonTB at a time.
++// Per (row, token) the operations and their order are canon_rows', so the rows are the same bits.
++
++constexpr int kGroupMax = 4096;  // pairs per chunk (M k)
++constexpr int kCanonTB = 4;      // tokens per pass over an expert's weights
++
++struct CanonGroups {
++  int* n;      // number of groups
++  int* start;  // [n + 1]: group g's pairs are pair[start[g] .. start[g + 1])
++  int* slot;   // [n]: the expert (slot) of group g
++  int* pair;   // [pairs]: t k + j, sorted by slot, then by pair
++};
++
++__global__ void __launch_bounds__(1024) canon_group_kernel(ExpertSel sel, int k, int M, int P2, CanonGroups G) {
++  __shared__ uint32_t key[kGroupMax];
++  const int P = M * k;
++  for (int i = threadIdx.x; i < P2; i += blockDim.x) {
++    const int t = i / k, j = i - t * k;
++    const bool valid = i < P && j < canon_count(sel, k, t);
++    key[i] = valid ? ((uint32_t)sel.ids[t * sel.stride + j] << 12 | (uint32_t)i) : 0xFFFFFFFFu;
++  }
++  __syncthreads();
++  for (int size = 2; size <= P2; size <<= 1)  // bitonic sort, ascending
++    for (int st = size >> 1; st > 0; st >>= 1) {
++      for (int i = threadIdx.x; i < P2; i += blockDim.x) {
++        const int o = i ^ st;
++        if (o > i) {
++          const uint32_t a = key[i], b = key[o];
++          if (((i & size) == 0) == (a > b)) { key[i] = b; key[o] = a; }
++        }
++      }
++      __syncthreads();
++    }
++  for (int i = threadIdx.x; i < P2; i += blockDim.x)
++    if (key[i] != 0xFFFFFFFFu) G.pair[i] = (int)(key[i] & 4095u);
++  if (threadIdx.x == 0) {
++    int n = 0, i = 0;
++    for (; i < P2 && key[i] != 0xFFFFFFFFu; i++)
++      if (i == 0 || (key[i] >> 12) != (key[i - 1] >> 12)) {
++        G.start[n] = i;
++        G.slot[n] = (int)(key[i] >> 12);
++        n++;
++      }
++    G.start[n] = i;
++    *G.n = n;
++  }
++}
++
++// group g's rows of gate (blockIdx.y even) or up (odd): as canon_gate_up_kernel per pair
++__global__ void __launch_bounds__(256) canon_gate_up_grouped_kernel(GpuMatrix gate, GpuMatrix up, CanonGroups G, int k,
++                                                                    CanonActDev x, float* __restrict__ gu) {
++  const int g = blockIdx.y >> 1, mat = blockIdx.y & 1;
++  if (g >= *G.n) return;
++  const GpuMatrix& m = mat ? up : gate;
++  const int N = m.N, nb = m.K / 32, lane = threadIdx.x & 63, l = lane % 16;
++  const int row = ((blockIdx.x * 4 + (threadIdx.x >> 6)) * 4 + lane / 16) * kCanonR;
++  const int r = row < N ? row : N - kCanonR;
++  const int e = G.slot[g], p1 = G.start[g + 1];
++  const uint8_t* wc = m.codes + (size_t)e * m.codes_stride + (size_t)r * (m.K / 2);
++  const uint8_t* ws = m.scales + (size_t)e * m.scales_stride + (size_t)r * nb;
++  for (int p = G.start[g]; p < p1; p += kCanonTB) {
++    const int nt = min(kCanonTB, p1 - p);
++    int pr[kCanonTB];
++    float acc[kCanonTB][kCanonR];
++#pragma unroll
++    for (int u = 0; u < kCanonTB; u++) {
++      pr[u] = G.pair[p + min(u, nt - 1)];
++#pragma unroll
++      for (int i = 0; i < kCanonR; i++) acc[u][i] = 0.0f;
++    }
++    for (int b = l; b < nb; b += 16) {
++      CanonW w[kCanonR];
++      float wsc[kCanonR];
++#pragma unroll
++      for (int i = 0; i < kCanonR; i++) {
++        w[i] = canon_decode(*(const uint4*)(wc + (size_t)i * nb * 16 + (size_t)b * 16));
++        wsc[i] = __uint_as_float((uint32_t)ws[(size_t)i * nb + b] << 23);
++      }
++#pragma unroll
++      for (int u = 0; u < kCanonTB; u++) {
++        if (u >= nt) break;
++        const size_t xo = (size_t)(pr[u] / k) * m.K;
++        const CanonX xx = canon_load(x.d0 + xo + b * 32, x.d1 + xo + b * 32, x.d2 + xo + b * 32);
++        const float c = x.c[xo / 32 + b];
++#pragma unroll
++        for (int i = 0; i < kCanonR; i++) {
++          const int S = canon_block_dec(w[i], xx);
++          acc[u][i] = __fadd_rn(acc[u][i], __fmul_rn((float)S, __fmul_rn(wsc[i], c)));
++        }
++      }
++    }
++#pragma unroll
++    for (int u = 0; u < kCanonTB; u++) {
++      if (u >= nt) break;
++      const int t = pr[u] / k, j = pr[u] - t * k;
++#pragma unroll
++      for (int i = 0; i < kCanonR; i++) {
++        float v = acc[u][i];
++#pragma unroll
++        for (int o = 8; o > 0; o >>= 1) v = __fadd_rn(v, __shfl_xor(v, o, 16));
++        if (row < N && l == 0) gu[((size_t)t * 2 * k + 2 * j + mat) * N + row + i] = v;
++      }
++    }
++  }
++}
++
++// group g's down rows: rows[base_t + j] per pair, as canon_down_kernel
++__global__ void __launch_bounds__(256) canon_down_grouped_kernel(GpuMatrix down, ExpertSel sel, CanonGroups G, int k,
++                                                                 CanonActDev a, float* __restrict__ rows) {
++  const int g = blockIdx.y;
++  if (g >= *G.n) return;
++  const int N = down.N, F = down.K, nb = F / 32, lane = threadIdx.x & 63, l = lane % 16;
++  const int row = ((blockIdx.x * 4 + (threadIdx.x >> 6)) * 4 + lane / 16) * kCanonR;
++  const int r = row < N ? row : N - kCanonR;
++  const int e = G.slot[g], p1 = G.start[g + 1];
++  const uint8_t* wc = down.codes + (size_t)e * down.codes_stride + (size_t)r * (F / 2);
++  const uint8_t* ws = down.scales + (size_t)e * down.scales_stride + (size_t)r * nb;
++  for (int p = G.start[g]; p < p1; p += kCanonTB) {
++    const int nt = min(kCanonTB, p1 - p);
++    int pr[kCanonTB];
++    float acc[kCanonTB][kCanonR];
++#pragma unroll
++    for (int u = 0; u < kCanonTB; u++) {
++      pr[u] = G.pair[p + min(u, nt - 1)];
++#pragma unroll
++      for (int i = 0; i < kCanonR; i++) acc[u][i] = 0.0f;
++    }
++    for (int b = l; b < nb; b += 16) {
++      CanonW w[kCanonR];
++      float wsc[kCanonR];
++#pragma unroll
++      for (int i = 0; i < kCanonR; i++) {
++        w[i] = canon_decode(*(const uint4*)(wc + (size_t)i * nb * 16 + (size_t)b * 16));
++        wsc[i] = __uint_as_float((uint32_t)ws[(size_t)i * nb + b] << 23);
++      }
++#pragma unroll
++      for (int u = 0; u < kCanonTB; u++) {
++        if (u >= nt) break;
++        const size_t ao = (size_t)pr[u] * F;
++        const CanonX xx = canon_load(a.d0 + ao + b * 32, a.d1 + ao + b * 32, a.d2 + ao + b * 32);
++        const float c = a.c[ao / 32 + b];
++#pragma unroll
++        for (int i = 0; i < kCanonR; i++) {
++          const int S = canon_block_dec(w[i], xx);
++          acc[u][i] = __fadd_rn(acc[u][i], __fmul_rn((float)S, __fmul_rn(wsc[i], c)));
++        }
++      }
++    }
++#pragma unroll
++    for (int u = 0; u < kCanonTB; u++) {
++      if (u >= nt) break;
++      const int t = pr[u] / k, j = pr[u] - t * k;
++      float* y = rows + (size_t)(canon_base(sel, k, t) + j) * N;
++#pragma unroll
++      for (int i = 0; i < kCanonR; i++) {
++        float v = acc[u][i];
++#pragma unroll
++        for (int o = 8; o > 0; o >>= 1) v = __fadd_rn(v, __shfl_xor(v, o, 16));
++        if (row < N && l == 0) y[row + i] = v;
++      }
++    }
++  }
++}
++
+ // y = ((0 + rows[0]) + rows[1]) + ... (expert order, as CpuMoeKernel::forward_canon)
+ __global__ void canon_sum_kernel(const float* rows, int k, int E, float* y) {
+   const int i = blockIdx.x * blockDim.x + threadIdx.x;
+@@ -455,7 +652,8 @@ __global__ void canon_sum_kernel(const float* rows, int k, int E, float* y) {
+ 
+ size_t fp4_moe_canon_rows_scratch_bytes(int E, int F, int k, int M) {
+   const size_t mk = (size_t)M * k;
+-  return (size_t)M * E * 3 + (size_t)M * E / 32 * 4 + mk * F * 4 * 2 + mk * F * 3 + mk * F / 32 * 4 + 256 * 9;
++  return (size_t)M * E * 3 + (size_t)M * E / 32 * 4 + mk * F * 4 * 2 + mk * F * 3 + mk * F / 32 * 4 + 256 * 9 +
++         (mk * 3 + 2) * 4 + 256 * 4;  // + the groups
+ }
+ 
+ size_t fp4_moe_canon_scratch_bytes(int E, int F, int k) {
+@@ -463,7 +661,7 @@ size_t fp4_moe_canon_scratch_bytes(int E, int F, int k) {
+ }
+ 
+ void fp4_moe_canon_rows(const GpuExperts& ex, const float* x, ExpertSel sel, int k, int M, float limit, float* rows,
+-                        void* scratch, hipStream_t s) {
++                        void* scratch, hipStream_t s, bool grouped) {
+   const int E = ex.gate.K, F = ex.gate.N;
+   char* p = (char*)scratch;
+   auto take = [&](size_t bytes) { char* r = p; p += (bytes + 255) / 256 * 256; return r; };
+@@ -473,9 +671,20 @@ void fp4_moe_canon_rows(const GpuExperts& ex, const float* x, ExpertSel sel, int
+   float* gu = (float*)take(mk * F * 4 * 2);
+   CanonActDev aa = {(int8_t*)take(mk * F), (int8_t*)take(mk * F), (int8_t*)take(mk * F), (float*)take(mk * F / 32 * 4)};
+   canon_quant_kernel<<<cdiv(M * E, 256), 256, 0, s>>>(x, xa.d0, xa.d1, xa.d2, xa.c, M * E);
+-  canon_gate_up_kernel<<<dim3(cdiv(F, 16 * kCanonR), 2 * k, M), 256, 0, s>>>(ex.gate, ex.up, sel, k, xa, gu);
++  if (!grouped || M == 1) {  // one pass per pair (one token: nothing to share)
++    canon_gate_up_kernel<<<dim3(cdiv(F, 16 * kCanonR), 2 * k, M), 256, 0, s>>>(ex.gate, ex.up, sel, k, xa, gu);
++    canon_act_kernel<<<cdiv((int)(mk * F), 256), 256, 0, s>>>(gu, sel, k, limit, F, (int)(mk * F), aa);
++    canon_down_kernel<<<dim3(cdiv(E, 16 * kCanonR), k, M), 256, 0, s>>>(ex.down, sel, k, aa, rows);
++    return;
++  }
++  if (mk > (size_t)kGroupMax) throw std::runtime_error("fp4_moe_canon_rows: more than 4096 pairs");
++  int P2 = 64;
++  while (P2 < (int)mk) P2 <<= 1;
++  CanonGroups G = {(int*)take(4), (int*)take((mk + 1) * 4), (int*)take(mk * 4), (int*)take(mk * 4)};
++  canon_group_kernel<<<1, 1024, 0, s>>>(sel, k, M, P2, G);
++  canon_gate_up_grouped_kernel<<<dim3(cdiv(F, 16 * kCanonR), 2 * (int)mk), 256, 0, s>>>(ex.gate, ex.up, G, k, xa, gu);
+   canon_act_kernel<<<cdiv((int)(mk * F), 256), 256, 0, s>>>(gu, sel, k, limit, F, (int)(mk * F), aa);
+-  canon_down_kernel<<<dim3(cdiv(E, 16 * kCanonR), k, M), 256, 0, s>>>(ex.down, sel, k, aa, rows);
++  canon_down_grouped_kernel<<<dim3(cdiv(E, 16 * kCanonR), (int)mk), 256, 0, s>>>(ex.down, sel, G, k, aa, rows);
+ }
+ 
+ void fp4_moe_canon(const GpuExperts& ex, const float* x, const int* ids, const float* w, int k, float limit, float* y,

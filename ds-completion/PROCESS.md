@@ -388,6 +388,12 @@ Each rule is followed by where it mattered most.
   reads are not shared across its tokens). A cold page cache after a reboot was caught by a
   mixed result (two prompts faster, three slower, outputs identical) and `fincore`.
 
+- **A fit is not a mechanism (README step 55).** Step 54's cost fit (~30 us per pair, ~0 per
+  distinct expert) was read as "the weights are read once per pair"; the bit-identical grouped
+  kernel showed otherwise within two benchmarks, and two cheap probes (more rows per lane group,
+  decoding once) ruled out the obvious alternatives. With no profiler for this runtime the next
+  step would have been guessing, so the attempt was reverted and kept as a patch with its numbers.
+
 ## 4. Predictions against outcomes
 
 Estimates were made before measuring wherever possible; this is how they fared.
@@ -407,6 +413,7 @@ Estimates were made before measuring wherever possible; this is how they fared.
 | CPU/GPU overlap of two half-chunks (38) | up to ~2x | 1.5x | half the tokens per CPU expert; both sides now ~33 s |
 | chunks of 64 share CPU expert reads (37) | most of the 53% saved | nothing | 384 experts: ~1 token per CPU expert per chunk; then compute-bound until tiled |
 | one CPU miss per layer hides behind the GPU's work (50) | partly | 0.05-0.15 of ~0.35-0.48 ms | the GPU's work alongside (shared expert, each die's experts) is shorter than one miss |
+| reading each expert once on the dies (55) | ~20 us saved per shared pair | -21% at heavy sharing, +23% without | a pair's cost was not the weight reads (a fit read as a mechanism) |
 | batched router top-k (53) | ~4% (5-6 ms per code step) | +4.6% held-out, +1-4% prompt | as estimated; the prompt hides most of it behind the CPU |
 | co-selected experts on different dies (54) | some gain if clusters exist | <= 0.3% (bound 1-3%) | weak affinities; the CPU sets a layer's pace |
 | next layer's CPU expert guessable for a prefetch (52) | >= 60% needed | 17-28% (top-1) | the CPU's experts are the tail the cache did not keep |
