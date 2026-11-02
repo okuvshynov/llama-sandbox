@@ -63,6 +63,16 @@ Runtime::Runtime(const Model& model, RtOptions options, const std::string& fp8_p
     : m(model), hp(model.hp), opt(options) {
   CHECK(hipSetDevice(opt.gpu));
   CHECK(hipStreamCreateWithFlags(&s, hipStreamNonBlocking));
+  mem_devs = {opt.gpu};
+  if (!opt.placement.empty())
+    for (int d : opt.moe_dies)
+      if (std::find(mem_devs.begin(), mem_devs.end(), d) == mem_devs.end()) mem_devs.push_back(d);
+  for (int d : mem_devs) {  // create every device's context now, so it is counted first
+    CHECK(hipSetDevice(d));
+    CHECK(hipFree(nullptr));
+  }
+  CHECK(hipSetDevice(opt.gpu));
+  mem_mark("context, other processes");
 
   // rotary frequencies: window-only layers at rope_base, compressed layers at
   // compress_rope_base with YaRN (as Engine::rope)
@@ -90,6 +100,7 @@ Runtime::Runtime(const Model& model, RtOptions options, const std::string& fp8_p
     close(fd);
     fprintf(stderr, "# runtime: %s of fp8 weights on GPU %d\n", fmt_bytes((double)n).c_str(), opt.gpu);
   }
+  mem_mark("dense fp8 weights");
   auto fp8w = [&](int L, const char* name) {
     Fp8W w;
     const std::string n = "blk." + std::to_string(L) + "." + name + ".weight";
@@ -167,6 +178,7 @@ Runtime::Runtime(const Model& model, RtOptions options, const std::string& fp8_p
   out_w = bf16(m.output);
   out_norm = f32(m.output_norm);
   fprintf(stderr, "# runtime: %s of small weights on GPU %d\n", fmt_bytes((double)small_bytes).c_str(), opt.gpu);
+  mem_mark("small weights (rotary, embeddings, head, norms, ...)");
   cpu_moe.reset(new CpuMoeKernel(hp.n_embd, hp.n_ff_exp, hp.n_expert_used, opt.n_threads));
 
   const int E = hp.n_embd, HC = hp.hc_mult, HD = hp.head_dim, NH = hp.n_head;
@@ -242,6 +254,7 @@ Runtime::Runtime(const Model& model, RtOptions options, const std::string& fp8_p
   }
   for (int L : hp.index_source_layers)
     if (L < hp.n_layer && m.layers[L].loaded) topk_buf[L] = dalloc<int>((size_t)C * hp.idx_topk);
+  mem_mark("activations and scratch (sized for 512-token chunks)");
   // the sequence state, zeroed (masked-out slots must hold finite values: 0 x NaN would leak)
   S.resize(hp.n_layer);
   for (int L = 0; L < hp.n_layer; L++) {
@@ -262,7 +275,9 @@ Runtime::Runtime(const Model& model, RtOptions options, const std::string& fp8_p
   CHECK(hipHostMalloc(&h_erows, hp.engram_layers.size() * C * hp.engram_cols() * hp.engram_dim * 4, 0));
   CHECK(hipEventCreateWithFlags(&ev_staged, hipEventDisableTiming));
 
+  mem_mark("sequence state: window, compressed KV, indexer keys (--max-ctx)");
   if (!opt.dspark.empty()) dspark.reset(new DSpark(*this, opt.dspark));  // before the pools take the rest
+  mem_mark("draft (DSpark)");
   setup_experts();
 
   // the per-token buffers, for addressing half a chunk (set_half); h / h2 are kept per half
@@ -311,6 +326,47 @@ Runtime::Runtime(const Model& model, RtOptions options, const std::string& fp8_p
     }
     CHECK(hipSetDevice(opt.gpu));
   }
+  mem_mark("cache and loader staging, the rest");
+  mem_report();
+}
+
+void Runtime::mem_mark(const char* phase) {
+  std::vector<size_t> used;
+  int cur;
+  CHECK(hipGetDevice(&cur));
+  if (mem_total.empty()) mem_total.assign(mem_devs.size(), 0);
+  for (size_t i = 0; i < mem_devs.size(); i++) {
+    size_t fr, tot;
+    CHECK(hipSetDevice(mem_devs[i]));
+    CHECK(hipMemGetInfo(&fr, &tot));
+    used.push_back(tot - fr);
+    mem_total[i] = tot;
+  }
+  CHECK(hipSetDevice(cur));
+  mem_snaps.push_back({phase, used});
+}
+
+// one line per phase: GB per device (and, for the expert dies, what it would hold in expert slots)
+void Runtime::mem_report() const {
+  if (mem_snaps.empty()) return;
+  const double slot = 3.0 * hp.n_embd * hp.n_ff_exp / 32 * 17;  // an expert slot: gate + up + down in mxfp4
+  fprintf(stderr, "# GPU memory (GB; the driver's used memory after each startup phase; expert slot = %.1f MB):\n", slot / 1e6);
+  fprintf(stderr, "#   %-62s", "phase");
+  for (int d : mem_devs) fprintf(stderr, "  GPU %d", d);
+  fprintf(stderr, "\n");
+  for (size_t p = 0; p < mem_snaps.size(); p++) {
+    fprintf(stderr, "#   %-62s", mem_snaps[p].first.c_str());
+    for (size_t i = 0; i < mem_devs.size(); i++) {
+      const double b = (double)mem_snaps[p].second[i] - (p ? (double)mem_snaps[p - 1].second[i] : 0.0);
+      fprintf(stderr, " %6.2f", b / 1e9);
+    }
+    fprintf(stderr, "\n");
+  }
+  fprintf(stderr, "#   %-62s", "free");
+  for (size_t i = 0; i < mem_devs.size(); i++) fprintf(stderr, " %6.2f", (double)(mem_total[i] - mem_snaps.back().second[i]) / 1e9);
+  fprintf(stderr, "\n#   %-62s", "total");
+  for (size_t i = 0; i < mem_devs.size(); i++) fprintf(stderr, " %6.2f", (double)mem_total[i] / 1e9);
+  fprintf(stderr, "\n");
 }
 
 // every per-token buffer from token tok_base to token t0 (null buffers stay null)
@@ -530,6 +586,7 @@ void Runtime::setup_experts() {
   CHECK(hipStreamCreateWithFlags(&s_local, hipStreamNonBlocking));
   CHECK(hipEventCreateWithFlags(&ev_dispatched, hipEventDisableTiming));
   CHECK(hipEventCreateWithFlags(&ev_local, hipEventDisableTiming));
+  mem_mark("expert path buffers (per die: scratch, staging)");
   std::vector<int> cap;
   const int spare = opt.load_test >= 0 ? kLoadTestSlots : 0;
   for (const Die& d : dies) cap.push_back(std::max(0, pool_slots_that_fit(d.dev, E, F, (size_t)(opt.reserve_gb * 1e9)) - spare));
@@ -562,6 +619,7 @@ void Runtime::setup_experts() {
     });
   for (auto& t : th) t.join();
   for (auto& e : errors) if (!e.empty()) throw std::runtime_error("expert upload: " + e);
+  mem_mark("expert slots");
   CHECK(hipSetDevice(home));
   std::vector<int>& table = h_table;
   table.assign((size_t)hp.n_layer * X, -1);

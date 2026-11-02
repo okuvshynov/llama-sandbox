@@ -331,6 +331,8 @@ dropped. Step 57: that "fixed cost" was the multi-token dot routine on one-token
 now use the one-token routine (bit-identical): +1.1%, held-out mean 32.0 t/s. Step 59: decayed
 counts equal the window, hysteresis margins only cost, a lower candidate threshold (`--cache-min
 1`) gains hits but loses ~0.7% live: the policy stays; more GPU slots are the cache's lever.
+Step 60: the memory ledger. Experts are 84% of GPU memory; 64k context costs only 21 slots;
+the draft's 8 GB of bf16 on GPU 0 is the largest other item (fp8: ~210 more slots).
 
 **A. Tuning the expert cache** (the CPU experts' ~25 ms)
 - Hysteresis: a newcomer must beat its victim by a margin, so the cache settles in long runs

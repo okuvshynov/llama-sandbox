@@ -104,6 +104,13 @@ Measuring costs time: `--profile` 5-6% of generation speed, `--trace` 7% (28.9 /
 untraced vs 26.8 / 34.5 traced; README step 58), so a trace's times run a few percent long; its
 proportions hold. `--trace FILE` writes the file for any run.
 
+## Memory
+
+Expert slots fill 84% of the four GPUs (6,126 slots of 18.8 MB at 4k context). GPU 0 also holds
+the draft (8.0 GB), the dense fp8 weights (6.85), the small weights (1.9) and activations (0.8),
+so it has 831 slots against 1,765 on each other GPU; 64k context costs only 0.4 GB (README step
+60, `results/gpu-memory/`). The runtime prints this ledger at startup.
+
 ## Fixed costs
 
 Model load ~9-20 s (from the page cache; minutes if it must come back from disk), expert upload

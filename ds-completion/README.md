@@ -2366,3 +2366,32 @@ At 800 loads/s, rebalance every 8 (est. t/s with loads free / charged like a mis
 
 The cache serves ~93% of expert uses in simulation (86-88% live); the rest are experts no
 counting predicts. More GPU slots, not a different policy, is the lever left on this side.
+
+## Step 60: where GPU memory goes
+
+The runtime now prints a memory ledger at startup: each GPU's used memory (`hipMemGetInfo`, the
+driver's view, so allocator rounding and contexts are counted) after each phase of the
+constructor. `results/gpu-memory/` holds it at `--max-ctx` 4096, 16384 and 65536 (the
+recommended command, `-n 1`); a chart of it: a private dashboard ("GPU memory ledger"). In GB:
+
+| phase | GPU 0 | GPU 1-3, each |
+|---|---|---|
+| context | 0.22 | 0.07 |
+| dense fp8 weights | 6.85 | |
+| small weights (embeddings, output head 1.3, norms) | 1.90 | |
+| activations, scratch (512-token chunks) | 0.80 | |
+| sequence state at 4k / 16k / 64k | 0.04 / 0.12 / 0.43 | |
+| draft (DSpark, bf16) | **8.02** | |
+| expert path buffers | 0.13 | 0.32 |
+| expert slots | 15.6 (831 slots at 4k) | 33.2 (1,765) |
+| free (the 0.75 GB reserve) | 0.75 | 0.76 |
+| total | 34.34 | 34.34 |
+
+- **Experts take 84% of the four GPUs' memory** (115 of 137 GB, 6,126 slots at 4k).
+- **Long context is cheap**: 64k instead of 4k costs 0.39 GB, 21 slots (6,126 -> 6,105). The
+  compressed caches are sized for 1/4 or 1/128 of the positions; fp8 for them (step 59's
+  candidate lever) would win back almost nothing.
+- **The draft is the largest item besides the experts**: 8.0 GB on GPU 0, ~430 slots (7% more
+  than today). Its weights are bf16; fp8 would free ~4 GB (~210 slots, +3.4%) without touching
+  the output (the draft only proposes), possibly changing acceptance. Next come the dense fp8
+  weights (6.85) and the bf16 output head (1.3).

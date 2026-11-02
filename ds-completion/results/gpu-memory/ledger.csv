@@ -1,0 +1,121 @@
+max_ctx,phase,phase_order,gpu,gb
+4096,Context,0,GPU 0,0.22
+4096,Context,0,GPU 1,0.07
+4096,Context,0,GPU 2,0.08
+4096,Context,0,GPU 3,0.07
+4096,Dense fp8 weights,1,GPU 0,6.85
+4096,Dense fp8 weights,1,GPU 1,0.0
+4096,Dense fp8 weights,1,GPU 2,0.0
+4096,Dense fp8 weights,1,GPU 3,0.0
+4096,Small weights,2,GPU 0,1.9
+4096,Small weights,2,GPU 1,0.0
+4096,Small weights,2,GPU 2,0.0
+4096,Small weights,2,GPU 3,0.0
+4096,"Activations, scratch",3,GPU 0,0.8
+4096,"Activations, scratch",3,GPU 1,0.0
+4096,"Activations, scratch",3,GPU 2,0.0
+4096,"Activations, scratch",3,GPU 3,0.0
+4096,Sequence state (KV caches),4,GPU 0,0.04
+4096,Sequence state (KV caches),4,GPU 1,0.0
+4096,Sequence state (KV caches),4,GPU 2,0.0
+4096,Sequence state (KV caches),4,GPU 3,0.0
+4096,Draft model,5,GPU 0,8.02
+4096,Draft model,5,GPU 1,0.0
+4096,Draft model,5,GPU 2,0.0
+4096,Draft model,5,GPU 3,0.0
+4096,Expert path buffers,6,GPU 0,0.13
+4096,Expert path buffers,6,GPU 1,0.32
+4096,Expert path buffers,6,GPU 2,0.32
+4096,Expert path buffers,6,GPU 3,0.32
+4096,Expert slots,7,GPU 0,15.63
+4096,Expert slots,7,GPU 1,33.2
+4096,Expert slots,7,GPU 2,33.2
+4096,Expert slots,7,GPU 3,33.2
+4096,"Cache staging, the rest",8,GPU 0,0.0
+4096,"Cache staging, the rest",8,GPU 1,0.0
+4096,"Cache staging, the rest",8,GPU 2,0.0
+4096,"Cache staging, the rest",8,GPU 3,0.0
+4096,Free (reserve),9,GPU 0,0.75
+4096,Free (reserve),9,GPU 1,0.76
+4096,Free (reserve),9,GPU 2,0.75
+4096,Free (reserve),9,GPU 3,0.76
+16384,Context,0,GPU 0,0.22
+16384,Context,0,GPU 1,0.07
+16384,Context,0,GPU 2,0.08
+16384,Context,0,GPU 3,0.07
+16384,Dense fp8 weights,1,GPU 0,6.85
+16384,Dense fp8 weights,1,GPU 1,0.0
+16384,Dense fp8 weights,1,GPU 2,0.0
+16384,Dense fp8 weights,1,GPU 3,0.0
+16384,Small weights,2,GPU 0,1.9
+16384,Small weights,2,GPU 1,0.0
+16384,Small weights,2,GPU 2,0.0
+16384,Small weights,2,GPU 3,0.0
+16384,"Activations, scratch",3,GPU 0,0.8
+16384,"Activations, scratch",3,GPU 1,0.0
+16384,"Activations, scratch",3,GPU 2,0.0
+16384,"Activations, scratch",3,GPU 3,0.0
+16384,Sequence state (KV caches),4,GPU 0,0.12
+16384,Sequence state (KV caches),4,GPU 1,0.0
+16384,Sequence state (KV caches),4,GPU 2,0.0
+16384,Sequence state (KV caches),4,GPU 3,0.0
+16384,Draft model,5,GPU 0,8.02
+16384,Draft model,5,GPU 1,0.0
+16384,Draft model,5,GPU 2,0.0
+16384,Draft model,5,GPU 3,0.0
+16384,Expert path buffers,6,GPU 0,0.13
+16384,Expert path buffers,6,GPU 1,0.32
+16384,Expert path buffers,6,GPU 2,0.32
+16384,Expert path buffers,6,GPU 3,0.32
+16384,Expert slots,7,GPU 0,15.56
+16384,Expert slots,7,GPU 1,33.2
+16384,Expert slots,7,GPU 2,33.2
+16384,Expert slots,7,GPU 3,33.2
+16384,"Cache staging, the rest",8,GPU 0,0.0
+16384,"Cache staging, the rest",8,GPU 1,0.0
+16384,"Cache staging, the rest",8,GPU 2,0.0
+16384,"Cache staging, the rest",8,GPU 3,0.0
+16384,Free (reserve),9,GPU 0,0.75
+16384,Free (reserve),9,GPU 1,0.76
+16384,Free (reserve),9,GPU 2,0.75
+16384,Free (reserve),9,GPU 3,0.76
+65536,Context,0,GPU 0,0.22
+65536,Context,0,GPU 1,0.07
+65536,Context,0,GPU 2,0.08
+65536,Context,0,GPU 3,0.07
+65536,Dense fp8 weights,1,GPU 0,6.85
+65536,Dense fp8 weights,1,GPU 1,0.0
+65536,Dense fp8 weights,1,GPU 2,0.0
+65536,Dense fp8 weights,1,GPU 3,0.0
+65536,Small weights,2,GPU 0,1.9
+65536,Small weights,2,GPU 1,0.0
+65536,Small weights,2,GPU 2,0.0
+65536,Small weights,2,GPU 3,0.0
+65536,"Activations, scratch",3,GPU 0,0.81
+65536,"Activations, scratch",3,GPU 1,0.0
+65536,"Activations, scratch",3,GPU 2,0.0
+65536,"Activations, scratch",3,GPU 3,0.0
+65536,Sequence state (KV caches),4,GPU 0,0.43
+65536,Sequence state (KV caches),4,GPU 1,0.0
+65536,Sequence state (KV caches),4,GPU 2,0.0
+65536,Sequence state (KV caches),4,GPU 3,0.0
+65536,Draft model,5,GPU 0,8.02
+65536,Draft model,5,GPU 1,0.0
+65536,Draft model,5,GPU 2,0.0
+65536,Draft model,5,GPU 3,0.0
+65536,Expert path buffers,6,GPU 0,0.13
+65536,Expert path buffers,6,GPU 1,0.32
+65536,Expert path buffers,6,GPU 2,0.32
+65536,Expert path buffers,6,GPU 3,0.32
+65536,Expert slots,7,GPU 0,15.24
+65536,Expert slots,7,GPU 1,33.2
+65536,Expert slots,7,GPU 2,33.2
+65536,Expert slots,7,GPU 3,33.2
+65536,"Cache staging, the rest",8,GPU 0,0.0
+65536,"Cache staging, the rest",8,GPU 1,0.0
+65536,"Cache staging, the rest",8,GPU 2,0.0
+65536,"Cache staging, the rest",8,GPU 3,0.0
+65536,Free (reserve),9,GPU 0,0.75
+65536,Free (reserve),9,GPU 1,0.76
+65536,Free (reserve),9,GPU 2,0.75
+65536,Free (reserve),9,GPU 3,0.76

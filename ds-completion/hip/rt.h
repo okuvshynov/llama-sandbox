@@ -316,4 +316,11 @@ class Runtime {
   void trace_step_begin();
   void trace_step_end();
   void trace_write();
+  // GPU memory ledger (README step 60): each device's used memory (total - free, the driver's
+  // view) after each startup phase; printed at the end of the constructor
+  std::vector<int> mem_devs;
+  std::vector<std::pair<std::string, std::vector<size_t>>> mem_snaps;
+  std::vector<size_t> mem_total;
+  void mem_mark(const char* phase);
+  void mem_report() const;
 };
