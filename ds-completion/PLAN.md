@@ -352,6 +352,9 @@ the lookahead guesses; verify steps in halves (the prompt's overlap) tried: exac
 Step 71: the handoffs: a short forward's copies back from the dies issued before the host waits
 (the CPU's experts start ~5 us after staging instead of ~80-190): held-out 34.33 -> 34.98 t/s,
 generation after a long prompt +8-10%.
+Step 73: the engram fetch (~1.4 ms of host page faults while the GPU idled at each step's start)
+read with pread, after layer 0 is queued, copied on its own stream: a step reaches layer 1 ~1 ms
+sooner; held-out 34.98 -> 35.09 t/s (steps 0.4-2.3% faster on 8 of 9 prompts).
 
 **A. Tuning the expert cache** (the CPU experts' ~25 ms)
 - Hysteresis: a newcomer must beat its victim by a margin, so the cache settles in long runs

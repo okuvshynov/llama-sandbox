@@ -2665,3 +2665,35 @@ night's conditions (~12 h in all). The chart's per-prompt grid shows each step's
 change from the previous point: a column of one color is a change every prompt feels; a column
 split by row is speculation-specific (the top rows accept the most drafts per step).
 
+## Step 73: the engram fetch off the critical path; traces regenerated
+
+At the start of every forward the host fetched the engram rows of layers 1 and 14 (hash the
+last 2-4 tokens, read 24 rows per layer and token from the 189 GB table, convert, copy) while
+die 0 waited with nothing queued: ~2.0 ms per code verify step in the step 69 trace. Three
+changes (`results/decode-next/engram.txt`):
+
+- **Fetched after layer 0 is queued** (`block_post` of layer 0, while die 0 runs its front);
+  the first engram layer is 1. Alone this gained ~0.3 ms: the fetch (~1.4-1.7 ms) outran
+  layer 0's front and delayed its CPU experts.
+- **Read with pread** (`Model::file_of`): through the mapping nearly every row was a minor page
+  fault (~200 per 5-token fetch, ~7 us each; no major faults, hashing 3 us). pread copies from
+  the page cache without mapping: 1428 -> 1036 us per 5-token fetch, 733 -> 491 us at 2.5.
+- **Copied on its own stream** (`s_engram`; layer 1's engram waits for its event): on die 0's
+  stream the copy sat between layer 0's shared expert and its sum.
+
+A 6-token verify step now reaches layer 1 after 3.5 ms instead of 4.5. Held-out
+(`spec-measure-sclk6-cacheloads800cacheperiod8-engram/`): mean **34.98 -> 35.09 t/s**; per step
+0.4-2.3% faster on 8 of 9 prompts (summary-json +0.3%), the t/s gain partly hidden by the
+draft-length rule's step counts. Outputs identical (prompt gate, the 8 prompts, the 6,106-token
+prompt in both modes against step 71). Prompt speed unchanged within run-to-run noise.
+
+Huge pages for the table (asked): the reads scatter over ~49M 4 KB pages (~94k 2 MB pages), a
+300-token run touches ~14k rows, so most reads would still be first touches; pread avoids the
+mapping entirely. Batched reads (io_uring) would matter only for long prompts (~24k rows per
+512-token chunk).
+
+The traces in `results/trace/` are regenerated with this build (29.33 / 38.20 t/s traced, outputs
+identical; `compare-step69.txt` against step 69's): on a code verify step die 0's
+`engram.fetch` (2.00 ms) is gone, the host's `engram fetch` (1.10 ms) runs beside layer 0, and
+die 0's wait for the other dies' results is 4.72 -> 2.15 ms (step 71).
+

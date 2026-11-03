@@ -93,6 +93,9 @@ struct Model {
   ggml_tensor* get(const std::string& name) const;  // any tensor in the file, nullptr if absent
   size_t n_tensors() const { return by_name.size(); }
   std::vector<std::string> shard_paths;
+  // the shard file holding mapped address p and p's offset in it (fd -1 if none): reading a few
+  // scattered rows with pread costs no page faults, unlike touching them through the mapping
+  int file_of(const void* p, size_t& offset) const;
 
  private:
   struct Shard {

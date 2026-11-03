@@ -463,6 +463,13 @@ Each rule is followed by where it mattered most.
   8 and other settings, so they are rerun from their commits rather than adjusted by a guessed
   factor. Each old commit was built and smoke-tested first, so the overnight run does not fail
   at its first point.
+- **Ask what the time is made of before moving it (README step 73).** The engram fetch looked
+  like ~2 ms of host work to hide behind layer 0; moved there it gained only 0.3 ms, because it
+  was longer than layer 0's front and delayed that layer's CPU experts. A fault counter showed
+  the ~1.4 ms was ~200 minor page faults on a 189 GB mapping (one per row read); pread removed
+  them, and the move then fit. The trace found the last piece (the copy waiting on die 0's
+  stream). The end result is small (+0.3% mean, ~1 ms per step); the person's question about
+  huge pages was answered from the access pattern (scattered first touches) rather than tried.
 
 ## 4. Predictions against outcomes
 

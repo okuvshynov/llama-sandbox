@@ -350,3 +350,14 @@ void Model::load(const std::string& first, const std::vector<int>& want_layers) 
     if (!claimed.count(name)) throw err("unexpected tensor (not in the schema): " + name);
   }
 }
+
+int Model::file_of(const void* p, size_t& offset) const {
+  for (const Shard& s : shards) {
+    const char* b = (const char*)s.map;
+    if ((const char*)p >= b && (const char*)p < b + s.size) {
+      offset = (size_t)((const char*)p - b);
+      return s.fd;
+    }
+  }
+  return -1;
+}

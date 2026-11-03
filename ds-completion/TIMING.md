@@ -26,7 +26,8 @@ Held-out mean: 32.0 t/s (26.7-38.6); 32.5 since the output head reads its inputs
 attention core runs a chunk in one launch (steps 66-68: 17.7 -> 7.8 ms per 6-token step, a code
 verify step 108 -> 96 ms; cpp-matrix now 41.4 t/s); **35.0** since a verify step's copies back from
 the dies are issued before the host waits (step 71: the CPU's experts start ~80 us sooner per
-layer, ~4 ms per code step). The table below is from before step 68. For scale: step 48 measured 28.0 at the same clock before
+layer, ~4 ms per code step); **35.1** since the engram rows are read while layer 0 runs (step 73).
+The table below is from before step 68. For scale: step 48 measured 28.0 at the same clock before
 the cache tuning and the router and CPU-routine fixes (steps 50, 53, 57).
 
 **What a millisecond is worth:** on the code step 1 ms is 0.8% (~0.3 t/s), on the chat step 1.3%
@@ -101,18 +102,19 @@ fast one per (token, expert) pair, so only the CPU side helps there.
 ## Seeing a step: traces
 
 `results/trace/tcp-udp.json.gz` (chat) and `cpp-matrix.json.gz` (code), 300 tokens each with
-speculation and the tuned cache (README steps 51, 58, 69), open in ui.perfetto.dev. Per layer: die
+speculation and the tuned cache (README steps 51, 58, 69, 73), open in ui.perfetto.dev. Per layer: die
 0's "layer N" span with its groups nested (attention, router, shared expert, the wait for the
 CPU, the sum); the host's "CPU experts" span with how many experts and tokens; each die's routed
 experts with theirs. The things above show up directly: a verify step is ~40 layers of 1.6-2.5
 ms; in a layer with CPU experts die 0 sits in `ffn.wait_for_cpu_experts` for most of the CPU's
 span, while the dies' experts finish in 0.1-0.35 ms.
 
-Measuring costs time: `--profile` 5-6% of generation speed, `--trace` 6-7% (30.7 / 41.4 t/s
-untraced vs 28.8 / 38.8 traced; README steps 58, 69), so a trace's times run a few percent long;
+Measuring costs time: `--profile` 5-6% of generation speed, `--trace` 6-9% (31.4 / 42.1 t/s
+untraced vs 29.3 / 38.2 traced; README steps 58, 69, 73), so a trace's times run a few percent long;
 its proportions hold. `--trace FILE` writes the file for any run; `scripts/trace_compare.py OLD
 NEW` lists two traces' spans side by side (`results/trace/compare-step58.txt`: the attention
-core 14.8 -> 6.0 ms per code verify step, everything else within ~1 ms).
+core 14.8 -> 6.0 ms per code verify step, everything else within ~1 ms; `compare-step69.txt`: the
+handoffs and the engram fetch of steps 71 and 73).
 
 ## Background expert loads (the adaptive cache)
 

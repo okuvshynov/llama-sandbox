@@ -63,6 +63,8 @@ Runtime::Runtime(const Model& model, RtOptions options, const std::string& fp8_p
     : m(model), hp(model.hp), opt(options) {
   CHECK(hipSetDevice(opt.gpu));
   CHECK(hipStreamCreateWithFlags(&s, hipStreamNonBlocking));
+  CHECK(hipStreamCreateWithFlags(&s_engram, hipStreamNonBlocking));
+  CHECK(hipEventCreateWithFlags(&ev_engram, hipEventDisableTiming));
   mem_devs = {opt.gpu};
   if (!opt.placement.empty())
     for (int d : opt.moe_dies)
@@ -583,8 +585,8 @@ std::vector<int32_t> Runtime::forward_chunk(const std::vector<int32_t>& toks, bo
   marks.clear();
   cur_layer = -1;
   trace_step_begin();
-  mark("engram.fetch");
-  fetch_engram_rows(toks);
+  engram_pending = toks;  // fetched once layer 0 is queued (block_post), before layer 1 reads them
+  engram_p0 = n_past_;
   std::vector<float> emb((size_t)M * E), one_hot((size_t)M * HC, 0.0f);
   for (int t = 0; t < M; t++) {
     const ggml_bf16_t* row = (const ggml_bf16_t*)((const char*)m.tok_embd->data + (size_t)toks[t] * m.tok_embd->nb[1]);
@@ -897,6 +899,9 @@ Runtime::~Runtime() {
   for (void* p : {(void*)h_moe.lists, (void*)h_yr, (void*)h_erows}) (void)hipHostFree(p);
   for (hipEvent_t e : ev_pool) (void)hipEventDestroy(e);
   (void)hipStreamDestroy(s);
+  (void)hipStreamSynchronize(s_engram);
+  (void)hipStreamDestroy(s_engram);
+  (void)hipEventDestroy(ev_engram);
 }
 
 // ------------------------------------------------------------------ pieces
@@ -1111,29 +1116,55 @@ void Runtime::tap(Taps* taps, const char* name, const float* d, std::vector<int6
 // The engram rows depend only on the tokens, so every engram layer's rows are gathered at the
 // start of the step (host: hash, read the mmap'd mxfp8 rows, convert) and go to the GPU in one
 // copy; the layers then only compute. h_erows is rewritten next step, after end_step's sync.
-void Runtime::fetch_engram_rows(const std::vector<int32_t>& chunk) {
+void Runtime::fetch_engram_rows(const std::vector<int32_t>& chunk, int p0) {
   const int n_cols = hp.engram_cols(), D = hp.engram_dim, n_slots = (int)hp.engram_layers.size();
   const size_t n = (size_t)n_cols * D;  // one token's rows of one slot
   const ggml_tensor* tab = m.engram_table;  // host mmap, mxfp8
   const auto to_float = ggml_get_type_traits(tab->type)->to_float;
+  // the rows by pread from the page cache: through the mapping, nearly every row was a minor page
+  // fault (~7 us each, ~200 per 5-token fetch; README step 73)
+  size_t tab_off = 0;
+  const int tab_fd = m.file_of(tab->data, tab_off);
+  const size_t row_bytes = tab->nb[1];
+  std::vector<char> row(row_bytes);
   std::vector<int32_t> hs = tokens_;  // the history up to and including each chunk token
   for (size_t t = 0; t < chunk.size(); t++) {
     hs.push_back(chunk[t]);
     for (int e = 0; e < n_slots; e++) {
-      const std::vector<int32_t> rows = engram_rows(hp, hs, e, pos + (int)t);
-      for (int c = 0; c < n_cols; c++)
-        to_float((const char*)tab->data + (size_t)rows[c] * tab->nb[1], h_erows + ((size_t)e * kChunk + t) * n + (size_t)c * D, D);
+      const std::vector<int32_t> rows = engram_rows(hp, hs, e, p0 + (int)t);
+      for (int c = 0; c < n_cols; c++) {
+        const char* src = (const char*)tab->data + (size_t)rows[c] * row_bytes;
+        if (tab_fd >= 0 && pread(tab_fd, row.data(), row_bytes, (off_t)(tab_off + (size_t)rows[c] * row_bytes)) == (ssize_t)row_bytes)
+          src = row.data();
+        to_float(src, h_erows + ((size_t)e * kChunk + t) * n + (size_t)c * D, D);
+      }
     }
   }
   // only this forward's rows of each slot (README step 48: copying all kChunk rows cost a decode
   // step ~2 ms once kChunk grew to 512)
+  // On their own stream: erows is free (the previous forward ended with a sync) and the engram
+  // layers wait for ev_engram.
   for (int e = 0; e < n_slots; e++)
     CHECK(hipMemcpyAsync(erows + (size_t)e * kChunk * n, h_erows + (size_t)e * kChunk * n, chunk.size() * n * 4,
-                         hipMemcpyHostToDevice, s));
+                         hipMemcpyHostToDevice, s_engram));
+  CHECK(hipEventRecord(ev_engram, s_engram));
+  engram_copied = true;
+}
+
+void Runtime::fetch_engram_pending() {
+  const auto t0 = Clock::now();
+  if (engram_copied) CHECK(hipStreamSynchronize(s_engram));  // no engram layer read the last copy
+  fetch_engram_rows(engram_pending, engram_p0);
+  engram_pending.clear();
+  trace_host("engram fetch", t0, Clock::now(), 1);
 }
 
 void Runtime::engram(int L, int M) {
   const int n = hp.engram_cols() * hp.engram_dim, E = hp.n_embd, HC = hp.hc_mult;
+  if (engram_copied) {
+    CHECK(hipStreamWaitEvent(s, ev_engram, 0));
+    engram_copied = false;
+  }
   quant(erows + (size_t)m.layers[L].kind.engram * kChunk * n, n, B, M);
   gemv8(W[L].engram_kv, B, ekv, 0, M);
   for (int t = 0; t < M; t++)
@@ -1595,6 +1626,7 @@ void Runtime::block_pre(int L, Taps* taps, int M) {
   const int E = hp.n_embd, HC = hp.hc_mult, MIX = (2 + HC) * HC;
   const float eps = hp.rms_eps;
   auto ht = [&](int t) { return h + (size_t)t * E * HC; };
+  if (!engram_pending.empty() && m.layers[L].kind.engram >= 0) fetch_engram_pending();  // an engram layer first
   mark("engram");
   if (m.layers[L].kind.engram >= 0) engram(L, M);
   tap(taps, "h_in", h, {E, HC, 1});
@@ -1626,6 +1658,7 @@ void Runtime::block_pre(int L, Taps* taps, int M) {
 // from the CPU's experts (the host computes them) to the block output
 void Runtime::block_post(int L, Taps* taps, int M) {
   cur_layer = L;
+  if (!engram_pending.empty()) fetch_engram_pending();  // the GPU is busy with this layer's front
   const int E = hp.n_embd, HC = hp.hc_mult;
   moe_finish(L, y, M, taps);
   tap(taps, "ffn_out", y, {E, 1});
@@ -1661,8 +1694,8 @@ void Runtime::begin_step(int32_t tok) {
   marks.clear();
   cur_layer = -1;
   trace_step_begin();
-  mark("engram.fetch");
-  fetch_engram_rows({tok});
+  engram_pending = {tok};
+  engram_p0 = n_past_;
 }
 
 // Routing log format (little endian):

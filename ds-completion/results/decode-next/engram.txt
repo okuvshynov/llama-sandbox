@@ -1,0 +1,39 @@
+# The engram fetch off the critical path (README step 73): rows read with pread, fetched once layer 0 is queued, copied on their own stream
+# measured on b3b107b + the change (hip/rt.cpp, hip/rt.h, src/model.{h,cpp}; committed with this file); sclk 6 (all four cards); 2026-11-03
+# gate: /tmp/.../engram-gate.sh (the prompt gate, the 20,000-byte prompt against step 71's outputs, scripts/spec-measure.sh with the tuned cache, copied)
+
+== 1. what the fetch cost (a temporary probe: getrusage around fetch_engram_rows, removed), --spec --canon, tuned cache
+                                         per fetch     tokens   minor faults   major   hash
+through the mapping, cpp-matrix          1428 us       5.0      197.5          0       3 us
+through the mapping, tcp-udp              733 us       2.5      110.4          0       2 us
+pread, cpp-matrix                        1036 us       5.1        0            0
+pread, tcp-udp                            491 us       2.5        0            0
+(shard 8, the engram table: 41.4 of 188.8 GB in the page cache; every row read was cached)
+
+== 2. the start of a 6-token verify step, cpp-matrix traces (medians over ~34 steps, us)
+build                                              step -> layer 0   layer 0   step -> layer 1
+step 71 (fetch at the step's start)                1936              2417      4466
+fetch after layer 0 is queued (mapping)             310              3715      4184   the fetch outran layer 0's front: its CPU experts started late
+  + pread                                           317              3030      3621
+  + the copy on its own stream (this change)        293              2884      3478   the copy had sat on die 0's stream before layer 0's sum
+== 3. prompt gate (and 32 generated tokens each: the short-forward path, fast and canon)
+p1200: canon 512 vs token-by-token baseline same (68.70 t/s); fast 1 vs 512 same (90.34 t/s); fast 512 vs step 71 same
+p6000: canon 512 vs token-by-token baseline same (63.67 t/s); fast 1 vs 512 same (91.22 t/s); fast 512 vs step 71 same
+== 3b. long context, vs step 71's outputs
+p20000 fast: prompt: 6106 tokens in 59.03 s = 103.44 t/s; generation: 64 tokens in 3.05 s = 20.98 t/s, output vs step 71 same
+p20000 --canon: prompt: 6106 tokens in 82.86 s = 73.69 t/s; generation: 64 tokens in 2.99 s = 21.37 t/s, output vs step 71 same
+# name: generation t/s, tokens per step, drafts accepted per step, output vs results/cache-test/plain-canon-static
+tcp-udp: 31.39 t/s, 2.16 tokens per step, 1.15 accepted, output same
+== 4. the 8 held-out prompts (copied to spec-measure-sclk6-cacheloads800cacheperiod8-engram/; mean 35.09 t/s, step 71 34.98)
+# name: generation t/s, tokens per step, drafts accepted per step, output vs results/cache-test/plain-canon-static
+tcp-udp: 31.39 t/s, 2.16 tokens per step, 1.15 accepted, output same
+py-lru: 36.84 t/s, 3.26 tokens per step, 2.25 accepted, output same
+cpp-matrix: 42.05 t/s, 4.69 tokens per step, 3.67 accepted, output same
+sql-report: 35.65 t/s, 3.90 tokens per step, 2.92 accepted, output same
+geometry: 42.42 t/s, 4.16 tokens per step, 3.17 accepted, output same
+zh-travel: 28.82 t/s, 1.61 tokens per step, 0.61 accepted, output same
+ja-email: 31.22 t/s, 1.95 tokens per step, 0.94 accepted, output same
+summary-json: 32.33 t/s, 3.63 tokens per step, 2.67 accepted, output same
+long-proof: 50.02 t/s, 3.87 tokens per step, 2.86 accepted, output n/a
+ms per step against step 71 (generation time / verify steps): cpp-matrix 111.9 -> 111.4, geometry 100.0 -> 98.0, ja-email 62.7 -> 62.4,
+py-lru 89.1 -> 88.5, sql-report 110.5 -> 109.4, summary-json 111.9 -> 112.2, tcp-udp 69.9 -> 68.8, zh-travel 57.3 -> 56.0, long-proof 77.7 -> 77.3

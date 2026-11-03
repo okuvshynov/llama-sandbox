@@ -294,7 +294,15 @@ class Runtime {
   void shift_tokens(int t0);
   void set_half(int i, int t0);  // i = -1: back to whole-chunk addressing
   void engram(int L, int M = 1);
-  void fetch_engram_rows(const std::vector<int32_t>& chunk);
+  void fetch_engram_rows(const std::vector<int32_t>& chunk, int p0);
+  // a forward's engram rows, fetched once layer 0 is queued (README step 73): the host would
+  // otherwise fetch them while the GPU idles; the first engram layer is 1
+  std::vector<int32_t> engram_pending;
+  int engram_p0 = 0;
+  hipStream_t s_engram = nullptr;  // their copy, so a copy queued behind a background load only
+  hipEvent_t ev_engram = nullptr;  // delays the engram layer that reads it
+  bool engram_copied = false;      // s still has to wait for ev_engram
+  void fetch_engram_pending();
   std::vector<int32_t> forward_chunk(const std::vector<int32_t>& toks, bool head = true);  // the greedy next token after each
   void tap(Taps* taps, const char* name, const float* d, std::vector<int64_t> ne);
   void mark(const char* group);
