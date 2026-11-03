@@ -60,8 +60,10 @@ void k_hc_post(const float* x, const float* h, const float* post, const float* c
 // positions (sparse_attn): keys are the ring slots whose position is in (pos - window, pos],
 // then comp[topk[i]] for i < K. One softmax over all, with a per-head sink in the denominator.
 // scratch: (window + K + 31) / 32 * n_head * (head_dim + 2) floats
+// ring: ring_n slots (0: window), position p at slot p mod ring_n (README step 66)
 void k_attn_decode(const float* q, int n_head, int head_dim, const float* ring, int window, int pos, const float* comp,
-                   const int* topk, int K, const float* sinks, float scale, float* o, float* scratch, hipStream_t s);
+                   const int* topk, int K, const float* sinks, float scale, float* o, float* scratch, hipStream_t s,
+                   int ring_n = 0);
 
 // the window KV of one token: slot = fq8(rope(rms(kv) * w)) (rope on the last rope_dim dims)
 void k_kv_finish(const float* kv, const float* w, int dim, int rope_dim, const float* freqs, int pos, float eps,

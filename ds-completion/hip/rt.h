@@ -246,7 +246,7 @@ class Runtime {
   bool verifying = false;
   bool chunked = false;  // in forward_chunk: per-token draft hiddens go to dspark->hid_chunk
   int verify_p0 = 0, verify_m = 0;
-  float* ring_backup = nullptr;  // [n_layer][kMaxChunk][head_dim]: the ring slots a chunk overwrites
+  int ring_n = 0;  // slots of each layer's window ring: window + kChunk (README step 66)
   // compressor partial groups (ratio > 1): a later rejected position can overwrite the slot of a
   // kept one (same pos % ratio), so each chunk position's row is kept, and the state before the
   // chunk; commit rebuilds every slot from the last kept position writing it

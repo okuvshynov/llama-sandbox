@@ -431,6 +431,12 @@ Each rule is followed by where it mattered most.
   (deadline-blind), which made even the perfect predictor look bad. And `pkill -f` matched its
   own shell again: stop a process by its PID.
 
+- **Unblock before batching (README step 66).** The attention core could not be batched while
+  the window ring was exactly the window; the first stage changes only the ring and proves it
+  exact (prompt gate, long context with `--canon`, held-out prompts), so the later stages start
+  from a known-good base. A fast-mode difference was explained (4 fewer expert slots) before
+  being accepted, by checking the placement in both runs.
+
 ## 4. Predictions against outcomes
 
 Estimates were made before measuring wherever possible; this is how they fared.

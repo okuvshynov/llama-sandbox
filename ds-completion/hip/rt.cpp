@@ -274,10 +274,13 @@ Runtime::Runtime(const Model& model, RtOptions options, const std::string& fp8_p
   mem_mark("activations and scratch (sized for 512-token chunks)");
   // the sequence state, zeroed (masked-out slots must hold finite values: 0 x NaN would leak)
   S.resize(hp.n_layer);
+  // the window ring: the window plus a chunk, so a chunk writes no position its tokens still need
+  // and a rejected draft's writes land on positions no window reads again (README step 66)
+  ring_n = hp.window + kChunk;
   for (int L = 0; L < hp.n_layer; L++) {
     const LayerKind& k = m.layers[L].kind;
     if (!m.layers[L].loaded) continue;
-    S[L].win = dalloc<float>((size_t)hp.window * HD);
+    S[L].win = dalloc<float>((size_t)ring_n * HD);
     if (k.kv_source) {
       const int r = k.ratio;
       if (r > 1) {
@@ -539,17 +542,12 @@ void Runtime::set_half(int i, int t0) {
 }
 
 std::vector<int32_t> Runtime::verify(const std::vector<int32_t>& chunk, bool head) {
-  const int M = (int)chunk.size(), HD = hp.head_dim, WIN = hp.window;
+  const int M = (int)chunk.size(), HD = hp.head_dim;
   if (M < 1 || M > DSpark::kMaxChunk) throw std::runtime_error("verify: chunk of " + std::to_string(M));
-  if (!ring_backup) ring_backup = dalloc<float>((size_t)hp.n_layer * DSpark::kMaxChunk * HD);
   verify_p0 = n_past_;
   verify_m = M;
-  // the ring slots these positions will overwrite
-  for (int L = 0; L < hp.n_layer; L++)
-    if (S[L].win)
-      for (int i = 0; i < M; i++)
-        CHECK(hipMemcpyAsync(ring_backup + ((size_t)L * DSpark::kMaxChunk + i) * HD, S[L].win + (size_t)((verify_p0 + i) % WIN) * HD,
-                             HD * 4, hipMemcpyDeviceToDevice, s));
+  // (the window ring needs no backup: a rejected draft's slots are written again, by the token
+  // that takes its position, before any window reads them, and they overwrite nothing still read)
   for (int L = 0; L < hp.n_layer; L++) {
     if (!S[L].cmp_kv) continue;  // ratio > 1 KV sources: the partial group before the chunk
     const int r = m.layers[L].kind.ratio;
@@ -657,13 +655,8 @@ std::vector<int32_t> Runtime::forward_chunk(const std::vector<int32_t>& toks, bo
 }
 
 void Runtime::commit(int n_keep) {
-  const int HD = hp.head_dim, WIN = hp.window, M = verify_m;
+  const int HD = hp.head_dim, M = verify_m;
   if (n_keep < 1 || n_keep > M || n_past_ != verify_p0 + M) throw std::runtime_error("commit without a matching verify");
-  for (int L = 0; L < hp.n_layer; L++)
-    if (S[L].win)
-      for (int i = n_keep; i < M; i++)
-        CHECK(hipMemcpyAsync(S[L].win + (size_t)((verify_p0 + i) % WIN) * HD, ring_backup + ((size_t)L * DSpark::kMaxChunk + i) * HD,
-                             HD * 4, hipMemcpyDeviceToDevice, s));
   // compressor partial groups: each slot from the last kept position writing it, else as before
   for (auto& [L, rows] : cmp_rows) {
     const int r = m.layers[L].kind.ratio;
@@ -875,7 +868,6 @@ Runtime::~Runtime() {
     (void)hipEventDestroy(ev_local);
   }
   (void)hipEventDestroy(ev_staged);
-  if (ring_backup) (void)hipFree(ring_backup);
   for (auto& [L, p] : cmp_rows) (void)hipFree(p);
   for (auto& [L, p] : cmp_backup) (void)hipFree(p);
   if (route_log) fclose(route_log);
@@ -1178,7 +1170,7 @@ void Runtime::attn_core(int L, int t, const float* xin, float* q_t, const float*
   std::map<int, const int*>& tcur = topk_cur[t];
   k_rope(q_t, NH, HD, RD, w.freqs, pos, false, s);
   float* ring = S[L].win;
-  k_kv_finish(kvv_t, w.kv_norm, HD, RD, w.freqs, pos, eps, ring + (size_t)(pos % WIN) * HD, s);
+  k_kv_finish(kvv_t, w.kv_norm, HD, RD, w.freqs, pos, eps, ring + (size_t)(pos % ring_n) * HD, s);
 
   const int* topk = nullptr;
   int K = 0;
@@ -1259,7 +1251,7 @@ void Runtime::attn_core(int L, int t, const float* xin, float* q_t, const float*
     if (K > 0) topk = tcur.at(k.idx_from);
   }
   mark("attn.core");
-  k_attn_decode(q_t, NH, HD, ring, WIN, pos, comp, topk, K, w.sinks, 1.0f / sqrtf((float)HD), o_t, att_scratch, s);
+  k_attn_decode(q_t, NH, HD, ring, WIN, pos, comp, topk, K, w.sinks, 1.0f / sqrtf((float)HD), o_t, att_scratch, s, ring_n);
   k_rope(o_t, NH, HD, RD, w.freqs, pos, true, s);  // take the query's rotation back out
 }
 

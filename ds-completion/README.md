@@ -2518,3 +2518,26 @@ already counts. The rest, an upper bound: 4.7% on chat, 2.9% on code, mostly bef
 is not the limit (HIP graphs would not help); the host's own work is, and little of it.
 
 The batched attention core for verify chunks is the large item left (~5-8% on code steps).
+
+## Step 66: the batched attention core, stage 1: a ring of window + chunk
+
+A verify chunk runs each layer's attention token by token (`attn_core`: rope, the KV into the
+window ring, the compressor and indexer, the attention, the inverse rope), so a 6-token step
+pays 6 launches of an attention kernel whose ~160 blocks hardly fill the GPU (39-94 us each,
+17.7 ms per step in `attn.core`). The plan (PLAN, "batched attention core"): (1) a larger ring,
+(2) the per-token work in phases with the small kernels batched, (3) one attention launch per
+chunk, (4) the indexer batched.
+
+The obstacle to batching is the ring: 128 slots, so a chunk's later tokens overwrite positions
+its earlier tokens still need. It is now window + `kChunk` = 640 slots per layer (0.07 GB more),
+position p at slot p mod 640. The attention kernel still takes window key j as the position
+pos - ((pos - j) mod 128), so every token sees the same keys in the same order, now at slot
+ps mod 640. Verify's ring backup and restore are gone: a rejected draft's slot is written again
+by the token that takes its position before any window reads it, and what it overwrites
+(positions 640 back) no window reads.
+
+`results/attn-batch/stage1.txt`: the prompt gate passes (`--canon` chunks of 512 against the
+token-by-token baseline, fast 1 vs 512, 1,200 and 6,000 bytes); a 6,106-token prompt with
+`--canon` gives the same bytes as a build of the previous commit (fast mode differs: GPU 0
+holds 4 fewer expert slots, and fast numerics follow the placement, step 31); the 8 held-out
+prompts are identical to step 32 at a mean 32.58 t/s (32.48 before: the backup copies, ~0.3%).

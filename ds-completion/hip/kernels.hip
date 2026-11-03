@@ -446,12 +446,17 @@ void k_hc_post(const float* x, const float* h, const float* post, const float* c
 // merges the chunks and adds the per-head sink to the denominator (sparse_attn).
 constexpr int ATT_HPB = 8, ATT_CHUNK = 32;
 
-__device__ inline const float* att_key(int j, const float* ring, int window, int pos, const float* comp, const int* topk,
-                                       int head_dim, bool& valid) {
+// Window key j (0..window-1) is the position ps = pos - ((pos - j) mod window): the order of the
+// keys is the order of j, whatever the ring's size. A ring of ring_n >= window slots keeps position
+// p at slot p mod ring_n (README step 66: window + a chunk, so a chunk's writes overwrite no
+// position its tokens still need); ring_n == window is the classic ring (slot j holds ps).
+__device__ inline const float* att_key(int j, const float* ring, int window, int ring_n, int pos, const float* comp,
+                                       const int* topk, int head_dim, bool& valid) {
   if (j < window) {
-    const int ps = pos - (((pos - j) % window) + window) % window;  // the position slot j holds
+    const int ps = pos - (((pos - j) % window) + window) % window;  // the position key j stands for
     valid = ps >= 0;
-    return ring + (size_t)j * head_dim;
+    const int slot = ((ps % ring_n) + ring_n) % ring_n;
+    return ring + (size_t)slot * head_dim;
   }
   valid = true;
   return comp + (size_t)topk[j - window] * head_dim;
@@ -463,7 +468,7 @@ __device__ inline const float* att_key(int j, const float* ring, int window, int
 // cross-lane sums in the score pass; the softmax per head is one 32-lane group's shuffles.
 // P @ V: each thread owns two dims (float2 per key), 8 keys in flight.
 __global__ void __launch_bounds__(256) attn_partial_kernel(const float* q, int head_dim, const float* ring, int window,
-                                                           int pos, const float* comp, const int* topk, int nk,
+                                                           int ring_n, int pos, const float* comp, const int* topk, int nk,
                                                            float scale, float* part_o, float* part_ml) {
   constexpr int D = 512, DC = 64, VB = 8;
   __shared__ float qs[ATT_HPB][D];
@@ -478,7 +483,7 @@ __global__ void __launch_bounds__(256) attn_partial_kernel(const float* q, int h
   if (threadIdx.x < ATT_CHUNK) {
     bool v = false;
     const float* p = ring;
-    if ((int)threadIdx.x < n) p = att_key(j0 + threadIdx.x, ring, window, pos, comp, topk, D, v);
+    if ((int)threadIdx.x < n) p = att_key(j0 + threadIdx.x, ring, window, ring_n, pos, comp, topk, D, v);
     kp[threadIdx.x] = p;
     kvalid[threadIdx.x] = v;
   }
@@ -554,13 +559,14 @@ __global__ void attn_combine_kernel(const float* part_o, const float* part_ml, i
 }
 
 void k_attn_decode(const float* q, int n_head, int head_dim, const float* ring, int window, int pos, const float* comp,
-                   const int* topk, int K, const float* sinks, float scale, float* o, float* scratch, hipStream_t s) {
+                   const int* topk, int K, const float* sinks, float scale, float* o, float* scratch, hipStream_t s, int ring_n) {
+  if (ring_n == 0) ring_n = window;
   const int nk = window + K, n_chunks = cdiv(nk, ATT_CHUNK);
   float* part_o = scratch;                                         // [n_chunks][n_head][head_dim]
   float* part_ml = scratch + (size_t)n_chunks * n_head * head_dim;  // [n_chunks][n_head][2]
   if (head_dim != 512) abort();  // the partial kernel is written for the model's head_dim
-  attn_partial_kernel<<<dim3(n_head / ATT_HPB, n_chunks), 256, 0, s>>>(q, head_dim, ring, window, pos, comp, topk, nk,
-                                                                       scale, part_o, part_ml);
+  attn_partial_kernel<<<dim3(n_head / ATT_HPB, n_chunks), 256, 0, s>>>(q, head_dim, ring, window, ring_n, pos, comp, topk,
+                                                                       nk, scale, part_o, part_ml);
   attn_combine_kernel<<<n_head, 256, 0, s>>>(part_o, part_ml, n_chunks, n_head, head_dim, sinks, o);
 }
 

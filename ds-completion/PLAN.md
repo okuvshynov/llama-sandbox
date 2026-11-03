@@ -341,7 +341,11 @@ counts), but loads must start 3-4 layers ahead, where the guesses are weaker: a 
 simulates to ~2.5% at best (bound 10%), likely 1-2% real. Not built. Step 65: the multi-input fp8
 GEMV re-decodes inputs per lane group for 64-lane rows (bit-identical fixes: ~1% at 3-4 inputs,
 none at 6); the GPU rarely waits for the host (<= 3-5%: engram rows, the sum's prelude). Next:
-the batched attention core for verify chunks.
+the batched attention core for verify chunks (and prompt chunks), in stages, each bit-identical:
+(1) the window ring at window + chunk slots (done, step 66); (2) attn_core in phases with the
+small per-token kernels batched; (3) one attention launch per chunk (token = grid z, a check
+mode against the per-token kernel); (4) the indexer batched (past ~2k context). Expected: code
+steps' attn.core 17.7 -> ~6-9 ms (+6-8%), and the prompt's attention core (4 ms per token).
 
 **A. Tuning the expert cache** (the CPU experts' ~25 ms)
 - Hysteresis: a newcomer must beat its victim by a margin, so the cache settles in long runs
