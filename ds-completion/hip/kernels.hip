@@ -336,7 +336,11 @@ void k_gemv_bf16(const uint16_t* W, int N, int K, const float* x, float* y, floa
 
 // ================================================================== rope
 
-__global__ void rope_kernel(float* x, int n_heads, int head_dim, int rope_dim, const float* freqs, int pos, bool inverse) {
+// token blockIdx.y of a chunk: x + y * x_stride at position pos + y (one token: y = 0)
+__global__ void rope_kernel(float* x, int n_heads, int head_dim, int rope_dim, const float* freqs, int pos, bool inverse,
+                            int x_stride) {
+  x += (size_t)blockIdx.y * x_stride;
+  pos += blockIdx.y;
   const int half = rope_dim / 2;
   const int t = blockIdx.x * blockDim.x + threadIdx.x;
   if (t >= n_heads * half) return;
@@ -351,7 +355,12 @@ __global__ void rope_kernel(float* x, int n_heads, int head_dim, int rope_dim, c
 
 void k_rope(float* x, int n_heads, int head_dim, int rope_dim, const float* freqs, int pos, bool inverse, hipStream_t s) {
   const int n = n_heads * rope_dim / 2;
-  rope_kernel<<<cdiv(n, 256), 256, 0, s>>>(x, n_heads, head_dim, rope_dim, freqs, pos, inverse);
+  rope_kernel<<<cdiv(n, 256), 256, 0, s>>>(x, n_heads, head_dim, rope_dim, freqs, pos, inverse, 0);
+}
+void k_rope_m(float* x, int M, int n_heads, int head_dim, int rope_dim, const float* freqs, int pos0, bool inverse,
+              hipStream_t s) {
+  const int n = n_heads * rope_dim / 2;
+  rope_kernel<<<dim3(cdiv(n, 256), M), 256, 0, s>>>(x, n_heads, head_dim, rope_dim, freqs, pos0, inverse, n_heads * head_dim);
 }
 
 // ================================================================== hyper-connections
@@ -445,6 +454,10 @@ void k_hc_post(const float* x, const float* h, const float* post, const float* c
 // writes its unnormalized partial output with the chunk's max and sum. The combine kernel
 // merges the chunks and adds the per-head sink to the denominator (sparse_attn).
 constexpr int ATT_HPB = 8, ATT_CHUNK = 32;
+struct AttnToks {  // per token of a launch (by value): its compressed keys and their top-k list
+  int K[kAttnMaxTok];
+  const int* topk[kAttnMaxTok];
+};
 
 // Window key j (0..window-1) is the position ps = pos - ((pos - j) mod window): the order of the
 // keys is the order of j, whatever the ring's size. A ring of ring_n >= window slots keeps position
@@ -467,10 +480,19 @@ __device__ inline const float* att_key(int j, const float* ring, int window, int
 // row stride so the 32 keys of a head read different banks), q is in shared memory once. No
 // cross-lane sums in the score pass; the softmax per head is one 32-lane group's shuffles.
 // P @ V: each thread owns two dims (float2 per key), 8 keys in flight.
+// Up to 8 tokens of a chunk in one launch (README step 68): token blockIdx.z at position pos0 + z,
+// q + z * n_head * D, its own key count and top-k; its blocks are exactly a one-token launch's
+// (the same chunks of 32 keys, the same order), past its last chunk they exit.
 __global__ void __launch_bounds__(256) attn_partial_kernel(const float* q, int head_dim, const float* ring, int window,
-                                                           int ring_n, int pos, const float* comp, const int* topk, int nk,
-                                                           float scale, float* part_o, float* part_ml) {
+                                                           int ring_n, int pos0, const float* comp, AttnToks tk,
+                                                           float scale, float* part_o, float* part_ml, int max_chunks) {
   constexpr int D = 512, DC = 64, VB = 8;
+  const int z = blockIdx.z, pos = pos0 + z, nk = window + tk.K[z];
+  const int* topk = tk.topk[z];
+  if ((int)blockIdx.y * ATT_CHUNK >= nk) return;  // the whole block, before any barrier
+  q += (size_t)z * gridDim.x * ATT_HPB * D;
+  part_o += (size_t)z * max_chunks * gridDim.x * ATT_HPB * D;
+  part_ml += (size_t)z * max_chunks * gridDim.x * ATT_HPB * 2;
   __shared__ float qs[ATT_HPB][D];
   __shared__ float kt[ATT_CHUNK][DC + 1];
   __shared__ float sc[ATT_HPB][ATT_CHUNK];
@@ -542,9 +564,13 @@ __global__ void __launch_bounds__(256) attn_partial_kernel(const float* q, int h
     ((float2*)(part_o + ((size_t)c * gridDim.x * ATT_HPB + h0 + h) * D))[d2] = acc[h];
 }
 
-__global__ void attn_combine_kernel(const float* part_o, const float* part_ml, int n_chunks, int n_head, int head_dim,
-                                    const float* sinks, float* o) {
-  const int h = blockIdx.x;
+__global__ void attn_combine_kernel(const float* part_o, const float* part_ml, int window, AttnToks tk, int max_chunks,
+                                    int n_head, int head_dim, const float* sinks, float* o) {
+  const int h = blockIdx.x, z = blockIdx.y;
+  const int n_chunks = (window + tk.K[z] + ATT_CHUNK - 1) / ATT_CHUNK;  // this token's, as a one-token launch
+  part_o += (size_t)z * max_chunks * n_head * head_dim;
+  part_ml += (size_t)z * max_chunks * n_head * 2;
+  o += (size_t)z * n_head * head_dim;
   float M = -1e30f;  // the reference kernel's finite floor
   for (int c = 0; c < n_chunks; c++) M = fmaxf(M, part_ml[((size_t)c * n_head + h) * 2]);
   float den = expf(sinks[h] - M);
@@ -558,21 +584,43 @@ __global__ void attn_combine_kernel(const float* part_o, const float* part_ml, i
   }
 }
 
-void k_attn_decode(const float* q, int n_head, int head_dim, const float* ring, int window, int pos, const float* comp,
-                   const int* topk, int K, const float* sinks, float scale, float* o, float* scratch, hipStream_t s, int ring_n) {
-  if (ring_n == 0) ring_n = window;
-  const int nk = window + K, n_chunks = cdiv(nk, ATT_CHUNK);
-  float* part_o = scratch;                                         // [n_chunks][n_head][head_dim]
-  float* part_ml = scratch + (size_t)n_chunks * n_head * head_dim;  // [n_chunks][n_head][2]
+void k_attn_decode_m(const float* q, int M, int n_head, int head_dim, const float* ring, int window, int pos0,
+                     const float* comp, const int* K, const int* const* topk, const float* sinks, float scale, float* o,
+                     float* scratch, hipStream_t s, int ring_n) {
+  if (M < 1 || M > kAttnMaxTok) abort();
   if (head_dim != 512) abort();  // the partial kernel is written for the model's head_dim
-  attn_partial_kernel<<<dim3(n_head / ATT_HPB, n_chunks), 256, 0, s>>>(q, head_dim, ring, window, ring_n, pos, comp, topk,
-                                                                       nk, scale, part_o, part_ml);
-  attn_combine_kernel<<<n_head, 256, 0, s>>>(part_o, part_ml, n_chunks, n_head, head_dim, sinks, o);
+  if (ring_n == 0) ring_n = window;
+  AttnToks tk;
+  int max_k = 0;
+  for (int z = 0; z < kAttnMaxTok; z++) {
+    tk.K[z] = z < M ? K[z] : 0;
+    tk.topk[z] = z < M ? topk[z] : nullptr;
+    max_k = std::max(max_k, tk.K[z]);
+  }
+  const int max_chunks = cdiv(window + max_k, ATT_CHUNK);
+  float* part_o = scratch;                                                // [M][max_chunks][n_head][head_dim]
+  float* part_ml = scratch + (size_t)M * max_chunks * n_head * head_dim;  // [M][max_chunks][n_head][2]
+  attn_partial_kernel<<<dim3(n_head / ATT_HPB, max_chunks, M), 256, 0, s>>>(q, head_dim, ring, window, ring_n, pos0, comp,
+                                                                           tk, scale, part_o, part_ml, max_chunks);
+  attn_combine_kernel<<<dim3(n_head, M), 256, 0, s>>>(part_o, part_ml, window, tk, max_chunks, n_head, head_dim, sinks, o);
 }
 
+void k_attn_decode(const float* q, int n_head, int head_dim, const float* ring, int window, int pos, const float* comp,
+                   const int* topk, int K, const float* sinks, float scale, float* o, float* scratch, hipStream_t s, int ring_n) {
+  k_attn_decode_m(q, 1, n_head, head_dim, ring, window, pos, comp, &K, &topk, sinks, scale, o, scratch, s, ring_n);
+}
+
+
 // ---- the window KV of one token: rms * w, rope on the tail, fp8 fake-quant, into its ring slot
+// token blockIdx.y: kv + y * dim at position pos + y; ring_n > 0: its slot is ring + ((pos + y)
+// mod ring_n) * dim (README step 67), else `slot` (one token)
 __global__ void kv_finish_kernel(const float* kv, const float* w, int dim, int rope_dim, const float* freqs, int pos,
-                                 float eps, float* slot) {
+                                 float eps, float* slot, int ring_n) {
+  if (ring_n > 0) {
+    kv += (size_t)blockIdx.y * dim;
+    pos += blockIdx.y;
+    slot += (size_t)(pos % ring_n) * dim;
+  }
   __shared__ float v[1024];
   float ss = 0;
   for (int i = threadIdx.x; i < dim; i += blockDim.x) ss += kv[i] * kv[i];
@@ -599,7 +647,11 @@ __global__ void kv_finish_kernel(const float* kv, const float* w, int dim, int r
 
 void k_kv_finish(const float* kv, const float* w, int dim, int rope_dim, const float* freqs, int pos, float eps,
                  float* slot, hipStream_t s) {
-  kv_finish_kernel<<<1, 512, 0, s>>>(kv, w, dim, rope_dim, freqs, pos, eps, slot);
+  kv_finish_kernel<<<1, 512, 0, s>>>(kv, w, dim, rope_dim, freqs, pos, eps, slot, 0);
+}
+void k_kv_finish_m(const float* kv, int M, const float* w, int dim, int rope_dim, const float* freqs, int pos0, float eps,
+                   float* ring, int ring_n, hipStream_t s) {
+  kv_finish_kernel<<<dim3(1, M), 512, 0, s>>>(kv, w, dim, rope_dim, freqs, pos0, eps, ring, ring_n);
 }
 
 // ================================================================== indexer

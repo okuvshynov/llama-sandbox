@@ -34,6 +34,9 @@ void k_gemv_bf16_m(const uint16_t* W, int N, int K, const float* x, int M, float
 // freqs: [rope_dim / 2] per-pair frequencies (precomputed on the host exactly as
 // precompute_freqs_cis). inverse: rotate by -angle (the attention output's de-rotation).
 void k_rope(float* x, int n_heads, int head_dim, int rope_dim, const float* freqs, int pos, bool inverse, hipStream_t s);
+// M tokens [M][n_heads][head_dim] at positions pos0 .. pos0 + M - 1, each as k_rope alone (README step 67)
+void k_rope_m(float* x, int M, int n_heads, int head_dim, int rope_dim, const float* freqs, int pos0, bool inverse,
+              hipStream_t s);
 
 // ---- hyper-connections (Block.hc_mixes / hc_pre / hc_post, hc_split_sinkhorn) ----
 
@@ -60,12 +63,23 @@ void k_hc_post(const float* x, const float* h, const float* post, const float* c
 // positions (sparse_attn): keys are the ring slots whose position is in (pos - window, pos],
 // then comp[topk[i]] for i < K. One softmax over all, with a per-head sink in the denominator.
 // scratch: (window + K + 31) / 32 * n_head * (head_dim + 2) floats
+// M (<= kAttnMaxTok) tokens of a chunk at positions pos0 .. in one launch (README step 68): q and o
+// [M][n_head][head_dim], token t's K[t] compressed keys topk[t]; each token's result is exactly a
+// one-token call's. scratch: M x the one-token size.
+constexpr int kAttnMaxTok = 8;
+void k_attn_decode_m(const float* q, int M, int n_head, int head_dim, const float* ring, int window, int pos0,
+                     const float* comp, const int* K, const int* const* topk, const float* sinks, float scale, float* o,
+                     float* scratch, hipStream_t s, int ring_n = 0);
 // ring: ring_n slots (0: window), position p at slot p mod ring_n (README step 66)
 void k_attn_decode(const float* q, int n_head, int head_dim, const float* ring, int window, int pos, const float* comp,
                    const int* topk, int K, const float* sinks, float scale, float* o, float* scratch, hipStream_t s,
                    int ring_n = 0);
 
 // the window KV of one token: slot = fq8(rope(rms(kv) * w)) (rope on the last rope_dim dims)
+// M tokens' window KV [M][dim] at positions pos0 .. into their ring slots (pos mod ring_n), each as
+// k_kv_finish alone (README step 67)
+void k_kv_finish_m(const float* kv, int M, const float* w, int dim, int rope_dim, const float* freqs, int pos0, float eps,
+                   float* ring, int ring_n, hipStream_t s);
 void k_kv_finish(const float* kv, const float* w, int dim, int rope_dim, const float* freqs, int pos, float eps,
                  float* slot, hipStream_t s);
 

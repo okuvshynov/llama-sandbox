@@ -437,6 +437,12 @@ Each rule is followed by where it mattered most.
   from a known-good base. A fast-mode difference was explained (4 fewer expert slots) before
   being accepted, by checking the placement in both runs.
 
+- **Stages that each prove themselves (README steps 66-68).** The plan put every risk in its own
+  stage with its own gate (the ring, then the phases, then the launch), and stage 3 carried a
+  check mode comparing each batched token against a one-token launch (0 of ~260,000 differ).
+  Stage 2 gained 2% before the main change. Stages 2 and 3 share a commit: stage 3 was written
+  in the same files before stage 2 was committed.
+
 ## 4. Predictions against outcomes
 
 Estimates were made before measuring wherever possible; this is how they fared.
@@ -457,6 +463,7 @@ Estimates were made before measuring wherever possible; this is how they fared.
 | chunks of 64 share CPU expert reads (37) | most of the 53% saved | nothing | 384 experts: ~1 token per CPU expert per chunk; then compute-bound until tiled |
 | one CPU miss per layer hides behind the GPU's work (50) | partly | 0.05-0.15 of ~0.35-0.48 ms | the GPU's work alongside (shared expert, each die's experts) is shorter than one miss |
 | fp8 compressed caches free expert slots (59 -> 60) | the next lever | 21 slots at 64k | the caches are small; the draft is 8 GB |
+| the batched attention core (66-68) | attn.core 17.7 -> 6-9 ms, +6-8% on code | 7.8 ms, +5.7% mean (+10% on cpp-matrix), the prompt +6-12% | as planned; the stages kept every output identical |
 | the fp8 projections lose the step 62 way (65) | 3-7% | ~1% at 3-4 inputs, 0 at 6 | the cost is decoding inputs per lane group, not L2 reads; the fixes keep the bits only partly |
 | launches / host gaps (65) | <= 7-12% | <= 3-5% | the host is usually 0.1-1 ms ahead; it waits on its own work, not on launches |
 | the next layers' experts from this layer's router input (63) | "demonstrated for some models" (the person) | 72% one layer ahead, 4-7x the use counts for CPU experts | the residual stream changes little per layer |

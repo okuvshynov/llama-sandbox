@@ -2541,3 +2541,39 @@ token-by-token baseline, fast 1 vs 512, 1,200 and 6,000 bytes); a 6,106-token pr
 `--canon` gives the same bytes as a build of the previous commit (fast mode differs: GPU 0
 holds 4 fewer expert slots, and fast numerics follow the placement, step 31); the 8 held-out
 prompts are identical to step 32 at a mean 32.58 t/s (32.48 before: the backup copies, ~0.3%).
+
+## Step 67: stage 2, the attention in phases
+
+`attention()` now runs a chunk's attention in phases: (A) every token's rope of q and its window
+KV into the ring, one launch each for the chunk (`k_rope_m`, `k_kv_finish_m`, the same
+per-element arithmetic with the token as the grid's second dimension); (B) token by token the
+compressor and the indexer (`attn_prep`: a compressor group completed mid-chunk makes a
+compressed position only the later tokens count; each token's key count and top-k are its own);
+(C) each token's attention; (D) the inverse rope, one launch. The stage-1 ring makes (A) safe.
+`results/attn-batch/stage2.txt`: the prompt gate passes; a 6,106-token prompt is identical to the
+stage-1 build in both numerics; the 8 held-out prompts are identical to step 32 at a mean **33.25
+t/s** (32.58).
+
+## Step 68: stage 3, one attention launch per chunk
+
+The attention kernel takes the token as its grid's third dimension: up to 8 tokens per launch
+(`k_attn_decode_m`; a struct by value carries each token's compressed-key count and top-k
+list), each token's blocks exactly a one-token launch's (the same 32-key chunks in the same
+order; blocks past a token's last chunk exit), the combine likewise per token; a prompt chunk
+runs in groups of 8 (the scratch: 8 x 2.6 MB). The one-token call is the same kernel with one
+token. `DS_ATTN_CHECK=1` also runs every token alone and compares: 0 of 14,400 tokens differ in a
+`--spec` run (2,880 launches) and 0 of 245,480 in a 6,106-token `--canon` prompt
+(`results/attn-batch/stage3.txt`).
+
+| | before stage 1 | stage 3 |
+|---|---|---|
+| held-out mean, sclk 6 | 32.48 t/s | **34.33 t/s (+5.7%)** (cpp-matrix 37.6 -> 41.4) |
+| a 6-token verify step (`--profile`) | 108.2 ms | 96.3 ms |
+| its attention core | 17.7 ms | 7.8 ms |
+| 1,989-token prompt, fast / `--canon` | ~83.5 / 59.5 t/s | 93.3 / 63.0 t/s |
+| 6,106-token prompt, fast / `--canon` | 87.2 / 68.2 t/s | 96.7 / 73.2 t/s |
+
+All outputs identical (prompt gate, the 8 held-out prompts; the long prompt identical with
+`--canon`, fast mode differing by one expert slot fewer on GPU 0). Stage 4 (the indexer batched)
+matters only past ~2k context and stays on the list. The CPU's experts (25.9 ms of the 96.3) are
+now the largest item of a code step.

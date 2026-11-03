@@ -22,7 +22,9 @@ typical steps, from the held-out run (README step 57):
 | chat (tcp-udp), mostly 2-3 verified | 2.16 | 10 ms | ~65 ms | 75 ms | 28.9 |
 
 Held-out mean: 32.0 t/s (26.7-38.6); 32.5 since the output head reads its inputs through LDS
-(README step 62: -1.1 ms per draft call, -1.6 ms per 6-token verify step). For scale: step 48 measured 28.0 at the same clock before
+(README step 62: -1.1 ms per draft call, -1.6 ms per 6-token verify step); **34.3** since the
+attention core runs a chunk in one launch (steps 66-68: 17.7 -> 7.8 ms per 6-token step, a code
+verify step 108 -> 96 ms; cpp-matrix now 41.4 t/s). The table below is from before step 68. For scale: step 48 measured 28.0 at the same clock before
 the cache tuning and the router and CPU-routine fixes (steps 50, 53, 57).
 
 **What a millisecond is worth:** on the code step 1 ms is 0.8% (~0.3 t/s), on the chat step 1.3%
@@ -76,7 +78,8 @@ README step 58, which adds ~5%):
 | GPU: attention core 4.0, attention output 1.4, indexer 1.0, compressor 0.7, shared expert 0.7, q 0.5, router 0.2, the rest 1.1 | 9.6 ms | ~10.3 ms |
 | **wall** | **12.0 ms (~83 t/s)** | **16.8 ms (~59.5 t/s)** |
 
-(The router was 1.1 ms per token before its top-k went into one launch, README step 53.) The two
+(The router was 1.1 ms per token before its top-k went into one launch, README step 53. Since
+step 68 the attention core runs 8 tokens per launch: this prompt at 93 t/s fast, 63 `--canon`.) The two
 sides are close in the fast numerics, the CPU now slightly the slower, so halving the GPU's work
 alone gains nothing:
 

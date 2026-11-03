@@ -1,0 +1,25 @@
+# the batched attention core, stage 3: one attention launch for up to 8 tokens of a chunk (README step 68)
+# /tmp/claude-1000/-home-oleksandr-projects-macpro-2019-vega-if/4780c00c-b58e-432f-b13c-d31b1f3d11f2/scratchpad/stage3-gate.sh: DS_ATTN_CHECK=1 runs, the prompt gate, a 20,000-byte prompt against a build of 6e7126a (stage 1), the 8 held-out prompts; sclk 6; 2026-11-03
+== 0. check mode (batched vs one-token launches)
+cpp-matrix --spec: # attention check (README step 68): 2880 launches, 14400 tokens, 0 differ from one-token launches output same
+p20000 --canon: # attention check (README step 68): 31840 launches, 245480 tokens, 0 differ from one-token launches
+== 1. prompt gate
+p1200: canon 512 vs token-by-token baseline same (68.92 t/s); fast 1 vs 512 same (86.68 t/s)
+p6000: canon 512 vs token-by-token baseline same (62.96 t/s); fast 1 vs 512 same (93.30 t/s)
+== 2. long context, new vs a build of 6e7126a (stage 1)
+p20000 fast: prompt: 6106 tokens in 63.16 s = 96.67 t/s; generation: 64 tokens in 3.30 s = 19.42 t/s, output vs stage 1 DIFFERS
+p20000 --canon: prompt: 6106 tokens in 83.42 s = 73.20 t/s; generation: 64 tokens in 3.20 s = 19.98 t/s, output vs stage 1 same
+# fast p20000 differs: GPU 0 holds one expert slot fewer (1250 -> 1249; the attention scratch is 8x); --canon is identical
+== 3. the 8 held-out prompts (copied to spec-measure-sclk6-cacheloads800cacheperiod8-attnbatch/; mean 34.33 t/s, stage 2 33.25, before stage 1 32.48)
+# name: generation t/s, tokens per step, drafts accepted per step, output vs results/cache-test/plain-canon-static
+tcp-udp: 30.71 t/s, 2.17 tokens per step, 1.17 accepted, output same
+py-lru: 35.87 t/s, 3.26 tokens per step, 2.25 accepted, output same
+cpp-matrix: 41.37 t/s, 4.69 tokens per step, 3.67 accepted, output same
+sql-report: 35.13 t/s, 4.00 tokens per step, 3.03 accepted, output same
+geometry: 41.65 t/s, 4.21 tokens per step, 3.22 accepted, output same
+zh-travel: 27.99 t/s, 1.69 tokens per step, 0.70 accepted, output same
+ja-email: 30.27 t/s, 1.92 tokens per step, 0.92 accepted, output same
+summary-json: 31.68 t/s, 3.63 tokens per step, 2.67 accepted, output same
+long-proof: 50.83 t/s, 3.89 tokens per step, 2.89 accepted, output n/a
+== --profile, cpp-matrix, 6-token verify steps, medians of the second half (scripts/profile_verify.py): step 96.3 ms (108.2 at step 58)
+ffn.wait_for_cpu_experts 25.9 attn.out 11.9 ffn.shared 10.4 attn.core 7.8 (17.7 at step 58) ffn.wait_for_gpu_experts 6.2 attn.q 5.4 hc 4.9 attn.indexer 4.8 attn.compressor 4.5 ffn.router 2.5 head 2.4 ffn.dispatch 2.3 engram.fetch 1.9 attn.kv 1.5 engram 1.4 ffn.add 0.6

@@ -262,7 +262,12 @@ class Runtime {
   void gemv8(const Fp8W& w, Codes c, float* yout, int rows_per_group = 0, int M = 1);
   // the chunk's M tokens are at positions pos .. pos + M - 1; per-token buffers are [M][...]
   void attention(int L, const float* xin, float* out, int M = 1);
-  void attn_core(int L, int t, const float* x_t, float* q_t, const float* kvv_t, Codes qr_t, float* o_t);
+  void attn_prep(int L, int t, const float* x_t, Codes qr_t, int& K, const int*& topk);
+  std::vector<int> att_K;            // per token of the chunk: its compressed keys (README step 67)
+  std::vector<const int*> att_topk;  // and their top-k list
+  bool attn_check = false;           // DS_ATTN_CHECK: the batched attention against one-token launches
+  float* attn_check_buf = nullptr;
+  long attn_check_calls = 0, attn_check_tokens = 0, attn_check_bad = 0;
   // the routed + shared experts of the chunk's M tokens (x [M][E] staged in d_moe.x)
   void moe(int L, float* out, int M, Taps* taps);
   void moe_launch(int L, int M);                           // GPU: router .. the dies' experts, shared expert

@@ -1,0 +1,19 @@
+# the batched attention core, stage 2: attention() in phases, the rope of q, the ring writes and the inverse rope batched over the chunk (README step 67)
+# /tmp/claude-1000/-home-oleksandr-projects-macpro-2019-vega-if/4780c00c-b58e-432f-b13c-d31b1f3d11f2/scratchpad/stage2-gate.sh: the prompt gate, a 20,000-byte prompt against a build of 6e7126a (stage 1), the 8 held-out prompts; sclk 6; 2026-11-02
+== 1. prompt gate
+p1200: canon 512 vs token-by-token baseline same; fast 1 vs 512 same
+p6000: canon 512 vs token-by-token baseline same; fast 1 vs 512 same
+== 2. long context, new vs a build of 6e7126a
+p20000 fast: prompt: 6106 tokens, output same
+p20000 --canon: prompt: 6106 tokens, output same
+== 3. the 8 held-out prompts (copied to spec-measure-sclk6-cacheloads800cacheperiod8-phases/; mean 33.25 t/s, stage 1 32.58)
+# name: generation t/s, tokens per step, drafts accepted per step, output vs results/cache-test/plain-canon-static
+tcp-udp: 29.95 t/s, 2.16 tokens per step, 1.15 accepted, output same
+py-lru: 34.42 t/s, 3.12 tokens per step, 2.11 accepted, output same
+cpp-matrix: 38.82 t/s, 4.48 tokens per step, 3.54 accepted, output same
+sql-report: 33.92 t/s, 3.95 tokens per step, 2.97 accepted, output same
+geometry: 40.49 t/s, 4.21 tokens per step, 3.22 accepted, output same
+zh-travel: 27.64 t/s, 1.69 tokens per step, 0.69 accepted, output same
+ja-email: 29.61 t/s, 1.90 tokens per step, 0.90 accepted, output same
+summary-json: 31.16 t/s, 3.63 tokens per step, 2.67 accepted, output same
+long-proof: 47.44 t/s, 3.84 tokens per step, 2.84 accepted, output n/a

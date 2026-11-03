@@ -243,7 +243,7 @@ Runtime::Runtime(const Model& model, RtOptions options, const std::string& fp8_p
   }
   rw = dalloc<float>((size_t)C * kMoeIdStride);
   rids = dalloc<int>((size_t)C * kMoeIdStride);
-  att_scratch = dalloc<float>((size_t)((hp.window + hp.idx_topk + 31) / 32) * NH * (HD + 2));
+  att_scratch = dalloc<float>((size_t)kAttnMaxTok * ((hp.window + hp.idx_topk + 31) / 32) * NH * (HD + 2));  // step 68
   erows = dalloc<float>((size_t)hp.engram_layers.size() * C * hp.engram_cols() * hp.engram_dim);  // [slot][token][rows]
   ekv = dalloc<float>((size_t)C * E * (HC + 1));
   {
@@ -254,6 +254,7 @@ Runtime::Runtime(const Model& model, RtOptions options, const std::string& fp8_p
   }
   for (int L : hp.index_source_layers)
     if (L < hp.n_layer && m.layers[L].loaded) topk_buf[L] = dalloc<int>((size_t)C * hp.idx_topk);
+  attn_check = getenv("DS_ATTN_CHECK") != nullptr;  // README step 68
   if (const char* e = getenv("DS_ROUTE_AHEAD")) {  // README step 63
     ra_k = std::max(0, std::min(8, atoi(e)));
     ra_logits = dalloc<float>((size_t)hp.n_layer * (ra_k + 1) * 8 * hp.n_expert);
@@ -789,6 +790,9 @@ Runtime::~Runtime() {
   (void)hipStreamSynchronize(s);
   trace_write();
   ra_report();
+  if (attn_check)
+    fprintf(stderr, "# attention check (README step 68): %ld launches, %ld tokens, %ld differ from one-token launches\n",
+            attn_check_calls, attn_check_tokens, attn_check_bad);
   if (ra_log) fclose(ra_log);
   if (loader) {
     fprintf(stderr, "# load test: %ld loads\n", loader->loads());
@@ -1147,11 +1151,44 @@ void Runtime::attention(int L, const float* xin, float* out, int M) {
   gemv8(w.q_b, B, q, 0, M);
   mark("attn.kv");
   gemv8(w.kv, A, kvv, 0, M);
+  // README step 67: in phases. (A) every token's rope of q and its window KV into the ring (the
+  // ring holds window + a chunk: no token's write touches a position another still needs);
+  // (B) token by token, the compressor and the indexer (a group completed mid-chunk makes a
+  // compressed position for the later tokens only: each token's count and top-k are its own);
+  // (C) each token's attention; (D) the inverse rope of every output.
+  const LayerKind& kind = m.layers[L].kind;
+  const int RD = hp.rope_dim, WIN = hp.window;
+  k_rope_m(q, M, NH, HD, RD, w.freqs, p0, false, s);
+  k_kv_finish_m(kvv, M, w.kv_norm, HD, RD, w.freqs, p0, eps, S[L].win, ring_n, s);
+  att_K.assign(M, 0);
+  att_topk.assign(M, nullptr);
+  const float* comp = kind.ratio ? S[kind.kv_from].comp : nullptr;
   for (int t = 0; t < M; t++) {
     pos = p0 + t;
-    attn_core(L, tok_base + t, xin + (size_t)t * E, q + (size_t)t * NH * HD, kvv + (size_t)t * HD,
-              Codes{B.q + (size_t)t * hp.q_lora, B.s + (size_t)t * hp.q_lora / 32}, o + (size_t)t * NH * HD);
+    attn_prep(L, tok_base + t, xin + (size_t)t * E, Codes{B.q + (size_t)t * hp.q_lora, B.s + (size_t)t * hp.q_lora / 32},
+              att_K[t], att_topk[t]);
   }
+  mark("attn.core");
+  const float scale = 1.0f / sqrtf((float)HD);
+  for (int t0 = 0; t0 < M; t0 += kAttnMaxTok) {  // README step 68: up to 8 tokens per launch
+    const int n = std::min(kAttnMaxTok, M - t0);
+    k_attn_decode_m(q + (size_t)t0 * NH * HD, n, NH, HD, S[L].win, WIN, p0 + t0, comp, att_K.data() + t0,
+                    att_topk.data() + t0, w.sinks, scale, o + (size_t)t0 * NH * HD, att_scratch, s, ring_n);
+    if (attn_check) {  // each token again alone, compared bit for bit (DS_ATTN_CHECK)
+      if (!attn_check_buf) attn_check_buf = dalloc<float>((size_t)kAttnMaxTok * NH * HD);
+      for (int i = 0; i < n; i++)
+        k_attn_decode(q + (size_t)(t0 + i) * NH * HD, NH, HD, S[L].win, WIN, p0 + t0 + i, comp, att_topk[t0 + i],
+                      att_K[t0 + i], w.sinks, scale, attn_check_buf + (size_t)i * NH * HD, att_scratch, s, ring_n);
+      std::vector<float> a((size_t)n * NH * HD), b(a.size());
+      CHECK(hipMemcpyAsync(a.data(), o + (size_t)t0 * NH * HD, a.size() * 4, hipMemcpyDeviceToHost, s));
+      CHECK(hipMemcpyAsync(b.data(), attn_check_buf, b.size() * 4, hipMemcpyDeviceToHost, s));
+      CHECK(hipStreamSynchronize(s));
+      attn_check_calls++;
+      attn_check_tokens += n;
+      for (int i = 0; i < n; i++) attn_check_bad += memcmp(a.data() + (size_t)i * NH * HD, b.data() + (size_t)i * NH * HD, (size_t)NH * HD * 4) != 0;
+    }
+  }
+  k_rope_m(o, M, NH, HD, RD, w.freqs, p0, true, s);  // take the queries' rotation back out
   pos = p0;
   mark("attn.out");
   quant(o, NH * HD, B, M);
@@ -1160,21 +1197,17 @@ void Runtime::attention(int L, const float* xin, float* out, int M) {
   gemv8(w.out_b, B, out, 0, M);
 }
 
-// one token (chunk index t, at position pos): rope of q, its window K/V into the ring, the
-// compressor and indexer, the attention, and the inverse rope of its output
-void Runtime::attn_core(int L, int t, const float* xin, float* q_t, const float* kvv_t, Codes qr_t, float* o_t) {
+// one token (chunk index t, at position pos): the compressor and the indexer; K and topk: the
+// compressed keys its attention takes (README step 67: the rope, the ring and the attention run
+// for the whole chunk in attention())
+void Runtime::attn_prep(int L, int t, const float* xin, Codes qr_t, int& K, const int*& topk) {
   const LayerW& w = W[L];
   const LayerKind& k = m.layers[L].kind;
-  const int HD = hp.head_dim, NH = hp.n_head, RD = hp.rope_dim, WIN = hp.window, E = hp.n_embd;
+  const int HD = hp.head_dim, RD = hp.rope_dim, E = hp.n_embd;
   const float eps = hp.rms_eps;
   std::map<int, const int*>& tcur = topk_cur[t];
-  k_rope(q_t, NH, HD, RD, w.freqs, pos, false, s);
-  float* ring = S[L].win;
-  k_kv_finish(kvv_t, w.kv_norm, HD, RD, w.freqs, pos, eps, ring + (size_t)(pos % ring_n) * HD, s);
-
-  const int* topk = nullptr;
-  int K = 0;
-  const float* comp = nullptr;
+  topk = nullptr;
+  K = 0;
   if (k.ratio) {
     const int r = k.ratio;
     mark("attn.compressor");
@@ -1218,7 +1251,6 @@ void Runtime::attn_core(int L, int t, const float* xin, float* q_t, const float*
     }
     const int n_comp = (pos + 1) / r;
     K = std::min(hp.idx_topk, n_comp);
-    comp = S[k.kv_from].comp;
     mark("attn.indexer");
     if (k.index_source && K > 0) {  // Indexer.forward, one query
       gemv8(w.idx_q_b, qr_t, iq);
@@ -1250,9 +1282,6 @@ void Runtime::attn_core(int L, int t, const float* xin, float* q_t, const float*
     }
     if (K > 0) topk = tcur.at(k.idx_from);
   }
-  mark("attn.core");
-  k_attn_decode(q_t, NH, HD, ring, WIN, pos, comp, topk, K, w.sinks, 1.0f / sqrtf((float)HD), o_t, att_scratch, s, ring_n);
-  k_rope(o_t, NH, HD, RD, w.freqs, pos, true, s);  // take the query's rotation back out
 }
 
 void Runtime::moe(int L, float* out, int M, Taps* taps) {
