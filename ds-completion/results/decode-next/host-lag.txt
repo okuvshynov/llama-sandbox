@@ -1,0 +1,9 @@
+# GPU 0's issue-to-start lag in generation (README step 65): --trace with the lag summary
+# bin-hip/ds-completion -m $M --rt $F8 --placement placements/study30.txt --dspark $D --spec --canon --cache-loads 800 --cache-period 8 --cache-wait -p <prompt> --chat -n 300 --trace <file>
+# commit 289bb2d + the lag summary; sclk 6; 2026-11-02; outputs identical; lag = GPU start of a group - host time it was issued (clocks anchored to ~10-30 us)
+## tcp-udp: 27.31 t/s (traced)
+# GPU 0 issue-to-start lag per group (generation): <0 1, 0-30 us 14305, 30-100 12796, 100-300 34092, 300-1000 43802, >1 ms 4317
+# host-bound estimate: 2363.0 of 9240.3 ms on GPU 0's stream (25.6%) in groups whose next group started within 30 us of being issued; by that group: ffn.wait_for_gpu_experts 1928.7 ffn.add 174.9 engram 159.9 ffn.wait_for_cpu_experts 49.5 hc 48.1 attn.q 1.1 head 0.7 ms
+## cpp-matrix: 34.56 t/s (traced)
+# GPU 0 issue-to-start lag per group (generation): <0 1, 0-30 us 4425, 30-100 9260, 100-300 15922, 300-1000 36121, >1 ms 8197
+# host-bound estimate: 2034.1 of 7446.1 ms on GPU 0's stream (27.3%) in groups whose next group started within 30 us of being issued; by that group: ffn.wait_for_gpu_experts 1816.4 engram 152.7 ffn.add 47.0 hc 11.0 ffn.wait_for_cpu_experts 5.6 attn.q 0.6 attn.compressor 0.3 head 0.2 ms

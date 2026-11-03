@@ -49,7 +49,9 @@ adds ~5%, README step 58):
 | draft | 12.2 ms | 10% | 10.0 ms | 16% |
 | **verify + draft** | **~118 ms** | | **~65 ms** | |
 
-So the dense part is ~60% of a step, the CPU's misses about a fifth: per layer a CPU miss costs
+(The fp8 projections cost ~2x one token at 6 because each lane group decodes every input again;
+the GPU waits for the host's own work at most 3-5% of the time; README step 65.) So the dense
+part is ~60% of a step, the CPU's misses about a fifth: per layer a CPU miss costs
 ~0.27 ms per distinct expert plus ~0.1 ms for having any, little of it hidden behind the GPUs
 (README step 50), so every miss avoided is ~0.27 ms off the step. The attention core runs token
 by token, so it grows fastest with the tokens verified (5.6 -> 17.7 ms from 2 to 6). Kernel

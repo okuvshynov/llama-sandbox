@@ -290,6 +290,12 @@ class Runtime {
   void mark(const char* group);
   std::vector<std::pair<const char*, hipEvent_t>> marks;
   std::vector<int> mark_layer;  // the layer of each mark (trace)
+  std::vector<double> mark_host;  // host time each mark was issued, us since trace_epoch (trace; README step 65)
+  // host-bound estimate (trace, generation): time in groups whose next group started on the GPU
+  // within 30 us of being issued (the GPU had run dry), by that next group's name; the lag histogram
+  std::map<std::string, double> hb_by_next;
+  double hb_total_us = 0, gen_gpu_us = 0;
+  long lag_hist[6] = {};
   int cur_layer = -1;
   std::vector<hipEvent_t> ev_pool;
   // trace state

@@ -1,0 +1,51 @@
+diff --git a/ds-completion/hip/fp8_gemv.hip b/ds-completion/hip/fp8_gemv.hip
+index 6b5aecd..fc282d7 100644
+--- a/ds-completion/hip/fp8_gemv.hip
++++ b/ds-completion/hip/fp8_gemv.hip
+@@ -1,3 +1,4 @@
++#include <cstdlib>
+ #include "fp8_gemv.h"
+ 
+ #include <algorithm>
+@@ -138,11 +139,11 @@ __global__ void __launch_bounds__(256) fp8_gemv_kernel(const uint8_t* __restrict
+ // Same work split, same per-lane order of k steps and the same per-element expression as
+ // fp8_gemv_kernel, so every row's result is bit-identical to a one-input call. A block's rows
+ // lie in one group.
+-template <int LPR, int R, int M>
+-__global__ void __launch_bounds__(256) fp8_gemv_lds_kernel(const uint8_t* __restrict__ w, const uint8_t* __restrict__ ws,
++template <int LPR, int R, int M, int WAVES = 4>
++__global__ void __launch_bounds__(64 * WAVES) fp8_gemv_lds_kernel(const uint8_t* __restrict__ w, const uint8_t* __restrict__ ws,
+                                                            int N, int K, int rpg, const uint8_t* __restrict__ xq,
+                                                            const float* __restrict__ xs, float* __restrict__ y) {
+-  constexpr int KT = 1024, ROWS = 4 * (64 / LPR) * R;
++  constexpr int KT = 1024, ROWS = WAVES * (64 / LPR) * R;
+   __shared__ uint4 xlo[M][KT / 16], xhi[M][KT / 16];  // fp16 of codes 0-7 / 8-15 of each 16
+   __shared__ float st[M][KT / 32];
+   const int lane = threadIdx.x & 63;
+@@ -296,8 +297,25 @@ static void launch_r(const uint8_t* w, const uint8_t* ws, int N, int K, int rpg,
+                      hipStream_t stream) {
+   const int rows_per_block = 4 * (64 / LPR) * R;  // 4 waves
+   const dim3 grid((N + rows_per_block - 1) / rows_per_block), block(256);
++  // several inputs, 64 lanes per row (README step 65; DS_FP8_LDS64: waves per block, tuning only)
++  if constexpr (LPR == 64) {
++    static const int wv = getenv("DS_FP8_LDS64") ? atoi(getenv("DS_FP8_LDS64")) : 0;
++    const int minm = getenv("DS_FP8_LDS64_MINM") ? atoi(getenv("DS_FP8_LDS64_MINM")) : 3;
++    if (wv && M >= minm && M >= 2) {
++      const int rpb = wv * R;
++      if (rpg % rpb == 0) {
++        const dim3 g2((N + rpb - 1) / rpb), b2(64 * wv);
++        switch (wv * 16 + M) {
++#define C2(W, m) case W * 16 + m: fp8_gemv_lds_kernel<LPR, R, m, W><<<g2, b2, 0, stream>>>(w, ws, N, K, rpg, x.q, x.s, y); return;
++          C2(8, 2) C2(8, 3) C2(8, 4) C2(8, 5) C2(8, 6) C2(8, 7) C2(8, 8)
++          C2(16, 2) C2(16, 3) C2(16, 4) C2(16, 5) C2(16, 6) C2(16, 7) C2(16, 8)
++#undef C2
++        }
++      }
++    }
++  }
+   // several inputs, rows split over 8 or 16 lanes: through shared memory (results/bench-fp8-multi.txt;
+-  // with 64 lanes per row a block covers too few rows to pay for decoding the tiles)
++  // with 64 lanes per row a 4-wave block covers too few rows to pay for decoding the tiles)
+   if (M >= 2 && LPR <= 16 && rpg % rows_per_block == 0) {
+     switch (M) {
+ #define CASE(m) case m: fp8_gemv_lds_kernel<LPR, R, m><<<grid, block, 0, stream>>>(w, ws, N, K, rpg, x.q, x.s, y); break;

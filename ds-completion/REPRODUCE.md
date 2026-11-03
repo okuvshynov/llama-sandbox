@@ -121,6 +121,7 @@ Unless stated: sclk 2, 16 CPU threads (32 before README step 18), the study30 pl
 | 30 | `bench-expert-load.txt`, `load-test/` | `bin-hip/bench-expert-load -m $M`, `scripts/load-test.sh` |
 | 31-32 | `canon-gate.txt`, `canon-gate/` | `scripts/canon-gate.sh` (rerun for steps 32 and 45) |
 | 34 | `check-topk.txt` | `~/venvs/ds-ref/bin/python ref/check_topk.py` (runs `bin-hip/test-topk`) |
+| 65 | `decode-next/fp8-multi.txt`, `fp8-lds64.patch`, `host-lag.txt` | `bin-hip/bench-fp8 $F8 --ms 1,2,3,4,6 [--gemm \| --sweep]` (the 8-wave variant: `git apply results/decode-next/fp8-lds64.patch`, `DS_FP8_LDS64=8`); the lag: the command in `host-lag.txt` (`--trace` prints it) |
 | 64 | `route-ahead/prefetch-sim.txt` | `~/venvs/ds-ref/bin/python scripts/prefetch_sim.py` on `data/route-ahead/*.bin` (from step 63's run) |
 | 63 | `route-ahead/` (`summary.txt`, `pooled.txt`, per prompt `.err`) | `scripts/route-ahead.sh 4` (`DS_ROUTE_AHEAD=4 DS_ROUTE_LOG=...`; logs in `data/route-ahead/`, ~185 MB); `pooled.txt`: the per-prompt tables weighted by their counts |
 | 62 | the load rate in TIMING.md: `loads started` and `generation:` in `spec-measure-sclk6-cacheloads800cacheperiod8-head/*.err` | (from the files) |

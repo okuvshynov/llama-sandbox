@@ -1,0 +1,23 @@
+# the fp8 GEMV at 1-6 inputs (README step 65): where verify steps' projections lose time
+# bin-hip/bench-fp8 ~/llms/ds-1017-fp8/dense-fp8.gguf --ms 1,2,3,4,6 [--gemm | --sweep] [DS_FP8_LDS64=8: fp8-lds64.patch]
+# commit 289bb2d; sclk 6; layer 2 (engram_kv from layer 1); 2026-11-02; us per call
+## the built-in choice (64 lanes per row for q_a, kv, attention output, shared gate/up, engram; 8-16 for the rest)
+tensor             M=1    M=2    M=3    M=4    M=6
+attn_q_a          11.7   16.1   25.7   27.0   29.7
+attn_q_b          60.4   63.8   67.1   70.0   78.2
+attn_kv            6.9   10.6   15.8   16.3   15.8
+attn_output_a     57.8   64.6  101.4  118.0  121.6
+attn_output_b     85.2  101.3  150.3  151.9  155.2
+indexer.attn_q_b  10.0   12.4   14.6   16.0   17.9
+ffn_gate_shexp    19.8   23.9   36.3   42.1   45.2
+ffn_down_shexp    18.2   23.3   25.7   28.5   31.7
+engram_kv        205.8  220.4  314.5  398.9  461.8
+## --gemm (the prompt's many-input kernel, bit-identical): slower at every M of 2-6 (0.4-1.0x the GEMV)
+## --sweep within 64 lanes per row (the lane split fixes the bits): rows per lane group R, us (GB/s best)
+attn_output_a  M=3: R=1 88.5 (today R=2: 101); M=4: R=4 100.3 (118); M=6: R=2 122.0 (best already)
+attn_output_b  M=3: R=1 109.5 (150);           M=4: R=1 139.1 (156); M=6: R=2 155.8 (best)
+ffn_gate_shexp M=3: R=1 32.6 (36);             M=4: R=4 35.0 (42);   M=6: R=2 45.3 (best)
+attn_q_a       M=3: R=1 20.8 (26);             M=4: R=4 24.7 (27);   M=6: R=2 29.7 (best)
+## the shared-memory kernel for 64-lane rows in 8- or 16-wave blocks (fp8-lds64.patch, bit-identical): better at M=3-4, worse at 6
+waves 8:  attn_output_a M=3 86.4, M=4 98.1, M=6 147.7; attn_output_b 137.3 / 146.7 / 221.7; engram_kv 296.5 / 327.7 / 638.8
+waves 16: attn_output_a 103.7 / 110.8 / 127.3; attn_output_b 166.4 / 176.0 / 186.8; engram_kv 438.4 / 481.9 / 508.8

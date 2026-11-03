@@ -2492,3 +2492,29 @@ the rarely used ones, with similar low counts). The simulation is optimistic (fr
 slots; the logged layer times are those without prefetching, and faster layers shorten the
 windows), so a real gain would likely be 1-2%, for a scheduler sharing the links with the
 cache, transient slots and per-layer timing. Not built.
+
+## Step 65: two quick checks for decode: the fp8 projections and the host
+
+After step 62 a 6-token code step was attention 39% (the core 15%), the other dense parts 24%,
+the CPU's experts 22%, the draft ~9%. Two cheap checks before the larger items
+(`results/decode-next/`):
+
+**The fp8 projections at several inputs** (`fp8-multi.txt`): from 3 inputs the 64-lane-per-row
+tensors jump (attention output A 58 -> 101 -> 122 us at 1 / 3 / 6, B 85 -> 150 -> 155, the
+shared gate 20 -> 36 -> 45, engram 206 -> 315 -> 462): each lane group decodes every input's fp8
+codes again, as the shared-memory variant (used for 8-16 lanes) avoids, but a 4-wave block of
+64-lane rows covers too few rows to pay for it. Bit-identical options: rows per lane group (R)
+by M (3-4 inputs: -10 to -25% on the large tensors; 6: today's R = 2 is best), the shared-memory
+kernel in 8-wave blocks (better at 3-4, worse at 6: `fp8-lds64.patch`, not kept), the prompt's
+many-input kernel (slower at 2-6). Other lane splits are faster but fix a different order of
+additions, changing every output. So ~1% on chat-sized steps, nothing at 6; not done.
+
+**Does the GPU wait for the host?** (`host-lag.txt`; `--trace` now prints, for generation, the
+lag between the host issuing each group and GPU 0 starting it). Most groups start 100 us to
+1 ms after their issue: the host is ahead. Starts within 30 us of the issue (the GPU had run
+dry) are almost all the step after each layer's wait for the CPU's experts, which the CPU time
+already counts. The rest, an upper bound: 4.7% on chat, 2.9% on code, mostly before `engram`
+(the host computes the engram rows per layer, ~2%) and `ffn.add` (1-2% on chat). Launch overhead
+is not the limit (HIP graphs would not help); the host's own work is, and little of it.
+
+The batched attention core for verify chunks is the large item left (~5-8% on code steps).

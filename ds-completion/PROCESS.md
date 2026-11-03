@@ -451,6 +451,8 @@ Estimates were made before measuring wherever possible; this is how they fared.
 | chunks of 64 share CPU expert reads (37) | most of the 53% saved | nothing | 384 experts: ~1 token per CPU expert per chunk; then compute-bound until tiled |
 | one CPU miss per layer hides behind the GPU's work (50) | partly | 0.05-0.15 of ~0.35-0.48 ms | the GPU's work alongside (shared expert, each die's experts) is shorter than one miss |
 | fp8 compressed caches free expert slots (59 -> 60) | the next lever | 21 slots at 64k | the caches are small; the draft is 8 GB |
+| the fp8 projections lose the step 62 way (65) | 3-7% | ~1% at 3-4 inputs, 0 at 6 | the cost is decoding inputs per lane group, not L2 reads; the fixes keep the bits only partly |
+| launches / host gaps (65) | <= 7-12% | <= 3-5% | the host is usually 0.1-1 ms ahead; it waits on its own work, not on launches |
 | the next layers' experts from this layer's router input (63) | "demonstrated for some models" (the person) | 72% one layer ahead, 4-7x the use counts for CPU experts | the residual stream changes little per layer |
 | a GPU prefetch from those guesses (64) | ~15% if a third of misses covered | 2.5% simulated (bound 10%) | loads need 3-4 layers' notice, where guesses are weaker; wrong loads take link time |
 | expert parallelism for the draft (62) | proposed by the person | ~1 ms at best | experts are 16% of the draft; the head (27%) was the item |

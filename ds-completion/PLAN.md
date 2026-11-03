@@ -338,7 +338,10 @@ through LDS (bit-identical): head 3.3 -> 2.2 ms at 5 inputs, +1.4% held-out (32.
 63-64: layer L's router input through the next layers' routers guesses their experts well (one
 layer ahead 72% of the chosen in the top 6; 71% of the CPU's experts in 3 guesses vs 20% by use
 counts), but loads must start 3-4 layers ahead, where the guesses are weaker: a GPU prefetch
-simulates to ~2.5% at best (bound 10%), likely 1-2% real. Not built.
+simulates to ~2.5% at best (bound 10%), likely 1-2% real. Not built. Step 65: the multi-input fp8
+GEMV re-decodes inputs per lane group for 64-lane rows (bit-identical fixes: ~1% at 3-4 inputs,
+none at 6); the GPU rarely waits for the host (<= 3-5%: engram rows, the sum's prelude). Next:
+the batched attention core for verify chunks.
 
 **A. Tuning the expert cache** (the CPU experts' ~25 ms)
 - Hysteresis: a newcomer must beat its victim by a margin, so the cache settles in long runs

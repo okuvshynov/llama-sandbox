@@ -1003,6 +1003,17 @@ void Runtime::trace_step_end() {
       CHECK(hipEventElapsedTime(&a, marks[0].second, die_trace[i].base));
       die_trace[i].base_us = t0 + a * 1000.0;
     }
+  if (step_anchor_us < 1e299)  // generation (anchored clocks): the issue-to-start lags
+    for (size_t i = 0; i + 1 < marks.size(); i++) {
+      const double dur = at[i + 1] - at[i], lag = at[i + 1] - mark_host[i + 1];
+      gen_gpu_us += dur;
+      const int b = lag < 0 ? 0 : lag < 30 ? 1 : lag < 100 ? 2 : lag < 300 ? 3 : lag < 1000 ? 4 : 5;
+      lag_hist[b]++;
+      if (lag < 30) {
+        hb_total_us += dur;
+        hb_by_next[marks[i + 1].first] += dur;
+      }
+    }
   for (size_t i = 0; i + 1 < marks.size(); i++) {
     const int L = mark_layer[i];
     if (L >= 0 && (i == 0 || mark_layer[i - 1] != L)) {
@@ -1050,6 +1061,17 @@ void Runtime::trace_write() {
   fprintf(f, "\n]}\n");
   fclose(f);
   fprintf(stderr, "# trace: %zu events in %s (open in ui.perfetto.dev)\n", trace_evs.size(), trace_path.c_str());
+  if (gen_gpu_us > 0) {  // README step 65
+    fprintf(stderr, "# GPU 0 issue-to-start lag per group (generation): <0 %ld, 0-30 us %ld, 30-100 %ld, 100-300 %ld, 300-1000 %ld, >1 ms %ld\n",
+            lag_hist[0], lag_hist[1], lag_hist[2], lag_hist[3], lag_hist[4], lag_hist[5]);
+    fprintf(stderr, "# host-bound estimate: %.1f of %.1f ms on GPU 0's stream (%.1f%%) in groups whose next group started within 30 us of being issued; by that group:",
+            hb_total_us / 1e3, gen_gpu_us / 1e3, 100 * hb_total_us / gen_gpu_us);
+    std::vector<std::pair<double, std::string>> v;
+    for (auto& [k, x] : hb_by_next) v.push_back({x, k});
+    std::sort(v.rbegin(), v.rend());
+    for (size_t i = 0; i < v.size() && i < 8; i++) fprintf(stderr, " %s %.1f", v[i].second.c_str(), v[i].first / 1e3);
+    fprintf(stderr, " ms\n");
+  }
 }
 
 void Runtime::mark(const char* group) {
@@ -1065,6 +1087,10 @@ void Runtime::mark(const char* group) {
   marks.emplace_back(group, e);
   if (mark_layer.size() < marks.size()) mark_layer.resize(marks.size());
   mark_layer[marks.size() - 1] = cur_layer;
+  if (!trace_path.empty()) {
+    if (mark_host.size() < marks.size()) mark_host.resize(marks.size());
+    mark_host[marks.size() - 1] = std::chrono::duration<double, std::micro>(Clock::now() - trace_epoch).count();
+  }
 }
 
 void Runtime::tap(Taps* taps, const char* name, const float* d, std::vector<int64_t> ne) {
