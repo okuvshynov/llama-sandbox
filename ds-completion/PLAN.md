@@ -357,6 +357,8 @@ read with pread, after layer 0 is queued, copied on its own stream: a step reach
 sooner; held-out 34.98 -> 35.09 t/s (steps 0.4-2.3% faster on 8 of 9 prompts).
 Step 74: the indexer skipped while it keeps every compressed position (<= 512 keys; its scores
 were computed and dropped): held-out 35.09 -> 35.94 t/s; batching it for long context is F below.
+Step 75: the fp8 GEMV at 2-8 inputs (attn.out ~12 ms of a code step at ~270 GB/s): fp16 inputs,
+shared memory, fewer registers, a register cap: none faster at M = 4-6; it needs a new work split.
 
 **A. Tuning the expert cache** (the CPU experts' ~25 ms)
 - Hysteresis: a newcomer must beat its victim by a margin, so the cache settles in long runs

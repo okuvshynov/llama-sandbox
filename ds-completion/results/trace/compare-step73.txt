@@ -1,0 +1,60 @@
+# scripts/trace_compare.py: step 73's traces (commit 8138b22) vs step 74's (c4bd99b), sclk 6, 2026-11-03T12:54:04-05:00
+## cpp-matrix
+# ms per verify step in generation: step73:cpp-matrix.json.gz (67 steps) vs step74:cpp-matrix.json (64 steps)
+span                                     old       new    change
+layer                                  98.06     96.47     -1.59
+experts                                59.44     60.73     +1.29
+verify 6 tokens                        52.69     62.01     +9.33
+CPU experts                            41.01     42.09     +1.08
+ffn.wait_for_cpu_experts               37.72     39.04     +1.32
+wait for the staged block              25.54     23.10     -2.44
+verify 5 tokens                        24.19     13.90    -10.29
+verify 4 tokens                        16.88     15.91     -0.98
+attn.out                               12.00     12.15     +0.15
+draft                                  11.46     11.52     +0.06
+ffn.shared                             10.53     10.36     -0.17
+verify 3 tokens                         8.00      9.40     +1.40
+attn.core                               5.98      6.06     +0.08
+hc                                      5.94      5.99     +0.06
+attn.q                                  5.73      5.81     +0.08
+attn.indexer                            4.37      1.25     -3.13
+attn.compressor                         4.22      4.35     +0.13
+ffn.dispatch                            2.76      2.77     +0.01
+ffn.router                              2.68      2.67     -0.01
+head                                    2.21      2.23     +0.02
+ffn.wait_for_gpu_experts                2.15      2.00     -0.15
+verify 2 tokens                         1.89      0.95     -0.94
+attn.kv                                 1.81      1.82     +0.01
+engram                                  1.40      1.41     +0.02
+engram fetch                            1.10      1.04     -0.06
+ffn.add                                 0.77      0.78     +0.02
+## tcp-udp
+# ms per verify step in generation: step73:tcp-udp.json.gz (134 steps) vs step74:tcp-udp.json (133 steps)
+span                                     old       new    change
+layer                                  61.64     60.80     -0.84
+experts                                36.73     37.10     +0.37
+verify 2 tokens                        23.53     22.21     -1.32
+verify 3 tokens                        19.47     20.09     +0.62
+CPU experts                            19.16     19.44     +0.28
+ffn.wait_for_cpu_experts               16.83     17.16     +0.33
+wait for the staged block              15.19     14.42     -0.77
+verify 4 tokens                        12.49     11.91     -0.58
+draft                                   9.50      9.35     -0.15
+attn.out                                9.12      9.18     +0.07
+ffn.shared                              6.98      7.10     +0.12
+verify 1 tokens                         5.34      5.28     -0.07
+hc                                      4.92      4.96     +0.04
+attn.q                                  4.75      4.81     +0.06
+attn.core                               3.77      3.80     +0.03
+ffn.wait_for_gpu_experts                3.34      3.35     +0.01
+verify 5 tokens                         3.25      3.81     +0.56
+ffn.dispatch                            2.45      2.46     +0.01
+ffn.router                              2.19      2.14     -0.05
+attn.indexer                            2.14      0.61     -1.54
+attn.compressor                         2.07      2.10     +0.03
+head                                    1.83      1.84     +0.01
+verify 6 tokens                         1.79      1.73     -0.06
+attn.kv                                 1.49      1.50     +0.00
+engram                                  0.95      0.97     +0.02
+ffn.add                                 0.64      0.65     +0.02
+engram fetch                            0.59      0.56     -0.03

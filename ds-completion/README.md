@@ -2714,3 +2714,22 @@ Held-out (`spec-measure-sclk6-cacheloads800cacheperiod8-indexer/`): mean **35.09
 gate, the 8 prompts, the 6,106-token prompt in both modes against step 73, where the indexer
 does pick). Prompt and long-context speed unchanged. Batching the indexer over a step's tokens,
 which is what would help long context, is in PLAN (Further ideas, F).
+
+## Step 75: traces after step 74; the fp8 GEMV for 2-8 inputs (tried, not kept)
+
+New traces (`results/trace/`, `compare-step73.txt`) put a 6-token code verify step at ~110 ms with
+the draft: die 0's dense part before the CPU starts ~41 ms, the CPU's experts ~42 ms (3.5 per
+layer, ~314 us each), the draft ~10 ms, handoffs and the head ~13 ms; a 2-token chat step ~62 ms
+in the same shape. The die and the CPU take turns; dies 1-3 are busy ~20% of a step.
+
+The largest dense piece is attn.out (wo_a + wo_b, ~0.30 ms per layer at 6 tokens, 12.1 ms per
+step): at M = 6 the kernel reads weights at ~270 GB/s against ~580 at M = 1. Step 65 had measured
+this kernel already (rows per lane group, the shared-memory kernel in 8- and 16-wave blocks: gains
+at 3-4 inputs only), which was missed before starting. Three variants it had not tried, all
+bit-identical to the one-input call (`results/decode-next/fp8-multi-step75.txt`, with step 65's
+shared-memory variant rerun in 4-wave blocks): inputs pre-decoded to fp16 by the quantizer
+(slower: decoding is not the limit), the weight rows first and one input at a time (half the
+registers, 3 waves per SIMD instead of 2, yet ~2x slower at M = 6: each input's load is waited for
+just before its use), and that with the loads first and a register cap (spills). Reverted. A gain
+needs a different work split (more rows per wave without holding M decoded inputs), a
+restructured kernel rather than a local change; the CPU side is next.

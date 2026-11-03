@@ -475,6 +475,12 @@ Each rule is followed by where it mattered most.
   held-out lengths every compressed position is kept, so its result was never used. Skipping it
   was three lines and exact by construction (+2.4%); batching it, the answer to the question as
   asked, only pays at long context and went to the backlog with its exactness requirements.
+- **Measure the limiter before fixing it (README step 75).** The fp8 kernel's own comment blamed
+  decoding; removing the decode made it slower. The register count then pointed at occupancy, and
+  raising it also made it slower. Four cheap variants, each with its bits checked, were enough to
+  show the kernel needs a different work split; stopped there rather than restructure it.
+  Step 65 had already measured part of this (and concluded "not done"); the README's earlier
+  steps should be searched for a kernel before an option built on it is ranked first.
 
 ## 4. Predictions against outcomes
 
