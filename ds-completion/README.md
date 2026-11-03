@@ -2577,3 +2577,23 @@ All outputs identical (prompt gate, the 8 held-out prompts; the long prompt iden
 `--canon`, fast mode differing by one expert slot fewer on GPU 0). Stage 4 (the indexer batched)
 matters only past ~2k context and stays on the list. The CPU's experts (25.9 ms of the 96.3) are
 now the largest item of a code step.
+
+## Step 69: traces of the batched attention
+
+`results/trace/` regenerated with the build of step 68 (same commands, sclk 6; outputs identical;
+28.84 / 38.83 t/s traced against 30.71 / 41.37 untraced, the same ~6% cost as in step 58).
+`scripts/trace_compare.py` lists two traces' spans in generation per verify step
+(`results/trace/compare-step58.txt`):
+
+| ms per verify step | cpp-matrix, step 58 | step 69 | tcp-udp, step 58 | step 69 |
+|---|---|---|---|---|
+| all layers (die 0) | 105.8 | 100.1 | 64.9 | 63.0 |
+| attention core | 14.8 | **6.0** | 7.0 | **3.8** |
+| CPU experts (host) | 40.3 | 41.5 | 18.9 | 19.4 |
+| die 0 waiting for the CPU | 36.6 | 38.0 | 17.4 | 18.0 |
+| draft | 12.4 | 11.3 | 9.9 | 9.0 |
+| head | 3.3 | 2.2 | 2.1 | 1.8 |
+
+The attention core is the only span that moved by more than ~1 ms (the head is step 62's); the
+CPU's experts and die 0's wait for them are now ~40% of a code step's layer time. In Perfetto a
+verify layer's attention is one short `attn.core` block instead of one per token.

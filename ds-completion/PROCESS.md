@@ -442,6 +442,9 @@ Each rule is followed by where it mattered most.
   check mode comparing each batched token against a one-token launch (0 of ~260,000 differ).
   Stage 2 gained 2% before the main change. Stages 2 and 3 share a commit: stage 3 was written
   in the same files before stage 2 was committed.
+  The traces were then regenerated (README step 69) and compared span by span with the old ones:
+  the attention core is the only span that moved by more than ~1 ms, which is what the change
+  claims and nothing else.
 
 ## 4. Predictions against outcomes
 
