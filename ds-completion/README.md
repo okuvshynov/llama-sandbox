@@ -2697,3 +2697,20 @@ identical; `compare-step69.txt` against step 69's): on a code verify step die 0'
 `engram.fetch` (2.00 ms) is gone, the host's `engram fetch` (1.10 ms) runs beside layer 0, and
 die 0's wait for the other dies' results is 4.72 -> 2.15 ms (step 71).
 
+
+## Step 74: the indexer skipped while it picks every compressed position
+
+The indexer (layers 2, 8, 14, 20, 24, 28, 32, 36) scores every compressed key for each token and
+keeps the best 512 for that token's attention. With 512 keys or fewer it keeps all of them, and
+the runtime then used `0 .. n-1` (iota) anyway: the projections, scores and top-k were computed
+and dropped. That is every held-out prompt (at most ~400 positions: ~200 keys on layers 2-19,
+~400 on 20-39), at ~76 us per token and source layer, one token at a time (~3.4 ms of a 6-token
+code verify step in step 73's trace). Now a source layer with every key picked and no candidate
+blocks (those start beyond 16,384 keys) sets iota without running the indexer: the same picks by
+construction. Past 512 keys (~512 tokens on layers 20-39, ~1,024 on 2-19) it runs as before.
+
+Held-out (`spec-measure-sclk6-cacheloads800cacheperiod8-indexer/`): mean **35.09 -> 35.94 t/s
+(+2.4%)**, every prompt faster (`results/decode-next/indexer.txt`). Outputs identical (prompt
+gate, the 8 prompts, the 6,106-token prompt in both modes against step 73, where the indexer
+does pick). Prompt and long-context speed unchanged. Batching the indexer over a step's tokens,
+which is what would help long context, is in PLAN (Further ideas, F).

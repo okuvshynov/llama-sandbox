@@ -470,6 +470,11 @@ Each rule is followed by where it mattered most.
   them, and the move then fit. The trace found the last piece (the copy waiting on die 0's
   stream). The end result is small (+0.3% mean, ~1 ms per step); the person's question about
   huge pages was answered from the access pattern (scattered first touches) rather than tried.
+- **Ask whether the work is used at all (README step 74).** Asked whether the indexer was serial,
+  the per-layer trace answered yes (~76 us per token), but the larger finding was that at the
+  held-out lengths every compressed position is kept, so its result was never used. Skipping it
+  was three lines and exact by construction (+2.4%); batching it, the answer to the question as
+  asked, only pays at long context and went to the backlog with its exactness requirements.
 
 ## 4. Predictions against outcomes
 

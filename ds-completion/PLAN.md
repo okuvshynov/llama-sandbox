@@ -355,6 +355,8 @@ generation after a long prompt +8-10%.
 Step 73: the engram fetch (~1.4 ms of host page faults while the GPU idled at each step's start)
 read with pread, after layer 0 is queued, copied on its own stream: a step reaches layer 1 ~1 ms
 sooner; held-out 34.98 -> 35.09 t/s (steps 0.4-2.3% faster on 8 of 9 prompts).
+Step 74: the indexer skipped while it keeps every compressed position (<= 512 keys; its scores
+were computed and dropped): held-out 35.09 -> 35.94 t/s; batching it for long context is F below.
 
 **A. Tuning the expert cache** (the CPU experts' ~25 ms)
 - Hysteresis: a newcomer must beat its victim by a margin, so the cache settles in long runs
@@ -417,6 +419,25 @@ sooner; held-out 34.98 -> 35.09 t/s (steps 0.4-2.3% faster on 8 of 9 prompts).
   kernels: full unrolling without runtime bounds; cheap, deterministic per build.
 - The GPU side has no practical PGO in ROCm's device compiler; its equivalent is the kernel
   sweeps already done (README steps 39-40).
+
+**F. The indexer batched over a verify step's tokens** (2026-11-03, long context only; README step 74)
+- Today the indexer (layers 2, 8, 14, 20, 24, 28, 32, 36) runs one token at a time inside
+  `attn_prep`: ~6 launches per token, `idx_q_b` (fp8) and `idx_proj` (bf16) read again for every
+  token, ~76 us per token and source layer at short context (~3.4 ms of a 6-token code step).
+  Step 74 skips it while every compressed position is picked (<= 512: up to ~1,024 tokens on
+  layers 2-19, 512 on 20-39), so this only matters beyond that, where scoring also grows with
+  the context (`k_index_scores` over n / ratio keys, then `k_topk`).
+- Batched: the two projections, the rope and the fake quantization for all M tokens in one
+  launch each (they do not depend on the compressor's per-token state; `q_b` is already batched
+  the same way); one scores kernel for M queries with each token's own key count (a group
+  completed mid-chunk adds a key for the later tokens only), reading every key once for all M;
+  then the top-k per token (M blocks in one launch), the candidate blocks likewise.
+- Exactness: each token's scores and picks must equal the one-token path bit for bit (the
+  batched gemv rows already are; the scores kernel needs the same per-key reduction order, the
+  top-k the same tie rule); gate with an `attn_check`-style comparison and the 6,106-token
+  prompt.
+- Measure first: decode t/s against position (step 34's 0.3k / 7.4k / 29.6k points) and the
+  indexer's share of a verify step there.
 
 ## Long context: plan (2026-10-29; before any further cache tuning)
 

@@ -1290,7 +1290,13 @@ void Runtime::attn_prep(int L, int t, const float* xin, Codes qr_t, int& K, cons
     const int n_comp = (pos + 1) / r;
     K = std::min(hp.idx_topk, n_comp);
     mark("attn.indexer");
-    if (k.index_source && K > 0) {  // Indexer.forward, one query
+    // README step 74: with every compressed position picked (K == n_comp) and no candidate blocks,
+    // the scores are not needed: the picks are 0 .. n_comp-1 whatever they are
+    const bool cands = (n_comp + hp.cand_block - 1) / hp.cand_block > hp.cand_topk_blocks;
+    if (k.index_source && K > 0 && K == n_comp && !cands) {
+      if (k.cand_source) cand_cur[t] = nullptr;
+      tcur[L] = iota;
+    } else if (k.index_source && K > 0) {  // Indexer.forward, one query
       gemv8(w.idx_q_b, qr_t, iq);
       k_rope(iq, hp.idx_heads, hp.idx_dim, RD, w.freqs, pos, false, s);
       k_fq4(iq, hp.idx_heads * hp.idx_dim, false, s);
@@ -1302,7 +1308,7 @@ void Runtime::attn_prep(int L, int t, const float* xin, Codes qr_t, int& K, cons
       // own scores, later indexers score only inside them (a no-op below 16,384 positions)
       if (k.cand_source) {
         cand_cur[t] = nullptr;
-        if ((n_comp + hp.cand_block - 1) / hp.cand_block > hp.cand_topk_blocks) {
+        if (cands) {
           uint8_t* keep = cand_keep + (size_t)t * (opt.max_ctx / hp.cand_block + 1);
           k_candidate_blocks(iscore, n_comp, hp.cand_block, hp.cand_topk_blocks, cand_bscore, cand_bidx, keep, s);
           cand_cur[t] = keep;
