@@ -1,0 +1,14 @@
+diff --git a/ds-completion/hip/rt.cpp b/ds-completion/hip/rt.cpp
+index 7061ef5..24cf697 100644
+--- a/ds-completion/hip/rt.cpp
++++ b/ds-completion/hip/rt.cpp
+@@ -595,7 +595,8 @@ std::vector<int32_t> Runtime::forward_chunk(const std::vector<int32_t>& toks, bo
+   CHECK(hipMemcpyAsync(pre, one_hot.data(), one_hot.size() * 4, hipMemcpyHostToDevice, s));
+   for (int t = 0; t < M; t++) k_repeat(x + (size_t)t * E, E, HC, h + (size_t)t * E * HC, s);
+   chunked = true;
+-  if (!head && opt.prefill_overlap && M >= 2) {
++  static const bool verify_halves = getenv("DS_VERIFY_HALVES") && atoi(getenv("DS_VERIFY_HALVES"));  // probe
++  if ((!head || verify_halves) && opt.prefill_overlap && M >= 2) {
+     // two halves A, B: pre(L, A) pre(L, B) post(L, A) pre(L + 1, A) post(L, B) pre(L + 1, B) ...
+     // The host computes A's CPU experts while the GPU runs B's attention, and B's while the GPU
+     // runs A's next layer. Causal order holds: B's attention at L follows A's at L.

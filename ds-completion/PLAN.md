@@ -345,7 +345,10 @@ the batched attention core for verify chunks (and prompt chunks), in stages, eac
 (1) the window ring at window + chunk slots (done, step 66); (2) attn_core in phases with the
 small per-token kernels batched (done, step 67); (3) one attention launch per chunk (done, step
 68: attn.core 17.7 -> 7.8 ms at 6 tokens, held-out 32.48 -> 34.33 t/s, the prompt +6-12%); (4)
-the indexer batched (past ~2k context; open).
+the indexer batched (past ~2k context; open). Step 69: traces regenerated. Step 70: every decode idea re-scored
+(README step 70): next the handoffs around the CPU's experts (~9 ms per code step), then the
+cross-die latency on the XGMI pair (for attention over dies 0-1), then a CPU-cache prefetch from
+the lookahead guesses; verify steps in halves (the prompt's overlap) tried: exact, 10-13% slower.
 
 **A. Tuning the expert cache** (the CPU experts' ~25 ms)
 - Hysteresis: a newcomer must beat its victim by a margin, so the cache settles in long runs

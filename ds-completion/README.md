@@ -2597,3 +2597,31 @@ now the largest item of a code step.
 The attention core is the only span that moved by more than ~1 ms (the head is step 62's); the
 CPU's experts and die 0's wait for them are now ~40% of a code step's layer time. In Perfetto a
 verify layer's attention is one short `attn.core` block instead of one per token.
+
+## Step 70: decode ideas revisited; verify steps in two halves (tried, slower)
+
+Every decode idea so far (PLAN's lists and the dropped ones) re-scored against step 69's traces.
+A code verify layer (6 tokens, medians per layer) is now die 0's attention, router and dispatch
+(0.95 ms), then the CPU's experts (0.95 ms; the shared expert and the dies' experts finish inside
+it), with handoffs between: 0.08 ms from the dispatch to the CPU's start and 0.13 ms from the
+CPU's end to the sum (9.0 ms per code step, 4.7 per chat step). The GPU idles during the CPU's
+part, the CPU during attention, dies 1-3 most of the layer. What moved up: those handoffs (new;
+local), attention split over the XGMI pair 0-1 (~36 ms of a code step; exact if split by heads
+and output rows with all-gathers), and a CPU-cache prefetch during attention from step 63's
+lookahead guesses (step 52 dropped it at 20-28% right; the lookahead finds 71% of the CPU's
+experts in 3 guesses; the caches hold ~2 experts: ~2-3%). The rest is unchanged: the CPU side
+and the dies' experts did not change since they were dropped.
+
+One idea not tried before: the prompt's CPU/GPU overlap (step 38: the chunk in halves A and B, the
+host computing A's CPU experts while the GPU runs B's attention) was kept out of the verify
+forward only by its condition. Let in (`results/decode-next/verify-halves.patch`, an env flag):
+
+| t/s | halves | without (step 68) |
+|---|---|---|
+| tcp-udp | 26.73 | 30.71 (-13%) |
+| cpp-matrix | 37.18 | 41.37 (-10%) |
+
+Outputs identical, slower on both. The likely reason (not measured): one host thread both
+computes the CPU's experts and issues all GPU work, and the halves double both the launches and
+the CPU's per-call fixed costs, which a 512-token prompt chunk amortizes and a 6-token verify
+does not. It would need a separate launching thread. Not kept.

@@ -121,6 +121,7 @@ Unless stated: sclk 2, 16 CPU threads (32 before README step 18), the study30 pl
 | 30 | `bench-expert-load.txt`, `load-test/` | `bin-hip/bench-expert-load -m $M`, `scripts/load-test.sh` |
 | 31-32 | `canon-gate.txt`, `canon-gate/` | `scripts/canon-gate.sh` (rerun for steps 32 and 45) |
 | 34 | `check-topk.txt` | `~/venvs/ds-ref/bin/python ref/check_topk.py` (runs `bin-hip/test-topk`) |
+| 70 | `decode-next/verify-halves.txt`, `verify-halves.patch` | the commands in the file; the layer medians: `results/trace/*.json.gz` (step 69) |
 | 69 | `trace/` (regenerated), `trace/compare-step58.txt` | the commands in `trace/README.txt`, then `gzip -9 -n`; the comparison: `scripts/trace_compare.py` on step 58's traces (`git show d7bbabd:ds-completion/results/trace/<name>.json.gz`) and the new ones |
 | 68 | `attn-batch/stage3.txt`, `spec-measure-sclk6-cacheloads800cacheperiod8-attnbatch/` | `DS_ATTN_CHECK=1 bin-hip/ds-completion ...` (prints the comparison at exit), the prompt gate, the long prompt against a build of 6e7126a, `CACHE="--cache-loads 800 --cache-period 8" scripts/spec-measure.sh` (copied), the profile with `--profile` and `scripts/profile_verify.py` |
 | 67 | `attn-batch/stage2.txt`, `spec-measure-sclk6-cacheloads800cacheperiod8-phases/` | the same gates (commands in the file; the spec run copied) |

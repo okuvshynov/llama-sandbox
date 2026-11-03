@@ -1,0 +1,12 @@
+# Verify steps in two halves (README step 70): the prompt's CPU/GPU overlap (step 38) let into the verify forward
+# git apply results/decode-next/verify-halves.patch (on 5041c1f), make HIP=1; then for tcp-udp and cpp-matrix of results/spec-heldout/prompts.txt:
+# DS_VERIFY_HALVES=1 bin-hip/ds-completion -m $M --rt $F8 --placement placements/study30.txt --dspark $D --spec --canon --cache-loads 800 --cache-period 8 --cache-wait -p <prompt> --chat -n 300
+# commit 5041c1f + the patch; sclk 6 (all four cards); 2026-11-03
+# without the halves: step 68's run (results/spec-measure-sclk6-cacheloads800cacheperiod8-attnbatch/)
+
+prompt       halves                     without (step 68)   output
+tcp-udp      26.73 t/s  2.38 tok/step   30.71 t/s           same (vs results/cache-test/plain-canon-static/)
+cpp-matrix   37.18 t/s  4.62 tok/step   41.37 t/s           same
+
+verify cost fit (the draft-length rule's online fit), halves: tcp-udp 44.5 + 19.0 n ms, cpp-matrix 79.0 + 7.1 n ms
+(step 69's traced run, without: cpp-matrix 82.0 + 5.5 n ms)

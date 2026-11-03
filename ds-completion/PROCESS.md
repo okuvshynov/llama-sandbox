@@ -445,6 +445,12 @@ Each rule is followed by where it mattered most.
   The traces were then regenerated (README step 69) and compared span by span with the old ones:
   the attention core is the only span that moved by more than ~1 ms, which is what the change
   claims and nothing else.
+- **Revisit dropped ideas when the profile shifts (README step 70).** After the attention work
+  the person asked to re-score every decode idea, the dropped ones included. Two moved up (a
+  CPU-cache prefetch, now with a better predictor; attention over two dies, now that attention
+  is a third of a step), one appeared that no summary had separated (the CPU's handoffs, ~8%),
+  and a one-line probe of an untried one (verify steps in halves) was exact but 10-13% slower:
+  measured in minutes instead of planned for days.
 
 ## 4. Predictions against outcomes
 
