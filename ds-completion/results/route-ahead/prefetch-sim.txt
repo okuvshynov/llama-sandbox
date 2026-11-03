@@ -1,0 +1,68 @@
+# prefetching the CPU's experts to the GPUs from the router lookahead, simulated (README step 64)
+# ~/venvs/ds-ref/bin/python scripts/prefetch_sim.py (defaults: load 2.0 ms / (1 - 0.3) per link, 4 links, a load issued only if it can land in time; GPU part of a layer 0.25 ms; 0.036 ms charged per load) on data/route-ahead/*.bin (scripts/route-ahead.sh 4)
+# commit 2650c04 + d972d28 + steps 63-64 (uncommitted); 2026-11-02
+# j: layers ahead the decision is made; B: loads per target layer at most; landed: of loads issued (deadline-aware: all); useful: loads whose expert was a CPU miss; covered: CPU experts that landed in time; saved: share of untraced generation time
+# layer times scaled by untraced / traced generation time: cpp-matrix 0.79 geometry 0.65 ja-email 0.70 py-lru 0.68 sql-report 0.67 summary-json 0.75 tcp-udp 0.80 zh-travel 0.70
+# 8 logs, 816 generation steps; savings against 69.5 s of untraced generation
+# load 2.0 ms / (1 - busy 0.3) per link, 4 links; GPU part of a layer 0.25 ms; 0.036 ms charged per load
+policy            j  B  loads/step  landed  useful  CPU experts covered  step time saved
+oracle            2  2        19.2  100.0%  100.0%                28.1%             4.4%
+oracle            2  4        23.6  100.0%  100.0%                34.5%             5.4%
+oracle            2  8        23.9  100.0%  100.0%                35.0%             5.4%
+oracle            2 all        23.9  100.0%  100.0%                35.0%             5.4%
+oracle            3  2        34.3  100.0%  100.0%                50.3%             7.3%
+oracle            3  4        41.9  100.0%  100.0%                61.3%             8.9%
+oracle            3  8        42.3  100.0%  100.0%                61.9%             9.0%
+oracle            3 all        42.3  100.0%  100.0%                61.9%             9.0%
+oracle            4  2        38.9  100.0%  100.0%                57.0%             8.0%
+oracle            4  4        48.3  100.0%  100.0%                70.7%             9.9%
+oracle            4  8        49.0  100.0%  100.0%                71.7%            10.0%
+oracle            4 all        49.0  100.0%  100.0%                71.7%            10.0%
+score             2  1         1.2  100.0%   90.5%                 1.6%             0.3%
+score             2  2         2.5  100.0%   87.7%                 3.2%             0.6%
+score             2  4         5.7  100.0%   78.8%                 6.6%             1.1%
+score             2  8        14.1  100.0%   59.7%                12.3%             1.9%
+score             3  1         2.2  100.0%   86.3%                 2.8%             0.5%
+score             3  2         4.8  100.0%   79.8%                 5.5%             0.9%
+score             3  4        11.4  100.0%   66.4%                11.1%             1.7%
+score             3  8        29.6  100.0%   45.5%                19.7%             2.6%
+score             4  1         2.5  100.0%   87.4%                 3.3%             0.5%
+score             4  2         5.7  100.0%   78.6%                 6.5%             1.0%
+score             4  4        14.2  100.0%   62.6%                13.0%             1.9%
+score             4  8        37.5  100.0%   40.7%                22.3%             2.7%
+score-nonres      2  1        12.2  100.0%   50.9%                 9.1%             1.3%
+score-nonres      2  2        24.4  100.0%   41.5%                14.8%             2.0%
+score-nonres      2  4        31.8  100.0%   31.0%                14.4%             1.6%
+score-nonres      2  8        32.1  100.0%   30.6%                14.4%             1.5%
+score-nonres      3  1        26.2  100.0%   40.1%                15.3%             1.8%
+score-nonres      3  2        47.6  100.0%   31.7%                22.0%             2.2%
+score-nonres      3  4        56.3  100.0%   23.2%                19.1%             1.3%
+score-nonres      3  8        56.8  100.0%   22.7%                18.9%             1.3%
+score-nonres      4  1        33.1  100.0%   35.1%                17.0%             1.8%
+score-nonres      4  2        56.4  100.0%   27.9%                23.0%             2.0%
+score-nonres      4  4        65.2  100.0%   20.4%                19.5%             1.0%
+score-nonres      4  8        65.6  100.0%   19.8%                19.0%             0.9%
+votes             2  1        11.6  100.0%   49.3%                 8.4%             1.2%
+votes             2  2        21.9  100.0%   44.6%                14.3%             2.0%
+votes             2  4        27.7  100.0%   39.6%                16.1%             2.1%
+votes             2  8        28.1  100.0%   39.2%                16.1%             2.1%
+votes             3  1        23.8  100.0%   40.2%                14.0%             1.7%
+votes             3  2        41.6  100.0%   35.8%                21.8%             2.4%
+votes             3  4        50.3  100.0%   32.7%                24.1%             2.5%
+votes             3  8        50.8  100.0%   32.3%                24.1%             2.5%
+votes             4  1        28.8  100.0%   36.9%                15.5%             1.7%
+votes             4  2        49.0  100.0%   33.0%                23.7%             2.4%
+votes             4  4        59.4  100.0%   29.7%                25.8%             2.4%
+votes             4  8        60.0  100.0%   28.9%                25.4%             2.3%
+score+freq l=0.05  2  2        24.4  100.0%   42.3%                15.1%             2.0%
+score+freq l=0.1  2  2        24.4  100.0%   42.7%                15.2%             2.0%
+score+freq l=0.2  2  2        24.4  100.0%   42.5%                15.1%             2.0%
+score+freq l=0.05  2  4        31.8  100.0%   31.9%                14.8%             1.6%
+score+freq l=0.1  2  4        31.8  100.0%   32.1%                14.9%             1.7%
+score+freq l=0.2  2  4        31.8  100.0%   32.1%                14.9%             1.7%
+score+freq l=0.05  3  2        47.6  100.0%   32.6%                22.7%             2.4%
+score+freq l=0.1  3  2        47.6  100.0%   33.1%                23.0%             2.4%
+score+freq l=0.2  3  2        47.6  100.0%   33.2%                23.1%             2.4%
+score+freq l=0.05  3  4        56.3  100.0%   23.9%                19.7%             1.4%
+score+freq l=0.1  3  4        56.3  100.0%   24.3%                20.0%             1.5%
+score+freq l=0.2  3  4        56.3  100.0%   24.5%                20.2%             1.6%

@@ -139,6 +139,11 @@ loads still pay.
 stalled, README step 43); generation runs meanwhile on the startup placement. `--cache-wait`
 waits for it, for measurements.
 
+Could loads be timed by the experts the next layers will choose? Layer L's router input passed
+through layer L+j's router guesses them well (README step 63), but a load needs ~2.9 ms, so it
+must start 3-4 layers ahead, where the guesses are weaker: a prefetch simulates to ~2.5% of
+decode time at best against a 10% bound for perfect guesses (step 64).
+
 ## Memory
 
 Expert slots fill 84% of the four GPUs (6,126 slots of 18.8 MB at 4k context). GPU 0 also holds

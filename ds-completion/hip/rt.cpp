@@ -254,6 +254,23 @@ Runtime::Runtime(const Model& model, RtOptions options, const std::string& fp8_p
   }
   for (int L : hp.index_source_layers)
     if (L < hp.n_layer && m.layers[L].loaded) topk_buf[L] = dalloc<int>((size_t)C * hp.idx_topk);
+  if (const char* e = getenv("DS_ROUTE_AHEAD")) {  // README step 63
+    ra_k = std::max(0, std::min(8, atoi(e)));
+    ra_logits = dalloc<float>((size_t)hp.n_layer * (ra_k + 1) * 8 * hp.n_expert);
+    ra_act = dalloc<int>((size_t)hp.n_layer * 8 * kMoeIdStride);
+    ra_valid.assign((size_t)hp.n_layer * (ra_k + 1), 0);
+    ra.assign(ra_k + 1, RaCell{});
+    ra_freq.assign(hp.n_layer, {});
+    ra_res.assign(hp.n_layer, std::vector<char>(hp.n_expert, 0));
+    ra_cnt.assign(hp.n_layer, std::vector<uint16_t>(hp.n_expert, 0));
+    ra_tl.assign(hp.n_layer, {});
+    if (const char* p = getenv("DS_ROUTE_LOG")) {
+      ra_log = fopen(p, "wb");
+      if (!ra_log) throw std::runtime_error(std::string("cannot write ") + p);
+      const int32_t hdr[4] = {0x48415244 /* "DRAH" */, hp.n_layer, hp.n_expert, ra_k};
+      fwrite(hdr, 4, 4, ra_log);
+    }
+  }
   mem_mark("activations and scratch (sized for 512-token chunks)");
   // the sequence state, zeroed (masked-out slots must hold finite values: 0 x NaN would leak)
   S.resize(hp.n_layer);
@@ -328,6 +345,125 @@ Runtime::Runtime(const Model& model, RtOptions options, const std::string& fp8_p
   }
   mem_mark("cache and loader staging, the rest");
   mem_report();
+}
+
+// the lookahead study (README step 63): per lookahead j, over every (token, layer) whose
+// prediction was made: the chosen experts among the top 6 / 12 / 24 of the earlier layer's
+// scores, and the chosen CPU experts among the top 1 / 3 / 6 non-resident experts by those scores
+// (what a prefetch would fetch) and by the cache's use counts (step 52's guess)
+void Runtime::ra_step_end() {
+  bool any = false;
+  for (char v : ra_valid) any |= v;
+  if (!any) return;
+  const int X = hp.n_expert, K1 = ra_k + 1;
+  CHECK(hipStreamSynchronize(s));
+  std::vector<float> lg((size_t)hp.n_layer * K1 * 8 * X);
+  std::vector<int> act((size_t)hp.n_layer * 8 * kMoeIdStride);
+  CHECK(hipMemcpy(lg.data(), ra_logits, lg.size() * 4, hipMemcpyDeviceToHost));
+  CHECK(hipMemcpy(act.data(), ra_act, act.size() * 4, hipMemcpyDeviceToHost));
+  std::vector<int> order(X);
+  std::vector<float> sc(X);
+  for (int L = 0; L < hp.n_layer; L++) {
+    if (!ra_valid[(size_t)L * K1]) continue;  // the layer itself ran this step (j = 0 is always made)
+    const float* bias = (const float*)m.layers[L].gate_bias->data;
+    const std::vector<int>& freq = ra_freq[L];  // taken before this step's routing was counted
+    for (int j = 0; j < K1; j++) {
+      if (!ra_valid[(size_t)L * K1 + j]) continue;
+      RaCell& c = ra[j];
+      for (int t = 0; t < ra_m; t++) {
+        const float* l = lg.data() + (((size_t)L * K1 + j) * 8 + t) * X;
+        for (int e = 0; e < X; e++) {
+          const float x = l[e];
+          sc[e] = sqrtf(x > 20.0f ? x : log1pf(expf(x))) + bias[e];
+          order[e] = e;
+        }
+        std::sort(order.begin(), order.end(), [&](int a, int b) { return sc[a] != sc[b] ? sc[a] > sc[b] : a < b; });
+        std::vector<int> nonres;  // the top non-resident by these scores
+        for (int i = 0; i < X && (int)nonres.size() < 6; i++)
+          if (!ra_res[L][order[i]]) nonres.push_back(order[i]);
+        const int* a = act.data() + ((size_t)L * 8 + t) * kMoeIdStride;
+        for (int k = 0; k < hp.n_expert_used; k++) {
+          const int e = a[k];
+          int rank = 0;
+          while (rank < 24 && order[rank] != e) rank++;
+          c.exp++;
+          c.in6 += rank < 6;
+          c.in12 += rank < 12;
+          c.in24 += rank < 24;
+          if (!ra_res[L][e]) {
+            c.cpu++;
+            for (int i = 0; i < (int)nonres.size(); i++)
+              if (nonres[i] == e) { c.p1 += i < 1; c.p3 += i < 3; c.p6 += i < 6; }
+            for (int i = 0; i < (int)freq.size(); i++)
+              if (freq[i] == e) { c.f1 += i < 1; c.f3 += i < 3; c.f6 += i < 6; }
+          }
+        }
+      }
+    }
+  }
+  if (ra_log) {  // one record per step: M, the end time, then per layer (README step 63's log)
+    const auto tend = Clock::now();
+    auto t0 = tend;
+    for (int L = 0; L < hp.n_layer; L++)
+      if (ra_valid[(size_t)L * K1] && ra_tl[L] < t0) t0 = ra_tl[L];
+    auto ms = [&](Clock::time_point a) { return (float)std::chrono::duration<double, std::milli>(a - t0).count(); };
+    const int32_t m32 = ra_m;
+    const float te = ms(tend);
+    fwrite(&m32, 4, 1, ra_log);
+    fwrite(&te, 4, 1, ra_log);
+    constexpr int TOP = 64;
+    std::vector<int16_t> ids(TOP);
+    std::vector<float> scs(TOP);
+    for (int L = 0; L < hp.n_layer; L++) {
+      const uint8_t valid = ra_valid[(size_t)L * K1];
+      fwrite(&valid, 1, 1, ra_log);
+      if (!valid) continue;
+      const float tl = ms(ra_tl[L]);
+      fwrite(&tl, 4, 1, ra_log);
+      for (int t = 0; t < ra_m; t++)
+        for (int k = 0; k < 6; k++) {
+          const int16_t e = (int16_t)act[((size_t)L * 8 + t) * kMoeIdStride + k];
+          fwrite(&e, 2, 1, ra_log);
+        }
+      fwrite(ra_res[L].data(), 1, X, ra_log);
+      fwrite(ra_cnt[L].data(), 2, X, ra_log);
+      const float* bias = (const float*)m.layers[L].gate_bias->data;
+      for (int j = 1; j < K1; j++) {  // the guess made j layers earlier (absent: ids -1)
+        const bool have = ra_valid[(size_t)L * K1 + j];
+        for (int t = 0; t < ra_m; t++) {
+          if (have) {
+            const float* l = lg.data() + (((size_t)L * K1 + j) * 8 + t) * X;
+            for (int e = 0; e < X; e++) {
+              sc[e] = sqrtf(l[e] > 20.0f ? l[e] : log1pf(expf(l[e]))) + bias[e];
+              order[e] = e;
+            }
+            std::partial_sort(order.begin(), order.begin() + TOP, order.end(), [&](int a, int b) { return sc[a] != sc[b] ? sc[a] > sc[b] : a < b; });
+            for (int i = 0; i < TOP; i++) ids[i] = (int16_t)order[i], scs[i] = sc[order[i]];
+          } else {
+            std::fill(ids.begin(), ids.end(), -1);
+            std::fill(scs.begin(), scs.end(), 0.0f);
+          }
+          fwrite(ids.data(), 2, TOP, ra_log);
+          fwrite(scs.data(), 4, TOP, ra_log);
+        }
+      }
+    }
+  }
+  std::fill(ra_valid.begin(), ra_valid.end(), 0);
+}
+
+void Runtime::ra_report() const {
+  if (ra.empty() || !ra[0].exp) return;
+  fprintf(stderr, "# router lookahead (README step 63): layer L+j's router on layer L's input, generation\n");
+  fprintf(stderr, "#   j   chosen experts in the guess's top 6 / 12 / 24 |   CPU experts in the guess's top 1 / 3 / 6 non-resident | cache's top 1 / 3 / 6\n");
+  for (size_t j = 0; j < ra.size(); j++) {
+    const RaCell& c = ra[j];
+    if (!c.exp) continue;
+    const double e = (double)c.exp, u = std::max(1.0, (double)c.cpu);
+    fprintf(stderr, "#   %zu   %5.1f%% %5.1f%% %5.1f%%  (%ld)              |   %5.1f%% %5.1f%% %5.1f%%  (%ld)                        | %5.1f%% %5.1f%% %5.1f%%\n", j,
+            100 * c.in6 / e, 100 * c.in12 / e, 100 * c.in24 / e, c.exp, 100 * c.p1 / u, 100 * c.p3 / u, 100 * c.p6 / u, c.cpu,
+            100 * c.f1 / u, 100 * c.f3 / u, 100 * c.f6 / u);
+  }
 }
 
 void Runtime::mem_mark(const char* phase) {
@@ -515,6 +651,7 @@ std::vector<int32_t> Runtime::forward_chunk(const std::vector<int32_t>& toks, bo
   }
   if (profile) fold_misses();
   trace_step_end();
+  if (ra_logits) ra_step_end();
   last.total_ms = ms_since(t0);
   return next;
 }
@@ -658,6 +795,8 @@ void Runtime::setup_experts() {
 Runtime::~Runtime() {
   (void)hipStreamSynchronize(s);
   trace_write();
+  ra_report();
+  if (ra_log) fclose(ra_log);
   if (loader) {
     fprintf(stderr, "# load test: %ld loads\n", loader->loads());
     loader.reset();
@@ -1112,6 +1251,23 @@ void Runtime::moe_launch(int L, int M) {
   k_gemv_f32_m(w.gate_inp, hp.n_expert, E, xin, M, router_logits, partial, s);
   k_router(router_logits, w.gate_bias, hp.n_expert, KE, hp.expert_weights_norm, hp.expert_weights_scale, rids, rw, s, M,
            kMoeIdStride);
+  if (ra_k >= 0 && ra_logits && !in_prefill && M <= 8) {  // the lookahead study: this layer's x through later routers
+    ra_m = M;
+    ra_tl[L] = Clock::now();
+    ra_freq[L] = cache ? cache->top_nonresident(L, 6) : std::vector<int>();
+    for (int e = 0; e < hp.n_expert; e++) {  // the table in force for this forward
+      ra_res[L][e] = !h_table.empty() && h_table[(size_t)L * hp.n_expert + e] >= 0;
+      ra_cnt[L][e] = cache ? (uint16_t)std::min(65535, cache->uses(L, e)) : 0;
+    }
+    CHECK(hipMemcpyAsync(ra_act + (size_t)L * 8 * kMoeIdStride, rids, (size_t)M * kMoeIdStride * 4, hipMemcpyDeviceToDevice, s));
+    for (int j = 0; j <= ra_k && L + j < hp.n_layer; j++) {
+      const int Lt = L + j;
+      if (!m.layers[Lt].loaded || !W[Lt].gate_inp) continue;
+      k_gemv_f32_m(W[Lt].gate_inp, hp.n_expert, E, xin, M,
+                   ra_logits + ((size_t)Lt * (ra_k + 1) + j) * 8 * hp.n_expert, partial, s);
+      ra_valid[(size_t)Lt * (ra_k + 1) + j] = 1;
+    }
+  }
   if (route_log)  // ids and weights next to each other per token and layer: [ids 8 | weights 8]
     for (int t = 0; t < M; t++) {
       int* dst = d_route + ((size_t)t * hp.n_layer + L) * 16;
@@ -1574,6 +1730,7 @@ std::vector<float> Runtime::decode(int32_t tok, bool want_logits) {
   }
   if (profile) fold_misses();
   trace_step_end();
+  if (ra_logits) ra_step_end();
   last.total_ms = ms_since(t0);
   trace_host("decode", t0, Clock::now(), 3);
   return logits;

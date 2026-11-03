@@ -2434,3 +2434,61 @@ engine, 1,437 loads/s over the four), how many the cache starts (310-465 loads/s
 token in this step's runs, from their `expert cache:` lines), and what they cost generation
 (steps 30, 59).
 
+
+## Step 63: the next layers' experts from this layer's router input
+
+Each layer changes the hidden state a little, so layer L's router input passed through layer
+L+j's router may already say which experts L+j will choose. `DS_ROUTE_AHEAD=K` (a study mode,
+generation only) runs, at each layer L, the routers of layers L..L+K on L's router input (the
+same top-6 rule with each layer's bias) and at the step's end compares the guesses with what
+each layer chose, including the experts it had to compute on the CPU (residency as it was when
+the layer routed). `scripts/route-ahead.sh`, the 8 held-out prompts, `results/route-ahead/`
+(`pooled.txt`; outputs identical):
+
+| j layers ahead | chosen experts in the guess's top 6 / 12 / 24 | CPU experts among the guess's top 1 / 3 / 6 not on a GPU | the cache's top 1 / 3 / 6 by use (step 52's guess) |
+|---|---|---|---|
+| 0 (check) | 100 / 100 / 100% | 69.3 / 98.3 / 100% | 9.9 / 19.8 / 27.6% |
+| 1 | 71.6 / 86.0 / 92.1% | **45.0 / 71.3 / 81.6%** | 10.0 / 20.0 / 27.8% |
+| 2 | 64.7 / 79.4 / 87.5% | **38.4 / 62.0 / 73.2%** | 10.1 / 20.2 / 28.1% |
+| 3 | 59.5 / 74.0 / 83.4% | 33.4 / 54.6 / 66.0% | 10.2 / 20.3 / 28.2% |
+| 4 | 56.3 / 70.4 / 80.4% | 30.9 / 50.4 / 61.3% | 10.2 / 20.4 / 28.3% |
+
+(604,320 chosen experts, 64,441 of them on the CPU, over 816 steps.) The approximation holds for
+this model and fades slowly: one layer ahead 72% of the chosen experts are in the guess's top 6,
+four layers ahead still 56%. For the CPU's experts, the ones a prefetch would need, three
+guesses one layer ahead catch 71% and two layers ahead 62%, against 20% for the cache's counts.
+(A first run on two prompts read the residency at the step's end, after the cache had already
+published that step's loads; the numbers above take it at routing time.)
+
+What it could serve: a prefetch to the CPU's caches one layer ahead (top-1 right 45% of the
+time; an expert nearly fills the L3, step 52) or loads to a GPU two or more layers ahead (a load
+takes ~2 ms, a layer 1.6-2.5 ms) within the links' budget: step 64 simulates the second.
+
+## Step 64: prefetching the CPU's experts to the GPUs from the lookahead, simulated
+
+A load takes ~2 ms of one GPU's link (~2.9 with the cache's own loads), a layer 1.6-2.5 ms: a
+guess must be acted on two or more layers ahead. `scripts/prefetch_sim.py` replays the 8
+prompts' logs (`DS_ROUTE_LOG`, step 63): per step and target layer, a policy picks up to B
+experts from the guess made j layers earlier, a load goes to the least busy of 4 links and is
+issued only if it can land before the layer routes (the logged routing times, scaled to the
+runs without the study), a landed expert takes itself off that layer's CPU time (0.10 + 0.27 ms
+per expert, at least 0.25 ms of GPU work), and each load costs 0.036 ms of the step (measured,
+step 59). `results/route-ahead/prefetch-sim.txt`; savings against the untraced generation time:
+
+| policy | best setting | loads per step | CPU experts covered | time saved |
+|---|---|---|---|---|
+| perfect knowledge (the bound) | 3 / 4 layers ahead | 42 / 49 | 62 / 72% | **9.0 / 10.0%** |
+| votes: tokens whose top 6 hold it, not on a GPU | 3 ahead, 4 per layer | 50 | 24% | **2.5%** |
+| score + use counts (lambda 0.05-0.2), not on a GPU | 3 ahead, 2 per layer | 48 | 23% | 2.4% |
+| score, not on a GPU | 3 ahead, 2 per layer | 48 | 22% | 2.2% |
+| score, a resident pick wasted | 4 ahead, 8 per layer | 38 | 22% | 2.7% |
+
+One layer ahead is too late (a first run that queued every load landed 1-6% of them); two
+layers ahead the links fit ~24 timely loads per step and the bound is 5.4%; three to four give
+the time, but those guesses are weaker (half of the top-3 non-resident ones wrong), and wrong
+loads take link time from right ones, so 4-8 picks per layer do worse than 2. The policies land
+within 0.3% of each other; use counts barely reorder the guesses (the experts not on a GPU are
+the rarely used ones, with similar low counts). The simulation is optimistic (free transient
+slots; the logged layer times are those without prefetching, and faster layers shorten the
+windows), so a real gain would likely be 1-2%, for a scheduler sharing the links with the
+cache, transient slots and per-layer timing. Not built.

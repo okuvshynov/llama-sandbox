@@ -1,0 +1,8 @@
+# router lookahead pooled over the 8 held-out prompts (README step 63): weighted by the counts in each prompt's table (results/route-ahead/<name>.err)
+# scripts/route-ahead.sh 4 (DS_ROUTE_AHEAD=4, the tuned cache, --spec --canon); sclk 6; 2026-11-02; every output identical to step 32's plain --canon run
+j  chosen experts in the guess's top 6/12/24 (n) | CPU experts in the guess's top 1/3/6 non-resident (n) | cache's top 1/3/6
+0  100.0 100.0 100.0  (604320)  |  69.3  98.3 100.0  (64441)  |   9.9  19.8  27.6
+1   71.6  86.0  92.1  (589212)  |  45.0  71.3  81.6  (62699)  |  10.0  20.0  27.8
+2   64.7  79.4  87.5  (574104)  |  38.4  62.0  73.2  (60702)  |  10.1  20.2  28.1
+3   59.5  74.0  83.4  (558996)  |  33.4  54.6  66.0  (59223)  |  10.2  20.3  28.2
+4   56.3  70.4  80.4  (543888)  |  30.9  50.4  61.3  (58153)  |  10.2  20.4  28.3

@@ -322,5 +322,21 @@ class Runtime {
   std::vector<std::pair<std::string, std::vector<size_t>>> mem_snaps;
   std::vector<size_t> mem_total;
   void mem_mark(const char* phase);
+  // router lookahead study (README step 63; DS_ROUTE_AHEAD=K, generation only, M <= 8): at layer
+  // L the routers of layers L .. L+K score layer L's router input; at the step's end the guesses
+  // are compared with what each layer chose (and with the cache's frequency guess)
+  int ra_k = 0, ra_m = 0;
+  float* ra_logits = nullptr;  // [layer][lookahead j][8 tokens][n_expert]: layer's router on x of layer - j
+  int* ra_act = nullptr;       // [layer][8 tokens][kMoeIdStride]: the chosen ids
+  std::vector<char> ra_valid;  // [layer][j]
+  std::vector<std::vector<int>> ra_freq;  // [layer]: the cache's top non-resident before the step
+  std::vector<std::vector<char>> ra_res;  // [layer][expert]: on a GPU for this forward (snapshot at routing)
+  std::vector<std::vector<uint16_t>> ra_cnt;  // [layer][expert]: the cache's use counts then
+  std::vector<std::chrono::steady_clock::time_point> ra_tl;  // [layer]: host time of the routing
+  FILE* ra_log = nullptr;  // DS_ROUTE_LOG: per step and layer, for scripts/prefetch_sim.py
+  struct RaCell { long exp = 0, in6 = 0, in12 = 0, in24 = 0, cpu = 0, p1 = 0, p3 = 0, p6 = 0, f1 = 0, f3 = 0, f6 = 0; };
+  std::vector<RaCell> ra;      // [j]
+  void ra_step_end();
+  void ra_report() const;
   void mem_report() const;
 };

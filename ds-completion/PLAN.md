@@ -334,7 +334,11 @@ counts equal the window, hysteresis margins only cost, a lower candidate thresho
 Step 60: the memory ledger. Experts are 84% of GPU memory; 64k context costs only 21 slots;
 the draft's 8 GB on GPU 0 is 7.2 GB of its own mxfp4 experts, its dense part already fp8 (step
 61: nothing cheap to free). Step 62: the output head's multi-input GEMV shares activations
-through LDS (bit-identical): head 3.3 -> 2.2 ms at 5 inputs, +1.4% held-out (32.5 t/s).
+through LDS (bit-identical): head 3.3 -> 2.2 ms at 5 inputs, +1.4% held-out (32.5 t/s). Steps
+63-64: layer L's router input through the next layers' routers guesses their experts well (one
+layer ahead 72% of the chosen in the top 6; 71% of the CPU's experts in 3 guesses vs 20% by use
+counts), but loads must start 3-4 layers ahead, where the guesses are weaker: a GPU prefetch
+simulates to ~2.5% at best (bound 10%), likely 1-2% real. Not built.
 
 **A. Tuning the expert cache** (the CPU experts' ~25 ms)
 - Hysteresis: a newcomer must beat its victim by a margin, so the cache settles in long runs
