@@ -204,6 +204,11 @@ class Runtime {
   hipEvent_t ev_staged;         // the block (x, router outputs, lists) is in host memory
   hipStream_t s_local = nullptr;  // home die: its own expert list, next to the shared expert
   hipEvent_t ev_dispatched = nullptr, ev_local = nullptr;
+  // a short forward: the other dies' results copied into the home die as each finishes (moe_launch)
+  hipStream_t s_gather = nullptr;
+  hipEvent_t ev_gathered = nullptr;
+  bool early_gather = false;  // this layer's copies were all issued by moe_launch (a short forward)
+  static constexpr int kEarlyGatherMaxM = 8;
   void setup_experts();
 
   // device scratch (one token)

@@ -2625,3 +2625,30 @@ Outputs identical, slower on both. The likely reason (not measured): one host th
 computes the CPU's experts and issues all GPU work, and the halves double both the launches and
 the CPU's per-call fixed costs, which a 512-token prompt chunk amortizes and a 6-token verify
 does not. It would need a separate launching thread. Not kept.
+
+## Step 71: the handoffs around the CPU's experts
+
+Step 70's trace showed ~0.2 ms per layer between the GPU's dispatch and the CPU's experts and
+between their end and the sum (9.0 ms per code step). Moving the dies' result copies to a second
+stream that starts them as each die finishes shortened the tail (126 -> 50 us per layer) and
+gained nothing: the HIP calls issuing them, ~10-15 us each across devices, now ran before the
+CPU's experts (a temporary host timer: 189 us from the staging event to the CPU's start).
+
+The fix: in a short forward (up to 8 tokens, not a prompt half), `moe_launch` issues each die's
+copy back to the host and on into the home die (a second stream, one event the sum waits for)
+while the host is still ahead of the GPU, copying a bound of rows (tokens x 6 in canon) instead
+of the counts the host learns only after staging; the rows past the count are never read. The
+prompt's chunks keep the old path. Now the CPU's experts start ~5 us after staging, and the sum
+follows them by ~60 us instead of ~125 (`results/decode-next/handoff.txt`):
+
+| | step 68 | step 71 |
+|---|---|---|
+| held-out mean, sclk 6 | 34.33 t/s | **34.98 t/s (+1.9%)**, every prompt faster (chat +2.3-3.6%, code +0.4-1.3%) |
+| a code layer with CPU experts (trace median) | 2,326 us | 2,214 us |
+| generation after the 6,106-token prompt, fast / `--canon` | 19.4 / 20.0 t/s | 21.5 / 21.5 t/s |
+
+Outputs identical (prompt gate, the 8 held-out prompts, the long prompt in both modes against
+step 68). Chat gains most since its steps are shortest; on code the draft-length rule took
+slightly shorter drafts on some steps (sql-report: 3.90 tokens per step vs 4.00), which hides
+part of a ~2-3% faster step.
+

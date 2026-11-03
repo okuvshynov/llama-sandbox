@@ -1,0 +1,34 @@
+# The handoffs around the CPU's experts (README step 71): a short forward's copies back to the home die issued before the host waits
+# measured on 5041c1f + the change (hip/rt.cpp, hip/rt.h; committed with this file); sclk 6 (all four cards); 2026-11-03
+# gate: /tmp/.../handoff-gate.sh (the prompt gate, the 20,000-byte prompt against step 68's outputs, scripts/spec-measure.sh with the tuned cache, copied)
+
+== 1. where the time went (cpp-matrix, --spec --canon, tuned cache)
+host us per layer with CPU experts, untraced (a temporary timer, DS_HANDOFF, removed):
+  build                                      staged wait done -> CPU start   CPU      CPU end -> sum issued
+  step 68 + copies moved early (moe_finish)  189.1                           1094.2   41.9
+  this change (copies issued in moe_launch)    5.4                           1112.0   48.5
+  (tcp-udp, this change: 4.0 / 695.1 / 40.8)
+trace medians per layer, layers with CPU experts (us): dispatch end -> CPU start, CPU end -> ffn.add, layer
+  step 69 trace (step 68 build)   79   126   2326
+  this change                      5    61   2214
+the first attempt (the dies' results copied in from a second stream while the CPU works, issued in moe_finish)
+moved the tail's wait into HIP calls before the CPU (~10-15 us each, cross-device): 30.36 / 41.24 t/s vs 30.71 / 41.37, no gain
+
+== 2. prompt gate (and 32 generated tokens each: the short-forward path, fast and canon)
+p1200: canon 512 vs token-by-token baseline same (68.73 t/s); fast 1 vs 512 same (90.30 t/s); fast 512 vs step 68 same
+p6000: canon 512 vs token-by-token baseline same (63.65 t/s); fast 1 vs 512 same (95.36 t/s); fast 512 vs step 68 same
+== 3. long context, vs step 68's outputs
+p20000 fast: prompt: 6106 tokens in 61.98 s = 98.52 t/s; generation: 64 tokens in 2.98 s = 21.45 t/s, output vs step 68 same
+p20000 --canon: prompt: 6106 tokens in 82.92 s = 73.63 t/s; generation: 64 tokens in 2.97 s = 21.54 t/s, output vs step 68 same
+== 4. the 8 held-out prompts (copied to spec-measure-sclk6-cacheloads800cacheperiod8-handoff/; mean 34.98 t/s, step 68 34.33)
+# name: generation t/s, tokens per step, drafts accepted per step, output vs results/cache-test/plain-canon-static
+tcp-udp: 31.83 t/s, 2.22 tokens per step, 1.21 accepted, output same
+py-lru: 36.58 t/s, 3.26 tokens per step, 2.25 accepted, output same
+cpp-matrix: 41.91 t/s, 4.69 tokens per step, 3.67 accepted, output same
+sql-report: 35.27 t/s, 3.90 tokens per step, 2.92 accepted, output same
+geometry: 42.10 t/s, 4.21 tokens per step, 3.22 accepted, output same
+zh-travel: 28.62 t/s, 1.64 tokens per step, 0.64 accepted, output same
+ja-email: 31.05 t/s, 1.95 tokens per step, 0.94 accepted, output same
+summary-json: 32.48 t/s, 3.63 tokens per step, 2.67 accepted, output same
+long-proof: 49.99 t/s, 3.89 tokens per step, 2.88 accepted, output n/a
+# generation after the 20,000-byte prompt (64 tokens, no speculation): fast 19.42 -> 21.45 t/s, --canon 19.98 -> 21.54 (step 68 -> this change)

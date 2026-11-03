@@ -349,6 +349,9 @@ the indexer batched (past ~2k context; open). Step 69: traces regenerated. Step 
 (README step 70): next the handoffs around the CPU's experts (~9 ms per code step), then the
 cross-die latency on the XGMI pair (for attention over dies 0-1), then a CPU-cache prefetch from
 the lookahead guesses; verify steps in halves (the prompt's overlap) tried: exact, 10-13% slower.
+Step 71: the handoffs: a short forward's copies back from the dies issued before the host waits
+(the CPU's experts start ~5 us after staging instead of ~80-190): held-out 34.33 -> 34.98 t/s,
+generation after a long prompt +8-10%.
 
 **A. Tuning the expert cache** (the CPU experts' ~25 ms)
 - Hysteresis: a newcomer must beat its victim by a margin, so the cache settles in long runs

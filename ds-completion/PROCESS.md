@@ -451,6 +451,13 @@ Each rule is followed by where it mattered most.
   is a third of a step), one appeared that no summary had separated (the CPU's handoffs, ~8%),
   and a one-line probe of an untried one (verify steps in halves) was exact but 10-13% slower:
   measured in minutes instead of planned for days.
+- **Moving work is not removing it (README step 71).** The first fix for the CPU's handoffs
+  moved the dies' copies earlier and the tail shrank in the trace, but nothing got faster: the
+  HIP calls that issue them (~10-15 us each) had moved in front of the CPU's experts. A
+  temporary host timer showed it (189 us before the CPU starts); issuing the copies while the
+  host is ahead of the GPU, with a bound of rows instead of the counts, removed it. A single
+  prompt's t/s also misled once more: the draft-length rule took 66 steps instead of 64, hiding
+  a 2.7% faster step; the 8 prompts and ms per step settled it.
 
 ## 4. Predictions against outcomes
 

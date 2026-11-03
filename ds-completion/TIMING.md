@@ -24,7 +24,9 @@ typical steps, from the held-out run (README step 57):
 Held-out mean: 32.0 t/s (26.7-38.6); 32.5 since the output head reads its inputs through LDS
 (README step 62: -1.1 ms per draft call, -1.6 ms per 6-token verify step); **34.3** since the
 attention core runs a chunk in one launch (steps 66-68: 17.7 -> 7.8 ms per 6-token step, a code
-verify step 108 -> 96 ms; cpp-matrix now 41.4 t/s). The table below is from before step 68. For scale: step 48 measured 28.0 at the same clock before
+verify step 108 -> 96 ms; cpp-matrix now 41.4 t/s); **35.0** since a verify step's copies back from
+the dies are issued before the host waits (step 71: the CPU's experts start ~80 us sooner per
+layer, ~4 ms per code step). The table below is from before step 68. For scale: step 48 measured 28.0 at the same clock before
 the cache tuning and the router and CPU-routine fixes (steps 50, 53, 57).
 
 **What a millisecond is worth:** on the code step 1 ms is 0.8% (~0.3 t/s), on the chat step 1.3%

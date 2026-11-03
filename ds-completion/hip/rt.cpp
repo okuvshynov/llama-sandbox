@@ -717,6 +717,8 @@ void Runtime::setup_experts() {
   CHECK(hipStreamCreateWithFlags(&s_local, hipStreamNonBlocking));
   CHECK(hipEventCreateWithFlags(&ev_dispatched, hipEventDisableTiming));
   CHECK(hipEventCreateWithFlags(&ev_local, hipEventDisableTiming));
+  CHECK(hipStreamCreateWithFlags(&s_gather, hipStreamNonBlocking));
+  CHECK(hipEventCreateWithFlags(&ev_gathered, hipEventDisableTiming));
   mem_mark("expert path buffers (per die: scratch, staging)");
   std::vector<int> cap;
   const int spare = opt.load_test >= 0 ? kLoadTestSlots : 0;
@@ -870,6 +872,11 @@ Runtime::~Runtime() {
     (void)hipStreamDestroy(s_local);
     (void)hipEventDestroy(ev_dispatched);
     (void)hipEventDestroy(ev_local);
+  }
+  if (s_gather) {
+    (void)hipStreamSynchronize(s_gather);
+    (void)hipStreamDestroy(s_gather);
+    (void)hipEventDestroy(ev_gathered);
   }
   (void)hipEventDestroy(ev_staged);
   for (auto& [L, p] : cmp_rows) (void)hipFree(p);
@@ -1338,6 +1345,11 @@ void Runtime::moe_launch(int L, int M) {
   };
   auto place_rows = [&](int p) { return canon_rows + (size_t)p * kChunk * KE * E; };  // canon
   bool local = false;
+  // a short forward (decode, verify): the copies back to the home die are issued here, while the
+  // host is ahead of the GPU, a bound of rows each (canon: every pair could be on one die) instead
+  // of the counts the host learns after staging; HIP calls there would delay the CPU's experts
+  early_gather = cur_half < 0 && M <= kEarlyGatherMaxM;
+  const size_t early_rows = (size_t)M * (opt.canon ? KE : 1);
   for (int i = 0; i < n_dies; i++) {
     Die& d = dies[i];
     if (!d.st) {  // the home die: its lists on the second stream, next to the shared expert
@@ -1365,8 +1377,12 @@ void Runtime::moe_launch(int L, int M) {
     CHECK(hipMemcpyAsync(d.d_in, h_moe.lists, lists_bytes, hipMemcpyHostToDevice, d.st));
     CHECK(hipMemcpyAsync(d.d_in + moe_lists_bytes, h_moe.x, (size_t)M * E * 4, hipMemcpyHostToDevice, d.st));
     const float* dx = (const float*)(d.d_in + moe_lists_bytes);
-    if (opt.canon) {  // the copy back waits for the counts (below)
+    if (opt.canon) {  // the copy back waits for the counts (moe_finish), unless early
       fp4_moe_canon_rows(d.pool.view, dx, sel((const MoeList*)d.d_in, i), KE, M, hp.swiglu_clamp[L], d.d_y, d.scratch, d.st);
+      if (early_gather) {
+        CHECK(hipMemcpyAsync(d.h_y, d.d_y, early_rows * E * 4, hipMemcpyDeviceToHost, d.st));
+        CHECK(hipEventRecord(d.done, d.st));
+      }
     } else {
       fp4_moe_chunk(d.pool.view, dx, sel((const MoeList*)d.d_in, i), KE, M, hp.swiglu_clamp[L], d.d_y, d.scratch, d.st);
       CHECK(hipMemcpyAsync(d.h_y, d.d_y, (size_t)M * E * 4, hipMemcpyDeviceToHost, d.st));
@@ -1378,7 +1394,12 @@ void Runtime::moe_launch(int L, int M) {
       die_trace[i].spans.push_back({L, tr_a, tr_b, ""});
     }
     CHECK(hipSetDevice(opt.gpu));
+    if (early_gather) {
+      CHECK(hipStreamWaitEvent(s_gather, d.done, 0));
+      CHECK(hipMemcpyAsync(opt.canon ? place_rows(i) : d.y_home, d.h_y, early_rows * E * 4, hipMemcpyHostToDevice, s_gather));
+    }
   }
+  if (early_gather) CHECK(hipEventRecord(ev_gathered, s_gather));
   mark("ffn.shared");
   quant(xin, E, A, M);
   gemv8(w.gate_sh, A, gate, 0, M);
@@ -1435,7 +1456,7 @@ void Runtime::moe_finish(int L, float* out, int M, Taps* taps) {
     total_cpu_experts += lt[n_dies].count;
   }
   if (cache) cache->observe(L, h_moe.lists, M, n_dies);
-  if (opt.canon)
+  if (opt.canon && !early_gather)
     for (int i = 0; i < n_dies; i++) {
       Die& d = dies[i];
       if (!d.st) continue;
@@ -1531,7 +1552,8 @@ void Runtime::moe_finish(int L, float* out, int M, Taps* taps) {
   // the dies' results, waited for in the stream
   if (n_dies) mark("ffn.wait_for_gpu_experts");
   if (local) CHECK(hipStreamWaitEvent(s, ev_local, 0));
-  for (int i = 0; i < n_dies; i++)
+  if (early_gather) CHECK(hipStreamWaitEvent(s, ev_gathered, 0));  // copied in by moe_launch
+  for (int i = 0; i < n_dies && !early_gather; i++)
     if (dies[i].st) {
       CHECK(hipStreamWaitEvent(s, dies[i].done, 0));
       if (opt.canon) {
