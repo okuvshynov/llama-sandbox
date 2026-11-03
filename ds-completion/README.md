@@ -2652,3 +2652,16 @@ step 68). Chat gains most since its steps are shortest; on code the draft-length
 slightly shorter drafts on some steps (sql-report: 3.90 tokens per step vs 4.00), which hides
 part of a ~2-3% faster step.
 
+## Step 72: the held-out history: every decode change on the same 8 prompts
+
+One point per decode change: commit, a one-line summary, and generation speed on the 8 held-out
+prompts (300 tokens, sclk 6), mean and per prompt (`results/heldout-history/`: `points.tsv` the
+plan, `history.tsv` the numbers, `history.html` the chart, all from `scripts/heldout_history.py`).
+Steps 48-71 were measured then at sclk 6 (27.96 -> 34.98 t/s); steps 6-45 were measured at other
+clocks or settings, so `scripts/heldout-rerun.sh` rebuilds their commits in worktrees (all 16
+build against today's tree of dependencies) and reruns them at sclk 6 with each commit's own
+flags: 13 points in tier 1 (~6-7 h), 3 optional, and steps 48-71 again so every point shares one
+night's conditions (~12 h in all). The chart's per-prompt grid shows each step's
+change from the previous point: a column of one color is a change every prompt feels; a column
+split by row is speculation-specific (the top rows accept the most drafts per step).
+

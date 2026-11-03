@@ -458,6 +458,11 @@ Each rule is followed by where it mattered most.
   host is ahead of the GPU, with a bound of rows instead of the counts, removed it. A single
   prompt's t/s also misled once more: the draft-length rule took 66 steps instead of 64, hiding
   a 2.7% faster step; the 8 prompts and ms per step settled it.
+- **One ruler for the whole history (README step 72).** The person asked for the held-out speed
+  per step. Only steps 48-71 shared a clock and prompt set; the earlier numbers mixed sclk 2 and
+  8 and other settings, so they are rerun from their commits rather than adjusted by a guessed
+  factor. Each old commit was built and smoke-tested first, so the overnight run does not fail
+  at its first point.
 
 ## 4. Predictions against outcomes
 

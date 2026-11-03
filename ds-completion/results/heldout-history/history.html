@@ -1,0 +1,171 @@
+<title>Held-out Decode History</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+/* layout: one reading column; the chart, then the per-prompt grid, then the table, each scrolling sideways on its own */
+:root {
+  --bg: #f7f7f4; --surface: #fcfcfb; --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
+  --grid: #e1e0d9; --axis: #c3c2b7; --line: #2a78d6; --pending: #c3c2b7; --ring: rgba(11,11,11,0.10);
+  --neutral: #f0efec; --up: #2a78d6; --down: #e34948;
+  --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
+  --grid: #2c2c2a; --axis: #383835; --line: #3987e5; --pending: #52514e; --ring: rgba(255,255,255,0.10);
+  --neutral: #383835; --up: #3987e5; --down: #e66767; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
+  --grid: #2c2c2a; --axis: #383835; --line: #3987e5; --pending: #52514e; --ring: rgba(255,255,255,0.10);
+  --neutral: #383835; --up: #3987e5; --down: #e66767; color-scheme: dark }
+body { background: var(--bg); color: var(--ink); font-family: var(--sans); }
+main { max-width: 1100px; margin: 0 auto; padding-block: 28px 48px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  display: flex; flex-direction: column; gap: 28px; }
+h1 { font-size: 1.6rem; margin: 0; text-wrap: balance; letter-spacing: -0.01em; }
+h2 { font-size: 1.05rem; margin: 0; }
+.lede { color: var(--ink-2); margin: 6px 0 0; max-width: 70ch; line-height: 1.5; }
+.facts { display: flex; flex-wrap: wrap; gap: 8px 24px; margin-top: 14px; color: var(--ink-2); font-size: 0.85rem; }
+.facts b { color: var(--ink); font-variant-numeric: tabular-nums; font-size: 1.05rem; }
+section { background: var(--surface); border: 1px solid var(--ring); border-radius: 8px; padding: 18px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.note { color: var(--ink-2); font-size: 0.85rem; margin: 0; line-height: 1.45; max-width: 80ch; }
+.scroll { overflow-x: auto; }
+svg text { font-family: var(--sans); }
+.mono { font-family: var(--mono); font-size: 0.82rem; }
+table { border-collapse: collapse; font-size: 0.82rem; font-variant-numeric: tabular-nums; width: 100%; }
+th, td { padding: 6px 8px; border-bottom: 1px solid var(--grid); text-align: right; white-space: nowrap; }
+th { color: var(--ink-2); font-weight: 600; position: sticky; top: 0; background: var(--surface); }
+td.l, th.l { text-align: left; }
+td.what { white-space: normal; min-width: 260px; max-width: 420px; color: var(--ink-2); text-align: left; }
+tr.pending td { color: var(--muted); }
+.chip { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 0.72rem; border: 1px solid var(--axis); color: var(--ink-2); }
+.legend { display: flex; align-items: center; gap: 8px; font-size: 0.78rem; color: var(--ink-2); flex-wrap: wrap; }
+.ramp { display: inline-flex; border-radius: 3px; overflow: hidden; border: 1px solid var(--ring); }
+.ramp span { width: 22px; height: 12px; }
+#tip { position: fixed; pointer-events: none; background: var(--surface); color: var(--ink); border: 1px solid var(--axis);
+  border-radius: 6px; padding: 8px 10px; font-size: 0.8rem; max-width: 320px; line-height: 1.4; box-shadow: 0 4px 14px rgba(0,0,0,0.12); }
+#tip b { font-variant-numeric: tabular-nums; }
+</style>
+<main>
+  <header>
+    <h1>Held-out decode history</h1>
+    <p class="lede">DeepSeek-V4.1-Flash-1017 on a Mac Pro 2019 (4 Vega II dies, CPU experts on a 16-core Xeon). Each point is one commit run on the same 8 held-out prompts: 300 generated tokens each, GPU clock level 6. Points marked pending are queued for the overnight rerun of old commits.</p>
+    <div class="facts" id="facts"></div>
+  </header>
+  <section>
+    <h2>Mean generation speed by step</h2>
+    <div class="scroll"><svg id="line" role="img" aria-label="Mean generation speed by step"></svg></div>
+    <p class="note">Mean of the 8 prompts, tokens per second. Hollow marks on the axis are pending points. Steps 20 onward use speculative decoding; steps 32 onward the adaptive expert cache with byte-identical outputs.</p>
+  </section>
+  <section>
+    <h2>Change per prompt from the previous point</h2>
+    <div class="legend"><span>slower</span><span class="ramp" id="ramp"></span><span>faster</span><span>&middot; clamped at &plusmn;10%; prompts ordered by tokens per step at the latest point (most speculation-friendly first)</span></div>
+    <div class="scroll"><svg id="heat" role="img" aria-label="Per-prompt change from the previous point"></svg></div>
+    <p class="note">A column of one color is a change every prompt feels. A column that splits by row is prompt-specific: rows near the top accept the most drafted tokens per step, so speculation-side changes land there first.</p>
+  </section>
+  <section>
+    <h2>Points</h2>
+    <div class="scroll"><table id="tbl"></table></div>
+  </section>
+</main>
+<div id="tip" hidden></div>
+<script>
+const DATA = {"prompts": ["tcp-udp", "py-lru", "cpp-matrix", "sql-report", "geometry", "zh-travel", "ja-email", "summary-json"], "points": [{"step": "6", "commit": "69474c2", "status": "rerun", "flags": "--gpu 0 --rt $F8", "summary": "Own HIP decode runtime: the dense part on GPU 0 in exact fp8 kernels, routed experts on the CPU through ggml.", "prompts": {}, "where": "", "header": "", "mean": null}, {"step": "7", "commit": "8cd730f", "status": "rerun", "flags": "--gpu 0 --rt $F8", "summary": "An exact AVX-512 kernel for the CPU's routed experts (fp4 weights x fp8 activations) instead of ggml's.", "prompts": {}, "where": "", "header": "", "mean": null}, {"step": "14", "commit": "a8648ad", "status": "rerun", "flags": "--rt $F8 --placement $PL", "summary": "Routed experts split per layer: the routing study's most-used ones on the four GPUs, the rest on the CPU, all at once.", "prompts": {}, "where": "", "header": "", "mean": null}, {"step": "16", "commit": "ecd1381", "status": "optional", "flags": "--rt $F8 --placement $PL", "summary": "Expert-path fix 1: no GPU waits for the host between its expert lists.", "prompts": {}, "where": "", "header": "", "mean": null}, {"step": "17", "commit": "d58e6c1", "status": "optional", "flags": "--rt $F8 --placement $PL", "summary": "Expert-path fix 2: a faster GPU kernel for a few experts per layer.", "prompts": {}, "where": "", "header": "", "mean": null}, {"step": "18", "commit": "964d515", "status": "rerun", "flags": "--rt $F8 --placement $PL", "summary": "Expert-path fix 3: 16 CPU threads instead of 32 (32 starved the host thread); with fixes 1-2 the oracle bound went 16 -> 25 t/s.", "prompts": {}, "where": "", "header": "", "mean": null}, {"step": "20", "commit": "329d7d2", "status": "rerun", "flags": "--rt $F8 --placement $PL --dspark $D --spec", "summary": "Speculative decoding: the DSpark head drafts tokens and the main model verifies them; output identical to plain greedy.", "prompts": {}, "where": "", "header": "", "mean": null}, {"step": "21a", "commit": "2146bf6", "status": "rerun", "flags": "--rt $F8 --placement $PL --dspark $D --spec", "summary": "Verification as one chunk forward: projections and the output head batched over the drafted tokens.", "prompts": {}, "where": "", "header": "", "mean": null}, {"step": "21b", "commit": "7f982af", "status": "rerun", "flags": "--rt $F8 --placement $PL --dspark $D --spec", "summary": "The routed experts batched over a verify chunk: one expert block for all its tokens.", "prompts": {}, "where": "", "header": "", "mean": null}, {"step": "22", "commit": "a1ea344", "status": "rerun", "flags": "--rt $F8 --placement $PL --dspark $D --spec", "summary": "A faster draft: its 5 positions go through each layer together (one weight read) and its head runs on the GPU, 26 -> 13 ms.", "prompts": {}, "where": "", "header": "", "mean": null}, {"step": "23", "commit": "7eb7acd", "status": "rerun", "flags": "--rt $F8 --placement $PL --dspark $D --spec", "summary": "Hyper-connection kernels batched over a verify chunk (verify step 207 -> 181 ms).", "prompts": {}, "where": "", "header": "", "mean": null}, {"step": "24", "commit": "e697e5a", "status": "rerun", "flags": "--rt $F8 --placement $PL --dspark $D --spec", "summary": "A multi-token fp8 GEMV: one weight read for all of a chunk's tokens (verify step 181 -> 171 ms).", "prompts": {}, "where": "", "header": "", "mean": null}, {"step": "25", "commit": "cc9820f", "status": "rerun", "flags": "--rt $F8 --placement $PL --dspark $D --spec", "summary": "Draft length chosen per step from the draft head's confidence.", "prompts": {}, "where": "", "header": "", "mean": null}, {"step": "31", "commit": "51bce5d", "status": "optional", "flags": "--rt $F8 --placement $PL --dspark $D --spec --canon", "summary": "Placement-invariant expert numerics (--canon): the GPU's experts give the CPU's bits; its cost before the cache.", "prompts": {}, "where": "", "header": "", "mean": null}, {"step": "32", "commit": "5ec0716", "status": "rerun", "flags": "--rt $F8 --placement $PL --dspark $D --spec --canon --cache-loads 200 --cache-wait", "summary": "The adaptive expert cache: the GPUs keep recently used experts, swapped in the background; outputs unchanged.", "prompts": {}, "where": "", "header": "", "mean": null}, {"step": "45", "commit": "0d234ea", "status": "rerun", "flags": "--rt $F8 --placement $PL --dspark $D --spec --canon --cache-loads 200 --cache-wait", "summary": "Everything built with -O3: the CPU expert kernel had run 1.6x slower in the runtime at -O2.", "prompts": {}, "where": "", "header": "", "mean": null}, {"step": "48", "commit": "0ec746d", "status": "measured", "flags": "--rt $F8 --placement $PL --dspark $D --spec --canon --cache-loads 200 --cache-wait", "summary": "Speculation measured live with the cache; a decode regression since step 37 (an engram copy per token) fixed.", "prompts": {"tcp-udp": {"tps": 26.22, "tok": 2.16, "same": "same"}, "py-lru": {"tps": 29.25, "tok": 3.12, "same": "same"}, "cpp-matrix": {"tps": 30.6, "tok": 4.35, "same": "same"}, "sql-report": {"tps": 28.52, "tok": 3.66, "same": "same"}, "geometry": {"tps": 33.53, "tok": 4.11, "same": "same"}, "zh-travel": {"tps": 23.67, "tok": 1.7, "same": "same"}, "ja-email": {"tps": 24.98, "tok": 2.03, "same": "same"}, "summary-json": {"tps": 26.89, "tok": 3.5, "same": "same"}}, "where": "results/spec-measure-sclk6", "header": "scripts/spec-measure.sh, commit cda964f+changes, sclk 6, 2026-11-01T21:35:22-05:00", "mean": 27.96}, {"step": "50", "commit": "cb73732", "status": "measured", "flags": "--rt $F8 --placement $PL --dspark $D --spec --canon --cache-loads 800 --cache-period 8 --cache-wait", "summary": "The CPU kernel's preparation in parallel, and the cache tuned to 800 loads/s rebalanced every 8 tokens.", "prompts": {"tcp-udp": {"tps": 27.75, "tok": 2.19, "same": "same"}, "py-lru": {"tps": 31.82, "tok": 3.3, "same": "same"}, "cpp-matrix": {"tps": 34.96, "tok": 4.48, "same": "same"}, "sql-report": {"tps": 30.19, "tok": 3.95, "same": "same"}, "geometry": {"tps": 36.32, "tok": 4.21, "same": "same"}, "zh-travel": {"tps": 25.62, "tok": 1.69, "same": "same"}, "ja-email": {"tps": 27.46, "tok": 1.97, "same": "same"}, "summary-json": {"tps": 28.18, "tok": 3.63, "same": "same"}}, "where": "results/spec-measure-sclk6-cacheloads800cacheperiod8", "header": "CACHE=\"--cache-loads 800 --cache-period 8\" scripts/spec-measure.sh, commit 0ec746d+changes, sclk 6, 2026-11-01T23:06:47-05:00", "mean": 30.29}, {"step": "53", "commit": "da19a4f", "status": "measured", "flags": "--rt $F8 --placement $PL --dspark $D --spec --canon --cache-loads 800 --cache-period 8 --cache-wait", "summary": "The router's top-k for all of a chunk's tokens in one launch.", "prompts": {"tcp-udp": {"tps": 28.94, "tok": 2.19, "same": "same"}, "py-lru": {"tps": 33.54, "tok": 3.33, "same": "same"}, "cpp-matrix": {"tps": 36.46, "tok": 4.48, "same": "same"}, "sql-report": {"tps": 32.15, "tok": 3.95, "same": "same"}, "geometry": {"tps": 38.06, "tok": 4.21, "same": "same"}, "zh-travel": {"tps": 26.5, "tok": 1.69, "same": "same"}, "ja-email": {"tps": 28.38, "tok": 1.97, "same": "same"}, "summary-json": {"tps": 29.49, "tok": 3.63, "same": "same"}}, "where": "results/spec-measure-sclk6-cacheloads800cacheperiod8-router", "header": "CACHE=\"--cache-loads 800 --cache-period 8\" scripts/spec-measure.sh, commit 97844c8+changes, sclk 6, 2026-11-02T09:12:23-05:00 (copied from spec-measure-sclk6-cacheloads800cacheperiod8/ after the run: README step 53; page cache warm)", "mean": 31.69}, {"step": "57", "commit": "d1a2de8", "status": "measured", "flags": "--rt $F8 --placement $PL --dspark $D --spec --canon --cache-loads 800 --cache-period 8 --cache-wait", "summary": "One-token expert groups on the CPU's one-token routine.", "prompts": {"tcp-udp": {"tps": 28.86, "tok": 2.16, "same": "same"}, "py-lru": {"tps": 33.98, "tok": 3.33, "same": "same"}, "cpp-matrix": {"tps": 36.9, "tok": 4.48, "same": "same"}, "sql-report": {"tps": 32.43, "tok": 3.95, "same": "same"}, "geometry": {"tps": 38.63, "tok": 4.21, "same": "same"}, "zh-travel": {"tps": 26.74, "tok": 1.69, "same": "same"}, "ja-email": {"tps": 28.77, "tok": 1.9, "same": "same"}, "summary-json": {"tps": 29.95, "tok": 3.63, "same": "same"}}, "where": "results/spec-measure-sclk6-cacheloads800cacheperiod8-nx1", "header": "CACHE=\"--cache-loads 800 --cache-period 8\" scripts/spec-measure.sh, commit d68da00+changes, sclk 6, 2026-11-02T11:50:31-05:00 (copied from spec-measure-sclk6-cacheloads800cacheperiod8/ after the run: README step 57)", "mean": 32.03}, {"step": "62", "commit": "2650c04", "status": "measured", "flags": "--rt $F8 --placement $PL --dspark $D --spec --canon --cache-loads 800 --cache-period 8 --cache-wait", "summary": "The output head reads its several inputs through LDS.", "prompts": {"tcp-udp": {"tps": 29.14, "tok": 2.14, "same": "same"}, "py-lru": {"tps": 33.95, "tok": 3.19, "same": "same"}, "cpp-matrix": {"tps": 37.62, "tok": 4.48, "same": "same"}, "sql-report": {"tps": 33.11, "tok": 3.95, "same": "same"}, "geometry": {"tps": 39.28, "tok": 4.21, "same": "same"}, "zh-travel": {"tps": 26.97, "tok": 1.61, "same": "same"}, "ja-email": {"tps": 29.21, "tok": 1.89, "same": "same"}, "summary-json": {"tps": 30.56, "tok": 3.63, "same": "same"}}, "where": "results/spec-measure-sclk6-cacheloads800cacheperiod8-head", "header": "CACHE=\"--cache-loads 800 --cache-period 8\" scripts/spec-measure.sh, commit c71b17c+changes, sclk 6, 2026-11-02T14:23:35-05:00 (copied from spec-measure-sclk6-cacheloads800cacheperiod8/ after the run: README step 62)", "mean": 32.48}, {"step": "66", "commit": "6e7126a", "status": "measured", "flags": "--rt $F8 --placement $PL --dspark $D --spec --canon --cache-loads 800 --cache-period 8 --cache-wait", "summary": "Attention stage 1: the window kept as a ring of window + chunk slots.", "prompts": {"tcp-udp": {"tps": 29.44, "tok": 2.16, "same": "same"}, "py-lru": {"tps": 34.09, "tok": 3.26, "same": "same"}, "cpp-matrix": {"tps": 38.07, "tok": 4.48, "same": "same"}, "sql-report": {"tps": 32.85, "tok": 3.95, "same": "same"}, "geometry": {"tps": 38.96, "tok": 4.16, "same": "same"}, "zh-travel": {"tps": 27.15, "tok": 1.61, "same": "same"}, "ja-email": {"tps": 29.57, "tok": 1.89, "same": "same"}, "summary-json": {"tps": 30.51, "tok": 3.63, "same": "same"}}, "where": "results/spec-measure-sclk6-cacheloads800cacheperiod8-ring", "header": "CACHE=\"--cache-loads 800 --cache-period 8\" scripts/spec-measure.sh, commit 67453f6+changes, sclk 6, 2026-11-02T22:05:12-05:00 (copied from spec-measure-sclk6-cacheloads800cacheperiod8/ after the run: README step 66)", "mean": 32.58}, {"step": "67", "commit": "d7bbabd*", "status": "measured", "flags": "--rt $F8 --placement $PL --dspark $D --spec --canon --cache-loads 800 --cache-period 8 --cache-wait", "summary": "Attention stage 2: the small per-token kernels once per chunk (measured before its commit, which also holds stage 3).", "prompts": {"tcp-udp": {"tps": 29.95, "tok": 2.16, "same": "same"}, "py-lru": {"tps": 34.42, "tok": 3.12, "same": "same"}, "cpp-matrix": {"tps": 38.82, "tok": 4.48, "same": "same"}, "sql-report": {"tps": 33.92, "tok": 3.95, "same": "same"}, "geometry": {"tps": 40.49, "tok": 4.21, "same": "same"}, "zh-travel": {"tps": 27.64, "tok": 1.69, "same": "same"}, "ja-email": {"tps": 29.61, "tok": 1.9, "same": "same"}, "summary-json": {"tps": 31.16, "tok": 3.63, "same": "same"}}, "where": "results/spec-measure-sclk6-cacheloads800cacheperiod8-phases", "header": "CACHE=\"--cache-loads 800 --cache-period 8\" scripts/spec-measure.sh, commit 6e7126a+changes, sclk 6, 2026-11-02T23:29:58-05:00 (copied from spec-measure-sclk6-cacheloads800cacheperiod8/ after the run: README step 67)", "mean": 33.25}, {"step": "68", "commit": "d7bbabd", "status": "measured", "flags": "--rt $F8 --placement $PL --dspark $D --spec --canon --cache-loads 800 --cache-period 8 --cache-wait", "summary": "Attention stage 3: one attention launch for up to 8 tokens of a chunk.", "prompts": {"tcp-udp": {"tps": 30.71, "tok": 2.17, "same": "same"}, "py-lru": {"tps": 35.87, "tok": 3.26, "same": "same"}, "cpp-matrix": {"tps": 41.37, "tok": 4.69, "same": "same"}, "sql-report": {"tps": 35.13, "tok": 4.0, "same": "same"}, "geometry": {"tps": 41.65, "tok": 4.21, "same": "same"}, "zh-travel": {"tps": 27.99, "tok": 1.69, "same": "same"}, "ja-email": {"tps": 30.27, "tok": 1.92, "same": "same"}, "summary-json": {"tps": 31.68, "tok": 3.63, "same": "same"}}, "where": "results/spec-measure-sclk6-cacheloads800cacheperiod8-attnbatch", "header": "CACHE=\"--cache-loads 800 --cache-period 8\" scripts/spec-measure.sh, commit 6e7126a+changes, sclk 6, 2026-11-03T00:04:50-05:00 (copied from spec-measure-sclk6-cacheloads800cacheperiod8/ after the run: README step 68)", "mean": 34.33}, {"step": "71", "commit": "52959ce", "status": "measured", "flags": "--rt $F8 --placement $PL --dspark $D --spec --canon --cache-loads 800 --cache-period 8 --cache-wait", "summary": "The CPU's experts start right after routing: the other GPUs' copies are issued while the host is still ahead.", "prompts": {"tcp-udp": {"tps": 31.83, "tok": 2.22, "same": "same"}, "py-lru": {"tps": 36.58, "tok": 3.26, "same": "same"}, "cpp-matrix": {"tps": 41.91, "tok": 4.69, "same": "same"}, "sql-report": {"tps": 35.27, "tok": 3.9, "same": "same"}, "geometry": {"tps": 42.1, "tok": 4.21, "same": "same"}, "zh-travel": {"tps": 28.62, "tok": 1.64, "same": "same"}, "ja-email": {"tps": 31.05, "tok": 1.95, "same": "same"}, "summary-json": {"tps": 32.48, "tok": 3.63, "same": "same"}}, "where": "results/spec-measure-sclk6-cacheloads800cacheperiod8-handoff", "header": "CACHE=\"--cache-loads 800 --cache-period 8\" scripts/spec-measure.sh, commit 5041c1f+changes, sclk 6, 2026-11-03T08:27:49-05:00 (copied from spec-measure-sclk6-cacheloads800cacheperiod8)", "mean": 34.98}]};
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const NS = "http://www.w3.org/2000/svg";
+const el = (tag, attrs, parent) => { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); if (parent) parent.appendChild(e); return e; };
+const pts = DATA.points, P = DATA.prompts;
+const have = pts.filter(p => p.mean);
+const last = have[have.length - 1], first = have[0];
+const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+// facts
+document.getElementById("facts").innerHTML =
+  `<span>first measured: <b>${first.mean.toFixed(2)}</b> t/s (step ${first.step})</span>` +
+  `<span>latest: <b>${last.mean.toFixed(2)}</b> t/s (step ${last.step})</span>` +
+  `<span>points: <b>${have.length}</b> with data, <b>${pts.length - have.length}</b> pending</span>`;
+
+// tooltip
+const tip = document.getElementById("tip");
+function showTip(ev, htmlStr) { tip.innerHTML = htmlStr; tip.hidden = false; moveTip(ev); }
+function moveTip(ev) { const w = tip.offsetWidth, h = tip.offsetHeight; let x = ev.clientX + 14, y = ev.clientY + 14;
+  if (x + w > innerWidth - 8) x = ev.clientX - w - 14; if (y + h > innerHeight - 8) y = ev.clientY - h - 14; tip.style.left = x + "px"; tip.style.top = y + "px"; }
+function hideTip() { tip.hidden = true; }
+function bindTip(node, fn) { node.addEventListener("mouseenter", e => showTip(e, fn())); node.addEventListener("mousemove", moveTip); node.addEventListener("mouseleave", hideTip); }
+const pointTip = p => `<div><b>Step ${esc(p.step)}</b> <span class="mono">${esc(p.commit)}</span></div><div>${esc(p.summary)}</div>` +
+  (p.mean ? `<div style="margin-top:4px">mean <b>${p.mean.toFixed(2)}</b> t/s</div>` : `<div style="margin-top:4px">pending: queued for the rerun</div>`);
+
+// line chart: every point gets a slot, so the layout holds when pending points fill in
+function drawLine() {
+  const svg = document.getElementById("line"); svg.innerHTML = "";
+  const slot = 40, L = 44, R = 16, T = 14, B = 46, H = 230;
+  const W = Math.max(640, L + R + slot * pts.length);
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`); svg.setAttribute("width", W); svg.setAttribute("height", H);
+  const maxV = Math.max(...have.map(p => p.mean)); const top = Math.ceil(maxV / 10) * 10;
+  const y = v => T + (H - T - B) * (1 - v / top);
+  const x = i => L + slot * i + slot / 2;
+  for (let v = 0; v <= top; v += 10) {
+    el("line", {x1: L, x2: W - R, y1: y(v), y2: y(v), stroke: v ? css("--grid") : css("--axis"), "stroke-width": 1}, svg);
+    el("text", {x: L - 8, y: y(v) + 4, "text-anchor": "end", "font-size": 11, fill: css("--muted")}, svg).textContent = v;
+  }
+  el("text", {x: 4, y: T + 2, "font-size": 11, fill: css("--muted")}, svg).textContent = "t/s";
+  let d = "";
+  pts.forEach((p, i) => { if (p.mean) d += (d ? "L" : "M") + x(i) + "," + y(p.mean); });
+  el("path", {d, fill: "none", stroke: css("--line"), "stroke-width": 2, "stroke-linejoin": "round"}, svg);
+  pts.forEach((p, i) => {
+    el("text", {x: x(i), y: H - B + 18, "text-anchor": "middle", "font-size": 11, fill: css("--ink-2")}, svg).textContent = p.step;
+    const g = el("g", {}, svg);
+    if (p.mean) {
+      el("circle", {cx: x(i), cy: y(p.mean), r: 4.5, fill: css("--line"), stroke: css("--surface"), "stroke-width": 2}, g);
+      if (p === first || p === last)
+        el("text", {x: x(i), y: y(p.mean) - 10, "text-anchor": "middle", "font-size": 12, "font-weight": 600, fill: css("--ink")}, g).textContent = p.mean.toFixed(1);
+    } else {
+      el("circle", {cx: x(i), cy: y(0), r: 4.5, fill: css("--surface"), stroke: css("--pending"), "stroke-width": 2}, g);
+    }
+    el("rect", {x: x(i) - slot / 2, y: T, width: slot, height: H - T - B + 24, fill: "transparent"}, g);
+    bindTip(g, () => pointTip(p));
+  });
+  el("text", {x: L, y: H - 8, "font-size": 11, fill: css("--muted")}, svg).textContent = "README step";
+}
+
+// diverging scale: --down .. --neutral .. --up, clamped at +-10%
+function mix(a, b, t) { const pa = [1,3,5].map(i => parseInt(a.slice(i, i + 2), 16)), pb = [1,3,5].map(i => parseInt(b.slice(i, i + 2), 16));
+  return "#" + pa.map((v, k) => Math.round(v + (pb[k] - v) * t).toString(16).padStart(2, "0")).join(""); }
+function divColor(pct) { const t = Math.max(-1, Math.min(1, pct / 10)); return t >= 0 ? mix(css("--neutral"), css("--up"), t) : mix(css("--neutral"), css("--down"), -t); }
+function inkOn(hex) { const [r, g, b] = [1,3,5].map(i => parseInt(hex.slice(i, i + 2), 16) / 255); const l = 0.2126*r + 0.7152*g + 0.0722*b; return l < 0.5 ? "#ffffff" : "#0b0b0b"; }
+
+function drawHeat() {
+  const ramp = document.getElementById("ramp"); ramp.innerHTML = "";
+  [-10, -6, -3, 0, 3, 6, 10].forEach(v => { const s = document.createElement("span"); s.style.background = divColor(v); ramp.appendChild(s); });
+  const svg = document.getElementById("heat"); svg.innerHTML = "";
+  const cols = have.slice(1), order = [...P].sort((a, b) => (last.prompts[b].tok || 0) - (last.prompts[a].tok || 0));
+  const cw = 52, ch = 26, gap = 2, L = 150, T = 22, B = 8;
+  const W = Math.max(600, L + cols.length * cw + 8), H = T + order.length * ch + B;
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`); svg.setAttribute("width", W); svg.setAttribute("height", H);
+  cols.forEach((p, j) => el("text", {x: L + j * cw + cw / 2, y: 14, "text-anchor": "middle", "font-size": 11, fill: css("--ink-2")}, svg).textContent = p.step);
+  order.forEach((n, i) => {
+    const tok = last.prompts[n].tok;
+    el("text", {x: L - 10, y: T + i * ch + ch / 2 + 4, "text-anchor": "end", "font-size": 12, fill: css("--ink")}, svg).textContent = n + (tok ? `  ${tok.toFixed(1)} tok/step` : "");
+    cols.forEach((p, j) => {
+      const prev = have[have.indexOf(p) - 1], pct = (p.prompts[n].tps / prev.prompts[n].tps - 1) * 100, fill = divColor(pct);
+      const g = el("g", {}, svg);
+      el("rect", {x: L + j * cw + gap / 2, y: T + i * ch + gap / 2, width: cw - gap, height: ch - gap, rx: 3, fill}, g);
+      el("text", {x: L + j * cw + cw / 2, y: T + i * ch + ch / 2 + 4, "text-anchor": "middle", "font-size": 11, fill: inkOn(fill), "font-variant-numeric": "tabular-nums"}, g).textContent = (pct >= 0 ? "+" : "") + pct.toFixed(1);
+      bindTip(g, () => `<div><b>${esc(n)}</b>, step ${esc(p.step)} vs ${esc(prev.step)}</div><div><b>${prev.prompts[n].tps.toFixed(2)} &rarr; ${p.prompts[n].tps.toFixed(2)}</b> t/s (${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%)</div><div style="color:var(--ink-2)">${esc(p.summary)}</div>`);
+    });
+  });
+}
+
+function drawTable() {
+  const t = document.getElementById("tbl");
+  let h = `<thead><tr><th class="l">step</th><th class="l">commit</th><th class="l">change</th><th>mean</th>${P.map(n => `<th>${esc(n)}</th>`).join("")}</tr></thead><tbody>`;
+  [...pts].reverse().forEach(p => {
+    const cells = P.map(n => `<td>${p.mean ? p.prompts[n].tps.toFixed(2) : ""}</td>`).join("");
+    h += `<tr class="${p.mean ? "" : "pending"}"><td class="l">${esc(p.step)}</td><td class="l mono">${esc(p.commit)}</td><td class="what">${esc(p.summary)}${p.mean ? "" : ` <span class="chip">${esc(p.status === "optional" ? "optional rerun" : "pending")}</span>`}</td><td><b>${p.mean ? p.mean.toFixed(2) : ""}</b></td>${cells}</tr>`;
+  });
+  t.innerHTML = h + "</tbody>";
+}
+function drawAll() { drawLine(); drawHeat(); }
+drawAll(); drawTable();
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", drawAll);
+new MutationObserver(drawAll).observe(document.documentElement, {attributes: true, attributeFilter: ["data-theme"]});
+</script>

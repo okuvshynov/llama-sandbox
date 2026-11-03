@@ -121,6 +121,7 @@ Unless stated: sclk 2, 16 CPU threads (32 before README step 18), the study30 pl
 | 30 | `bench-expert-load.txt`, `load-test/` | `bin-hip/bench-expert-load -m $M`, `scripts/load-test.sh` |
 | 31-32 | `canon-gate.txt`, `canon-gate/` | `scripts/canon-gate.sh` (rerun for steps 32 and 45) |
 | 34 | `check-topk.txt` | `~/venvs/ds-ref/bin/python ref/check_topk.py` (runs `bin-hip/test-topk`) |
+| 72 | `heldout-history/` | `scripts/heldout-rerun.sh --build rerun optional`, `scripts/heldout-rerun.sh rerun` (and `optional`), then `python3 scripts/heldout_history.py`; points and flags in `points.tsv` |
 | 71 | `decode-next/handoff.txt`, `spec-measure-sclk6-cacheloads800cacheperiod8-handoff/` | the gate commands in the file (prompt gate, the 20,000-byte prompt, `CACHE="--cache-loads 800 --cache-period 8" scripts/spec-measure.sh`, copied); the host timer was a temporary patch (three clock reads in `moe_finish`), the trace medians: `--trace` as in `trace/README.txt` |
 | 70 | `decode-next/verify-halves.txt`, `verify-halves.patch` | the commands in the file; the layer medians: `results/trace/*.json.gz` (step 69) |
 | 69 | `trace/` (regenerated), `trace/compare-step58.txt` | the commands in `trace/README.txt`, then `gzip -9 -n`; the comparison: `scripts/trace_compare.py` on step 58's traces (`git show d7bbabd:ds-completion/results/trace/<name>.json.gz`) and the new ones |

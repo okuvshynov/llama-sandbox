@@ -1,0 +1,30 @@
+# The held-out history: one row per point (README step 72). Columns, tab-separated:
+# step	commit	status	flags	source	summary
+# status: measured (source holds the run) | rerun (scripts/heldout-rerun.sh runs it, tier 1) | optional (tier 2) | -
+# flags: what the run adds to `ds-completion -m $M -p <prompt> --chat -n 300` ($F8 dense fp8, $D draft, $PL placement)
+# source: the results directory with summary.txt (measured), or "" (runs/<step>-<commit>/ once rerun)
+6	69474c2	rerun	--gpu 0 --rt $F8		Own HIP decode runtime: the dense part on GPU 0 in exact fp8 kernels, routed experts on the CPU through ggml.
+7	8cd730f	rerun	--gpu 0 --rt $F8		An exact AVX-512 kernel for the CPU's routed experts (fp4 weights x fp8 activations) instead of ggml's.
+14	a8648ad	rerun	--rt $F8 --placement $PL		Routed experts split per layer: the routing study's most-used ones on the four GPUs, the rest on the CPU, all at once.
+16	ecd1381	optional	--rt $F8 --placement $PL		Expert-path fix 1: no GPU waits for the host between its expert lists.
+17	d58e6c1	optional	--rt $F8 --placement $PL		Expert-path fix 2: a faster GPU kernel for a few experts per layer.
+18	964d515	rerun	--rt $F8 --placement $PL		Expert-path fix 3: 16 CPU threads instead of 32 (32 starved the host thread); with fixes 1-2 the oracle bound went 16 -> 25 t/s.
+20	329d7d2	rerun	--rt $F8 --placement $PL --dspark $D --spec		Speculative decoding: the DSpark head drafts tokens and the main model verifies them; output identical to plain greedy.
+21a	2146bf6	rerun	--rt $F8 --placement $PL --dspark $D --spec		Verification as one chunk forward: projections and the output head batched over the drafted tokens.
+21b	7f982af	rerun	--rt $F8 --placement $PL --dspark $D --spec		The routed experts batched over a verify chunk: one expert block for all its tokens.
+22	a1ea344	rerun	--rt $F8 --placement $PL --dspark $D --spec		A faster draft: its 5 positions go through each layer together (one weight read) and its head runs on the GPU, 26 -> 13 ms.
+23	7eb7acd	rerun	--rt $F8 --placement $PL --dspark $D --spec		Hyper-connection kernels batched over a verify chunk (verify step 207 -> 181 ms).
+24	e697e5a	rerun	--rt $F8 --placement $PL --dspark $D --spec		A multi-token fp8 GEMV: one weight read for all of a chunk's tokens (verify step 181 -> 171 ms).
+25	cc9820f	rerun	--rt $F8 --placement $PL --dspark $D --spec		Draft length chosen per step from the draft head's confidence.
+31	51bce5d	optional	--rt $F8 --placement $PL --dspark $D --spec --canon		Placement-invariant expert numerics (--canon): the GPU's experts give the CPU's bits; its cost before the cache.
+32	5ec0716	rerun	--rt $F8 --placement $PL --dspark $D --spec --canon --cache-loads 200 --cache-wait		The adaptive expert cache: the GPUs keep recently used experts, swapped in the background; outputs unchanged.
+45	0d234ea	rerun	--rt $F8 --placement $PL --dspark $D --spec --canon --cache-loads 200 --cache-wait		Everything built with -O3: the CPU expert kernel had run 1.6x slower in the runtime at -O2.
+48	0ec746d	measured	--rt $F8 --placement $PL --dspark $D --spec --canon --cache-loads 200 --cache-wait	results/spec-measure-sclk6	Speculation measured live with the cache; a decode regression since step 37 (an engram copy per token) fixed.
+50	cb73732	measured	--rt $F8 --placement $PL --dspark $D --spec --canon --cache-loads 800 --cache-period 8 --cache-wait	results/spec-measure-sclk6-cacheloads800cacheperiod8	The CPU kernel's preparation in parallel, and the cache tuned to 800 loads/s rebalanced every 8 tokens.
+53	da19a4f	measured	--rt $F8 --placement $PL --dspark $D --spec --canon --cache-loads 800 --cache-period 8 --cache-wait	results/spec-measure-sclk6-cacheloads800cacheperiod8-router	The router's top-k for all of a chunk's tokens in one launch.
+57	d1a2de8	measured	--rt $F8 --placement $PL --dspark $D --spec --canon --cache-loads 800 --cache-period 8 --cache-wait	results/spec-measure-sclk6-cacheloads800cacheperiod8-nx1	One-token expert groups on the CPU's one-token routine.
+62	2650c04	measured	--rt $F8 --placement $PL --dspark $D --spec --canon --cache-loads 800 --cache-period 8 --cache-wait	results/spec-measure-sclk6-cacheloads800cacheperiod8-head	The output head reads its several inputs through LDS.
+66	6e7126a	measured	--rt $F8 --placement $PL --dspark $D --spec --canon --cache-loads 800 --cache-period 8 --cache-wait	results/spec-measure-sclk6-cacheloads800cacheperiod8-ring	Attention stage 1: the window kept as a ring of window + chunk slots.
+67	d7bbabd*	measured	--rt $F8 --placement $PL --dspark $D --spec --canon --cache-loads 800 --cache-period 8 --cache-wait	results/spec-measure-sclk6-cacheloads800cacheperiod8-phases	Attention stage 2: the small per-token kernels once per chunk (measured before its commit, which also holds stage 3).
+68	d7bbabd	measured	--rt $F8 --placement $PL --dspark $D --spec --canon --cache-loads 800 --cache-period 8 --cache-wait	results/spec-measure-sclk6-cacheloads800cacheperiod8-attnbatch	Attention stage 3: one attention launch for up to 8 tokens of a chunk.
+71	52959ce	measured	--rt $F8 --placement $PL --dspark $D --spec --canon --cache-loads 800 --cache-period 8 --cache-wait	results/spec-measure-sclk6-cacheloads800cacheperiod8-handoff	The CPU's experts start right after routing: the other GPUs' copies are issued while the host is still ahead.
