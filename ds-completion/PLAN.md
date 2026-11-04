@@ -35,7 +35,7 @@ Speed
 | 15 | Per-layer expert split, CPU and all dies concurrently (A1/EP) | done | `--placement`: fixed set from the study; 17.7-21.7 t/s (README steps 14-18) |
 | 15a | Expert path fixes: no die waits for the host; faster small-count kernel; 16 threads | done | oracle bound 16 -> ~25 t/s (README steps 15-18) |
 | 16 | Adaptive expert cache (A1 + A2) | done; rate and period tuned (step 50) | `--canon --cache-loads R`: frequency rebalance, held-out `--spec` +28% at sclk 2 (25.6 t/s), 29.1 at sclk 8, outputs identical (README steps 28-33); tuning: "Further optimization ideas" A |
-| 17 | Tensor parallelism, 2-way then 4-way (C1/C2) | planned | split the dense GEMVs over dies: ~-6..10 ms per step, matters once experts are mostly on GPUs |
+| 17 | Tensor parallelism, 2-way then 4-way (C1/C2) | planned; step 76 tried wo_a/wo_b over 0-1 (+0.6%, not kept) | split the dense GEMVs over dies: ~-6..10 ms per step, matters once experts are mostly on GPUs |
 | 18 | Shared expert by TP, routed by EP (C4) | planned | the dense shared expert splits like any other GEMV under TP |
 | 19 | DSpark speculative decoding (E1) | done | `--dspark ... --spec`, output identical to plain greedy; held-out prompts +7% to +33% (geometric mean +22%), oracle placement +19% / +71% (README steps 19-26) |
 | 20 | Batched prompt processing (F) | in progress | README steps 37-38: chunks of up to 512, CPU experts batched, CPU/GPU overlap; byte-identical output: 16.8 -> 51.6 t/s (fast), 17.4 -> 40.0 (canon), 1,989 tokens. CPU and GPU now balanced (~33 s each): step 39 (fp8_gemm, bit-identical): 57.1 t/s fast; now the CPU experts are the limit (30 of 36 s). Options and the expert-streaming estimate: "Prompt processing: where it stands and the options" (P1-P9) |
@@ -359,6 +359,10 @@ Step 74: the indexer skipped while it keeps every compressed position (<= 512 ke
 were computed and dropped): held-out 35.09 -> 35.94 t/s; batching it for long context is F below.
 Step 75: the fp8 GEMV at 2-8 inputs (attn.out ~12 ms of a code step at ~270 GB/s): fp16 inputs,
 shared memory, fewer registers, a register cap: none faster at M = 4-6; it needs a new work split.
+Step 76: attention's output projections over dies 0-1 (flags in fine-grained memory, ~6-8 us per
+hand-off; exact): +0.6%, not kept (~55 us per layer of hand-offs, and die 1's copy of the weights
+cost its expert cache 1.41 GiB); `results/decode-next/attn-split.patch`. With the core and q_b
+split too (KV state on die 1) est. +4-6%.
 
 **A. Tuning the expert cache** (the CPU experts' ~25 ms)
 - Hysteresis: a newcomer must beat its victim by a margin, so the cache settles in long runs
@@ -712,6 +716,7 @@ Everything is replicated except where the table says otherwise. Weights are fp8 
 
 **C2. 2-way first** (one XGMI pair, peer copies only), to get the structure right before
 cross-card.
+Step 76 tried the output projections alone over 0-1 (+0.6%, not kept; README step 76).
 
 **C3. Weight interleaving for TP**
 

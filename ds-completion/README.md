@@ -2758,3 +2758,34 @@ registers, 3 waves per SIMD instead of 2, yet ~2x slower at M = 6: each input's 
 just before its use), and that with the loads first and a register cap (spills). Reverted. A gain
 needs a different work split (more rows per wave without holding M decoded inputs), a
 restructured kernel rather than a local change; the CPU side is next.
+
+## Step 76: attention's output over the XGMI pair 0-1 (tried, not kept)
+
+Step 70's next lever after the handoffs: the attention work on die 0 (attn.out ~12 ms, core ~6,
+q ~6 per code step) split over dies 0 and 1, which share an XGMI link. First the hand-off itself
+(`results/decode-next/attn-split.txt`, a `bench-xdie` ping-pong on 2-6 tokens of activations): an
+event between the dies costs the host ~15-20 us per hand-off; a kernel spinning on a flag in
+fine-grained memory, raised by the other die's kernel, costs the GPU ~6-8 us and the host ~3.
+
+Built first: the output projections only, which need no state on die 1. With `--attn-split`
+(M <= 8) die 1 holds wo_a's groups 4-7 and wo_b's rows 2560-5119 (1.41 GiB); die 0 sends o's codes
+for heads 32-63, each die runs its half of wo_a, they swap their halves of oa's codes, each runs
+its half of wo_b, and die 1's rows come back. Hand-offs are put/get kernels on mailboxes and flags,
+no events and no host. The GEMV took row strides and the whole matrix's lanes per row, so every
+row keeps the one-die bits: outputs identical on every run, and bit-identical at M = 1-8 in the
+bench.
+
+- **The split's fixed cost is ~55 us per layer** (wo_a + wo_b over 40 layers on the real shapes:
+  M = 6 268 -> 190 us where halving would give ~134; M = 2 173 -> 146): four more kernels on die 0
+  and two waits for die 1. The host is not the limit (24 us of submits per layer).
+- **The weight halves came out of die 1's expert cache** (die 0 keeps the whole matrices for the
+  prompt): 1.41 GiB fewer slots, 4.4% more CPU expert pairs, CPU experts +1.5 ms per code step,
+  against attn.out -2.1 ms.
+- **End to end +0.5-0.7%** (cpp-matrix 43.30 -> 43.57 t/s, tcp-udp 32.14 -> 32.35, two
+  alternating runs each).
+
+Not kept; the change is `results/decode-next/attn-split.patch` (applies to 4b1a52c). It would pay
+with the halves dropped from die 0 (the prompt's fp8_gemm split too; est. +1.5-2%) or with the
+attention core and q_b split by heads as well, so die 1 makes its own heads' o and the largest
+transfer goes (needs the KV caches, the indexer's picks and speculation's rollback on die 1; est.
++4-6%).

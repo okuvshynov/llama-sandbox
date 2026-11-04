@@ -1,0 +1,760 @@
+diff --git a/ds-completion/Makefile b/ds-completion/Makefile
+index 840b200..cfff4a5 100644
+--- a/ds-completion/Makefile
++++ b/ds-completion/Makefile
+@@ -35,7 +35,7 @@ endif
+ 
+ all: $(BIN)/ds-completion $(BIN)/ds-inspect $(BIN)/ds-test $(BIN)/test-fakequant $(BIN)/llama-logits $(BIN)/fp8pack $(BIN)/bench-cpu-moe
+ ifeq ($(HIP),1)
+-all: $(BIN)/bench-fp8 $(BIN)/bench-kernels $(BIN)/bench-fp4-moe $(BIN)/bench-expert-pool $(BIN)/bench-expert-load $(BIN)/test-topk $(BIN)/bench-register $(BIN)/bench-launch
++all: $(BIN)/bench-fp8 $(BIN)/bench-kernels $(BIN)/bench-fp4-moe $(BIN)/bench-expert-pool $(BIN)/bench-expert-load $(BIN)/test-topk $(BIN)/bench-register $(BIN)/bench-launch $(BIN)/bench-xdie
+ endif
+ 
+ # our own HIP kernels (PLAN.md B1 onwards)
+@@ -64,6 +64,10 @@ $(BIN)/bench-launch: hip/bench_launch.cpp
+ 	@mkdir -p $(BIN)
+ 	$(HIPCC) $(HIPFLAGS) -o $@ hip/bench_launch.cpp
+ 
++$(BIN)/bench-xdie: hip/bench_xdie.cpp hip/kernels.hip hip/fp8_gemv.hip hip/kernels.h hip/fp8_gemv.h
++	@mkdir -p $(BIN)
++	$(HIPCC) $(HIPFLAGS) -o $@ hip/bench_xdie.cpp hip/kernels.hip hip/fp8_gemv.hip
++
+ $(BIN)/bench-register: hip/bench_register.cpp
+ 	@mkdir -p $(BIN)
+ 	$(HIPCC) $(HIPFLAGS) -o $@ hip/bench_register.cpp
+diff --git a/ds-completion/hip/bench_xdie.cpp b/ds-completion/hip/bench_xdie.cpp
+new file mode 100644
+index 0000000..4965d40
+--- /dev/null
++++ b/ds-completion/hip/bench_xdie.cpp
+@@ -0,0 +1,239 @@
++// bench-xdie: what a hand-off between the XGMI pair's dies costs (attention over dies 0-1, PLAN C2).
++// A ping-pong: die A writes a payload (a verify chunk's activations, T x 5120 fp32), die B takes it
++// and writes one back, N times; per hand-off = total / (2 N). Methods:
++//   same-die  two streams on die 0 with an event between them (the baseline: no second die)
++//   event+read   hipStreamWaitEvent on the other die's event, then a kernel reads the peer's memory
++//   event+copy   hipStreamWaitEvent, then hipMemcpyPeerAsync into local memory
++//   flag         no events: the consumer's kernel is queued ahead and spins on a flag the producer's
++//                kernel sets after its stores (fine-grained memory, system-scope fences)
++//   bin-hip/bench-xdie [T]       the hand-off alone
++//   bin-hip/bench-xdie proj      attention's output (wo_a, wo_b shapes) on die 0 vs split over 0-1, M = 1..8
++#include <hip/hip_runtime.h>
++#include "fp8_gemv.h"
++#include "kernels.h"
++#include <vector>
++#include <cstring>
++#include <chrono>
++#include <cstdio>
++#include <cstdlib>
++#define CK(x) do { hipError_t e_ = (x); if (e_ != hipSuccess) { printf("%s: %s\n", #x, hipGetErrorString(e_)); exit(1); } } while (0)
++
++// out[i] = in[i] + 1 (in may be the peer's memory)
++__global__ void step(const float* in, float* out, int n) {
++  for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += gridDim.x * blockDim.x) out[i] = in[i] + 1.0f;
++}
++// one thread: wait until the local flag reaches want (written by the other die)
++__global__ void wait_flag(const int* flag, int want) {
++  while (__hip_atomic_load(flag, __ATOMIC_ACQUIRE, __HIP_MEMORY_SCOPE_SYSTEM) < want) __builtin_amdgcn_s_sleep(1);
++}
++// one thread, after the stream's previous kernel: make its stores visible, then set the peer's flag
++__global__ void signal_flag(int* peer_flag, int v) {
++  __threadfence_system();
++  __hip_atomic_store(peer_flag, v, __ATOMIC_RELEASE, __HIP_MEMORY_SCOPE_SYSTEM);
++}
++
++int proj_main();
++int main(int argc, char** argv) {
++  if (argc > 1 && !strcmp(argv[1], "proj")) return proj_main();
++  const int T = argc > 1 ? atoi(argv[1]) : 6;
++  const int n = T * 5120;
++  const size_t bytes = (size_t)n * 4;
++  int can = 0;
++  CK(hipDeviceCanAccessPeer(&can, 0, 1));
++  if (!can) { printf("no peer access 0<->1\n"); return 1; }
++  CK(hipSetDevice(0)); CK(hipDeviceEnablePeerAccess(1, 0));
++  CK(hipSetDevice(1)); CK(hipDeviceEnablePeerAccess(0, 0));
++  float *a[2], *b[2];  // a: written by its die, read by the other; b: local landing buffer
++  int* flag[2];
++  hipStream_t s[2], s0b;
++  hipEvent_t ev[2], ev0b;
++  for (int d = 0; d < 2; d++) {
++    CK(hipSetDevice(d));
++    CK(hipExtMallocWithFlags((void**)&a[d], bytes, hipDeviceMallocFinegrained));
++    CK(hipMalloc(&b[d], bytes));
++    CK(hipExtMallocWithFlags((void**)&flag[d], 64, hipDeviceMallocFinegrained));
++    CK(hipMemset(a[d], 0, bytes)); CK(hipMemset(flag[d], 0, 64));
++    CK(hipStreamCreateWithFlags(&s[d], hipStreamNonBlocking));
++    CK(hipEventCreateWithFlags(&ev[d], hipEventDisableTiming));
++  }
++  CK(hipSetDevice(0));
++  CK(hipStreamCreateWithFlags(&s0b, hipStreamNonBlocking));
++  CK(hipEventCreateWithFlags(&ev0b, hipEventDisableTiming));
++  CK(hipDeviceSynchronize());
++  using C = std::chrono::steady_clock;
++  auto us = [](C::time_point t) { return std::chrono::duration<double, std::micro>(C::now() - t).count(); };
++  const int G = (n + 255) / 256 < 64 ? (n + 255) / 256 : 64, N = 2000;
++  printf("# bench-xdie: T=%d (%zu KB per hand-off), %d round trips, per hand-off in us\n", T, bytes / 1024, N);
++  for (int rep = 0; rep < 3; rep++) {
++    // same die, two streams
++    auto t0 = C::now();
++    for (int i = 0; i < N; i++) {
++      step<<<G, 256, 0, s[0]>>>(b[0], a[0], n); CK(hipEventRecord(ev[0], s[0]));
++      CK(hipStreamWaitEvent(s0b, ev[0], 0));
++      step<<<G, 256, 0, s0b>>>(a[0], b[0], n); CK(hipEventRecord(ev0b, s0b));
++      CK(hipStreamWaitEvent(s[0], ev0b, 0));
++    }
++    double sub = us(t0); CK(hipStreamSynchronize(s[0])); double tot = us(t0);
++    printf("same-die      %7.2f   (host submit %.2f)\n", tot / (2 * N), sub / (2 * N));
++    // event + peer read
++    t0 = C::now();
++    for (int i = 0; i < N; i++) {
++      CK(hipSetDevice(0)); step<<<G, 256, 0, s[0]>>>(b[0], a[0], n); CK(hipEventRecord(ev[0], s[0]));
++      CK(hipSetDevice(1)); CK(hipStreamWaitEvent(s[1], ev[0], 0));
++      step<<<G, 256, 0, s[1]>>>(a[0], a[1], n); CK(hipEventRecord(ev[1], s[1]));
++      CK(hipSetDevice(0)); CK(hipStreamWaitEvent(s[0], ev[1], 0));
++      step<<<G, 256, 0, s[0]>>>(a[1], b[0], n);
++    }
++    sub = us(t0); CK(hipStreamSynchronize(s[0])); tot = us(t0);
++    printf("event+read    %7.2f   (host submit %.2f)\n", tot / (2 * N), sub / (2 * N));
++    // event + DMA copy
++    t0 = C::now();
++    for (int i = 0; i < N; i++) {
++      CK(hipSetDevice(0)); step<<<G, 256, 0, s[0]>>>(b[0], a[0], n); CK(hipEventRecord(ev[0], s[0]));
++      CK(hipSetDevice(1)); CK(hipStreamWaitEvent(s[1], ev[0], 0));
++      CK(hipMemcpyPeerAsync(b[1], 1, a[0], 0, bytes, s[1]));
++      step<<<G, 256, 0, s[1]>>>(b[1], a[1], n); CK(hipEventRecord(ev[1], s[1]));
++      CK(hipSetDevice(0)); CK(hipStreamWaitEvent(s[0], ev[1], 0));
++      CK(hipMemcpyPeerAsync(b[0], 0, a[1], 1, bytes, s[0]));
++    }
++    sub = us(t0); CK(hipStreamSynchronize(s[0])); tot = us(t0);
++    printf("event+copy    %7.2f   (host submit %.2f)\n", tot / (2 * N), sub / (2 * N));
++    // flags: die 0 waits flag0 >= i, works, sets flag1 = i + 1; die 1 waits flag1 >= i + 1, works,
++    // sets flag0 = i + 1. Everything is queued up front; no events, the host only submits.
++    for (int d = 0; d < 2; d++) { CK(hipSetDevice(d)); CK(hipMemset(flag[d], 0, 64)); CK(hipDeviceSynchronize()); }
++    t0 = C::now();
++    for (int i = 0; i < N; i++) {
++      CK(hipSetDevice(0));
++      wait_flag<<<1, 1, 0, s[0]>>>(flag[0], i);
++      step<<<G, 256, 0, s[0]>>>(a[1], a[0], n);
++      signal_flag<<<1, 1, 0, s[0]>>>(flag[1], i + 1);
++      CK(hipSetDevice(1));
++      wait_flag<<<1, 1, 0, s[1]>>>(flag[1], i + 1);
++      step<<<G, 256, 0, s[1]>>>(a[0], a[1], n);
++      signal_flag<<<1, 1, 0, s[1]>>>(flag[0], i + 1);
++    }
++    sub = us(t0);
++    for (int d = 0; d < 2; d++) { CK(hipSetDevice(d)); CK(hipStreamSynchronize(s[d])); }
++    tot = us(t0);
++    printf("flag+read     %7.2f   (host submit %.2f)\n", tot / (2 * N), sub / (2 * N));
++    // check: after N round trips a0 = 2N - 1 + its start, a1 = 2N + ... (only that both moved)
++    float h0 = 0, h1 = 0;
++    CK(hipSetDevice(0)); CK(hipMemcpy(&h0, a[0], 4, hipMemcpyDeviceToHost));
++    CK(hipMemcpy(&h1, a[1], 4, hipMemcpyDeviceToHost));
++    printf("  values after: a0 %.0f a1 %.0f (a1 = a0 + 1 when the hand-offs were ordered)\n", h0, h1);
++    // the kernels alone, one die, one stream (what a hand-off adds to)
++    t0 = C::now();
++    for (int i = 0; i < 2 * N; i++) step<<<G, 256, 0, s[0]>>>(b[0], a[0], n);
++    CK(hipStreamSynchronize(s[0]));
++    printf("kernel alone  %7.2f\n", us(t0) / (2 * N));
++  }
++  return 0;
++}
++
++// ---------------------------------------------------------------- proj: wo_a + wo_b, 40 layers
++// The runtime's sequence (rt.cpp attn_out_split) on random weights: o's codes [M][32768] ->
++// wo_a (8 groups of 1024 rows x 4096) -> quant -> wo_b (5120 x 8192). Full: all on die 0. Split:
++// die 1 takes groups 4-7 and rows 2560.., with the same puts and gets. Checks the split's out
++// against the full one bit for bit.
++static uint8_t* rnd_codes(size_t n, unsigned seed) {
++  std::vector<uint8_t> h(n);
++  for (size_t i = 0; i < n; i++) { seed = seed * 1664525u + 1013904223u; uint8_t c = seed >> 24; if ((c & 0x7f) >= 0x70) c &= 0x8f; h[i] = c; }
++  uint8_t* d; CK(hipMalloc(&d, n)); CK(hipMemcpy(d, h.data(), n, hipMemcpyHostToDevice)); return d;
++}
++static uint8_t* rnd_scales(size_t n) {  // e8m0 around 2^-6
++  std::vector<uint8_t> h(n, 121);
++  uint8_t* d; CK(hipMalloc(&d, n)); CK(hipMemcpy(d, h.data(), n, hipMemcpyHostToDevice)); return d;
++}
++int proj_main() {
++  const int L = 40, Kt = 32768, G = 8, R = 1024, Ka = Kt / G, Na = G * R, E = 5120, ho = Kt / 2, ha = Na / 2, hb = E / 2, MX = 8;
++  CK(hipSetDevice(0)); (void)hipDeviceEnablePeerAccess(1, 0); (void)hipGetLastError();
++  CK(hipSetDevice(1)); (void)hipDeviceEnablePeerAccess(0, 0); (void)hipGetLastError();
++  struct W { uint8_t *aq, *as, *bq, *bs; };
++  std::vector<W> w0(L), w1(L);
++  CK(hipSetDevice(0));
++  for (int l = 0; l < L; l++) w0[l] = {rnd_codes((size_t)Na * Ka, 1 + l), rnd_scales((size_t)Na / 32 * Ka / 32), rnd_codes((size_t)E * Na, 100 + l), rnd_scales((size_t)E / 32 * Na / 32)};
++  CK(hipSetDevice(1));
++  for (int l = 0; l < L; l++) {
++    w1[l] = {nullptr, nullptr, nullptr, nullptr};
++    CK(hipMalloc(&w1[l].aq, (size_t)ha * Ka)); CK(hipMalloc(&w1[l].as, (size_t)ha / 32 * Ka / 32));
++    CK(hipMalloc(&w1[l].bq, (size_t)hb * Na)); CK(hipMalloc(&w1[l].bs, (size_t)hb / 32 * Na / 32));
++    CK(hipMemcpyPeer(w1[l].aq, 1, w0[l].aq + (size_t)ha * Ka, 0, (size_t)ha * Ka));
++    CK(hipMemcpyPeer(w1[l].as, 1, w0[l].as + (size_t)ha / 32 * Ka / 32, 0, (size_t)ha / 32 * Ka / 32));
++    CK(hipMemcpyPeer(w1[l].bq, 1, w0[l].bq + (size_t)hb * Na, 0, (size_t)hb * Na));
++    CK(hipMemcpyPeer(w1[l].bs, 1, w0[l].bs + (size_t)hb / 32 * Na / 32, 0, (size_t)hb / 32 * Na / 32));
++  }
++  auto codes = [&](int n, bool fine, uint8_t*& q, float*& sc) {
++    if (fine) { CK(hipExtMallocWithFlags((void**)&q, (size_t)MX * n, hipDeviceMallocFinegrained)); CK(hipExtMallocWithFlags((void**)&sc, (size_t)MX * n / 32 * 4, hipDeviceMallocFinegrained)); }
++    else { CK(hipMalloc(&q, (size_t)MX * n)); CK(hipMalloc(&sc, (size_t)MX * n / 32 * 4)); }
++  };
++  auto iflag = [&](bool fine) { int* f; if (fine) CK(hipExtMallocWithFlags((void**)&f, 64, hipDeviceMallocFinegrained)); else CK(hipMalloc(&f, 64)); CK(hipMemset(f, 0, 64)); return f; };
++  // die 0
++  CK(hipSetDevice(0));
++  hipStream_t s0; CK(hipStreamCreateWithFlags(&s0, hipStreamNonBlocking));
++  float *o0, *oa0, *out0, *ref0; uint8_t* Bq; float* Bs;
++  CK(hipMalloc(&o0, (size_t)MX * Kt * 4)); CK(hipMalloc(&oa0, (size_t)MX * Na * 4)); CK(hipMalloc(&out0, (size_t)MX * E * 4)); CK(hipMalloc(&ref0, (size_t)MX * E * 4));
++  CK(hipMemset(oa0, 0, (size_t)MX * Na * 4));
++  { std::vector<float> h((size_t)MX * Kt); unsigned sd = 7; for (auto& v : h) { sd = sd * 1664525u + 1013904223u; v = ((int)(sd >> 9) - (1 << 22)) / float(1 << 22); }
++    CK(hipMemcpy(o0, h.data(), h.size() * 4, hipMemcpyHostToDevice)); }
++  codes(Kt, false, Bq, Bs);
++  uint8_t *mah_q; float* mah_s; codes(ha, true, mah_q, mah_s);
++  float* mb_out; CK(hipExtMallocWithFlags((void**)&mb_out, (size_t)MX * hb * 4, hipDeviceMallocFinegrained));
++  int *flag_h = iflag(true), *done_h = iflag(false);
++  // die 1
++  CK(hipSetDevice(1));
++  hipStream_t s1; CK(hipStreamCreateWithFlags(&s1, hipStreamNonBlocking));
++  uint8_t *ocq, *acq, *mo_q, *ma_q; float *ocs, *acs, *mo_s, *ma_s, *oa1, *out1;
++  codes(ho, false, ocq, ocs); codes(Na, false, acq, acs); codes(ho, true, mo_q, mo_s); codes(ha, true, ma_q, ma_s);
++  CK(hipMalloc(&oa1, (size_t)MX * Na * 4)); CK(hipMemset(oa1, 0, (size_t)MX * Na * 4)); CK(hipMalloc(&out1, (size_t)MX * hb * 4));
++  int *flag_d = iflag(true), *done_d = iflag(false);
++  int to_d = 0, to_h = 0;
++  CK(hipSetDevice(0));
++  auto reg = [](const void* src, int sl, void* dst, int dl, int wd) { return XRegion{src, sl, dst, dl, wd}; };
++  const XRegion none{nullptr, 0, nullptr, 0, 0};
++  const int lpr_a = fp8_lpr(Na, Ka), lpr_b = fp8_lpr(E, Na);
++  auto full = [&](int l, int M, float* out) {
++    fp8_quant_act(o0, Bq, Bs, M, Kt, s0);
++    fp8_gemv(w0[l].aq, w0[l].as, Na, Ka, R, Fp8Act{Bq, Bs}, M, oa0, s0);
++    fp8_quant_act(oa0, Bq, Bs, M, Na, s0);
++    fp8_gemv(w0[l].bq, w0[l].bs, E, Na, E, Fp8Act{Bq, Bs}, M, out, s0);
++  };
++  auto split = [&](int l, int M, float* out) {
++    fp8_quant_act(o0, Bq, Bs, M, Kt, s0);
++    const int v_o = ++to_d, v_a = ++to_d, v_ah = ++to_h, v_out = ++to_h;
++    k_xdie_put(reg(Bq + ho, Kt, mo_q, ho, ho), reg(Bs + ho / 32, Kt / 32 * 4, mo_s, ho / 32 * 4, ho / 32 * 4), M, done_h, flag_d, v_o, s0);
++    CK(hipSetDevice(1));
++    k_xdie_get(reg(mo_q, ho, ocq, ho, ho), reg(mo_s, ho / 32 * 4, ocs, ho / 32 * 4, ho / 32 * 4), M, flag_d, v_o, s1);
++    fp8_gemv_ld(w1[l].aq, w1[l].as, ha, Ka, R, Fp8Act{ocq, ocs}, M, oa1 + ha, s1, lpr_a, 0, ho, Na);
++    fp8_quant_act(oa1, acq, acs, M, Na, s1);
++    k_xdie_put(reg(acq + ha, Na, mah_q, ha, ha), reg(acs + ha / 32, Na / 32 * 4, mah_s, ha / 32 * 4, ha / 32 * 4), M, done_d, flag_h, v_ah, s1);
++    k_xdie_get(reg(ma_q, ha, acq, Na, ha), reg(ma_s, ha / 32 * 4, acs, Na / 32 * 4, ha / 32 * 4), M, flag_d, v_a, s1);
++    fp8_gemv_ld(w1[l].bq, w1[l].bs, hb, Na, hb, Fp8Act{acq, acs}, M, out1, s1, lpr_b, 0, Na, hb);
++    k_xdie_put(reg(out1, hb * 4, mb_out, hb * 4, hb * 4), none, M, done_d, flag_h, v_out, s1);
++    CK(hipSetDevice(0));
++    fp8_gemv_ld(w0[l].aq, w0[l].as, ha, Ka, R, Fp8Act{Bq, Bs}, M, oa0, s0, lpr_a, 0, Kt, Na);
++    fp8_quant_act(oa0, Bq, Bs, M, Na, s0);
++    k_xdie_put(reg(Bq, Na, ma_q, ha, ha), reg(Bs, Na / 32 * 4, ma_s, ha / 32 * 4, ha / 32 * 4), M, done_h, flag_d, v_a, s0);
++    k_xdie_get(reg(mah_q, ha, Bq + ha, Na, ha), reg(mah_s, ha / 32 * 4, Bs + ha / 32, Na / 32 * 4, ha / 32 * 4), M, flag_h, v_ah, s0);
++    fp8_gemv_ld(w0[l].bq, w0[l].bs, hb, Na, hb, Fp8Act{Bq, Bs}, M, out, s0, lpr_b, 0, Na, E);
++    k_xdie_get(reg(mb_out, hb * 4, out + hb, E * 4, hb * 4), none, M, flag_h, v_out, s0);
++  };
++  using C = std::chrono::steady_clock;
++  printf("# bench-xdie proj: wo_a + wo_b x %d layers, us per layer (device time of a pass / %d)\n", L, L);
++  printf("M   full    split   saved   bits   host submit: full split\n");
++  for (int M = 1; M <= 8; M++) {
++    double best[2] = {1e9, 1e9}, sub[2] = {1e9, 1e9};
++    for (int rep = 0; rep < 6; rep++)
++      for (int v = 0; v < 2; v++) {
++        CK(hipDeviceSynchronize());
++        auto t0 = C::now();
++        for (int l = 0; l < L; l++) { if (v) split(l, M, out0); else full(l, M, ref0); }
++        sub[v] = std::min(sub[v], std::chrono::duration<double, std::micro>(C::now() - t0).count() / L);
++        CK(hipStreamSynchronize(s0));
++        best[v] = std::min(best[v], std::chrono::duration<double, std::micro>(C::now() - t0).count() / L);
++      }
++    std::vector<float> a((size_t)M * E), b((size_t)M * E);
++    CK(hipMemcpy(a.data(), ref0, a.size() * 4, hipMemcpyDeviceToHost)); CK(hipMemcpy(b.data(), out0, b.size() * 4, hipMemcpyDeviceToHost));
++    printf("%d %7.1f %7.1f %7.1f   %s   %7.1f %7.1f\n", M, best[0], best[1], best[0] - best[1], memcmp(a.data(), b.data(), a.size() * 4) ? "DIFFER" : "same", sub[0], sub[1]);
++  }
++  return 0;
++}
+diff --git a/ds-completion/hip/fp8_gemv.h b/ds-completion/hip/fp8_gemv.h
+index 07df698..9d59b4c 100644
+--- a/ds-completion/hip/fp8_gemv.h
++++ b/ds-completion/hip/fp8_gemv.h
+@@ -37,6 +37,11 @@ void fp8_gemv_cfg(const uint8_t* w, const uint8_t* w_scale, int N, int K, int ro
+                   float* y, hipStream_t stream, int lpr, int r);
+ void fp8_gemv(const uint8_t* w, const uint8_t* w_scale, int N, int K, int rows_per_group, Fp8Act x, int M,
+               float* y, hipStream_t stream);
++// A slice of a matrix's rows (README step 76: attention's output over dies 0-1): ldx is the input's
++// row length in codes (its scales: ldx / 32), ldy the output's (0: K * groups and N). lpr must be
++// the whole matrix's (fp8_lpr of its N), so every row gets the same bits as in a whole call.
++void fp8_gemv_ld(const uint8_t* w, const uint8_t* w_scale, int N, int K, int rows_per_group, Fp8Act x, int M,
++                 float* y, hipStream_t stream, int lpr, int r, int ldx, int ldy);
+ // the lanes-per-row split fp8_gemv uses for a shape (it fixes every output's order of additions)
+ int fp8_lpr(int N, int K);
+ // Any number of inputs (prompt chunks): tiles of mt inputs, r rows per lane group; every result
+diff --git a/ds-completion/hip/fp8_gemv.hip b/ds-completion/hip/fp8_gemv.hip
+index 6b5aecd..f9d3ba8 100644
+--- a/ds-completion/hip/fp8_gemv.hip
++++ b/ds-completion/hip/fp8_gemv.hip
+@@ -77,7 +77,8 @@ __device__ inline float dot2(uint32_t a, uint32_t b, float c) {
+ template <int LPR, int R, int M>
+ __global__ void __launch_bounds__(256) fp8_gemv_kernel(const uint8_t* __restrict__ w, const uint8_t* __restrict__ ws,
+                                                        int N, int K, int rpg, const uint8_t* __restrict__ xq,
+-                                                       const float* __restrict__ xs, float* __restrict__ y) {
++                                                       const float* __restrict__ xs, float* __restrict__ y, int ldx,
++                                                       int ldy) {
+   const int lane = threadIdx.x & 63;
+   const int set = (blockIdx.x * (blockDim.x >> 6) + (threadIdx.x >> 6)) * (64 / LPR) + lane / LPR;
+   const int row0 = set * R;
+@@ -85,7 +86,7 @@ __global__ void __launch_bounds__(256) fp8_gemv_kernel(const uint8_t* __restrict
+   const bool live = row0 < N;
+   const int r0 = live ? row0 : N - R;  // dead lanes still take part in the shuffles
+   const int g = r0 / rpg;              // R rows never straddle a group (rpg is a multiple of 32)
+-  const int K_total = K * (N / rpg);
++  const int K_total = ldx;  // a row of the input (K * groups unless a slice of the rows runs)
+   const uint8_t* wr = w + (size_t)r0 * K;
+   const uint8_t* sr = ws + (size_t)(r0 / 32) * (K / 32);
+   const uint8_t* xr = xq + (size_t)g * K;
+@@ -125,7 +126,7 @@ __global__ void __launch_bounds__(256) fp8_gemv_kernel(const uint8_t* __restrict
+       float v = acc[i][m];
+ #pragma unroll
+       for (int o = LPR / 2; o > 0; o >>= 1) v += __shfl_xor(v, o, 64);
+-      if (live && l == 0) y[(size_t)m * N + row0 + i] = v;
++      if (live && l == 0) y[(size_t)m * ldy + row0 + i] = v;
+     }
+ }
+ 
+@@ -141,7 +142,8 @@ __global__ void __launch_bounds__(256) fp8_gemv_kernel(const uint8_t* __restrict
+ template <int LPR, int R, int M>
+ __global__ void __launch_bounds__(256) fp8_gemv_lds_kernel(const uint8_t* __restrict__ w, const uint8_t* __restrict__ ws,
+                                                            int N, int K, int rpg, const uint8_t* __restrict__ xq,
+-                                                           const float* __restrict__ xs, float* __restrict__ y) {
++                                                           const float* __restrict__ xs, float* __restrict__ y, int ldx,
++                                                           int ldy) {
+   constexpr int KT = 1024, ROWS = 4 * (64 / LPR) * R;
+   __shared__ uint4 xlo[M][KT / 16], xhi[M][KT / 16];  // fp16 of codes 0-7 / 8-15 of each 16
+   __shared__ float st[M][KT / 32];
+@@ -152,7 +154,7 @@ __global__ void __launch_bounds__(256) fp8_gemv_lds_kernel(const uint8_t* __rest
+   const bool live = row0 < N;
+   const int r0 = live ? row0 : N - R;  // dead lanes still load tiles and take part in the shuffles
+   const int g = (blockIdx.x * ROWS) / rpg;
+-  const int K_total = K * (N / rpg);
++  const int K_total = ldx;
+   const uint8_t* wr = w + (size_t)r0 * K;
+   const uint8_t* sr = ws + (size_t)(r0 / 32) * (K / 32);
+   const uint8_t* xg = xq + (size_t)g * K;
+@@ -206,7 +208,7 @@ __global__ void __launch_bounds__(256) fp8_gemv_lds_kernel(const uint8_t* __rest
+       float v = acc[i][m];
+ #pragma unroll
+       for (int o = LPR / 2; o > 0; o >>= 1) v += __shfl_xor(v, o, 64);
+-      if (live && l == 0) y[(size_t)m * N + row0 + i] = v;
++      if (live && l == 0) y[(size_t)m * ldy + row0 + i] = v;
+     }
+ }
+ 
+@@ -293,21 +295,21 @@ __global__ void __launch_bounds__(256, MINB) fp8_gemm_kernel(const uint8_t* __re
+ 
+ template <int LPR, int R>
+ static void launch_r(const uint8_t* w, const uint8_t* ws, int N, int K, int rpg, Fp8Act x, int M, float* y,
+-                     hipStream_t stream) {
++                     hipStream_t stream, int ldx, int ldy) {
+   const int rows_per_block = 4 * (64 / LPR) * R;  // 4 waves
+   const dim3 grid((N + rows_per_block - 1) / rows_per_block), block(256);
+   // several inputs, rows split over 8 or 16 lanes: through shared memory (results/bench-fp8-multi.txt;
+   // with 64 lanes per row a block covers too few rows to pay for decoding the tiles)
+   if (M >= 2 && LPR <= 16 && rpg % rows_per_block == 0) {
+     switch (M) {
+-#define CASE(m) case m: fp8_gemv_lds_kernel<LPR, R, m><<<grid, block, 0, stream>>>(w, ws, N, K, rpg, x.q, x.s, y); break;
++#define CASE(m) case m: fp8_gemv_lds_kernel<LPR, R, m><<<grid, block, 0, stream>>>(w, ws, N, K, rpg, x.q, x.s, y, ldx, ldy); break;
+       CASE(2) CASE(3) CASE(4) CASE(5) CASE(6) CASE(7) CASE(8)
+ #undef CASE
+     }
+     return;
+   }
+   switch (M) {
+-#define CASE(m) case m: fp8_gemv_kernel<LPR, R, m><<<grid, block, 0, stream>>>(w, ws, N, K, rpg, x.q, x.s, y); break;
++#define CASE(m) case m: fp8_gemv_kernel<LPR, R, m><<<grid, block, 0, stream>>>(w, ws, N, K, rpg, x.q, x.s, y, ldx, ldy); break;
+     CASE(1) CASE(2) CASE(3) CASE(4) CASE(5) CASE(6) CASE(7) CASE(8)
+ #undef CASE
+   }
+@@ -315,12 +317,12 @@ static void launch_r(const uint8_t* w, const uint8_t* ws, int N, int K, int rpg,
+ 
+ template <int LPR>
+ static void launch_lpr(const uint8_t* w, const uint8_t* ws, int N, int K, int rpg, Fp8Act x, int M, float* y,
+-                       hipStream_t stream, int r) {
++                       hipStream_t stream, int r, int ldx, int ldy) {
+   switch (r) {
+-    case 8: launch_r<LPR, 8>(w, ws, N, K, rpg, x, M, y, stream); break;
+-    case 4: launch_r<LPR, 4>(w, ws, N, K, rpg, x, M, y, stream); break;
+-    case 2: launch_r<LPR, 2>(w, ws, N, K, rpg, x, M, y, stream); break;
+-    default: launch_r<LPR, 1>(w, ws, N, K, rpg, x, M, y, stream); break;
++    case 8: launch_r<LPR, 8>(w, ws, N, K, rpg, x, M, y, stream, ldx, ldy); break;
++    case 4: launch_r<LPR, 4>(w, ws, N, K, rpg, x, M, y, stream, ldx, ldy); break;
++    case 2: launch_r<LPR, 2>(w, ws, N, K, rpg, x, M, y, stream, ldx, ldy); break;
++    default: launch_r<LPR, 1>(w, ws, N, K, rpg, x, M, y, stream, ldx, ldy); break;
+   }
+ }
+ 
+@@ -384,19 +386,26 @@ void fp8_gemm(const uint8_t* w, const uint8_t* w_scale, int N, int K, int rows_p
+   fp8_gemm_cfg(w, w_scale, N, K, rows_per_group, x, M, y, stream, 0, 0, 0);
+ }
+ 
+-void fp8_gemv_cfg(const uint8_t* w, const uint8_t* w_scale, int N, int K, int rows_per_group, Fp8Act x, int M,
+-                  float* y, hipStream_t stream, int lpr, int r) {
++void fp8_gemv_ld(const uint8_t* w, const uint8_t* w_scale, int N, int K, int rows_per_group, Fp8Act x, int M,
++                 float* y, hipStream_t stream, int lpr, int r, int ldx, int ldy) {
+   if (lpr == 0) lpr = fp8_lpr(N, K);
++  if (ldx == 0) ldx = K * (N / rows_per_group);
++  if (ldy == 0) ldy = N;
+   // several inputs: two rows per lane group; four for 8 inputs over 64-lane rows (sweeps at M = 6, 8)
+   if (r == 0) r = M == 1 ? 1 : (M >= 8 && lpr == 64 && N >= 2048) ? 4 : 2;
+   switch (lpr) {
+-    case 64: launch_lpr<64>(w, w_scale, N, K, rows_per_group, x, M, y, stream, r); break;
+-    case 32: launch_lpr<32>(w, w_scale, N, K, rows_per_group, x, M, y, stream, r); break;
+-    case 16: launch_lpr<16>(w, w_scale, N, K, rows_per_group, x, M, y, stream, r); break;
+-    default: launch_lpr<8>(w, w_scale, N, K, rows_per_group, x, M, y, stream, r); break;
++    case 64: launch_lpr<64>(w, w_scale, N, K, rows_per_group, x, M, y, stream, r, ldx, ldy); break;
++    case 32: launch_lpr<32>(w, w_scale, N, K, rows_per_group, x, M, y, stream, r, ldx, ldy); break;
++    case 16: launch_lpr<16>(w, w_scale, N, K, rows_per_group, x, M, y, stream, r, ldx, ldy); break;
++    default: launch_lpr<8>(w, w_scale, N, K, rows_per_group, x, M, y, stream, r, ldx, ldy); break;
+   }
+ }
+ 
++void fp8_gemv_cfg(const uint8_t* w, const uint8_t* w_scale, int N, int K, int rows_per_group, Fp8Act x, int M,
++                  float* y, hipStream_t stream, int lpr, int r) {
++  fp8_gemv_ld(w, w_scale, N, K, rows_per_group, x, M, y, stream, lpr, r, 0, 0);
++}
++
+ void fp8_gemv(const uint8_t* w, const uint8_t* w_scale, int N, int K, int rows_per_group, Fp8Act x, int M, float* y,
+               hipStream_t stream) {
+   fp8_gemv_cfg(w, w_scale, N, K, rows_per_group, x, M, y, stream, 0, 0);
+diff --git a/ds-completion/hip/kernels.h b/ds-completion/hip/kernels.h
+index eac2de3..03879ee 100644
+--- a/ds-completion/hip/kernels.h
++++ b/ds-completion/hip/kernels.h
+@@ -155,3 +155,14 @@ void k_repeat(const float* x, int n, int copies, float* y, hipStream_t s);
+ void k_argmax(const float* x, int n, int* out, hipStream_t s);
+ // y[k] = bf16 table[*row][k] as f32, k < dim (a row picked by a device-side index)
+ void k_gather_bf16_row(const uint16_t* table, const int* row, int dim, float* y, hipStream_t s);
++
++// ---- hand-offs between the XGMI pair's dies (README step 76) ----
++// A mailbox is fine-grained memory on the receiving die (coherent across the pair); a flag is
++// one int in fine-grained memory on the receiving die, raised to increasing values.
++struct XRegion { const void* src; int src_ld; void* dst; int dst_ld; int width; };  // bytes, multiples of 16
++// put: copy up to two regions of `rows` rows (src local, dst the peer's mailbox), then, once every
++// block is done (done: a local counter, 0 between puts), raise the peer's flag to v
++void k_xdie_put(XRegion a, XRegion b, int rows, int* done, int* peer_flag, int v, hipStream_t s);
++// get: wait until the local flag reaches v, then copy up to two regions (src the local mailbox,
++// dst ordinary local memory)
++void k_xdie_get(XRegion a, XRegion b, int rows, const int* flag, int v, hipStream_t s);
+diff --git a/ds-completion/hip/kernels.hip b/ds-completion/hip/kernels.hip
+index ff1062f..b34651d 100644
+--- a/ds-completion/hip/kernels.hip
++++ b/ds-completion/hip/kernels.hip
+@@ -1053,3 +1053,47 @@ __global__ void gather_bf16_row_kernel(const uint16_t* table, const int* row, in
+ void k_gather_bf16_row(const uint16_t* table, const int* row, int dim, float* y, hipStream_t s) {
+   gather_bf16_row_kernel<<<cdiv(dim, 256), 256, 0, s>>>(table, row, dim, y);
+ }
++
++// ---------------------------------------------------------------- hand-offs between dies (step 76)
++
++// 16-byte word i of a region pair (widths, strides and addresses are multiples of 16 bytes):
++// region a's rows, then region b's
++__device__ inline void xdie_copy(const XRegion& a, const XRegion& b, int rows) {
++  const int wa = a.width / 16, wb = b.width / 16, na = rows * wa, n = na + rows * wb;
++  for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += gridDim.x * blockDim.x) {
++    const XRegion& r = i < na ? a : b;
++    const int j = i < na ? i : i - na, w = i < na ? wa : wb, row = j / w, c = j % w;
++    ((uint4*)((char*)r.dst + (size_t)row * r.dst_ld))[c] = ((const uint4*)((const char*)r.src + (size_t)row * r.src_ld))[c];
++  }
++}
++
++__global__ void xdie_put_kernel(XRegion a, XRegion b, int rows, int* done, int* peer_flag, int v) {
++  xdie_copy(a, b, rows);
++  __threadfence_system();  // this block's stores reach the peer before it counts itself done
++  __syncthreads();
++  if (threadIdx.x == 0 && atomicAdd(done, 1) == (int)gridDim.x - 1) {
++    *done = 0;
++    __threadfence_system();
++    __hip_atomic_store(peer_flag, v, __ATOMIC_RELEASE, __HIP_MEMORY_SCOPE_SYSTEM);
++  }
++}
++
++__global__ void xdie_get_kernel(XRegion a, XRegion b, int rows, const int* flag, int v) {
++  if (threadIdx.x == 0)
++    while (__hip_atomic_load(flag, __ATOMIC_ACQUIRE, __HIP_MEMORY_SCOPE_SYSTEM) < v) __builtin_amdgcn_s_sleep(1);
++  __syncthreads();
++  xdie_copy(a, b, rows);
++}
++
++static int xdie_blocks(const XRegion& a, const XRegion& b, int rows) {
++  const int n = rows * (a.width + b.width) / 16;
++  return std::max(1, std::min(64, (n + 255) / 256));
++}
++
++void k_xdie_put(XRegion a, XRegion b, int rows, int* done, int* peer_flag, int v, hipStream_t s) {
++  xdie_put_kernel<<<xdie_blocks(a, b, rows), 256, 0, s>>>(a, b, rows, done, peer_flag, v);
++}
++
++void k_xdie_get(XRegion a, XRegion b, int rows, const int* flag, int v, hipStream_t s) {
++  xdie_get_kernel<<<xdie_blocks(a, b, rows), 256, 0, s>>>(a, b, rows, flag, v);
++}
+diff --git a/ds-completion/hip/rt.cpp b/ds-completion/hip/rt.cpp
+index 32e9d11..7c282ed 100644
+--- a/ds-completion/hip/rt.cpp
++++ b/ds-completion/hip/rt.cpp
+@@ -7,6 +7,7 @@
+ 
+ #include "gguf.h"
+ 
++#include <array>
+ #include <fcntl.h>
+ #include <sys/mman.h>
+ #include <sys/stat.h>
+@@ -301,6 +302,8 @@ Runtime::Runtime(const Model& model, RtOptions options, const std::string& fp8_p
+   mem_mark("sequence state: window, compressed KV, indexer keys (--max-ctx)");
+   if (!opt.dspark.empty()) dspark.reset(new DSpark(*this, opt.dspark));  // before the pools take the rest
+   mem_mark("draft (DSpark)");
++  if (opt.attn_split) setup_xdie();  // before the pools take the partner's free memory
++  mem_mark("attention output split (partner die)");
+   setup_experts();
+ 
+   // the per-token buffers, for addressing half a chunk (set_half); h / h2 are kept per half
+@@ -849,6 +852,16 @@ Runtime::~Runtime() {
+             b.calls, b.pairs, b.experts, b.by_tokens[0], b.by_tokens[1], b.by_tokens[2], b.by_tokens[3], b.by_tokens[4], b.prep,
+             b.inputs, b.gate_up, b.act, b.down, b.sum, (b.prep + b.inputs + b.gate_up + b.act + b.down + b.sum) / b.pairs);
+   }
++  if (xd.dev >= 0) {
++    (void)hipSetDevice(xd.dev);
++    (void)hipStreamSynchronize(xd.st);
++    (void)hipStreamDestroy(xd.st);
++    for (void* p : {xd.wbuf, (void*)xd.oc.q, (void*)xd.oc.s, (void*)xd.ac.q, (void*)xd.ac.s, (void*)xd.oa, (void*)xd.out, (void*)xd.mb_o.q,
++                    (void*)xd.mb_o.s, (void*)xd.mb_a.q, (void*)xd.mb_a.s, (void*)xd.flag_dev, (void*)xd.done_dev})
++      (void)hipFree(p);
++    (void)hipSetDevice(opt.gpu);
++    for (void* p : {(void*)xd.mb_a_home.q, (void*)xd.mb_a_home.s, (void*)xd.mb_out, (void*)xd.flag_home, (void*)xd.done_home}) (void)hipFree(p);
++  }
+   dspark.reset();
+   cpu_moe.reset();
+   for (Die& d : dies) {
+@@ -1230,11 +1243,142 @@ void Runtime::attention(int L, const float* xin, float* out, int M) {
+   pos = p0;
+   mark("attn.out");
+   quant(o, NH * HD, B, M);
++  if (xd.dev >= 0 && M <= 8) {  // README step 76: over the XGMI pair
++    attn_out_split(L, out, M);
++    return;
++  }
+   gemv8(w.out_a, B, oa, hp.o_lora, M);  // block-diagonal over the 8 groups
+   quant(oa, hp.o_groups * hp.o_lora, B, M);
+   gemv8(w.out_b, B, out, 0, M);
+ }
+ 
++// ------------------------------------------------------------------ attention's output over the XGMI pair
++
++// the partner die: its rows of wo_a and wo_b, its buffers, the mailboxes and flags (README step 76)
++void Runtime::setup_xdie() {
++  const int home = opt.gpu, dev = home ^ 1;  // the XGMI pairs are 0-1 and 2-3
++  int can = 0;
++  CHECK(hipDeviceCanAccessPeer(&can, home, dev));
++  if (!can) throw std::runtime_error("--attn-split: no peer access between GPU " + std::to_string(home) + " and " + std::to_string(dev));
++  const int NH = hp.n_head, HD = hp.head_dim, G = hp.o_groups, R = hp.o_lora, E = hp.n_embd;
++  const int Kt = NH * HD, Na = G * R;
++  if (G % 2 || R % 32 || E % 64 || (Kt / 2) % 32) throw std::runtime_error("--attn-split: shapes do not halve");
++  auto peer_on = [](int from, int to) {
++    CHECK(hipSetDevice(from));
++    const hipError_t e = hipDeviceEnablePeerAccess(to, 0);
++    if (e != hipSuccess && e != hipErrorPeerAccessAlreadyEnabled) CHECK(e);
++    (void)hipGetLastError();
++  };
++  peer_on(home, dev);
++  peer_on(dev, home);
++  xd.dev = dev;
++  // the partner's rows: wo_a rows Na/2.. (groups G/2..), wo_b rows E/2.., copied from the home die
++  size_t wbytes = 0;
++  std::vector<std::array<size_t, 4>> offs(hp.n_layer);
++  for (int L = 0; L < hp.n_layer; L++) {
++    const Fp8W &a = W[L].out_a, &b = W[L].out_b;
++    if (a.N != Na || a.K != Kt / G || b.N != E || b.K != Na) throw std::runtime_error("--attn-split: unexpected wo_a / wo_b shape");
++    const size_t sizes[4] = {(size_t)a.N / 2 * a.K, (size_t)a.N / 2 / 32 * (a.K / 32), (size_t)b.N / 2 * b.K, (size_t)b.N / 2 / 32 * (b.K / 32)};
++    for (int i = 0; i < 4; i++) { offs[L][i] = wbytes; wbytes += (sizes[i] + 255) / 256 * 256; }
++  }
++  CHECK(hipSetDevice(dev));
++  CHECK(hipStreamCreateWithFlags(&xd.st, hipStreamNonBlocking));
++  CHECK(hipMalloc(&xd.wbuf, wbytes));
++  uint8_t* wb = (uint8_t*)xd.wbuf;
++  xd.out_a.resize(hp.n_layer);
++  xd.out_b.resize(hp.n_layer);
++  for (int L = 0; L < hp.n_layer; L++) {
++    const Fp8W &a = W[L].out_a, &b = W[L].out_b;
++    Fp8W pa{wb + offs[L][0], wb + offs[L][1], a.N / 2, a.K}, pb{wb + offs[L][2], wb + offs[L][3], b.N / 2, b.K};
++    CHECK(hipMemcpyPeer(pa.q, dev, a.q + (size_t)(a.N / 2) * a.K, home, (size_t)pa.N * pa.K));
++    CHECK(hipMemcpyPeer(pa.s, dev, a.s + (size_t)(a.N / 2 / 32) * (a.K / 32), home, (size_t)pa.N / 32 * (pa.K / 32)));
++    CHECK(hipMemcpyPeer(pb.q, dev, b.q + (size_t)(b.N / 2) * b.K, home, (size_t)pb.N * pb.K));
++    CHECK(hipMemcpyPeer(pb.s, dev, b.s + (size_t)(b.N / 2 / 32) * (b.K / 32), home, (size_t)pb.N / 32 * (pb.K / 32)));
++    xd.out_a[L] = pa;
++    xd.out_b[L] = pb;
++  }
++  const int Mx = 8;
++  auto codes = [&](int n, bool fine) {
++    Codes c;
++    if (fine) {
++      CHECK(hipExtMallocWithFlags((void**)&c.q, (size_t)Mx * n, hipDeviceMallocFinegrained));
++      CHECK(hipExtMallocWithFlags((void**)&c.s, (size_t)Mx * n / 32 * 4, hipDeviceMallocFinegrained));
++    } else {
++      CHECK(hipMalloc(&c.q, (size_t)Mx * n));
++      CHECK(hipMalloc(&c.s, (size_t)Mx * n / 32 * 4));
++    }
++    return c;
++  };
++  auto flag = [&]() {
++    int* f;
++    CHECK(hipExtMallocWithFlags((void**)&f, 64, hipDeviceMallocFinegrained));
++    CHECK(hipMemset(f, 0, 64));
++    return f;
++  };
++  auto counter = [&]() {
++    int* f;
++    CHECK(hipMalloc(&f, 64));
++    CHECK(hipMemset(f, 0, 64));
++    return f;
++  };
++  xd.oc = codes(Kt / 2, false);
++  xd.ac = codes(Na, false);
++  CHECK(hipMalloc(&xd.oa, (size_t)Mx * Na * 4));
++  CHECK(hipMemset(xd.oa, 0, (size_t)Mx * Na * 4));  // its first half is never written; quantized as 0
++  CHECK(hipMalloc(&xd.out, (size_t)Mx * E / 2 * 4));
++  xd.mb_o = codes(Kt / 2, true);
++  xd.mb_a = codes(Na / 2, true);
++  xd.flag_dev = flag();
++  xd.done_dev = counter();
++  CHECK(hipSetDevice(home));
++  xd.mb_a_home = codes(Na / 2, true);
++  CHECK(hipExtMallocWithFlags((void**)&xd.mb_out, (size_t)Mx * E / 2 * 4, hipDeviceMallocFinegrained));
++  xd.flag_home = flag();
++  xd.done_home = counter();
++  CHECK(hipMemset(oa, 0, (size_t)Mx * Na * 4));  // likewise its second half on the home die
++  CHECK(hipDeviceSynchronize());
++  fprintf(stderr, "# runtime: attention output over GPUs %d-%d: %s of wo_a / wo_b rows on GPU %d\n", home, dev,
++          fmt_bytes((double)wbytes).c_str(), dev);
++}
++
++// wo_a and wo_b for M <= 8 tokens over the pair; o's codes are in B. Every row of oa and out is
++// computed as in the one-die path (the same kernel, lanes per row of the whole matrix), so the
++// result is bit-identical. The flag values are fixed up front: the partner's chain is queued
++// first, then the home die's.
++void Runtime::attn_out_split(int L, float* out, int M) {
++  const LayerW& w = W[L];
++  const int NH = hp.n_head, HD = hp.head_dim, G = hp.o_groups, R = hp.o_lora, E = hp.n_embd;
++  const int Kt = NH * HD, Ka = Kt / G, Na = G * R, ho = Kt / 2, ha = Na / 2, hb = E / 2;
++  const int lpr_a = fp8_lpr(Na, Ka), lpr_b = fp8_lpr(E, Na);
++  auto reg = [](const void* src, int src_ld, void* dst, int dst_ld, int width) { return XRegion{src, src_ld, dst, dst_ld, width}; };
++  const XRegion none{nullptr, 0, nullptr, 0, 0};
++  const int v_o = ++xd.to_dev, v_a = ++xd.to_dev;      // home -> partner: o's codes, home's half of oa's
++  const int v_ah = ++xd.to_home, v_out = ++xd.to_home;  // partner -> home: its half of oa's, its rows of out
++  // home: o's codes for groups G/2.. to the partner
++  k_xdie_put(reg(B.q + ho, Kt, xd.mb_o.q, ho, ho), reg(B.s + ho / 32, Kt / 32 * 4, xd.mb_o.s, ho / 32 * 4, ho / 32 * 4), M,
++             xd.done_home, xd.flag_dev, v_o, s);
++  // partner: wo_a groups G/2.., its half of oa's codes to home, then home's half, then wo_b rows E/2..
++  CHECK(hipSetDevice(xd.dev));
++  k_xdie_get(reg(xd.mb_o.q, ho, xd.oc.q, ho, ho), reg(xd.mb_o.s, ho / 32 * 4, xd.oc.s, ho / 32 * 4, ho / 32 * 4), M, xd.flag_dev, v_o, xd.st);
++  fp8_gemv_ld(xd.out_a[L].q, xd.out_a[L].s, ha, Ka, R, Fp8Act{xd.oc.q, xd.oc.s}, M, xd.oa + ha, xd.st, lpr_a, 0, ho, Na);
++  fp8_quant_act(xd.oa, xd.ac.q, xd.ac.s, M, Na, xd.st);
++  k_xdie_put(reg(xd.ac.q + ha, Na, xd.mb_a_home.q, ha, ha), reg(xd.ac.s + ha / 32, Na / 32 * 4, xd.mb_a_home.s, ha / 32 * 4, ha / 32 * 4), M,
++             xd.done_dev, xd.flag_home, v_ah, xd.st);
++  k_xdie_get(reg(xd.mb_a.q, ha, xd.ac.q, Na, ha), reg(xd.mb_a.s, ha / 32 * 4, xd.ac.s, Na / 32 * 4, ha / 32 * 4), M, xd.flag_dev, v_a, xd.st);
++  fp8_gemv_ld(xd.out_b[L].q, xd.out_b[L].s, hb, Na, hb, Fp8Act{xd.ac.q, xd.ac.s}, M, xd.out, xd.st, lpr_b, 0, Na, hb);
++  k_xdie_put(reg(xd.out, hb * 4, xd.mb_out, hb * 4, hb * 4), none, M, xd.done_dev, xd.flag_home, v_out, xd.st);
++  CHECK(hipSetDevice(opt.gpu));
++  // home: wo_a groups 0..G/2, its half of oa's codes to the partner, the partner's half in, wo_b
++  // rows 0..E/2, the partner's rows in
++  fp8_gemv_ld(w.out_a.q, w.out_a.s, ha, Ka, R, Fp8Act{B.q, B.s}, M, oa, s, lpr_a, 0, Kt, Na);
++  quant(oa, Na, B, M);  // columns ha.. (stale) are replaced by the partner's codes below
++  k_xdie_put(reg(B.q, Na, xd.mb_a.q, ha, ha), reg(B.s, Na / 32 * 4, xd.mb_a.s, ha / 32 * 4, ha / 32 * 4), M, xd.done_home, xd.flag_dev, v_a, s);
++  k_xdie_get(reg(xd.mb_a_home.q, ha, B.q + ha, Na, ha), reg(xd.mb_a_home.s, ha / 32 * 4, B.s + ha / 32, Na / 32 * 4, ha / 32 * 4), M,
++             xd.flag_home, v_ah, s);
++  fp8_gemv_ld(w.out_b.q, w.out_b.s, hb, Na, hb, Fp8Act{B.q, B.s}, M, out, s, lpr_b, 0, Na, E);
++  k_xdie_get(reg(xd.mb_out, hb * 4, out + hb, E * 4, hb * 4), none, M, xd.flag_home, v_out, s);
++}
++
+ // one token (chunk index t, at position pos): the compressor and the indexer; K and topk: the
+ // compressed keys its attention takes (README step 67: the rope, the ring and the attention run
+ // for the whole chunk in attention())
+diff --git a/ds-completion/hip/rt.h b/ds-completion/hip/rt.h
+index 7d165d8..92ff24b 100644
+--- a/ds-completion/hip/rt.h
++++ b/ds-completion/hip/rt.h
+@@ -59,6 +59,9 @@ struct RtOptions {
+   int cache_period = 16, cache_window = 256, cache_min = 2;
+   bool cache_wait = false;  // wait at startup until the cache can load (expert_cache.h)
+   bool load_pinned = false;  // the load test's path: pinned staging instead of direct (expert_loader.h)
++  // attention's output projections over the XGMI pair (README step 76): the partner die (1 for
++  // home 0) computes wo_a's second half of groups and wo_b's second half of rows, M <= 8 only
++  bool attn_split = false;
+ };
+ 
+ class Runtime {
+@@ -218,6 +221,26 @@ class Runtime {
+   // GEMVs read, B the intermediate ones (qr, o, oa, act, engram rows); up to 32768 values each
+   struct Codes { uint8_t* q; float* s; };
+   Codes A, B;
++  // attention's output over the XGMI pair (README step 76, --attn-split): o's codes go to the
++  // partner, which runs wo_a's groups G/2.. and wo_b's rows E/2..; the dies swap their halves of
++  // oa's codes in between and the partner's rows come back. Hand-offs: k_xdie_put / k_xdie_get
++  // (a flag in fine-grained memory per receiving die, no events, no host)
++  struct XDie {
++    int dev = -1;
++    hipStream_t st = nullptr;
++    std::vector<Fp8W> out_a, out_b;  // per layer: the partner's rows of each, on dev
++    void* wbuf = nullptr;
++    Codes oc{}, ac{};                 // on dev: o's codes for groups G/2.. [8][NH*HD/2]; oa's [8][G*R]
++    float *oa = nullptr, *out = nullptr;  // on dev: [8][G*R], [8][E/2]
++    // mailboxes, fine-grained: on dev (o's codes, home's half of oa's), on home (dev's half, dev's rows)
++    Codes mb_o{}, mb_a{}, mb_a_home{};
++    float* mb_out = nullptr;
++    int *flag_dev = nullptr, *flag_home = nullptr;  // fine-grained, on dev / on home
++    int *done_dev = nullptr, *done_home = nullptr;  // the puts' block counters, on dev / on home
++    int to_dev = 0, to_home = 0;                     // flag values raised so far
++  } xd;
++  void setup_xdie();
++  void attn_out_split(int L, float* out, int M);
+   float *cmp_kvn, *cmp_sc, *lat, *ik, *iq, *iw, *iscore, *gate, *up, *act, *router_logits, *rw, *erows, *ekv;
+   int *rids, *iota;
+   std::map<int, int*> topk_buf;  // [index source] its selection buffers, [kChunk][idx_topk]
+diff --git a/ds-completion/src/ds_completion.cpp b/ds-completion/src/ds_completion.cpp
+index 60ec835..6e20c97 100644
+--- a/ds-completion/src/ds_completion.cpp
++++ b/ds-completion/src/ds_completion.cpp
+@@ -2,7 +2,7 @@
+ //
+ //   ds-completion -m <model-00001-of-000NN.gguf> (-p "prompt" | -f prompt.txt) [--chat | --think [--effort 75]] [-n 128]
+ //                 [-t 16] [--no-quant] [--max-ctx 4096]
+-//                 [--rt <dense-fp8.gguf> [--gpu D] [--placement file [--moe-dies 0,1,2,3] [--load-test R [--load-pinned]] [--cache-loads R [--cache-period N] [--cache-window N] [--cache-min N] [--cache-wait]]] [--canon] [--profile]]
++//                 [--rt <dense-fp8.gguf> [--gpu D] [--placement file [--moe-dies 0,1,2,3] [--load-test R [--load-pinned]] [--cache-loads R [--cache-period N] [--cache-window N] [--cache-min N] [--cache-wait]]] [--canon] [--attn-split] [--profile]]
+ //
+ // The prompt is fed as one chunk (prefill), then one token per step, greedy. --chat wraps the
+ // prompt as one user turn in the model's chat format without thinking, --think with it (the
+@@ -65,6 +65,7 @@ int main(int argc, char** argv) {
+   [[maybe_unused]] double load_test = -1;
+   [[maybe_unused]] bool load_pinned = false;
+   [[maybe_unused]] bool canon = false;
++  [[maybe_unused]] bool attn_split = false;
+   bool max_ctx_set = false;
+   [[maybe_unused]] int prefill_chunk = 512;
+   [[maybe_unused]] bool prefill_overlap = true;
+@@ -107,6 +108,7 @@ int main(int argc, char** argv) {
+     else if (a == "--load-test") load_test = atof(next());  // runtime: background loads to spare slots (rt.h)
+     else if (a == "--load-pinned") load_pinned = true;
+     else if (a == "--canon") canon = true;  // runtime: placement-invariant expert numerics (rt.h)
++    else if (a == "--attn-split") attn_split = true;  // runtime: attention's output over the XGMI pair (rt.h)
+     else if (a == "--cache-loads") cache_loads = atof(next());  // runtime: adaptive expert cache (expert_cache.h)
+     else if (a == "--cache-period") cache_period = atoi(next());
+     else if (a == "--cache-window") cache_window = atoi(next());
+@@ -127,7 +129,7 @@ int main(int argc, char** argv) {
+     else { fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
+   }
+   if (model_path.empty() || prompt.empty()) {
+-    fprintf(stderr, "usage: ds-completion -m <model.gguf> (-p \"prompt\" | -f prompt.txt) [--chat|--think [--effort 1-100|low|high|max]] [-n N] [-t N] [--no-quant] [--max-ctx N] [--rt dense-fp8.gguf [--gpu D] [--placement file [--moe-dies 0,1,2,3] [--load-test R [--load-pinned]] [--cache-loads R [--cache-period N] [--cache-window N] [--cache-min N] [--cache-wait]]] [--canon] [--profile]]\n");
++    fprintf(stderr, "usage: ds-completion -m <model.gguf> (-p \"prompt\" | -f prompt.txt) [--chat|--think [--effort 1-100|low|high|max]] [-n N] [-t N] [--no-quant] [--max-ctx N] [--rt dense-fp8.gguf [--gpu D] [--placement file [--moe-dies 0,1,2,3] [--load-test R [--load-pinned]] [--cache-loads R [--cache-period N] [--cache-window N] [--cache-min N] [--cache-wait]]] [--canon] [--attn-split] [--profile]]\n");
+     return 2;
+   }
+ 
+@@ -190,6 +192,7 @@ int main(int argc, char** argv) {
+     ro.load_test = load_test;
+     ro.load_pinned = load_pinned;
+     ro.canon = canon;
++    ro.attn_split = attn_split;
+     ro.prefill_chunk = prefill_chunk;
+     ro.prefill_overlap = prefill_overlap;
+     ro.cache_loads = cache_loads;

@@ -485,6 +485,12 @@ Each rule is followed by where it mattered most.
   show the kernel needs a different work split; stopped there rather than restructure it.
   Step 65 had already measured part of this (and concluded "not done"); the README's earlier
   steps should be searched for a kernel before an option built on it is ranked first.
+- **Price the hand-off and the memory, not just the work moved (README step 76).** The split
+  of attention's output was estimated from the work it moves (~140 us per layer at 6 tokens) less
+  a hand-off cost measured alone. The real sequence cost ~55 us per layer of extra kernels and
+  waits, and the moved weights took 1.41 GiB from die 1's expert cache, which the estimate left
+  out; together they left +0.6%. A bench of the whole sequence on the real shapes (bits checked)
+  showed the first in minutes; the trace's CPU expert pairs showed the second.
 
 ## 4. Predictions against outcomes
 
@@ -511,6 +517,7 @@ Estimates were made before measuring wherever possible; this is how they fared.
 | launches / host gaps (65) | <= 7-12% | <= 3-5% | the host is usually 0.1-1 ms ahead; it waits on its own work, not on launches |
 | the next layers' experts from this layer's router input (63) | "demonstrated for some models" (the person) | 72% one layer ahead, 4-7x the use counts for CPU experts | the residual stream changes little per layer |
 | a GPU prefetch from those guesses (64) | ~15% if a third of misses covered | 2.5% simulated (bound 10%) | loads need 3-4 layers' notice, where guesses are weaker; wrong loads take link time |
+| attention's output over dies 0-1 (76) | ~3.5% of a code step | +0.6% | ~55 us per layer of hand-off kernels and waits; the weights on die 1 cost its cache 1.41 GiB (CPU expert pairs +4.4%) |
 | expert parallelism for the draft (62) | proposed by the person | ~1 ms at best | experts are 16% of the draft; the head (27%) was the item |
 | the head through LDS (62) | ~1-2% | +1.4% held-out, +2% on code | as estimated from the per-part times |
 | the draft in fp8 frees ~4 GB (60 -> 61) | ~210 slots | nothing | its dense part was already fp8 and its experts mxfp4: assumed from the file's name |

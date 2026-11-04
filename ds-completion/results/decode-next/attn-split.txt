@@ -1,0 +1,72 @@
+# Attention's output projections over the XGMI pair 0-1 (README step 76, tried, not kept)
+# measured on 4b1a52c + results/decode-next/attn-split.patch (reverted; `git apply` it to rerun); sclk 6; 2026-11-03
+# commands: bin-hip/bench-xdie 6 / 2 (hand-offs), bin-hip/bench-xdie proj (wo_a + wo_b), the A/B runs and
+# the trace below with the flags of scripts/spec-measure.sh (--spec --canon --cache-loads 800 --cache-period 8 --cache-wait) +/- --attn-split
+
+What the patch does (--attn-split, M <= 8 only): die 1 holds wo_a's groups 4-7 and wo_b's rows
+2560-5119 (1.41 GiB for the 40 layers); per layer die 0 sends o's codes for heads 32-63, both dies run
+their half of wo_a, swap their halves of oa's codes, run their half of wo_b, and die 1's rows come
+back. Hand-offs: a put kernel copies into a fine-grained mailbox on the other die and raises a flag
+there; a get kernel spins on the local flag and copies into ordinary memory. No events, no host.
+The GEMV takes row strides (ldx, ldy) and the whole matrix's lanes per row, so every row has the
+one-die bits.
+
+## 1. One hand-off between dies 0 and 1 (ping-pong, payload T x 5120 fp32, us per hand-off)
+# bench-xdie: T=6 (120 KB per hand-off), 2000 round trips, per hand-off in us
+same-die        17.83   (host submit 17.83)
+event+read      17.32   (host submit 17.31)
+event+copy      21.90   (host submit 21.85)
+flag+read        7.74   (host submit 6.34)
+  values after: a0 17999 a1 18000 (a1 = a0 + 1 when the hand-offs were ordered)
+# bench-xdie: T=2 (40 KB per hand-off), 2000 round trips, per hand-off in us
+same-die        15.40   (host submit 15.39)
+event+read      19.95   (host submit 19.94)
+event+copy      18.76   (host submit 18.76)
+flag+read        6.21   (host submit 3.86)
+  values after: a0 17999 a1 18000 (a1 = a0 + 1 when the hand-offs were ordered)
+(The first run of this bench, ~12 min after the overnight run, gave flag+read 19.2 us at T=6 and
+10.0 at T=2 and event+read 28.7 / 19.4; every later run gives the numbers above. Not explained.)
+Events cost the host ~15-20 us per hand-off (two streams on one die are no cheaper); a flag
+polled by a waiting kernel costs the GPU ~6-8 us and the host ~3.
+
+## 2. wo_a + wo_b, 40 layers, random fp8 weights of the real shapes (us per layer)
+# bench-xdie proj: wo_a + wo_b x 40 layers, us per layer (device time of a pass / 40)
+M   full    split   saved   bits   host submit: full split
+1   153.0   126.5    26.4   same       8.6    24.1
+2   172.8   146.1    26.7   same       7.9    23.9
+3   234.7   183.8    50.9   same       8.0    23.9
+4   316.9   247.7    69.3   same       8.3    23.7
+5   351.8   256.6    95.2   same       7.8    24.0
+6   267.9   190.1    77.8   same       7.7    23.3
+7   290.6   201.3    89.3   same       8.4    24.1
+8   408.4   278.5   129.9   same       8.1    24.1
+Bits: the split's output equals the one-die output at every M. The split's fixed cost is
+~55 us per layer (M = 6: 268 -> 190 where halving would give ~134): die 0 runs 4 more kernels
+(two puts, two gets) and waits twice for die 1, which cannot start before o's codes arrive.
+The host is not the limit (24 us of submits per layer against 126-278 us of GPU time).
+
+## 3. End to end (one prompt per run, alternating; every output equal to the reference)
+
+prompt        without        with --attn-split
+cpp-matrix    43.40  43.20   43.61  43.52  (43.34 first run; 43.67 with 16-byte copies)
+tcp-udp       32.11  32.17   32.32  32.38
+
++0.5-0.7%.
+
+## 4. Where the gain went (cpp-matrix trace, ms per verify step, step 74's trace vs --attn-split)
+
+attn.out                12.15 -> 10.07   (-2.08)
+CPU experts             42.09 -> 43.57   (+1.48)
+expert slots on die 1   33.20 -> 31.69 GB used (the weight halves came out of the cache)
+CPU expert pairs        9606 -> 10029 over the run (+4.4%)
+
+The die 0 copy of wo_a / wo_b stays whole (prompt chunks use it), so the halves on die 1 are
+extra memory, and the expert cache pays for it.
+
+## Conclusion
+
+Exact, but +0.6%: not kept. What would change it: drop die 0's copy of the halves (the prompt's
+fp8_gemm would need the strides and the split too) to get the cache back (est. +1.5-2%), or split
+the attention core and q_b by heads as well, so die 1 makes its own heads' o and the largest
+transfer goes away (needs the KV caches, the indexer's picks and speculation's rollback on die 1;
+est. +4-6%, a larger change).
