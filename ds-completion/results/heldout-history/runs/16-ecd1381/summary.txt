@@ -1,0 +1,11 @@
+# scripts/heldout-rerun.sh: step 16, commit ecd1381 (worktree build), sclk 6, 2026-11-03T14:28:56-05:00
+# ds-completion -m $M -p <prompt> --chat -n 300 --rt $F8 --placement $PL
+# name: generation t/s, tokens per step, drafts accepted per step, output vs results/cache-test/plain-canon-static
+tcp-udp: 20.98 t/s, - tokens per step, - accepted, output DIFFERS
+py-lru: 19.97 t/s, - tokens per step, - accepted, output DIFFERS
+cpp-matrix: 19.50 t/s, - tokens per step, - accepted, output DIFFERS
+sql-report: 19.00 t/s, - tokens per step, - accepted, output DIFFERS
+geometry: 20.43 t/s, - tokens per step, - accepted, output DIFFERS
+zh-travel: 17.55 t/s, - tokens per step, - accepted, output DIFFERS
+ja-email: 16.80 t/s, - tokens per step, - accepted, output DIFFERS
+summary-json: 20.14 t/s, - tokens per step, - accepted, output DIFFERS

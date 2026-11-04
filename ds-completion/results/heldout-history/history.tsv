@@ -1,29 +1,29 @@
 # scripts/heldout_history.py: held-out generation t/s per point (8 prompts, 300 tokens, sclk 6); empty: pending
 step	commit	mean	tcp-udp	py-lru	cpp-matrix	sql-report	geometry	zh-travel	ja-email	summary-json	data
-6	69474c2										
-7	8cd730f										
-14	a8648ad										
-16	ecd1381										
-17	d58e6c1										
-18	964d515										
-20	329d7d2										
-21a	2146bf6										
-21b	7f982af										
-22	a1ea344										
-23	7eb7acd										
-24	e697e5a										
-25	cc9820f										
-31	51bce5d										
-32	5ec0716										
-45	0d234ea										
-48	0ec746d	27.96	26.22	29.25	30.60	28.52	33.53	23.67	24.98	26.89	results/spec-measure-sclk6
-50	cb73732	30.29	27.75	31.82	34.96	30.19	36.32	25.62	27.46	28.18	results/spec-measure-sclk6-cacheloads800cacheperiod8
-53	da19a4f	31.69	28.94	33.54	36.46	32.15	38.06	26.50	28.38	29.49	results/spec-measure-sclk6-cacheloads800cacheperiod8-router
-57	d1a2de8	32.03	28.86	33.98	36.90	32.43	38.63	26.74	28.77	29.95	results/spec-measure-sclk6-cacheloads800cacheperiod8-nx1
-62	2650c04	32.48	29.14	33.95	37.62	33.11	39.28	26.97	29.21	30.56	results/spec-measure-sclk6-cacheloads800cacheperiod8-head
-66	6e7126a	32.58	29.44	34.09	38.07	32.85	38.96	27.15	29.57	30.51	results/spec-measure-sclk6-cacheloads800cacheperiod8-ring
+6	69474c2	10.06	9.85	10.05	10.11	9.97	10.15	10.12	10.15	10.06	results/heldout-history/runs/6-69474c2
+7	8cd730f	12.32	12.28	12.28	12.24	12.34	12.52	12.28	12.34	12.30	results/heldout-history/runs/7-8cd730f
+14	a8648ad	18.08	19.65	18.76	18.17	17.84	19.06	16.60	15.91	18.62	results/heldout-history/runs/14-a8648ad
+16	ecd1381	19.30	20.98	19.97	19.50	19.00	20.43	17.55	16.80	20.14	results/heldout-history/runs/16-ecd1381
+17	d58e6c1	19.43	21.26	20.36	19.56	19.11	20.56	17.45	16.80	20.32	results/heldout-history/runs/17-d58e6c1
+18	964d515	19.36	21.19	20.26	19.52	19.13	20.44	17.38	16.74	20.21	results/heldout-history/runs/18-964d515
+20	329d7d2	11.44	9.54	12.14	13.94	12.79	14.03	7.49	6.88	14.68	results/heldout-history/runs/20-329d7d2
+21a	2146bf6	12.31	10.68	13.27	14.81	13.78	15.22	7.87	7.16	15.72	results/heldout-history/runs/21a-2146bf6
+21b	7f982af	15.23	13.26	16.45	18.65	16.80	18.88	9.58	8.72	19.49	results/heldout-history/runs/21b-7f982af
+22	a1ea344	16.55	15.45	17.72	19.89	18.11	19.83	10.30	9.80	21.30	results/heldout-history/runs/22-a1ea344
+23	7eb7acd	17.81	16.75	19.03	21.29	19.45	21.39	10.95	10.40	23.23	results/heldout-history/runs/23-7eb7acd
+24	e697e5a	18.61	17.58	19.92	22.19	20.32	22.58	11.43	10.76	24.14	results/heldout-history/runs/24-e697e5a
+25	cc9820f	22.92	23.42	23.85	25.12	22.66	25.86	18.27	17.62	26.52	results/heldout-history/runs/25-cc9820f
+31	51bce5d	20.70	21.27	23.01	22.78	20.75	23.89	15.68	15.63	22.57	results/heldout-history/runs/31-51bce5d
+32	5ec0716	29.02	27.22	29.98	31.80	29.40	33.57	24.23	26.60	29.37	results/heldout-history/runs/32-5ec0716
+45	0d234ea	27.55	25.96	28.70	30.59	28.22	32.52	22.98	24.36	27.08	results/heldout-history/runs/45-0d234ea
+48	0ec746d	28.07	26.43	29.22	30.93	28.22	33.35	23.69	25.30	27.41	results/heldout-history/runs/48-0ec746d
+50	cb73732	30.42	27.76	31.94	34.89	30.49	36.51	25.78	27.46	28.52	results/heldout-history/runs/50-cb73732
+53	da19a4f	31.73	28.84	33.52	36.50	32.04	38.18	26.37	28.32	30.09	results/heldout-history/runs/53-da19a4f
+57	d1a2de8	32.03	28.84	34.00	36.80	32.54	38.55	26.69	28.88	29.91	results/heldout-history/runs/57-d1a2de8
+62	2650c04	32.61	29.50	34.25	37.52	33.10	39.33	27.36	29.44	30.39	results/heldout-history/runs/62-2650c04
+66	6e7126a	32.80	29.56	34.34	37.90	33.45	39.72	27.42	29.53	30.52	results/heldout-history/runs/66-6e7126a
 67	d7bbabd*	33.25	29.95	34.42	38.82	33.92	40.49	27.64	29.61	31.16	results/spec-measure-sclk6-cacheloads800cacheperiod8-phases
-68	d7bbabd	34.33	30.71	35.87	41.37	35.13	41.65	27.99	30.27	31.68	results/spec-measure-sclk6-cacheloads800cacheperiod8-attnbatch
-71	52959ce	34.98	31.83	36.58	41.91	35.27	42.10	28.62	31.05	32.48	results/spec-measure-sclk6-cacheloads800cacheperiod8-handoff
-73	8138b22	35.09	31.39	36.84	42.05	35.65	42.42	28.82	31.22	32.33	results/spec-measure-sclk6-cacheloads800cacheperiod8-engram
-74	c4bd99b	35.94	32.26	37.21	43.14	36.88	43.69	29.44	31.61	33.26	results/spec-measure-sclk6-cacheloads800cacheperiod8-indexer
+68	d7bbabd	34.46	30.81	35.92	41.60	35.15	41.96	27.81	30.42	32.04	results/heldout-history/runs/68-d7bbabd
+71	52959ce	34.80	31.08	36.60	41.88	35.36	41.74	28.44	31.08	32.20	results/heldout-history/runs/71-52959ce
+73	8138b22	35.08	31.58	36.68	41.96	35.43	42.46	28.61	31.23	32.72	results/heldout-history/runs/73-8138b22
+74	c4bd99b	35.94	32.32	37.08	43.09	36.86	43.88	29.41	31.85	33.04	results/heldout-history/runs/74-c4bd99b

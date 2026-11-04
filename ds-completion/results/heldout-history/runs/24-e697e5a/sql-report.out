@@ -1,0 +1,28 @@
+# SQL Query: Customer Total Orders in 2024 with Ranking
+
+```sql
+SELECT
+    c.id,
+    c.name,
+    COALESCE(SUM(o.amount), 0) AS total_order_amount_2024,
+    RANK() OVER (ORDER BY COALESCE(SUM(o.amount), 0) DESC) AS customer_rank
+FROM customers c
+LEFT JOIN orders o
+    ON o.customer_id = c.id
+    AND o.created_at >= '2024-01-01'
+    AND o.created_at <  '2025-01-01'
+GROUP BY c.id, c.name
+ORDER BY customer_rank;
+```
+
+## Explanation
+
+**Key design decisions:**
+
+1. **`LEFT JOIN` from `customers`** — ensures every customer appears in the result, even those with no orders in 2024 (they'll show `0`).
+
+2. **Date filter in the `ON` clause, not `WHERE`** — this is critical. If you put the date filter in `WHERE`, the `LEFT JOIN` effectively becomes an `INNER JOIN`, dropping customers with no 2024 orders.
+
+3. **`COALESCE(SUM(o.amount), 0)`** — converts `NULL` (from customers with no matching orders) to `0`.
+
+4. **`RANK() OVER (ORDER BY ... DESC)`** — ranks customers by total amount, highest first. Ties

@@ -463,6 +463,10 @@ Each rule is followed by where it mattered most.
   8 and other settings, so they are rerun from their commits rather than adjusted by a guessed
   factor. Each old commit was built and smoke-tested first, so the overnight run does not fail
   at its first point.
+  The run took ~5 h, not ~12, and its reruns of steps 48-74 matched their original numbers within
+  0.2 t/s, which is what lets the old and new points share one chart. A small status script
+  (progress, a stall warning) made the long run checkable at a glance; its first version
+  counted the summary's header line as a prompt, caught when it printed "9 of 8".
 - **Ask what the time is made of before moving it (README step 73).** The engram fetch looked
   like ~2 ms of host work to hide behind layer 0; moved there it gained only 0.3 ms, because it
   was longer than layer 0's front and delayed that layer's CPU experts. A fault counter showed

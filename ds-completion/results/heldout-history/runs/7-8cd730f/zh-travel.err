@@ -1,0 +1,5 @@
+# GPU 0 (AMD Radeon Graphics): 921 dense tensors, 14.45 GiB
+# runtime: 6.37 GiB of fp8 weights on GPU 0
+# loaded in 4.8 s; prompt 17 tokens; fake-quant off; 16 threads
+# graph splits per step: 854
+# prompt: 17 tokens in 2.16 s = 7.86 t/s; generation: 300 tokens in 24.42 s = 12.28 t/s

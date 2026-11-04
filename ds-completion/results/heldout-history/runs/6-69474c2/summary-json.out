@@ -1,0 +1,14 @@
+```json
+{
+  "topic": "City council approval of a new budget",
+  "key_points": [
+    "The city council approved a new budget on Monday after a long debate.",
+    "Public transport funding increases by 15 percent.",
+    "Library funding increases by 5 percent.",
+    "The road maintenance budget is cut.",
+    "Several residents supported the transport investment.",
+    "Local business owners worried fewer road repairs would hurt deliveries."
+  ],
+  "sentiment": "mixed"
+}
+```

@@ -2665,6 +2665,31 @@ night's conditions (~12 h in all). The chart's per-prompt grid shows each step's
 change from the previous point: a column of one color is a change every prompt feels; a column
 split by row is speculation-specific (the top rows accept the most drafts per step).
 
+**The run (2026-11-03, 14:10-19:00, ~4 h 50 min instead of the ~12 h estimated):** all 26 points
+complete (25 run, step 67 from its source), no failures. Mean t/s on the 8 prompts:
+
+| step | 6 | 7 | 14 | 16 | 17 | 18 | 20 | 21a | 21b | 22 | 23 | 24 | 25 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| t/s | 10.06 | 12.32 | 18.08 | 19.30 | 19.43 | 19.36 | 11.44 | 12.31 | 15.23 | 16.55 | 17.81 | 18.61 | 22.92 |
+
+| step | 31 | 32 | 45 | 48 | 50 | 53 | 57 | 62 | 66 | 67 | 68 | 71 | 73 | 74 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| t/s | 20.70 | 29.02 | 27.55 | 28.07 | 30.42 | 31.73 | 32.03 | 32.61 | 32.80 | 33.25 | 34.46 | 34.80 | 35.08 | 35.94 |
+
+- **Three dips, each recovered:** step 20 (speculation verified token by token, by design: a
+  step paid for rejected tokens and a 26 ms draft; the chat prompts, which accept fewest drafts,
+  fell most, ja-email 16.7 -> 6.9) recovered through 21a-25 to 22.9, above step 18; step 31
+  (`--canon`, the GPU's experts computing the CPU's bits) cost 10% and bought exact outputs
+  whatever the placement, repaid by the cache in step 32; step 45 (-O3) sits on top of the
+  extra engram copy per token since step 37, found and fixed in step 48.
+- **Repeatable:** steps 48-74 rerun agree with their measurements of the time within 0.2 t/s
+  (71: 34.98 then, 34.80 now; 74: 35.94 both).
+- **Outputs:** every point from 31 on gives the reference output on all 8 prompts; points 6-25
+  differ from it by design (the fast numerics of their time).
+- `scripts/heldout-status.sh` (added after the start): points complete, the current point and
+  its prompts, the age of the last write (`STALLED?` after 15 min), the means so far; run it
+  under `watch -n 60`.
+
 ## Step 73: the engram fetch off the critical path; traces regenerated
 
 At the start of every forward the host fetched the engram rows of layers 1 and 14 (hash the

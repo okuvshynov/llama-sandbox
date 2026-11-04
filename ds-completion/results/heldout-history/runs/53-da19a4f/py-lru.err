@@ -1,0 +1,14 @@
+# mapped 289 GB of CPU experts in 1.1 s
+# runtime: 6.37 GiB of fp8 weights on GPU 0
+# runtime: 1.75 GiB of small weights on GPU 0
+# dspark: 3 layers, block 5, 128 experts top-3, targets 37 38 39; 7.7 GB on GPU 0
+# runtime: 6105 experts (39.7% of the loaded layers' pairs) on GPUs (0: 810, 1: 1765, 2: 1765, 3: 1765), loaded in 4.9 s
+# expert loader: 288.8 GB of expert tensors registered in 103.1 s (direct loads from now)
+# expert cache: up to 800 loads/s, rebalance every 8 tokens over the last 256
+# loaded in 115.5 s; prompt 27 tokens; fake-quant on; 16 threads
+
+# drafts verified per step: 0: 6 1: 23 2: 20 3: 14 4: 7 5: 20 (of the 0s, 3 plain steps without a draft); verify cost fit 48.1 + 14.9 n ms
+# speculative: 90 verify steps, 2.32 drafts accepted per step, 3.33 tokens per step; draft 11.6 ms per step
+# routed experts: 85.6% on GPUs (71903 of 84000)
+# prompt: 27 tokens in 0.73 s = 36.85 t/s; generation: 300 tokens in 8.95 s = 33.52 t/s
+# expert cache: 33 rebalances, 3706 swaps planned, 3706 loads started, 3706 published

@@ -38,7 +38,8 @@ from that reference by design ("DIFFERS" is expected there); the token counts ar
 ## Running it
 
     scripts/heldout-rerun.sh --build rerun optional measured   # worktrees + builds, ~20 s each (done 2026-11-03)
-    scripts/heldout-rerun.sh rerun optional measured           # the overnight run, ~12 h at sclk 6
+    scripts/heldout-rerun.sh rerun optional measured           # the overnight run, ~4 h 50 min at sclk 6
+    watch -n 60 scripts/heldout-status.sh                      # progress; STALLED? after 15 min without a write
     python3 scripts/heldout_history.py                         # history.tsv, history.html
 
 The overnight run includes steps 48-71 again (`measured`, ~4 h; step 67 is skipped, not being a
@@ -53,3 +54,10 @@ Checked before the first night (2026-11-03): every point's commit builds (23 wor
 each), and a 24-token smoke run of three of them works with today's model files: 69474c2 (the
 oldest runtime, 10.0 t/s), 329d7d2 (the first speculation build) and 5ec0716 (the first cache
 build).
+
+## The run (2026-11-03)
+
+14:10-19:00, all 26 points, no failures (`~/heldout-rerun.log`). Means: 6: 10.06, 7: 12.32,
+14: 18.08, 18: 19.36, 20: 11.44, 25: 22.92, 31: 20.70, 32: 29.02, 45: 27.55, 48: 28.07,
+50: 30.42, 74: 35.94 t/s (all points in `history.tsv` and README step 72). Steps 48-74 agree
+with their earlier measurements within 0.2 t/s. Every point from 31 on gives "output same".

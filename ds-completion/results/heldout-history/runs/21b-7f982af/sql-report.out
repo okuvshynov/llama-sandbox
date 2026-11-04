@@ -1,0 +1,26 @@
+# SQL Query: Customer 2024 Totals with Ranking
+
+```sql
+SELECT
+    c.id,
+    c.name,
+    COALESCE(SUM(o.amount), 0) AS total_amount_2024,
+    RANK() OVER (ORDER BY COALESCE(SUM(o.amount), 0) DESC) AS customer_rank
+FROM customers c
+LEFT JOIN orders o
+    ON o.customer_id = c.id
+    AND o.created_at >= '2024-01-01'
+    AND o.created_at <  '2025-01-01'
+GROUP BY c.id, c.name
+ORDER BY customer_rank;
+```
+
+## Key design decisions
+
+| Choice | Why |
+|---|---|
+| **`LEFT JOIN`** | Includes customers with **zero** 2024 orders (they still get a rank). |
+| **Date filter in `ON` clause** | Filters orders *before* aggregation, so non-2024 orders don't affect the sum — and customers with no 2024 orders still appear. |
+| **`COALESCE(..., 0)`** | Turns `NULL` (no matching orders) into `0`. |
+| **`RANK()`** | Ties share the same rank, and the next rank skips (e.g., 1, 1, 3). Use `DENSE_RANK()` if you want 1, 1, 2 instead. |
+| **

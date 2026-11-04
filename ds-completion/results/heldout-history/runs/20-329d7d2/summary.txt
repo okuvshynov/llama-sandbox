@@ -1,0 +1,11 @@
+# scripts/heldout-rerun.sh: step 20, commit 329d7d2 (worktree build), sclk 6, 2026-11-03T14:44:57-05:00
+# ds-completion -m $M -p <prompt> --chat -n 300 --rt $F8 --placement $PL --dspark $D --spec
+# name: generation t/s, tokens per step, drafts accepted per step, output vs results/cache-test/plain-canon-static
+tcp-udp: 9.54 t/s, 2.97 tokens per step, 2.01 accepted, output DIFFERS
+py-lru: 12.14 t/s, 3.95 tokens per step, 2.97 accepted, output DIFFERS
+cpp-matrix: 13.94 t/s, 4.76 tokens per step, 3.83 accepted, output DIFFERS
+sql-report: 12.79 t/s, 4.29 tokens per step, 3.33 accepted, output DIFFERS
+geometry: 14.03 t/s, 4.51 tokens per step, 3.52 accepted, output DIFFERS
+zh-travel: 7.49 t/s, 2.70 tokens per step, 1.73 accepted, output DIFFERS
+ja-email: 6.88 t/s, 2.63 tokens per step, 1.64 accepted, output DIFFERS
+summary-json: 14.68 t/s, 4.78 tokens per step, 3.83 accepted, output DIFFERS
