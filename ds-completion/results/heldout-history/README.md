@@ -27,8 +27,8 @@ are rerun at sclk 6 from their commits, each with the flags it had then:
 | | 31 | `--canon` before the cache (its cost) |
 
 Not in the history: step 4 (ggml's GPU path, removed in step 11; it needs the fork's HIP build),
-steps without a decode change (prompt work 37-44, studies, docs), step 67's state is not a commit
-(measured before its commit, which also holds stage 3), and 56, 59, 64, 65, 75, 76 (tried, not kept).
+steps without a decode change (prompt work 37-44, studies such as 77, docs), step 67's state is not a commit
+(measured before its commit, which also holds stage 3), and 56, 59, 64, 65, 75, 76, 78 (tried, not kept).
 
 Outputs: points from 32 on run `--canon` and must equal `results/cache-test/plain-canon-static`
 ("output same"). Earlier points use the fast numerics of their time, so their outputs differ
