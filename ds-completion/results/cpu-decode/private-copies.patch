@@ -1,0 +1,148 @@
+diff --git a/ds-completion/src/cpu_moe.cpp b/ds-completion/src/cpu_moe.cpp
+index 838227f..0d93511 100644
+--- a/ds-completion/src/cpu_moe.cpp
++++ b/ds-completion/src/cpu_moe.cpp
+@@ -87,6 +87,15 @@ inline void dot_range(const uint8_t* base, size_t row_bytes, int nb, const float
+ 
+ const uint8_t* expert_base(const ggml_tensor* t, int e) { return (const uint8_t*)t->data + (size_t)e * t->nb[2]; }
+ 
++// what canon_dot_rows(_multi) reads of an activation (not x9): dst sized for the same n
++inline void copy_act(const CanonAct& src, CanonAct& dst) {
++  memcpy(dst.d0.data(), src.d0.data(), src.d0.size());
++  memcpy(dst.d1.data(), src.d1.data(), src.d1.size());
++  memcpy(dst.d2.data(), src.d2.data(), src.d2.size());
++  memcpy(dst.corr.data(), src.corr.data(), src.corr.size() * 4);
++  memcpy(dst.c.data(), src.c.data(), src.c.size() * 4);
++}
++
+ // One row against nx inputs (lane order; prompt chunks: several tokens routed to one expert):
+ // each block decoded once, then every input takes exactly dot_rows' steps, so each y[j][r] is
+ // bit-identical to a one-input call.
+@@ -189,11 +198,24 @@ void CpuMoeKernel::forward_canon(const CpuExperts& L, const float* x, const int*
+   }
+ }
+ 
++// per thread: nx input activations (E values) and na activations (F values), sized
++void CpuMoeKernel::size_private(int nx, int na) {
++  t_xc.resize(n_threads);
++  t_ac.resize(n_threads);
++  for (int i = 0; i < n_threads; i++) {
++    if ((int)t_xc[i].size() < nx) t_xc[i].resize(nx);
++    if ((int)t_ac[i].size() < na) t_ac[i].resize(na);
++    for (int j = 0; j < nx; j++) if (t_xc[i][j].nb != E / QB) canon_act_size(E, t_xc[i][j]);
++    for (int j = 0; j < na; j++) if (t_ac[i][j].nb != F / QB) canon_act_size(F, t_ac[i][j]);
++  }
++}
++
+ void CpuMoeKernel::forward_canon_rows(const CpuExperts& L, const float* x, const int* ids, const float* w, int k, float* rows) {
+   constexpr int CH = 32;  // rows per task
+   constexpr int AB = 8;   // activation blocks (of 32 values) per task
+   canon_act_size(E, x_c);
+   for (int j = 0; j < k; j++) canon_act_size(F, act_c[j]);
++  size_private(1, k);
+   const size_t gu_row = L.gate->nb[1], d_row = L.down->nb[1];
+   const int gu_tasks = k * 2 * (F / CH), d_tasks = k * (E / CH);
+   const int x_tasks = E / QB / AB, a_per = F / QB / AB, a_tasks = k * a_per;  // E / 32 and F / 32 are multiples of 8
+@@ -202,12 +224,14 @@ void CpuMoeKernel::forward_canon_rows(const CpuExperts& L, const float* x, const
+     // the input's digits, a few blocks per task (one thread for all of it cost ~8% at 1 expert)
+ #pragma omp for schedule(static)
+     for (int t = 0; t < x_tasks; t++) canon_act_blocks(x, t * AB, (t + 1) * AB, x_c);
++    const int tid = omp_get_thread_num();
++    copy_act(x_c, t_xc[tid][0]);  // this thread's copy (see t_xc)
+ #pragma omp for schedule(static)
+     for (int t = 0; t < gu_tasks; t++) {
+       const int per = F / CH, j = t / (2 * per), m = (t / per) % 2, c = t % per;
+       const ggml_tensor* W = m ? L.up : L.gate;
+       float* out = (m ? up_out.data() : gate_out.data()) + (size_t)j * F;
+-      canon_dot_rows(expert_base(W, ids[j]), gu_row, x_c, c * CH, (c + 1) * CH, out);
++      canon_dot_rows(expert_base(W, ids[j]), gu_row, t_xc[tid][0], c * CH, (c + 1) * CH, out);
+     }
+     // the activation and its digits, a few blocks of one expert per task
+ #pragma omp for schedule(static)
+@@ -221,10 +245,11 @@ void CpuMoeKernel::forward_canon_rows(const CpuExperts& L, const float* x, const
+       }
+       canon_act_blocks(a, b0, b0 + AB, act_c[j]);
+     }
++    for (int j = 0; j < k; j++) copy_act(act_c[j], t_ac[tid][j]);
+ #pragma omp for schedule(static)
+     for (int t = 0; t < d_tasks; t++) {
+       const int per = E / CH, j = t / per, c = t % per;
+-      canon_dot_rows(expert_base(L.down, ids[j]), d_row, act_c[j], c * CH, (c + 1) * CH, rows + (size_t)j * E);
++      canon_dot_rows(expert_base(L.down, ids[j]), d_row, t_ac[tid][j], c * CH, (c + 1) * CH, rows + (size_t)j * E);
+     }
+   }
+ }
+@@ -356,6 +381,8 @@ void CpuMoeKernel::forward_batch(const CpuExperts& L, const float* x, int T, con
+   }
+   const size_t gu_row = L.gate->nb[1], d_row = L.down->nb[1];
+   const int nb_e = E / QB, nb_f = F / QB, per_f = F / CH, per_e = E / CH;
++  const bool priv = canon && T <= kPrivMaxTokens;  // per-thread copies of the activations (t_xc)
++  if (priv) size_private(T, P);
+   // per group: the inputs of its tokens and the output rows of its pairs
+   std::vector<std::vector<const float*>> gx(G), ga;
+   std::vector<std::vector<const CanonAct*>> gxc(G), gac(G);
+@@ -399,6 +426,10 @@ void CpuMoeKernel::forward_batch(const CpuExperts& L, const float* x, int T, con
+         permute_blocks(q, q + E, AB * QB);
+       }
+     }
++    const int tid = omp_get_thread_num();
++    if (priv)
++      for (int t = 0; t < T; t++)
++        if (routes[t].count) copy_act(b_xc[t], t_xc[tid][t]);
+ #pragma omp master
+     tp[1] = Clk::now();
+     // gate and up rows: per expert, every row once for all its tokens
+@@ -410,8 +441,12 @@ void CpuMoeKernel::forward_batch(const CpuExperts& L, const float* x, int T, con
+       const int nx = (int)groups[g].pairs.size();
+       // one token: the one-token routine (canon_dot_rows_multi's L1 round trip of the decoded
+       // weights and 2 rows per step cost 35% at one expert; README step 57); the same bits
+-      if (canon && nx == 1) canon_dot_rows(base, gu_row, *gxc[g][0], c * CH, (c + 1) * CH, ys[0]);
+-      else if (canon) canon_dot_rows_multi(base, gu_row, gxc[g].data(), nx, c * CH, (c + 1) * CH, ys);
++      const CanonAct* xa[kPrivMaxTokens];
++      if (priv)
++        for (int i = 0; i < nx; i++) xa[i] = &t_xc[tid][pair_tok[groups[g].pairs[i]]];
++      const CanonAct* const* xs = priv ? xa : gxc[g].data();
++      if (canon && nx == 1) canon_dot_rows(base, gu_row, *xs[0], c * CH, (c + 1) * CH, ys[0]);
++      else if (canon) canon_dot_rows_multi(base, gu_row, xs, nx, c * CH, (c + 1) * CH, ys);
+       else dot_range_multi(base, gu_row, nb_e, gx[g].data(), nx, ys, c * CH, (c + 1) * CH);
+     }
+ #pragma omp master
+@@ -443,6 +478,8 @@ void CpuMoeKernel::forward_batch(const CpuExperts& L, const float* x, int T, con
+         permute_blocks(a, a + F, AB * QB);
+       }
+     }
++    if (priv)
++      for (int p = 0; p < P; p++) copy_act(b_ac[p], t_ac[tid][p]);
+ #pragma omp master
+     tp[3] = Clk::now();
+     // down rows: per expert, every row once for all its tokens
+@@ -451,8 +488,12 @@ void CpuMoeKernel::forward_batch(const CpuExperts& L, const float* x, int T, con
+       const int g = task / per_e, c = task % per_e;
+       const uint8_t* base = expert_base(L.down, groups[g].e);
+       const int nx = (int)groups[g].pairs.size();
+-      if (canon && nx == 1) canon_dot_rows(base, d_row, *gac[g][0], c * CH, (c + 1) * CH, gd[g][0]);
+-      else if (canon) canon_dot_rows_multi(base, d_row, gac[g].data(), nx, c * CH, (c + 1) * CH, gd[g].data());
++      const CanonAct* aa[kPrivMaxTokens];
++      if (priv)
++        for (int i = 0; i < nx; i++) aa[i] = &t_ac[tid][groups[g].pairs[i]];
++      const CanonAct* const* as = priv ? aa : gac[g].data();
++      if (canon && nx == 1) canon_dot_rows(base, d_row, *as[0], c * CH, (c + 1) * CH, gd[g][0]);
++      else if (canon) canon_dot_rows_multi(base, d_row, as, nx, c * CH, (c + 1) * CH, gd[g].data());
+       else dot_range_multi(base, d_row, nb_f, ga[g].data(), nx, gd[g].data(), c * CH, (c + 1) * CH);
+     }
+ #pragma omp master
+diff --git a/ds-completion/src/cpu_moe.h b/ds-completion/src/cpu_moe.h
+index 6bf491e..ddd758c 100644
+--- a/ds-completion/src/cpu_moe.h
++++ b/ds-completion/src/cpu_moe.h
+@@ -60,4 +60,10 @@ class CpuMoeKernel {
+   std::vector<CanonAct> act_c;
+   std::vector<float> b_gate, b_up, b_xl, b_act, b_down;  // forward_batch scratch
+   std::vector<CanonAct> b_xc, b_ac;
++  // per-thread copies of the canonical activations (README step 78): written by the whole team,
++  // then read by every task, they cost ~45% of a one-token call as lines pulled from other cores'
++  // caches; one bulk copy per thread after each activation phase instead. [thread][token / pair]
++  std::vector<std::vector<CanonAct>> t_xc, t_ac;
++  static constexpr int kPrivMaxTokens = 8;  // verify-sized calls; prompt chunks read the shared ones
++  void size_private(int nx, int na);
+ };

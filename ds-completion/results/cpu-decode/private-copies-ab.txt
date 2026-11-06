@@ -1,0 +1,11 @@
+# end to end (README step 78): forward_batch / forward_canon_rows with per-thread activation copies (results/cpu-decode/private-copies.patch) vs without, alternating
+# ds-completion -m $M -p <prompt> --chat -n 300 --rt $F8 --placement placements/study30.txt --dspark $D --spec --canon --cache-loads 800 --cache-period 8 --cache-wait; commit e1b9fbc (+ the patch); sclk 6; 2026-11-06, after warming the page cache (a first base run on a cold cache after a reboot gave 38.40)
+cpp-matrix base round 1: 43.24 t/s output same
+cpp-matrix priv round 1: 43.07 t/s output same
+tcp-udp base round 1: 32.13 t/s output same
+tcp-udp priv round 1: 31.96 t/s output same
+cpp-matrix base round 2: 43.02 t/s output same
+cpp-matrix priv round 2: 43.03 t/s output same
+tcp-udp base round 2: 32.24 t/s output same
+tcp-udp priv round 2: 32.45 t/s output same
+AB DONE

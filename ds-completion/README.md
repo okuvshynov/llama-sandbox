@@ -2789,3 +2789,68 @@ with the halves dropped from die 0 (the prompt's fp8_gemm split too; est. +1.5-2
 attention core and q_b split by heads as well, so die 1 makes its own heads' o and the largest
 transfer goes (needs the KV caches, the indexer's picks and speculation's rollback on die 1; est.
 +4-6%).
+
+## Step 77: would a prefetch to the CPU's caches pay? The kernel's ceiling from cache
+
+A larger model will keep experts on the CPU however many GPUs it gets, so the question was
+whether a CPU with a large last-level cache (an EPYC with 768 MB) could prefetch the guessed
+experts a few layers ahead (step 63: the top 6 guesses two layers ahead catch 73% of the CPU's
+experts) while the CPU idles during attention. The ceiling of any such prefetch is the kernel's
+speed on an expert that is already in cache. `bench-cpu-moe --warm` runs the same call on fresh
+experts every time (from DRAM) and on the same experts every time (from L2 + L3: one expert,
+18.8 MB, fits in the 16 + 22 MB here), with the read-only control
+(`results/cpu-decode/warm.txt`, 16 threads, ms per expert, one token per call):
+
+| D = 1 | from DRAM | from cache | |
+|---|---|---|---|
+| canonical kernel | 0.39-0.43 | 0.34-0.35 | x1.2 |
+| fast kernel | 0.41-0.47 | 0.30-0.40 | x1.2-1.4 |
+| read only | 0.19-0.24 | 0.03-0.07 | x3-6 |
+
+(The ranges: no gap and a 1.5 ms gap between calls. Two or six experts per call do not fit, and
+their warm runs gain only 1.04-1.2x.) **The call is not bound by DRAM:** from cache it still
+processes only ~55 GB/s of expert bytes, and the canonical (exact integer) kernel and the fast
+one behave alike. Step 56 read the gap between the kernel and a plain read (~35-40%) as lost
+memory efficiency; it is not that either. So a large cache or HBM pays only once the call itself
+is faster; step 78 takes the call apart.
+
+## Step 78: where a one-token CPU call goes; per-thread activation copies (tried, not kept)
+
+Step 77 left a warm call (one expert in cache) at 0.34 ms. Taken apart with two new benchmarks,
+on 16 threads, ms per expert:
+
+- **The kernel's compute alone** (`bin/bench-fp4-decode`: each thread its own 64 rows in its L2,
+  repeated; `results/cpu-decode/decode-bench.txt`): canonical ~0.15-0.17, fast ~0.11; of the
+  canonical one, the fp4 decode ~0.045-0.065 and the integer arithmetic (3 vpdpbusd per 64
+  weights) ~0.07-0.09. A CPU layout (a row's codes contiguous, 128 per 64-byte load) decodes in
+  ~0.026-0.03. Gate rows (K 5120) and down rows (K 2304) cost the same per weight.
+- **The call's two phases as a bare loop** (`bin/bench-fp4-decode call`, and the same loop on a
+  real expert in `bench-cpu-moe --warm`): 32-row tasks of `canon_dot_rows`, gate + up then down,
+  activations written once: warm 0.19-0.20, cold 0.29-0.30 (`call.txt`, `warm.txt`). 4 KB or
+  2 MB pages: no difference. A static schedule: warm 0.17-0.22, cold 0.22-0.25.
+- **`forward_batch` on the same expert: 0.34.** The difference is reproduced by the bare loop
+  rewriting its activation digits in parallel every call, as `forward_batch` does: 0.19 -> 0.33.
+  Down, which excludes the rewrite, 0.066 -> 0.12. Reading digits the whole team has just written
+  (~15 KB for gate + up, ~7 KB for down) costs ~45% of a warm call. The writers flushing them:
+  no change; the readers prefetching them: no change; each thread copying them into its own
+  buffer and reading that: 0.33 -> 0.245.
+
+The copies went into `forward_batch` and `forward_canon_rows` for calls of up to 8 tokens (the
+same bits: `bench-cpu-moe --batch 3`, 0 of 40 layers differ). Back to back the call went 0.334 ->
+0.256 warm, 0.395 -> 0.359 cold; but after a 1.5 ms idle gap, the runtime's case (the GPU's part
+of a layer), the copy cost what it saved: cold 0.433 -> 0.431 with one expert, 0.321 -> 0.358
+with two. End to end, alternating, outputs identical (`private-copies-ab.txt`): cpp-matrix 43.13
+-> 43.05 t/s, tcp-udp 32.19 -> 32.21. Not kept (`results/cpu-decode/private-copies.patch`).
+
+**After an idle gap** (`bench-fp4-decode call 16 2m 1500`, `call-gap.txt`), the runtime's case:
+libgomp's workers spin through 1.5 ms by default, so the last one enters a call 2-4 us after it
+starts; with `OMP_WAIT_POLICY=passive` they sleep and arrive 0.13 ms late (a call 0.64 ms). With
+the dynamic schedule a gap costs ~0.01 ms warm and ~0.02-0.03 cold (0.30 -> 0.32-0.33), about the
+same whether the master sleeps or spins through it; the static schedule, which waits for its
+slowest thread, loses 0.1-0.2 ms. So the gap is worth 5-10% of a call, not the 2x.
+
+Every thread computing all of the input's digits itself (no shared, freshly written lines for
+gate + up) costs what it saves: its ~0.09 ms of single-thread work replaces the penalty. Why
+reading digits the team has just written is slow, when a thread's copy of them is fast, is
+open; hardware counters (snoops, L2 misses) would answer it rather than more variants.
+

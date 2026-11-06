@@ -33,7 +33,7 @@ RT_FLAGS = -DDS_RUNTIME -D__HIP_PLATFORM_AMD__ -Ihip -I$(ROCM)/include
 RT_LIBS  = $(RT_OBJ) -L$(ROCM)/lib -Wl,-rpath,$(ROCM)/lib -lamdhip64
 endif
 
-all: $(BIN)/ds-completion $(BIN)/ds-inspect $(BIN)/ds-test $(BIN)/test-fakequant $(BIN)/llama-logits $(BIN)/fp8pack $(BIN)/bench-cpu-moe
+all: $(BIN)/ds-completion $(BIN)/ds-inspect $(BIN)/ds-test $(BIN)/test-fakequant $(BIN)/llama-logits $(BIN)/fp8pack $(BIN)/bench-cpu-moe $(BIN)/bench-fp4-decode
 ifeq ($(HIP),1)
 all: $(BIN)/bench-fp8 $(BIN)/bench-kernels $(BIN)/bench-fp4-moe $(BIN)/bench-expert-pool $(BIN)/bench-expert-load $(BIN)/test-topk $(BIN)/bench-register $(BIN)/bench-launch
 endif
@@ -118,6 +118,10 @@ $(BIN)/fp8pack: src/fp8pack.cpp src/model.cpp src/model.h src/fakequant.cpp src/
 $(BIN)/bench-cpu-moe: src/bench_cpu_moe.cpp $(CORE) $(CORE_H)
 	@mkdir -p $(BIN)
 	$(CXX) $(CXXFLAGS) -O3 -o $@ src/bench_cpu_moe.cpp $(CORE) $(LDLIBS)
+
+$(BIN)/bench-fp4-decode: src/bench_fp4_decode.cpp src/canon_dot.cpp src/canon_dot.h src/fakequant.cpp src/fakequant.h
+	@mkdir -p $(BIN)
+	$(CXX) $(CXXFLAGS) -o $@ src/bench_fp4_decode.cpp src/canon_dot.cpp src/fakequant.cpp $(LDLIBS)
 
 $(BIN)/test-fakequant: src/test_fakequant.cpp src/fakequant.cpp src/fakequant.h
 	@mkdir -p $(BIN)

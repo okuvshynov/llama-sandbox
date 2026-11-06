@@ -363,6 +363,13 @@ Step 76: attention's output projections over dies 0-1 (flags in fine-grained mem
 hand-off; exact): +0.6%, not kept (~55 us per layer of hand-offs, and die 1's copy of the weights
 cost its expert cache 1.41 GiB); `results/decode-next/attn-split.patch`. With the core and q_b
 split too (KV state on die 1) est. +4-6%.
+Step 77: the CPU expert call from cache (one expert warm in L2 + L3) is only x1.2 faster than
+from DRAM (a plain read: x3-6): DRAM is not its limit, so a prefetch to a large LLC or HBM waits
+on a faster call. Step 78 takes the call apart.
+Step 78: a warm one-token call is ~2x its compute; ~45% of it is reading activation digits the
+team just wrote. Per-thread copies: -25% back to back, nothing after the runtime's idle gap
+(end to end flat); not kept. After the runtime's idle gap a call loses only 5-10% (libgomp's
+workers spin through it). Open: why freshly written activations read slowly (hardware counters).
 
 **A. Tuning the expert cache** (the CPU experts' ~25 ms)
 - Hysteresis: a newcomer must beat its victim by a margin, so the cache settles in long runs

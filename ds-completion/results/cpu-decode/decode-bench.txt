@@ -1,0 +1,83 @@
+# the CPU expert kernel's per-weight cost without memory (README step 78): each thread 64 rows in its L2, repeated; two runs per shape
+# OMP_PROC_BIND=spread OMP_PLACES=cores bin/bench-fp4-decode 16 K (K = 5120: gate / up rows; 2304: down rows); commit e1b9fbc + src/bench_fp4_decode.cpp; W-3245, CPU defaults (powersave governor); 2026-11-06T15:17:05-05:00
+# clock: dependent scalar adds per thread while all run (AVX-512 code may run slower: w/clock is approximate); runs at 16 threads vary by ~20% (a first run gave canon 0.31 ms)
+
+# bench-fp4-decode: per thread 64 rows x K = 5120 (170 KB in today's layout, in L2), repeated
+
+## 1 thread, clock 3.19 GHz (dependent adds, while all 1 run)
+variant   Gw/s/core   w/clock    ms/expert @16
+canon         18.19      5.70            0.122
+fast          28.70      8.99            0.077
+decode17      63.07     19.77            0.035
+decode64     115.28     36.13            0.019
+arith         43.24     13.55            0.051
+
+## 16 threads, clock 2.42 GHz (dependent adds, while all 16 run)
+variant   Gw/s/core   w/clock    ms/expert @16
+canon         10.01      4.14            0.221
+fast          16.17      6.69            0.137
+decode17      43.80     18.13            0.050
+decode64      82.29     34.06            0.027
+arith         25.51     10.56            0.087
+
+# ms/expert @16: one expert (gate + up + down, 35.4M weights) as if all its rows ran at this K's per-core rate on 16 cores
+
+# bench-fp4-decode: per thread 64 rows x K = 5120 (170 KB in today's layout, in L2), repeated
+
+## 1 thread, clock 3.19 GHz (dependent adds, while all 1 run)
+variant   Gw/s/core   w/clock    ms/expert @16
+canon         17.40      5.45            0.127
+fast          26.81      8.40            0.083
+decode17      62.70     19.66            0.035
+decode64     115.07     36.07            0.019
+arith         45.38     14.23            0.049
+
+## 16 threads, clock 2.54 GHz (dependent adds, while all 16 run)
+variant   Gw/s/core   w/clock    ms/expert @16
+canon         13.92      5.48            0.159
+fast          19.38      7.63            0.114
+decode17      34.40     13.54            0.064
+decode64      64.30     25.31            0.034
+arith         31.49     12.39            0.070
+
+# ms/expert @16: one expert (gate + up + down, 35.4M weights) as if all its rows ran at this K's per-core rate on 16 cores
+
+# bench-fp4-decode: per thread 64 rows x K = 2304 (76 KB in today's layout, in L2), repeated
+
+## 1 thread, clock 3.10 GHz (dependent adds, while all 1 run)
+variant   Gw/s/core   w/clock    ms/expert @16
+canon         17.36      5.59            0.127
+fast          27.98      9.01            0.079
+decode17      66.45     21.40            0.033
+decode64     127.97     41.22            0.017
+arith         42.33     13.63            0.052
+
+## 16 threads, clock 2.52 GHz (dependent adds, while all 16 run)
+variant   Gw/s/core   w/clock    ms/expert @16
+canon         13.95      5.53            0.159
+fast          21.04      8.34            0.105
+decode17      51.57     20.44            0.043
+decode64      94.55     37.48            0.023
+arith         32.85     13.02            0.067
+
+# ms/expert @16: one expert (gate + up + down, 35.4M weights) as if all its rows ran at this K's per-core rate on 16 cores
+
+# bench-fp4-decode: per thread 64 rows x K = 2304 (76 KB in today's layout, in L2), repeated
+
+## 1 thread, clock 3.18 GHz (dependent adds, while all 1 run)
+variant   Gw/s/core   w/clock    ms/expert @16
+canon         17.44      5.48            0.127
+fast          28.00      8.81            0.079
+decode17      66.07     20.78            0.033
+decode64     115.97     36.47            0.019
+arith         44.72     14.07            0.049
+
+## 16 threads, clock 2.51 GHz (dependent adds, while all 16 run)
+variant   Gw/s/core   w/clock    ms/expert @16
+canon         13.33      5.30            0.166
+fast          21.06      8.38            0.105
+decode17      46.75     18.60            0.047
+decode64      68.42     27.22            0.032
+arith         25.41     10.11            0.087
+
+# ms/expert @16: one expert (gate + up + down, 35.4M weights) as if all its rows ran at this K's per-core rate on 16 cores

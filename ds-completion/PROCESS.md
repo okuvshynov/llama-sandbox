@@ -491,6 +491,20 @@ Each rule is followed by where it mattered most.
   waits, and the moved weights took 1.41 GiB from die 1's expert cache, which the estimate left
   out; together they left +0.6%. A bench of the whole sequence on the real shapes (bits checked)
   showed the first in minutes; the trace's CPU expert pairs showed the second.
+- **Find the ceiling before building toward it (README step 77).** A CPU with a large cache
+  looked like the way to keep experts on the CPU: prefetch the guessed ones during attention. Its
+  ceiling is the kernel on an expert already in cache, a few minutes to measure here (one expert
+  fits): x1.2, against x3-6 for a plain read. A first reading ("bound by its arithmetic") was
+  one step too quick: the next measurement put the arithmetic at about half the warm call
+  (step 78).
+- **Reproduce under the runtime's conditions before believing a bench (README step 78).** The
+  warm call's 2x was reproduced in a bare loop and pinned on reading freshly written activations;
+  per-thread copies took 25% off back to back, and the end to end A/B gave nothing. The bench had
+  shown why in its 1.5 ms gap case (the runtime idles that long between calls), which was read as
+  noise. Also: a reboot empties the page cache; the first run after it (38.4 instead of 43 t/s)
+  was set aside and the cache warmed before measuring.
+  The suspected after-gap cost then measured at 5-10%; the open question (why fresh activations
+  read slowly) was left for hardware counters instead of a fifth variant.
 
 ## 4. Predictions against outcomes
 
@@ -518,6 +532,8 @@ Estimates were made before measuring wherever possible; this is how they fared.
 | the next layers' experts from this layer's router input (63) | "demonstrated for some models" (the person) | 72% one layer ahead, 4-7x the use counts for CPU experts | the residual stream changes little per layer |
 | a GPU prefetch from those guesses (64) | ~15% if a third of misses covered | 2.5% simulated (bound 10%) | loads need 3-4 layers' notice, where guesses are weaker; wrong loads take link time |
 | attention's output over dies 0-1 (76) | ~3.5% of a code step | +0.6% | ~55 us per layer of hand-off kernels and waits; the weights on die 1 cost its cache 1.41 GiB (CPU expert pairs +4.4%) |
+| a CPU expert from cache vs DRAM, the ceiling of an LLC prefetch (77) | ~3x (assumed, for a large-LLC EPYC) | x1.2 | DRAM is not the call's limit: half of a warm call is neither DRAM nor arithmetic (step 78) |
+| per-thread activation copies in the CPU call (78) | ~8-10% on code (from -0.1 ms per expert back to back) | flat | the runtime's calls follow a ~1.5 ms idle gap, after which the copy costs what it saves |
 | expert parallelism for the draft (62) | proposed by the person | ~1 ms at best | experts are 16% of the draft; the head (27%) was the item |
 | the head through LDS (62) | ~1-2% | +1.4% held-out, +2% on code | as estimated from the per-part times |
 | the draft in fp8 frees ~4 GB (60 -> 61) | ~210 slots | nothing | its dense part was already fp8 and its experts mxfp4: assumed from the file's name |

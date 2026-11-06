@@ -14,11 +14,18 @@
 // static schedule, on the model's mapping (4 KB pages) vs a copy of the first --layers layers'
 // experts in 2 MB pages (madvise(MADV_HUGEPAGE)); the read-only control on both. --gap-us N: idle
 // N us between calls (the runtime's host waits ~1-2 ms per layer for the GPU; workers may sleep).
+// --warm D[,D...] [--steps 30]: the ceiling of a prefetch to the CPU's caches (README step 77): the
+// same call (D tokens, each its own expert; canonical and fast kernels) on fresh experts every
+// call (from DRAM) vs on the same experts every call (from L2 + L3 when they fit: one expert
+// 18.8 MB, L2 16 MB + L3 22 MB here), and the read-only control both ways; without and with a
+// 1.5 ms idle gap between calls, after a pass that maps the pages (first touches are faults).
 //
 // Accuracy: for a few layers, both against the double reference (same fp8 fake quantization of
 // the inputs, exact fp4 weights). Speed: a "token" = all 40 layers in sequence, 6 random experts
 // each (fresh experts every token, so the 113 MB per layer stream from DRAM as in decode).
 
+#include "canon_dot.h"
+#include <immintrin.h>
 #include "cpu_moe.h"
 #include "fakequant.h"
 #include "model.h"
@@ -121,7 +128,7 @@ int main(int argc, char** argv) {
   setvbuf(stdout, nullptr, _IOLBF, 0);
   std::string path;
   int threads = 32, tokens = 5, kspeed = 0, batch = 0, resident_n = 6578, half = 256, dec_layers = 4, dec_steps = 30;
-  std::vector<int> decode;
+  std::vector<int> decode, warm;
   CpuMoeKernel::Sched sched = CpuMoeKernel::kDynamic;
   int gap_us = 0;
   std::string replay, placement_path = "placements/study30.txt";
@@ -137,6 +144,7 @@ int main(int argc, char** argv) {
     else if (a == "--placement") placement_path = argv[++i];
     else if (a == "--resident") resident_n = atoi(argv[++i]);
     else if (a == "--half") half = atoi(argv[++i]);
+    else if (a == "--warm") { for (char* q = argv[++i]; *q;) { warm.push_back((int)strtol(q, &q, 10)); if (*q == ',') q++; } }
     else if (a == "--decode") { for (char* q = argv[++i]; *q;) { decode.push_back((int)strtol(q, &q, 10)); if (*q == ',') q++; } }
     else if (a == "--layers") dec_layers = atoi(argv[++i]);
     else if (a == "--steps") dec_steps = atoi(argv[++i]);
@@ -204,6 +212,159 @@ int main(int argc, char** argv) {
 
   const int KS = kspeed > 0 && kspeed <= K ? kspeed : K;
   kern.batch_sched = sched;
+  if (!warm.empty()) {
+    const double ex_bytes = 3.0 * ggml_nbytes(m.layers[0].gate_exps) / hp.n_expert;
+    std::vector<float> x((size_t)8 * E);
+    for (auto& v : x) v = nd(rng);
+    printf("# warm vs cold: D tokens per call, each its own expert (%.1f MB), dynamic schedule; %d calls each; "
+           "ms per expert (GB/s of expert bytes)\n", ex_bytes / 1e6, dec_steps * 8);
+    auto f = [&](double ms) { char b[64]; snprintf(b, sizeof b, "%.3f (%4.0f)", ms, ex_bytes / ms / 1e6); return std::string(b); };
+    for (int gap : {-1, 0, 1500})  // -1: a first pass that only maps the pages (4 KB first touches)
+      for (int D : warm) {
+        if (D < 1 || D > 8) continue;
+        std::vector<float> out((size_t)D * E);
+        double res[2][3];  // [cold, warm][canonical kernel, fast kernel, control]
+        CpuMoeKernel::BatchStats ph[2] = {};  // the canonical calls' phases, cold and warm
+        for (int hot = 0; hot < 2; hot++)
+          for (int v = 0; v < 3; v++) {
+            if (v == 0) kern.bstats = {};
+            std::mt19937 r2(3000 + D);
+            std::vector<int> ids;
+            int L = 0;
+            double ms = 0;
+            const int n = dec_steps * 8;
+            for (int c = -2; c < n; c++) {  // two untimed calls first (the warm case fills the caches)
+              if (!hot || ids.empty()) {
+                std::set<int> st;
+                while ((int)st.size() < D) st.insert((int)(r2() % hp.n_expert));
+                ids.assign(st.begin(), st.end());
+                L = hot ? 7 : (int)(r2() % hp.n_layer);
+              }
+              std::vector<float> w(D, 0.5f);
+              const CpuExperts ex = {m.layers[L].gate_exps, m.layers[L].up_exps, m.layers[L].down_exps, hp.swiglu_clamp[L]};
+              std::vector<CpuMoeKernel::CpuRoute> r(D);
+              for (int t = 0; t < D; t++) r[t] = {ids.data() + t, w.data() + t, 1};
+              auto t0 = Clock::now();
+              if (v < 2) kern.forward_batch(ex, x.data(), D, r.data(), v == 0, out.data());
+              else { volatile uint64_t sink = kern.touch(ex, ids.data(), D); (void)sink; }
+              if (c >= 0) ms += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+              if (gap > 0) std::this_thread::sleep_for(std::chrono::microseconds(gap));
+            }
+            res[hot][v] = ms / (n * D);
+            if (v == 0) ph[hot] = kern.bstats;
+          }
+        if (gap < 0) continue;
+        printf("gap %4d us, D %d: canonical cold %s warm %s (x%.2f) | fast cold %s warm %s (x%.2f) | control cold %s warm %s (x%.2f)\n",
+               gap, D, f(res[0][0]).c_str(), f(res[1][0]).c_str(), res[0][0] / res[1][0], f(res[0][1]).c_str(), f(res[1][1]).c_str(),
+               res[0][1] / res[1][1], f(res[0][2]).c_str(), f(res[1][2]).c_str(), res[0][2] / res[1][2]);
+        for (int hot = 0; hot < 2; hot++) {  // per call, the canonical kernel's phases (ms; the stats include the 2 untimed calls)
+          const CpuMoeKernel::BatchStats& p = ph[hot];
+          const double c = (double)std::max(1L, p.calls);
+          printf("    %s phases per call: prep %.3f inputs %.3f gate_up %.3f act %.3f down %.3f sum %.3f\n", hot ? "warm" : "cold",
+                 p.prep / c, p.inputs / c, p.gate_up / c, p.act / c, p.down / c, p.sum / c);
+        }
+      }
+    // the same expert through forward_batch and through a bare loop of its 32-row tasks
+    // (bench-fp4-decode call's loop: canon_dot_rows on gate + up, then down, nothing else)
+    {
+      const int L = 7, e = 3, CH = 32, F = hp.n_ff_exp, n = dec_steps * 8;
+      const CpuExperts ex = {m.layers[L].gate_exps, m.layers[L].up_exps, m.layers[L].down_exps, hp.swiglu_clamp[L]};
+      const size_t gu_row = ex.gate->nb[1], d_row = ex.down->nb[1];
+      const uint8_t* g = (const uint8_t*)ex.gate->data + (size_t)e * ex.gate->nb[2];
+      const uint8_t* u = (const uint8_t*)ex.up->data + (size_t)e * ex.up->nb[2];
+      const uint8_t* d = (const uint8_t*)ex.down->data + (size_t)e * ex.down->nb[2];
+      std::vector<float> a(F), yg(F), yu(F), yd(E), out(E);
+      for (auto& v : a) v = nd(rng);
+      CanonAct xc, ac;
+      canon_act(x.data(), E, xc);
+      canon_act(a.data(), F, ac);
+      int id = e;
+      float w1 = 0.5f;
+      CpuMoeKernel::CpuRoute r = {&id, &w1, 1};
+      omp_set_schedule(omp_sched_dynamic, 0);
+      std::vector<CanonAct> pxc(threads), pac(threads);  // per-thread copies (reps 4-5)
+      for (int i = 0; i < threads; i++) { canon_act_size(E, pxc[i]); canon_act_size(F, pac[i]); }
+      // only what canon_dot_rows reads: the three digit arrays and the per-block constants
+      auto copy_act = [](const CanonAct& src, CanonAct& dst) {
+        memcpy(dst.d0.data(), src.d0.data(), src.d0.size());
+        memcpy(dst.d1.data(), src.d1.data(), src.d1.size());
+        memcpy(dst.d2.data(), src.d2.data(), src.d2.size());
+        memcpy(dst.corr.data(), src.corr.data(), src.corr.size() * 4);
+        memcpy(dst.c.data(), src.c.data(), src.c.size() * 4);
+      };
+      // a writer's flush of the lines it just wrote (reps 6-7): readers then fetch them from memory
+      auto flush_blocks = [](CanonAct& a, int b0, int b1) {
+        auto fl = [](const void* p, size_t n) {
+          const uintptr_t s0 = (uintptr_t)p & ~(uintptr_t)63, e = (uintptr_t)p + n;
+          for (uintptr_t q = s0; q < e; q += 64) _mm_clflushopt((void*)q);
+        };
+        const size_t o = (size_t)b0 * 32, n = (size_t)(b1 - b0) * 32;
+        fl(a.d0.data() + o, n);
+        fl(a.d1.data() + o, n);
+        fl(a.d2.data() + o, n);
+        fl(a.corr.data() + b0, (size_t)(b1 - b0) * 4);
+        fl(a.c.data() + b0, (size_t)(b1 - b0) * 4);
+        _mm_sfence();
+      };
+      auto prefetch_act = [](const CanonAct& a) {  // reps 8-9: each reader prefetches what the kernel reads
+        auto pf = [](const void* p, size_t n) { for (size_t o = 0; o < n; o += 64) _mm_prefetch((const char*)p + o, _MM_HINT_T0); };
+        pf(a.d0.data(), a.d0.size());
+        pf(a.d1.data(), a.d1.size());
+        pf(a.d2.data(), a.d2.size());
+        pf(a.corr.data(), a.corr.size() * 4);
+        pf(a.c.data(), a.c.size() * 4);
+      };
+      for (int rep = 0; rep < 12; rep++) {  // reps 10-11: each thread computes all of x's digits itself (gate + up), down as rewritten  // reps 2-7: the bare loop rewrites its activations each call (in parallel, as forward_batch
+        // does); reps 4-5: each thread then copies them into its own buffer and reads that; reps 6-7: the writers flush them
+        const bool rewrite = rep >= 2, private_copy = rep >= 4 && rep < 6, flush = rep >= 6 && rep < 8, pref = rep >= 8 && rep < 10, own = rep >= 10;
+        double t_fb = 0, t_bare = 0, t_gu = 0, t_d = 0;
+        for (int c = -8; c < n; c++) {
+          auto t0 = Clock::now();
+          kern.forward_batch(ex, x.data(), 1, &r, true, out.data());
+          if (c >= 0) t_fb += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+          if (gap_us) std::this_thread::sleep_for(std::chrono::microseconds(gap_us));  // both preceded by the gap
+          double a0 = 0, a1 = 0, a2 = 0;
+#pragma omp parallel num_threads(threads)
+          {
+#pragma omp master
+            a0 = omp_get_wtime();
+            if (rewrite && !own) {
+#pragma omp for schedule(static)
+              for (int b0 = 0; b0 < E / 32; b0 += 8) { canon_act_blocks(x.data(), b0, b0 + 8, xc); if (flush) flush_blocks(xc, b0, b0 + 8); }
+            }
+            const CanonAct* xa = &xc;
+            if (private_copy) { copy_act(xc, pxc[omp_get_thread_num()]); xa = &pxc[omp_get_thread_num()]; }
+            if (pref) prefetch_act(xc);
+            if (own) { canon_act_blocks(x.data(), 0, E / 32, pxc[omp_get_thread_num()]); xa = &pxc[omp_get_thread_num()]; }
+#pragma omp for schedule(runtime)
+            for (int task = 0; task < 2 * (F / CH); task++) {
+              const int mm = task / (F / CH), r0 = (task % (F / CH)) * CH;
+              canon_dot_rows(mm ? u : g, gu_row, *xa, r0, r0 + CH, mm ? yu.data() : yg.data());
+            }
+            if (rewrite) {
+#pragma omp for schedule(static)
+              for (int b0 = 0; b0 < F / 32; b0 += 8) { canon_act_blocks(a.data(), b0, b0 + 8, ac); if (flush) flush_blocks(ac, b0, b0 + 8); }
+            }
+#pragma omp master
+            a1 = omp_get_wtime();
+            const CanonAct* aa = &ac;
+            if (private_copy) { copy_act(ac, pac[omp_get_thread_num()]); aa = &pac[omp_get_thread_num()]; }
+            if (pref) prefetch_act(ac);
+#pragma omp for schedule(runtime)
+            for (int task = 0; task < E / CH; task++) canon_dot_rows(d, d_row, *aa, task * CH, task * CH + CH, yd.data());
+#pragma omp master
+            a2 = omp_get_wtime();
+          }
+          if (c >= 0) { t_bare += (a2 - a0) * 1e3; t_gu += (a1 - a0) * 1e3; t_d += (a2 - a1) * 1e3; }
+          if (gap_us) std::this_thread::sleep_for(std::chrono::microseconds(gap_us));
+        }
+        printf("warm, one expert, alternating: forward_batch %.3f ms | bare tasks%s %.3f ms (gate_up %.3f, down %.3f)\n", t_fb / n,
+               own ? " + x's digits per thread, act rewritten" : pref ? " + rewritten + readers prefetch" : flush ? " + rewritten + writers flush" : private_copy ? " + rewritten + per-thread copies" : rewrite ? " + activations rewritten" : "",
+               t_bare / n, t_gu / n, t_d / n);
+      }
+    }
+    return 0;
+  }
   if (!decode.empty()) {
     const int NL = std::min(dec_layers, hp.n_layer);
     auto anon_huge_kb = [] {

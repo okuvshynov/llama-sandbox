@@ -1,0 +1,47 @@
+# the ceiling of a prefetch to the CPU's caches, and where a one-token call goes (README steps 77-78)
+# bin-hip/bench-cpu-moe -m $M -t 16 --check-layers "" --warm 1,2,6 --steps 20 [--gap-us 1500 for the second comparison]; commit e1b9fbc + the bench modes; W-3245, 16 threads, CPU defaults; 2026-11-06T16:13:44-05:00
+# part 1: warm (same experts every call) vs cold (fresh experts), and the canonical call's phases (D = 1 is the clean case: one expert, 18.8 MB, fits in L2 + L3; D = 2 and 6 do not)
+# part 2: one real expert, warm, alternating: forward_batch vs a bare loop of its 32-row tasks (activations written once), the bare loop rewriting its activations in parallel each call (as forward_batch does), then per-thread copies, writers' flushes, readers' prefetches, every thread computing all of x's digits itself
+# warm vs cold: D tokens per call, each its own expert (18.8 MB), dynamic schedule; 160 calls each; ms per expert (GB/s of expert bytes)
+gap    0 us, D 1: canonical cold 0.397 (  47) warm 0.335 (  56) (x1.18) | fast cold 0.397 (  47) warm 0.279 (  67) (x1.42) | control cold 0.187 ( 101) warm 0.041 ( 453) (x4.50)
+    cold phases per call: prep 0.001 inputs 0.013 gate_up 0.202 act 0.011 down 0.168 sum 0.002
+    warm phases per call: prep 0.001 inputs 0.014 gate_up 0.168 act 0.014 down 0.136 sum 0.002
+gap    0 us, D 2: canonical cold 0.306 (  61) warm 0.255 (  74) (x1.20) | fast cold 0.322 (  58) warm 0.248 (  76) (x1.30) | control cold 0.174 ( 108) warm 0.096 ( 196) (x1.82)
+    cold phases per call: prep 0.002 inputs 0.025 gate_up 0.324 act 0.020 down 0.238 sum 0.002
+    warm phases per call: prep 0.003 inputs 0.019 gate_up 0.264 act 0.019 down 0.203 sum 0.002
+gap    0 us, D 6: canonical cold 0.271 (  69) warm 0.255 (  74) (x1.06) | fast cold 0.290 (  65) warm 0.275 (  68) (x1.05) | control cold 0.177 ( 106) warm 0.150 ( 125) (x1.18)
+    cold phases per call: prep 0.003 inputs 0.044 gate_up 0.867 act 0.035 down 0.669 sum 0.002
+    warm phases per call: prep 0.005 inputs 0.061 gate_up 0.851 act 0.043 down 0.565 sum 0.002
+gap 1500 us, D 1: canonical cold 0.405 (  46) warm 0.338 (  56) (x1.20) | fast cold 0.449 (  42) warm 0.387 (  49) (x1.16) | control cold 0.254 (  74) warm 0.088 ( 214) (x2.89)
+    cold phases per call: prep 0.002 inputs 0.017 gate_up 0.206 act 0.014 down 0.163 sum 0.002
+    warm phases per call: prep 0.001 inputs 0.015 gate_up 0.174 act 0.016 down 0.128 sum 0.002
+gap 1500 us, D 2: canonical cold 0.341 (  55) warm 0.287 (  65) (x1.19) | fast cold 0.385 (  49) warm 0.316 (  59) (x1.22) | control cold 0.207 (  91) warm 0.153 ( 123) (x1.35)
+    cold phases per call: prep 0.006 inputs 0.042 gate_up 0.342 act 0.043 down 0.244 sum 0.002
+    warm phases per call: prep 0.007 inputs 0.037 gate_up 0.289 act 0.036 down 0.200 sum 0.002
+gap 1500 us, D 6: canonical cold 0.289 (  65) warm 0.269 (  70) (x1.07) | fast cold 0.322 (  58) warm 0.304 (  62) (x1.06) | control cold 0.212 (  89) warm 0.172 ( 109) (x1.23)
+    cold phases per call: prep 0.010 inputs 0.087 gate_up 0.906 act 0.073 down 0.652 sum 0.002
+    warm phases per call: prep 0.011 inputs 0.089 gate_up 0.880 act 0.075 down 0.555 sum 0.002
+no gap: warm, one expert, alternating: forward_batch 0.350 ms | bare tasks 0.190 ms (gate_up 0.121, down 0.068)
+no gap: warm, one expert, alternating: forward_batch 0.344 ms | bare tasks 0.187 ms (gate_up 0.120, down 0.067)
+no gap: warm, one expert, alternating: forward_batch 0.339 ms | bare tasks + activations rewritten 0.334 ms (gate_up 0.211, down 0.124)
+no gap: warm, one expert, alternating: forward_batch 0.340 ms | bare tasks + activations rewritten 0.334 ms (gate_up 0.211, down 0.122)
+no gap: warm, one expert, alternating: forward_batch 0.333 ms | bare tasks + rewritten + per-thread copies 0.251 ms (gate_up 0.172, down 0.079)
+no gap: warm, one expert, alternating: forward_batch 0.331 ms | bare tasks + rewritten + per-thread copies 0.250 ms (gate_up 0.171, down 0.079)
+no gap: warm, one expert, alternating: forward_batch 0.337 ms | bare tasks + rewritten + writers flush 0.336 ms (gate_up 0.216, down 0.120)
+no gap: warm, one expert, alternating: forward_batch 0.336 ms | bare tasks + rewritten + writers flush 0.332 ms (gate_up 0.210, down 0.122)
+no gap: warm, one expert, alternating: forward_batch 0.340 ms | bare tasks + rewritten + readers prefetch 0.339 ms (gate_up 0.215, down 0.124)
+no gap: warm, one expert, alternating: forward_batch 0.337 ms | bare tasks + rewritten + readers prefetch 0.344 ms (gate_up 0.215, down 0.129)
+no gap: warm, one expert, alternating: forward_batch 0.340 ms | bare tasks + x's digits per thread, act rewritten 0.330 ms (gate_up 0.212, down 0.118)
+no gap: warm, one expert, alternating: forward_batch 0.341 ms | bare tasks + x's digits per thread, act rewritten 0.330 ms (gate_up 0.211, down 0.119)
+1.5 ms gap: warm, one expert, alternating: forward_batch 0.372 ms | bare tasks 0.221 ms (gate_up 0.154, down 0.067)
+1.5 ms gap: warm, one expert, alternating: forward_batch 0.362 ms | bare tasks 0.220 ms (gate_up 0.154, down 0.067)
+1.5 ms gap: warm, one expert, alternating: forward_batch 0.372 ms | bare tasks + activations rewritten 0.362 ms (gate_up 0.229, down 0.133)
+1.5 ms gap: warm, one expert, alternating: forward_batch 0.362 ms | bare tasks + activations rewritten 0.354 ms (gate_up 0.228, down 0.126)
+1.5 ms gap: warm, one expert, alternating: forward_batch 0.390 ms | bare tasks + rewritten + per-thread copies 0.306 ms (gate_up 0.224, down 0.082)
+1.5 ms gap: warm, one expert, alternating: forward_batch 0.354 ms | bare tasks + rewritten + per-thread copies 0.278 ms (gate_up 0.200, down 0.078)
+1.5 ms gap: warm, one expert, alternating: forward_batch 0.376 ms | bare tasks + rewritten + writers flush 0.371 ms (gate_up 0.242, down 0.129)
+1.5 ms gap: warm, one expert, alternating: forward_batch 0.374 ms | bare tasks + rewritten + writers flush 0.359 ms (gate_up 0.236, down 0.123)
+1.5 ms gap: warm, one expert, alternating: forward_batch 0.373 ms | bare tasks + rewritten + readers prefetch 0.360 ms (gate_up 0.241, down 0.118)
+1.5 ms gap: warm, one expert, alternating: forward_batch 0.381 ms | bare tasks + rewritten + readers prefetch 0.371 ms (gate_up 0.251, down 0.120)
+1.5 ms gap: warm, one expert, alternating: forward_batch 0.360 ms | bare tasks + x's digits per thread, act rewritten 0.373 ms (gate_up 0.240, down 0.133)
+1.5 ms gap: warm, one expert, alternating: forward_batch 0.393 ms | bare tasks + x's digits per thread, act rewritten 0.402 ms (gate_up 0.263, down 0.139)

@@ -1,0 +1,60 @@
+# the call after an idle gap (README step 78): bin-hip/bench-fp4-decode call with a gap before every call, the master sleeping or spinning; OpenMP wait policies
+# bin/bench-fp4-decode call 16 2m G (G = 0, 1500, -1500: spinning), twice each; then OMP_WAIT_POLICY=passive / active with G = 1500; commit e1b9fbc + src/bench_fp4_decode.cpp; W-3245, CPU defaults (intel_pstate powersave; idle states POLL C1 C1E C6); 2026-11-06T16:13:17-05:00
+
+# idle gap before each call: 0 us
+schedule data       call  gate_up     down     GB/s     late
+dynamic  warm      0.202    0.131    0.071       93    0.002
+dynamic  cold      0.306    0.166    0.140       61    0.002
+static   warm      0.222    0.144    0.078       85    0.002
+static   cold      0.246    0.153    0.093       76    0.003
+
+# idle gap before each call: 1500 us (the master sleeping)
+schedule data       call  gate_up     down     GB/s     late
+dynamic  warm      0.221    0.154    0.067       85    0.003
+dynamic  cold      0.328    0.192    0.135       57    0.003
+static   warm      0.335    0.230    0.105       56    0.003
+static   cold      0.393    0.267    0.125       48    0.004
+
+# idle gap before each call: 1500 us (the master spinning)
+schedule data       call  gate_up     down     GB/s     late
+dynamic  warm      0.206    0.143    0.064       91    0.002
+dynamic  cold      0.328    0.189    0.139       57    0.002
+static   warm      0.207    0.145    0.062       91    0.002
+static   cold      0.246    0.160    0.086       76    0.002
+
+# idle gap before each call: 0 us
+schedule data       call  gate_up     down     GB/s     late
+dynamic  warm      0.207    0.134    0.073       91    0.002
+dynamic  cold      0.308    0.166    0.141       61    0.002
+static   warm      0.182    0.118    0.064      104    0.002
+static   cold      0.231    0.144    0.087       81    0.002
+
+# idle gap before each call: 1500 us (the master sleeping)
+schedule data       call  gate_up     down     GB/s     late
+dynamic  warm      0.215    0.149    0.066       87    0.003
+dynamic  cold      0.332    0.195    0.137       57    0.003
+static   warm      0.356    0.242    0.114       53    0.004
+static   cold      0.414    0.275    0.139       45    0.004
+
+# idle gap before each call: 1500 us (the master spinning)
+schedule data       call  gate_up     down     GB/s     late
+dynamic  warm      0.206    0.142    0.064       91    0.002
+dynamic  cold      0.328    0.190    0.138       57    0.002
+static   warm      0.196    0.137    0.059       96    0.002
+static   cold      0.257    0.167    0.090       73    0.002
+
+## OMP_WAIT_POLICY=passive
+# idle gap before each call: 1500 us (the master sleeping)
+schedule data       call  gate_up     down     GB/s     late
+dynamic  warm      0.613    0.445    0.167       31    0.134
+dynamic  cold      0.705    0.486    0.218       27    0.131
+static   warm      0.769    0.547    0.223       24    0.135
+static   cold      0.816    0.578    0.237       23    0.131
+
+## OMP_WAIT_POLICY=active
+# idle gap before each call: 1500 us (the master sleeping)
+schedule data       call  gate_up     down     GB/s     late
+dynamic  warm      0.222    0.155    0.068       85    0.004
+dynamic  cold      0.329    0.197    0.132       57    0.004
+static   warm      0.445    0.305    0.140       42    0.003
+static   cold      0.367    0.248    0.119       51    0.002

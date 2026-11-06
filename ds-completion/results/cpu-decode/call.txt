@@ -1,0 +1,16 @@
+# a whole one-token call in bench-fp4-decode (README step 78): gate + up then down in 32-row tasks of canon_dot_rows, activations written once
+# bin/bench-fp4-decode call 16 [4k]; commit e1b9fbc + src/bench_fp4_decode.cpp; W-3245, CPU defaults; 2026-11-06T16:10:15-05:00
+# bench-fp4-decode call: one token, one expert per call (18.8 MB), 16 threads, 32-row tasks, 2 MB pages; ms per call
+# (phases timed by the master thread: gate + up, then down, each ending at the team's barrier)
+schedule data       call  gate_up     down     GB/s
+dynamic  warm      0.202    0.131    0.072       93
+dynamic  cold      0.298    0.164    0.133       63
+static   warm      0.179    0.116    0.063      105
+static   cold      0.252    0.156    0.095       75
+# bench-fp4-decode call: one token, one expert per call (18.8 MB), 16 threads, 32-row tasks, 4 KB pages; ms per call
+# (phases timed by the master thread: gate + up, then down, each ending at the team's barrier)
+schedule data       call  gate_up     down     GB/s
+dynamic  warm      0.203    0.131    0.072       92
+dynamic  cold      0.287    0.161    0.126       66
+static   warm      0.220    0.143    0.077       85
+static   cold      0.244    0.158    0.086       77
