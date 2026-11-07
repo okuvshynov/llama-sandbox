@@ -14,6 +14,10 @@ Per verify step (the "verify N tokens" spans) and per layer of it:
 and per step: the time outside its layers (the head, the step's own overhead) and the draft
 before it. Medians over the steps of each size, ms per step; then the CPU's experts per layer.
 
+With step 86's traces also: per speculative cycle the host's spans (draft, verify, commit and its
+parts, emitting the tokens), the draft's parts per call (its GPU spans), and each draft against
+the background loads (the "cache loads" tracks): the drafts a load on the home die overlaps.
+
   scripts/trace_critpath.py TRACE.json[.gz] [--sizes 2,6]
 """
 import argparse, gzip, json, re, statistics as st
@@ -135,6 +139,56 @@ def main():
             print("      phases (median ms per layer): " + ", ".join(
                 f"{k[4:]} {st.median(v):.3f}" for k, v in ph.items() if not k.endswith('spread')) +
                   "; thread spread: " + ", ".join(f"{k[4:-7]} {st.median(v):.3f}" for k, v in ph.items() if k.endswith('spread')))
+    cycles(ev)
+
+
+
+
+def cycles(ev):
+    """step 86's traces: the speculative cycle, the draft's parts, the drafts against the loads"""
+    st3 = sorted([e for e in ev if e['tid'] == STEPS], key=lambda e: e['ts'])
+    if not any(e['name'].startswith('commit') for e in st3):
+        return
+    gen0 = min(e['ts'] for e in st3 if e['name'].startswith('verify '))
+    st3 = [e for e in st3 if e['ts'] >= gen0 - 20000]
+    med = lambda v: st.median(v) if v else 0.0
+    parts = defaultdict(list)
+    for e in st3:
+        n = re.sub(r'verify \d+ tokens', 'verify', e['name'])
+        parts[re.sub(r'commit \d+ of \d+', 'commit', n)].append(e['dur'] / 1000)
+    drafts = [e for e in st3 if e['name'] == 'draft']
+    print(f"\n# the speculative cycle: host spans, median ms (mean) over {len(drafts)} drafts")
+    for k in ['draft', '  draft: issue', 'verify', 'after verify: draft rule, logs', 'commit', '  commit: compressor rows (issue)',
+              '  commit: draft seed (issue)', '  commit: synchronize', 'after commit: emit the tokens']:
+        v = parts.get(k.strip(), [])
+        if v:
+            print(f"  {k:36s} {med(v):8.3f}  ({st.mean(v):.3f})")
+    g2 = [e for e in ev if e['tid'] == GPU0 and e['ts'] >= gen0 - 20000]
+    dg = sorted([e for e in g2 if e['name'] == 'draft (GPU)'], key=lambda e: e['ts'])
+    if not dg:
+        return
+    per = defaultdict(list)
+    for d in dg:
+        acc = defaultdict(float)
+        for e in g2:
+            if e['name'].startswith('draft.') and d['ts'] - 1 <= e['ts'] < d['ts'] + d['dur'] + 1:
+                acc[re.sub(r' L\d+', '', e['name'])] += e['dur'] / 1000
+        for k, v in acc.items():
+            per[k].append(v)
+    print(f"# the draft on the GPU, median ms per call: {med([d['dur'] / 1000 for d in dg]):.2f}")
+    for k, v in sorted(per.items(), key=lambda kv: -med(kv[1])):
+        print(f"  {k:22s} {med(v):8.3f}")
+    loads = defaultdict(list)
+    for e in ev:
+        if e['tid'] >= 20:
+            loads[e['tid'] - 20].append((e['ts'], e['ts'] + e['dur']))
+    if loads:
+        ov = lambda a0, a1, iv: sum(max(0.0, min(a1, b) - max(a0, a)) for a, b in iv)
+        home = [d for d in dg if ov(d['ts'], d['ts'] + d['dur'], loads.get(0, [])) > 0]
+        rest = [d for d in dg if ov(d['ts'], d['ts'] + d['dur'], loads.get(0, [])) == 0]
+        print(f"# drafts against the background loads: {len(home)} overlap a load on the home die (median "
+              f"{med([d['dur'] / 1000 for d in home]):.2f} ms), {len(rest)} do not ({med([d['dur'] / 1000 for d in rest]):.2f} ms); "
+              f"loads per die in the run: {dict(sorted((k, len(v)) for k, v in loads.items()))}")
 
 
 if __name__ == '__main__':

@@ -1,0 +1,41 @@
+We need answer. Need solve. Triangle 13-14-15. Area Heron s=21, area sqrt(21*8*7*6)=sqrt(7056)=84. Inradius r=K/s=84/21=4. Circumradius R=abc/(4K)=13*14*15/(336). 13*14=182*15=2730. /336 simplify? 2730/336 divide 42 =65/8? 42*65=2730, 42*8=336 yes 65/8=8.125. Need present. Maybe mention. Ensure no hidden. Final concise. 
+</think>For a triangle with sides \(13, 14, 15\):
+
+- Semiperimeter:
+\[
+s=\frac{13+14+15}{2}=21
+\]
+
+- Area by Heron’s formula:
+\[
+A=\sqrt{s(s-a)(s-b)(s-c)}
+=\sqrt{21\cdot 8\cdot 7\cdot 6}
+=\sqrt{7056}=84
+\]
+
+- Inradius:
+\[
+r=\frac{A}{s}=\frac{84}{21}=4
+\]
+
+- Circumradius:
+\[
+R=\frac{abc}{4A}
+=\frac{13\cdot 14\cdot 15}{4\cdot 84}
+=\frac{2730}{336}
+=\frac{65}{8}
+\]
+
+Therefore:
+
+\[
+\boxed{\text{Area}=84}
+\]
+
+\[
+\boxed{\text{Inradius}=4}
+\]
+
+\[
+\boxed{\text{Circumradius}=\frac{65}{8}=8.125}
+\]

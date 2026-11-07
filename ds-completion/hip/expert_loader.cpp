@@ -183,6 +183,7 @@ void ExpertLoader::work(int d) {
       r = queues[d].front();
       queues[d].pop_front();
     }
+    const auto ta = std::chrono::steady_clock::now();
     load_expert(st, p, r.slot, m.layers[r.layer], r.expert, registered);
     n++;
     n_loads++;
@@ -191,10 +192,18 @@ void ExpertLoader::work(int d) {
       CHECK(hipEventSynchronize(fin));
       std::lock_guard<std::mutex> lk(mu);
       done.push_back(r);
+      if (trace_on) spans.push_back({d, r.layer, r.expert, ta, std::chrono::steady_clock::now()});
     }
   }
   (void)hipEventDestroy(fin);
   load_stage_free(st);
+}
+
+std::vector<ExpertLoader::LoadSpan> ExpertLoader::take_trace() {
+  std::lock_guard<std::mutex> lk(mu);
+  std::vector<LoadSpan> r;
+  r.swap(spans);
+  return r;
 }
 
 std::vector<ExpertLoader::Request> ExpertLoader::take_done() {

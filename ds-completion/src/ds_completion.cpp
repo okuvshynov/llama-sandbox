@@ -290,10 +290,13 @@ int main(int argc, char** argv) {
     int backoff = 0, skip = 0;
     long plain_steps = 0;
     if (emit(anchor)) {
+      Clock::time_point t_emit, td_start;
+      bool have_t_emit = false;
       for (;;) {
         DraftResult d;
         double dms = 0;
         int n_verify = 0;
+        td_start = Clock::now();
         if (skip > 0) {
           skip--;
           plain_steps++;
@@ -315,8 +318,10 @@ int main(int argc, char** argv) {
         const int room = opt.max_ctx - rt->n_past();
         if ((int)chunk.size() > room) chunk.resize(std::max(room, 1));
         auto tv = Clock::now();
+        if (have_t_emit) rt->trace_host("after commit: emit the tokens", t_emit, td_start, 3);  // README step 86
         const std::vector<int32_t> next = rt->verify(chunk);
-        const double vms = std::chrono::duration<double, std::milli>(Clock::now() - tv).count();
+        const auto tv1 = Clock::now();
+        const double vms = std::chrono::duration<double, std::milli>(tv1 - tv).count();
         int k = 0;
         while (k + 1 < (int)chunk.size() && chunk[k + 1] == next[k]) k++;
         {
@@ -335,7 +340,10 @@ int main(int argc, char** argv) {
           for (float c : d.conf) fprintf(spec_log, " %.4f", c);
           fprintf(spec_log, "\n");
         }
+        rt->trace_host("after verify: draft rule, logs", tv1, Clock::now(), 3);
         rt->commit(k + 1);
+        t_emit = Clock::now();
+        have_t_emit = true;
         spec_steps++;
         spec_accepted += k;
         bool go = true;

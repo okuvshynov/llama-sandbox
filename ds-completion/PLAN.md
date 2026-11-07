@@ -2,8 +2,8 @@
 
 Status: **done**, **next** (agreed, in order), **planned** (agreed, later), **idea** (not
 decided). Today (sclk 6, 16 CPU threads): `--spec` with the adaptive cache (`--canon
---cache-loads 800 --cache-period 8`) 37.57 t/s mean on the 8 held-out prompts (30.0-45.6; README
-step 84; every decode change on the same ruler: `results/heldout-history/`). Prompt processing
+--cache-loads 800 --cache-period 8`) 40.82 t/s mean on the 8 held-out prompts (31.5-50.1; README
+step 86; every decode change on the same ruler: `results/heldout-history/`). Prompt processing
 93 t/s (63 `--canon`; 1,989 tokens, README step 68). Earlier milestones (sclk 2): no GPU experts
 ~12 t/s; the study30 placement 17.7-21.7; + `--spec` and the cache at 200 loads/s 25.6. The cost
 model below (2026-10-27) says where a token's time went before the cache; today: TIMING.md.
@@ -395,6 +395,18 @@ from the pinned buffer instead: held-out 37.16 -> 37.57 t/s. Left: the dies' own
 behind their loads (~3 ms per code step; kernels there and smaller load pieces were slower).
 Step 85: the background loads paced by the layers (k matrices per layer right after it, or none
 during the expert phase): slower or no change; not kept (`results/decode-next/load-gate.patch`).
+Step 86: the draft in the traces (its parts, commit, the loads per die): drafts doubled while the
+cache loaded into die 0; the home die now keeps its startup experts (dies 1-3 adapt): held-out
+37.57 -> 40.82 t/s. Ideas, not built:
+- how out of date die 0's set is: per rebalance its experts' share of the uses the best set of
+  that size would serve, and the CPU pairs it would have absorbed (ms); if it grows in long runs,
+  its loads at the start of the CPU's experts (die 0 idles ~0.8 ms there), one matrix per layer;
+- die 0 seeded with the experts used most across kinds of prompts (the stable ones), dies 1-3
+  left for the prompt's own;
+- the draft's 384 experts (7.2 GB on die 0): measure its router's usage; if skewed, keep the
+  used half (~190 slots freed; acceptance may drop, outputs cannot change), first a cache
+  simulation of what the slots are worth;
+- the draft's window seeded for all of a commit's kept tokens at once (commit's ~1 ms).
 
 **A. Tuning the expert cache** (the CPU experts' ~25 ms)
 - Hysteresis: a newcomer must beat its victim by a margin, so the cache settles in long runs

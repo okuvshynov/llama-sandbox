@@ -20,6 +20,7 @@
 #include "model.h"
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <deque>
 #include <mutex>
@@ -70,6 +71,11 @@ class ExpertLoader {
   // requests whose copy and unpack have finished since the last call (served from the queue)
   std::vector<Request> take_done();
   bool direct_ready() const { return registered.load(); }
+  // --trace (README step 86): each served load, its die and host times from taking it to its
+  // copies and unpack completing (collected only once trace_on is set)
+  struct LoadSpan { int die, layer, expert; std::chrono::steady_clock::time_point a, b; };
+  std::atomic<bool> trace_on{false};
+  std::vector<LoadSpan> take_trace();
 
  private:
   const Model& m;
@@ -81,6 +87,7 @@ class ExpertLoader {
   std::condition_variable cv;
   std::vector<std::deque<Request>> queues;
   std::vector<Request> done;  // finished, not yet taken (guarded by mu)
+  std::vector<LoadSpan> spans;  // (guarded by mu)
   std::atomic<bool> stop{false}, registered{false};
   std::atomic<long> n_loads{0};
   double test_rate = 0;  // loads/s per die; 0 = serve the queue

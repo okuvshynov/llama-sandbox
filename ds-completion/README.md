@@ -14,8 +14,8 @@ Status, 2026-11-07 (the milestones in order; details in [OVERVIEW.md](OVERVIEW.m
 - Placement-invariant numerics (`--canon`, step 31) and the adaptive expert cache (step 32):
   with `--spec`, 25.6 t/s mean on held-out prompts at sclk 2 (step 32), every output
   byte-identical. Since then, at sclk 6 with the cache tuned (800 loads/s every 8 tokens) and
-  the decode work of steps 50-84: **37.6 t/s mean (30.0-45.6)** on the 8 held-out prompts, every
-  output byte-identical (step 84; the whole history: `results/heldout-history/`, step 72). The
+  the decode work of steps 50-86: **40.8 t/s mean (31.5-50.1)** on the 8 held-out prompts, every
+  output byte-identical (step 86; the whole history: `results/heldout-history/`, step 72). The
   fastest settings per job: QUICKSTART.md.
 - Prompt processing in chunks of 512 (steps 37-45, 68): ~17 -> 93 t/s on a 1,989-token prompt
   (63 with `--canon`; sclk 6), output byte-identical to token by token.
@@ -3121,4 +3121,65 @@ with the loads, but bunched right after a layer they slow the next layer's atten
 unpack kernels and copies meet die 0's work) and the wait does not shrink. Holding new loads
 back during the expert phase changes nothing: the ones started during attention are still on
 the copy engine when the phase begins. Not kept; the dies' copies stay as they are.
+
+## Step 86: the draft in the traces; the home die keeps its startup experts
+
+The draft was one host span in the traces. Four additions to `--trace` (no change untraced):
+
+- **The draft's parts on die 0's track** (`draft.*`, per draft layer, and "draft (GPU)"), placed
+  on the host clock from its end (it synchronizes there), and "draft: issue": the host issuing it
+  up to its copies out (they block: pageable memory).
+- **The gap after a verify step:** `commit` and its parts (the compressor rows, seeding the
+  draft's window, the synchronize), the loop's work after verify and after commit.
+- **The cache's background loads**, each on a track per die, from the loader taking it to its
+  copies and unpack completing (`ExpertLoader::take_trace`).
+- `scripts/trace_critpath.py` reports the cycle, the draft's parts and the drafts against the
+  loads.
+
+What they show (`results/decode-next/draft.txt`):
+
+- **A draft is ~8 ms on die 0** (5 positions; head 2.2 ms, routed experts 1.7, the Markov head
+  1.0, attention 2.1, shared expert 0.5, the rest 0.7), and GPU-bound: the host issues it in
+  ~0.6 ms.
+- **The gap after a verify step is `commit`'s synchronize** (~1.2 ms on a code step, 0.6 on
+  chat): the draft's window seeded one kept token at a time. The host's own work there is ~20 us.
+  (Inside the traced verify step the host returns 2-3 ms after the head: the trace's per-step
+  event processing, traced runs only.)
+- **Half the drafts took 14-18 ms instead of 8,** in turns: exactly those during which the
+  cache was loading experts into die 0 (36 of 36 slow drafts overlap such a load, none of the
+  fast ones; without loads every draft is ~8 ms). The parts made of many small kernels doubled,
+  the head (the largest read) did not; loads to dies 1-3 alone leave the draft at 8.4 ms.
+- **The loader's unpack kernel** took 153 us per matrix with every CU busy (a thread per 17-byte
+  block, byte by byte); coalesced through shared memory it takes 21 us, the same bytes. It was not
+  the cause (the slow drafts stay) but is kept.
+
+**The home die now keeps its startup experts:** the cache never picks a victim there
+(`ExpertCache::Options::fixed_die`), so its ~830 slots hold the placement's experts for the whole
+run and every load goes to dies 1-3. Traced: cpp-matrix 42.75 -> 44.99 t/s, tcp-udp 31.18 ->
+32.39; the cache still publishes as many loads (3,654 / 3,175). No draft overlaps a load on the
+home die any more, and commit's wait is shorter too (1.4 -> 1.0 ms per code step).
+
+Held-out (`spec-measure-sclk6-cacheloads800cacheperiod8-homefixed/`): mean **37.57 -> 40.82 t/s
+(+8.7%)**, 31.5-50.1; outputs identical.
+
+| prompt | step 84 | step 86 |
+|---|---|---|
+| tcp-udp | 33.41 | 35.28 |
+| py-lru | 39.55 | 42.62 |
+| cpp-matrix | 45.60 | 50.08 |
+| sql-report | 38.69 | 43.14 |
+| geometry | 45.45 | 49.73 |
+| zh-travel | 29.96 | 31.52 |
+| ja-email | 32.81 | 33.34 |
+| summary-json | 35.12 | 40.87 |
+| long-proof | 51.31 | 51.62 |
+
+(Every prompt took fewer tokens per step than in step 84's run, 1-10%: the draft-length rule
+chooses from the measured step costs, which changed.) The gain is larger than the traces' (+4-5%):
+die 0's loads had also slowed its own dense work. The startup placement now matters more: die
+0's set is fixed for the run. Ideas (PLAN): a measure of how out of date die 0's set is, and its
+loads in the CPU phase if it is; die 0 seeded with the most stable experts; the draft's own
+experts pruned to free die 0's space; the draft's window seeded for all kept tokens at once.
+`results/trace/` holds the traces of this build (32.28 / 45.02 t/s traced, outputs identical),
+`compare-step84.txt` and `critpath.txt`.
 

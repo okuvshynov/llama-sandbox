@@ -1,5 +1,7 @@
 #include "expert_cache.h"
 
+#include <cstdlib>
+
 #include <algorithm>
 #include <stdexcept>
 #include <string>
@@ -44,7 +46,9 @@ void ExpertCache::rebalance() {
   std::vector<int> cand, res;
   for (int k = 0; k < n_pairs; k++) {
     if (loading[k]) continue;
-    if (table[k] >= 0) res.push_back(k);
+    if (table[k] >= 0) {
+      if ((table[k] >> 16) != opt.fixed_die) res.push_back(k);  // the fixed die's experts stay
+    }
     else if (count[k] >= opt.min_count) cand.push_back(k);
   }
   // newcomers: most used first (ties: most recent); victims: least used first (ties: least recent)

@@ -1,4 +1,106 @@
-# scripts/trace_critpath.py on step 84's traces (4f72523 + step 84) and, for comparison, step 74's (c4bd99b); sclk 6; 2026-11-07T01:43:00-05:00
+# scripts/trace_critpath.py on step 86's traces (a6eaf82 + step 86) and step 84's (a6eaf82); sclk 6; 2026-11-07T03:50:10-05:00
+
+# step 86's cpp-matrix: verify steps by size, median ms per step (die 0 front + its wait for the CPU + tail + outside = step)
+part                           2 tok (2)     3 tok (7)    4 tok (10)    5 tok (13)    6 tok (34)
+front                              32.11         41.52         47.50         47.78         54.46
+handoff in                          0.89          0.57          0.85          0.98          1.22
+CPU                                23.54         23.05         32.14         36.23         32.08
+handoff out                         1.22          1.24          1.60          1.59          1.57
+  issue the copy (host)             0.46          0.38          0.55          0.57          0.47
+  lag to the copy                   0.10          0.18          0.23          0.25          0.22
+  the copy (die 0)                  0.66          0.66          0.88          0.89          0.91
+die 0 waits for CPU                21.13         19.19         26.36         31.71         26.22
+tail                                1.25          2.03          3.29          3.47          5.82
+outside layers                      4.05          3.97          4.75          5.40          5.92
+draft                               8.21          8.42          8.35          8.26          8.38
+step                               58.54         67.72         82.42         87.65         91.43
+
+# the CPU's experts per layer that had any (medians): distinct experts, pairs, ms, ms per distinct expert
+  2 tokens: 72 layers, 2 experts, 3 pairs, 0.669 ms, 0.271 ms per expert
+      phases (median ms per layer): inputs 0.018, gate_up 0.409, act 0.013, down 0.198; thread spread: gate_up 0.026, down 0.014
+  3 tokens: 237 layers, 2 experts, 3 pairs, 0.765 ms, 0.309 ms per expert
+      phases (median ms per layer): inputs 0.017, gate_up 0.462, act 0.016, down 0.241; thread spread: gate_up 0.029, down 0.016
+  4 tokens: 374 layers, 3 experts, 4 pairs, 0.919 ms, 0.299 ms per expert
+      phases (median ms per layer): inputs 0.018, gate_up 0.560, act 0.017, down 0.290; thread spread: gate_up 0.027, down 0.015
+  5 tokens: 487 layers, 3 experts, 4 pairs, 0.988 ms, 0.294 ms per expert
+      phases (median ms per layer): inputs 0.018, gate_up 0.589, act 0.018, down 0.321; thread spread: gate_up 0.028, down 0.015
+  6 tokens: 1240 layers, 3 experts, 3 pairs, 0.835 ms, 0.290 ms per expert
+      phases (median ms per layer): inputs 0.017, gate_up 0.493, act 0.017, down 0.274; thread spread: gate_up 0.028, down 0.015
+
+# the speculative cycle: host spans, median ms (mean) over 66 drafts
+  draft                                   8.354  (8.518)
+    draft: issue                          0.643  (0.653)
+  verify                                 89.441  (91.467)
+  after verify: draft rule, logs          0.001  (0.001)
+  commit                                  0.987  (0.932)
+    commit: compressor rows (issue)       0.030  (0.031)
+    commit: draft seed (issue)            0.107  (0.100)
+    commit: synchronize                   0.854  (0.802)
+  after commit: emit the tokens           0.022  (0.023)
+# the draft on the GPU, median ms per call: 8.27
+  draft.head                2.196
+  draft.ffn.routed          1.662
+  draft.markov              0.998
+  draft.attn.out            0.832
+  draft.attn.core           0.748
+  draft.attn.proj           0.615
+  draft.ffn.shared          0.492
+  draft.hc                  0.330
+  draft.embed               0.176
+  draft.copy                0.166
+# drafts against the background loads: 0 overlap a load on the home die (median 0.00 ms), 66 do not (8.27 ms); loads per die in the run: {1: 1214, 2: 1220, 3: 1268}
+
+# step 86's tcp-udp: verify steps by size, median ms per step (die 0 front + its wait for the CPU + tail + outside = step)
+part                          1 tok (26)    2 tok (51)    3 tok (37)    4 tok (18)     5 tok (4)     6 tok (2)
+front                              31.70         36.31         44.96         51.40         49.83         52.41
+handoff in                          0.22          0.50          0.53          0.81          0.95          1.33
+CPU                                 5.70         12.33         15.70         19.29         35.16         53.96
+handoff out                         0.43          0.89          1.00          1.24          1.78          1.94
+  issue the copy (host)             0.13          0.27          0.31          0.35          0.46          0.61
+  lag to the copy                   0.07          0.13          0.14          0.21          0.44          0.32
+  the copy (die 0)                  0.24          0.47          0.57          0.66          0.89          1.02
+die 0 waits for CPU                 4.85         10.05         11.30         13.26         28.56         45.97
+tail                                0.49          1.02          2.04          3.15          4.26          4.48
+outside layers                      3.20          3.83          4.09          4.39          4.98          6.10
+draft                               8.22          8.23          8.28          8.29          8.39          8.26
+step                               40.70         51.27         63.36         73.65         87.90        108.95
+
+# the CPU's experts per layer that had any (medians): distinct experts, pairs, ms, ms per distinct expert
+  1 tokens: 424 layers, 1 experts, 1 pairs, 0.329 ms, 0.296 ms per expert
+      phases (median ms per layer): inputs 0.017, gate_up 0.190, act 0.010, down 0.098; thread spread: gate_up 0.027, down 0.014
+  2 tokens: 1279 layers, 1 experts, 1 pairs, 0.457 ms, 0.312 ms per expert
+      phases (median ms per layer): inputs 0.018, gate_up 0.224, act 0.012, down 0.119; thread spread: gate_up 0.028, down 0.015
+  3 tokens: 1073 layers, 2 experts, 2 pairs, 0.545 ms, 0.307 ms per expert
+      phases (median ms per layer): inputs 0.017, gate_up 0.315, act 0.013, down 0.174; thread spread: gate_up 0.027, down 0.015
+  4 tokens: 573 layers, 2 experts, 2 pairs, 0.616 ms, 0.303 ms per expert
+      phases (median ms per layer): inputs 0.017, gate_up 0.361, act 0.015, down 0.191; thread spread: gate_up 0.027, down 0.015
+  5 tokens: 145 layers, 3 experts, 3 pairs, 0.870 ms, 0.299 ms per expert
+      phases (median ms per layer): inputs 0.018, gate_up 0.540, act 0.016, down 0.284; thread spread: gate_up 0.028, down 0.015
+  6 tokens: 78 layers, 5 experts, 6 pairs, 1.338 ms, 0.289 ms per expert
+      phases (median ms per layer): inputs 0.018, gate_up 0.824, act 0.022, down 0.445; thread spread: gate_up 0.027, down 0.014
+
+# the speculative cycle: host spans, median ms (mean) over 123 drafts
+  draft                                   8.276  (8.402)
+    draft: issue                          0.625  (0.636)
+  verify                                 55.227  (59.324)
+  after verify: draft rule, logs          0.001  (0.001)
+  commit                                  0.444  (0.480)
+    commit: compressor rows (issue)       0.030  (0.030)
+    commit: draft seed (issue)            0.054  (0.057)
+    commit: synchronize                   0.362  (0.393)
+  after commit: emit the tokens           0.019  (0.020)
+# the draft on the GPU, median ms per call: 8.19
+  draft.head                2.186
+  draft.ffn.routed          1.674
+  draft.markov              0.979
+  draft.attn.out            0.820
+  draft.attn.core           0.722
+  draft.attn.proj           0.594
+  draft.ffn.shared          0.468
+  draft.hc                  0.308
+  draft.copy                0.194
+  draft.embed               0.169
+# drafts against the background loads: 0 overlap a load on the home die (median 0.00 ms), 123 do not (8.19 ms); loads per die in the run: {1: 1072, 2: 1047, 3: 1056}
 
 # step 84's cpp-matrix: verify steps by size, median ms per step (die 0 front + its wait for the CPU + tail + outside = step)
 part                           2 tok (1)     3 tok (7)     4 tok (9)     5 tok (9)    6 tok (38)
@@ -55,42 +157,3 @@ step                               40.14         52.04         63.82         72.
       phases (median ms per layer): inputs 0.018, gate_up 0.540, act 0.017, down 0.294; thread spread: gate_up 0.028, down 0.014
   6 tokens: 40 layers, 6 experts, 9 pairs, 1.860 ms, 0.286 ms per expert
       phases (median ms per layer): inputs 0.019, gate_up 1.137, act 0.030, down 0.620; thread spread: gate_up 0.028, down 0.015
-
-# step 74's cpp-matrix: verify steps by size, median ms per step (die 0 front + its wait for the CPU + tail + outside = step)
-part                           2 tok (1)     3 tok (7)    4 tok (10)     5 tok (8)    6 tok (38)
-front                              32.30         45.62         57.29         57.07         58.10
-handoff in                          0.69          0.15          0.15          0.35          0.98
-CPU                                26.29         30.07         31.49         51.95         36.75
-handoff out                         1.48          2.29          7.31          5.31          5.57
-die 0 waits for CPU                23.68         29.13         29.32         48.15         33.07
-tail                                1.16          1.79          2.38          2.28          1.44
-outside layers                      3.87          4.67          4.93          5.53          6.00
-draft                               7.87         13.83         15.28         14.94          8.40
-step                               61.01         86.78         97.32        112.82         99.22
-
-# the CPU's experts per layer that had any (medians): distinct experts, pairs, ms, ms per distinct expert
-  2 tokens: 36 layers, 2 experts, 2 pairs, 0.703 ms, 0.327 ms per expert
-  3 tokens: 248 layers, 3 experts, 3 pairs, 0.879 ms, 0.344 ms per expert
-  4 tokens: 362 layers, 3 experts, 3 pairs, 0.972 ms, 0.342 ms per expert
-  5 tokens: 310 layers, 3 experts, 4 pairs, 1.150 ms, 0.339 ms per expert
-  6 tokens: 1389 layers, 3 experts, 3 pairs, 0.985 ms, 0.332 ms per expert
-
-# step 74's tcp-udp: verify steps by size, median ms per step (die 0 front + its wait for the CPU + tail + outside = step)
-part                          1 tok (17)    2 tok (52)    3 tok (38)    4 tok (19)     5 tok (5)     6 tok (2)
-front                              31.93         37.18         45.67         52.57         51.02         53.32
-handoff in                          0.01          0.33          0.29          0.49          0.76          0.95
-CPU                                 5.85         13.61         18.54         21.74         29.32         60.40
-handoff out                         0.50          1.02          1.78          2.87          5.05          4.47
-die 0 waits for CPU                 4.95         11.39         15.41         17.20         24.97         54.44
-tail                                0.46          0.89          1.11          1.17          1.44          1.45
-outside layers                      3.10          4.17          4.40          4.82          5.49          6.01
-draft                               7.96          7.96          7.97          7.96         15.08          7.95
-step                               40.45         54.06         66.35         76.11         81.83        115.22
-
-# the CPU's experts per layer that had any (medians): distinct experts, pairs, ms, ms per distinct expert
-  1 tokens: 253 layers, 1 experts, 1 pairs, 0.382 ms, 0.330 ms per expert
-  2 tokens: 1299 layers, 1 experts, 2 pairs, 0.506 ms, 0.357 ms per expert
-  3 tokens: 1089 layers, 2 experts, 2 pairs, 0.636 ms, 0.360 ms per expert
-  4 tokens: 598 layers, 2 experts, 2 pairs, 0.677 ms, 0.347 ms per expert
-  5 tokens: 183 layers, 3 experts, 3 pairs, 0.921 ms, 0.337 ms per expert
-  6 tokens: 76 layers, 4 experts, 6 pairs, 1.532 ms, 0.327 ms per expert

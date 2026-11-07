@@ -39,6 +39,10 @@ class ExpertCache {
     // wait = block in the constructor until it is done (for measurements)
     bool wait = false;
     int min_count = 2;  // a newcomer's least uses in the window (README step 59)
+    // a die whose slots keep the startup placement (never a victim, so never loaded into): the
+    // home die, whose loads' copies and unpacks ran next to its draft and its dense work and
+    // doubled the draft's time (README step 86); -1 = every die adapts
+    int fixed_die = -1;
   };
   // table: the host copy of the runtime's [n_layer][n_expert] table (die << 16 | slot, or -1),
   // filled by the static placement; d_table its device copy (uploaded by step())
@@ -78,6 +82,9 @@ class ExpertCache {
   std::chrono::steady_clock::time_point last_tick;
   bool table_dirty = false;
   std::unique_ptr<ExpertLoader> loader;
+ public:
+  ExpertLoader* loader_ptr() { return loader.get(); }  // --trace (README step 86)
+ private:
   Stats st;
   void rebalance();
 };

@@ -663,6 +663,7 @@ std::vector<int32_t> Runtime::forward_chunk(const std::vector<int32_t>& toks, bo
 }
 
 void Runtime::commit(int n_keep) {
+  const auto t_c0 = Clock::now();  // README step 86: commit's parts on the steps track
   const int HD = hp.head_dim, M = verify_m;
   if (n_keep < 1 || n_keep > M || n_past_ != verify_p0 + M) throw std::runtime_error("commit without a matching verify");
   // compressor partial groups: each slot from the last kept position writing it, else as before
@@ -680,12 +681,21 @@ void Runtime::commit(int n_keep) {
   }
   n_past_ = verify_p0 + n_keep;
   tokens_.resize(n_past_);
+  const auto t_c1 = Clock::now();
   if (dspark) {
     const size_t nh = dspark->target_layers.size() * hp.n_embd;
     for (int i = 0; i < n_keep; i++) dspark->seed(verify_p0 + i, dspark->hid_chunk + (size_t)i * nh);
     CHECK(hipMemcpyAsync(dspark->main_hidden, dspark->hid_chunk + (size_t)(n_keep - 1) * nh, nh * 4, hipMemcpyDeviceToDevice, s));
   }
+  const auto t_c2 = Clock::now();
   CHECK(hipStreamSynchronize(s));
+  const auto t_c3 = Clock::now();
+  if (!trace_path.empty()) {
+    trace_host(("commit " + std::to_string(n_keep) + " of " + std::to_string(M)).c_str(), t_c0, t_c3, 3);
+    trace_host("commit: compressor rows (issue)", t_c0, t_c1, 3);
+    trace_host("commit: draft seed (issue)", t_c1, t_c2, 3);
+    trace_host("commit: synchronize", t_c2, t_c3, 3);
+  }
   verify_m = 0;
 }
 
@@ -778,7 +788,11 @@ void Runtime::setup_experts() {
     if (opt.load_test >= 0) throw std::runtime_error("--load-test and the expert cache are exclusive");
     std::vector<ExpertPool*> pools;
     for (Die& d : dies) pools.push_back(&d.pool);
-    cache.reset(new ExpertCache(m, pools, h_table, d_table, X, {opt.cache_loads, opt.cache_period, opt.cache_window, opt.cache_wait, opt.cache_min}));
+    int home = -1;  // the home die keeps its startup experts (README step 86)
+    for (size_t i = 0; i < dies.size(); i++)
+      if (dies[i].dev == opt.gpu) home = (int)i;
+    cache.reset(new ExpertCache(m, pools, h_table, d_table, X,
+                                {opt.cache_loads, opt.cache_period, opt.cache_window, opt.cache_wait, opt.cache_min, home}));
     fprintf(stderr, "# expert cache: up to %.0f loads/s, rebalance every %d tokens over the last %d%s\n", opt.cache_loads,
             opt.cache_period, opt.cache_window, opt.canon ? "" : " (without --canon the output depends on load timing)");
     CHECK(hipSetDevice(home));
@@ -950,6 +964,7 @@ void Runtime::set_trace(const std::string& path) {
   trace_path = path;
   profile = true;
   trace_epoch = Clock::now();
+  if (cache && cache->loader_ptr()) cache->loader_ptr()->trace_on = true;  // README step 86
   CHECK(hipEventCreate(&tr_staged));
   die_trace.resize(dies.size());
   for (size_t i = 0; i < dies.size(); i++) {
@@ -1065,6 +1080,11 @@ void Runtime::trace_write() {
   meta(2, "GPU " + std::to_string(opt.gpu) + " main stream (dense part)");
   for (size_t i = 0; i < dies.size(); i++)
     meta(10 + (int)i, "GPU " + std::to_string(dies[i].dev) + (dies[i].st ? " experts" : " experts (second stream)"));
+  if (cache && cache->loader_ptr()) {  // README step 86: the cache's background loads, per die
+    for (size_t i = 0; i < dies.size(); i++) meta(20 + (int)i, "GPU " + std::to_string(dies[i].dev) + " cache loads (host view)");
+    for (const ExpertLoader::LoadSpan& l : cache->loader_ptr()->take_trace())
+      trace_host(("load L" + std::to_string(l.layer) + " e" + std::to_string(l.expert)).c_str(), l.a, l.b, 20 + l.die);
+  }
   // start and end rounded to 0.1 us each, so a span that ends where its parent ends still nests
   for (const TraceEv& e : trace_evs) {
     const double a = std::round(e.ts * 10) / 10, b = std::round((e.ts + e.dur) * 10) / 10;

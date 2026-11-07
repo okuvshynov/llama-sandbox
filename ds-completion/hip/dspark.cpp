@@ -270,6 +270,7 @@ void DSpark::seed(int pos, const float* hidden) {
 // position, after every position's K/V is written. The Markov step runs on the GPU (row gather,
 // bias GEMV, argmax), left to right; one host sync at the end.
 DraftResult DSpark::draft(int32_t anchor, int pos, bool keep_logits) {
+  const auto t_call0 = std::chrono::steady_clock::now();
   const Hparams& hp = rt.hp;
   const int E = hp.n_embd, HC = hp.hc_mult, HD = hp.head_dim, NH = hp.n_head, RD = hp.rope_dim, F = hp.n_ff_exp;
   const int B = block_size, MIX = (2 + HC) * HC;
@@ -282,18 +283,23 @@ DraftResult DSpark::draft(int32_t anchor, int pos, bool keep_logits) {
   };
   // DS_DRAFT_PROFILE=1: GPU time per part of the draft, summed over the run, printed at exit
   static const bool prof = getenv("DS_DRAFT_PROFILE") != nullptr;
+  const bool tracing = !rt.trace_path.empty();  // README step 86: the parts as spans in --trace
   static std::map<std::string, double> prof_ms;
   static int prof_n = 0;
   static std::vector<std::pair<std::string, hipEvent_t>> ev;
+  static std::vector<int> ev_layer;  // the draft layer of each mark (-1 outside the layers)
   size_t ev_i = 0;
+  int cur_l = -1;
   auto mark = [&](const char* name) {
-    if (!prof) return;
+    if (!prof && !tracing) return;
     if (ev_i == ev.size()) {
       hipEvent_t e;
       CHECK(hipEventCreate(&e));
       ev.emplace_back(name, e);
+      ev_layer.push_back(-1);
     }
     ev[ev_i].first = name;
+    ev_layer[ev_i] = cur_l;
     CHECK(hipEventRecord(ev[ev_i].second, s));
     ev_i++;
   };
@@ -323,6 +329,7 @@ DraftResult DSpark::draft(int32_t anchor, int pos, bool keep_logits) {
 
   for (size_t l = 0; l < L.size(); l++) {
     const LayerW& w = L[l];
+    cur_l = (int)l;
     mark("hc");
     // attention: mixes, then q and K/V for every block position (it attends to itself both ways)
     k_gemv_f32_m(w.hc_attn_fn, MIX, E * HC, hblk, B, mixes, rt.partial, s);
@@ -388,6 +395,7 @@ DraftResult DSpark::draft(int32_t anchor, int pos, bool keep_logits) {
     fclose(debug_log);
     debug_log = nullptr;
   }
+  cur_l = -1;
   mark("head");
   // head: collapse, the draft's norm, the main model's head (one read for the whole block)
   k_hc_pre(hblk, pre, E, xfin, s, B);
@@ -405,6 +413,7 @@ DraftResult DSpark::draft(int32_t anchor, int pos, bool keep_logits) {
     k_argmax(lg, (int)V, d_ids + i + 1, s);
   }
   mark("copy");
+  const auto t_issued = std::chrono::steady_clock::now();  // every kernel issued (the copies below block)
   DraftResult r;
   r.ids.resize(B + 1);
   std::vector<float> xf((size_t)B * E), emb((size_t)B * rank);
@@ -417,6 +426,27 @@ DraftResult DSpark::draft(int32_t anchor, int pos, bool keep_logits) {
   }
   mark("end");
   CHECK(hipStreamSynchronize(s));
+  if (tracing) rt.trace_host("draft: issue", t_call0, t_issued, 3);
+  if (tracing && ev_i > 1) {  // on the host clock from the end, which completed just before the sync returned
+    const double t_end = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - rt.trace_epoch).count();
+    std::vector<double> at(ev_i);
+    for (size_t i = 0; i < ev_i; i++) {
+      float a;
+      CHECK(hipEventElapsedTime(&a, ev[i].second, ev[ev_i - 1].second));
+      at[i] = t_end - a * 1000.0;
+    }
+    rt.trace_evs.push_back({"draft (GPU)", 2, at[0], at[ev_i - 1] - at[0], ""});
+    for (size_t i = 0; i + 1 < ev_i; i++) {
+      if (ev_layer[i] >= 0 && (i == 0 || ev_layer[i - 1] != ev_layer[i])) {
+        size_t j = i;
+        while (j + 1 < ev_i && ev_layer[j] == ev_layer[i]) j++;
+        rt.trace_evs.push_back({"draft layer " + std::to_string(ev_layer[i]), 2, at[i], at[j] - at[i], ""});
+      }
+      std::string name = std::string("draft.") + ev[i].first;
+      if (ev_layer[i] >= 0) name += " L" + std::to_string(ev_layer[i]);
+      rt.trace_evs.push_back({name, 2, at[i], at[i + 1] - at[i], ""});
+    }
+  }
   if (prof) {
     for (size_t i = 0; i + 1 < ev_i; i++) {
       float ms;

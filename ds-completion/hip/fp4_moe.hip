@@ -20,16 +20,40 @@ static inline int cdiv(int a, int b) { return (a + b - 1) / b; }
 // ------------------------------------------------------------------ upload
 
 // ggml block_mxfp4 (scale byte + 16 code bytes) -> separate aligned codes and scales
+// A workgroup takes 256 blocks (4,352 contiguous bytes) into shared memory by coalesced 4-byte
+// loads, then each thread writes its block's 16 codes as one 16-byte store and its scale (README
+// step 86: one thread per block reading and writing byte by byte took 153 us per expert matrix,
+// with every CU busy, while the expert cache's loads ran next to the draft; this takes 21 us)
+constexpr int kUnpackGroup = 256;
 __global__ void unpack_blocks_kernel(const uint8_t* src, size_t n_blocks, uint8_t* codes, uint8_t* scales) {
-  const size_t b = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
-  if (b >= n_blocks) return;
-  const uint8_t* s = src + b * 17;
-  scales[b] = s[0];
-  for (int i = 0; i < 16; i++) codes[b * 16 + i] = s[1 + i];
+  __shared__ uint32_t sh[kUnpackGroup * 17 / 4 + 1];
+  const size_t g0 = (size_t)blockIdx.x * kUnpackGroup;
+  const size_t nb = n_blocks - g0 < (size_t)kUnpackGroup ? n_blocks - g0 : kUnpackGroup;
+  const uint8_t* s = src + g0 * 17;  // 4-aligned: kUnpackGroup * 17 is a multiple of 4
+  const size_t bytes = nb * 17;
+  for (size_t i = threadIdx.x; i < (bytes + 3) / 4; i += blockDim.x) {
+    uint32_t v = 0;
+    if (i * 4 + 4 <= bytes) v = ((const uint32_t*)s)[i];
+    else
+      for (size_t k = i * 4; k < bytes; k++) v |= (uint32_t)s[k] << (8 * (k - i * 4));
+    sh[i] = v;
+  }
+  __syncthreads();
+  const int t = threadIdx.x;
+  if ((size_t)t < nb) {
+    const uint8_t* sb = (const uint8_t*)sh + t * 17;
+    scales[g0 + t] = sb[0];
+    uint8_t c[16];
+    for (int i = 0; i < 16; i++) c[i] = sb[1 + i];
+    uint4 w;
+    memcpy(&w, c, 16);
+    ((uint4*)(codes + (g0 + t) * 16))[0] = w;
+  }
 }
 
 void fp4_unpack(const uint8_t* blocks, size_t n_blocks, uint8_t* codes, uint8_t* scales, hipStream_t s) {
-  unpack_blocks_kernel<<<(unsigned)((n_blocks + 255) / 256), 256, 0, s>>>(blocks, n_blocks, codes, scales);
+  if ((uintptr_t)blocks % 4 || (uintptr_t)codes % 16) throw std::runtime_error("fp4_unpack: misaligned buffers");
+  unpack_blocks_kernel<<<(unsigned)((n_blocks + kUnpackGroup - 1) / kUnpackGroup), kUnpackGroup, 0, s>>>(blocks, n_blocks, codes, scales);
 }
 
 GpuMatrix fp4_upload(const void* src, int K, int N, int n_expert, hipStream_t s) {

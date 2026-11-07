@@ -1,0 +1,77 @@
+# the draft, the gap after a verify step, and the cache's loads next to the draft (README step 86)
+# traces of cpp-matrix / tcp-udp (300 tokens, --spec --canon --cache-loads 800 --cache-period 8 --cache-wait, study30); commit a6eaf82 + step 86's changes; sclk 6; 2026-11-07
+# read with scripts/trace_critpath.py (its cycle section); 'draft (GPU)' and draft.* are die 0's spans of the draft, 'draft: issue' the host issuing it up to its copies out
+
+## 1. step 84's build with the load spans: the cycle and the draft (cpp-matrix)
+# the speculative cycle: host spans, median ms (mean) over 64 drafts
+  draft                                  14.093  (12.370)
+    draft: issue                          0.798  (1.077)
+  verify                                 91.466  (95.406)
+  after verify: draft rule, logs          0.001  (0.001)
+  commit                                  1.371  (1.821)
+    commit: compressor rows (issue)       0.029  (0.030)
+    commit: draft seed (issue)            0.107  (0.098)
+    commit: synchronize                   1.240  (1.693)
+  after commit: emit the tokens           0.023  (0.024)
+# the draft on the GPU, median ms per call: 13.97
+  draft.head                2.259
+  draft.ffn.routed          2.005
+  draft.attn.proj           1.313
+  draft.attn.core           1.169
+  draft.ffn.shared          1.085
+  draft.markov              1.074
+  draft.attn.out            1.060
+  draft.hc                  0.797
+  draft.embed               0.421
+  draft.copy                0.295
+# drafts against the background loads: 36 overlap a load on the home die (median 15.69 ms), 28 do not (8.13 ms); loads per die in the run: {0: 483, 1: 1052, 2: 1028, 3: 1102}
+
+## 2. the same build, no background loads (--cache-loads 0): every draft ~8 ms
+  70 drafts: median 8.07 ms, max 8.29
+
+## 3. the loader's unpack kernel, one expert matrix (368,640 blocks, 6.3 MB), die 0 (a scratch bench of both kernels; bytes compared)
+  today's (a thread per block, byte by byte, 1,440 workgroups): 153 us
+  coalesced (shared memory, 16-byte stores): 21 us with 1,440 workgroups; 41 / 75 / 147 / 290 us with 120 / 60 / 30 / 15; output identical
+  in the runtime (traced, loads on): the slow drafts stay (cpp-matrix 42.09 t/s; 33 of 66 drafts over 12 ms, mean 12.2 ms): it was not the cause; kept for its own sake
+
+## 4. loads to dies 1-3 only (the home die's slots as at startup): cpp-matrix traced
+  a temporary skip of swaps with a victim on die 0: 44.90 t/s (42.75 with them); drafts overlapping loads on dies 1-3 median 8.36 ms, without any 8.08
+  as kept (ExpertCache::Options::fixed_die = the home die; never a victim):
+  cpp-matrix: 44.99 t/s traced, 3723 loads started, 3654 published (with the home die adapting: 42.75 t/s)
+  tcp-udp: 32.39 t/s traced, 3175 loads started, 3175 published (with the home die adapting: 31.18 t/s)
+
+## 5. step 86's build: the cycle and the draft (cpp-matrix)
+# the speculative cycle: host spans, median ms (mean) over 66 drafts
+  draft                                   8.354  (8.518)
+    draft: issue                          0.643  (0.653)
+  verify                                 89.441  (91.467)
+  after verify: draft rule, logs          0.001  (0.001)
+  commit                                  0.987  (0.932)
+    commit: compressor rows (issue)       0.030  (0.031)
+    commit: draft seed (issue)            0.107  (0.100)
+    commit: synchronize                   0.854  (0.802)
+  after commit: emit the tokens           0.022  (0.023)
+# the draft on the GPU, median ms per call: 8.27
+  draft.head                2.196
+  draft.ffn.routed          1.662
+  draft.markov              0.998
+  draft.attn.out            0.832
+  draft.attn.core           0.748
+  draft.attn.proj           0.615
+  draft.ffn.shared          0.492
+  draft.hc                  0.330
+  draft.embed               0.176
+  draft.copy                0.166
+# drafts against the background loads: 0 overlap a load on the home die (median 0.00 ms), 66 do not (8.27 ms); loads per die in the run: {1: 1214, 2: 1220, 3: 1268}
+
+## 6. held-out: results/spec-measure-sclk6-cacheloads800cacheperiod8-homefixed/ (step 84: -kcopy/)
+# name: generation t/s, tokens per step, drafts accepted per step, output vs results/cache-test/plain-canon-static
+tcp-udp: 35.28 t/s, 2.11 tokens per step, 1.11 accepted, output same
+py-lru: 42.62 t/s, 3.03 tokens per step, 2.02 accepted, output same
+cpp-matrix: 50.08 t/s, 4.62 tokens per step, 3.60 accepted, output same
+sql-report: 43.14 t/s, 3.90 tokens per step, 2.92 accepted, output same
+geometry: 49.73 t/s, 4.06 tokens per step, 3.07 accepted, output same
+zh-travel: 31.52 t/s, 1.55 tokens per step, 0.54 accepted, output same
+ja-email: 33.34 t/s, 1.71 tokens per step, 0.71 accepted, output same
+summary-json: 40.87 t/s, 3.50 tokens per step, 2.54 accepted, output same
+long-proof: 51.62 t/s, 3.80 tokens per step, 2.80 accepted, output n/a
