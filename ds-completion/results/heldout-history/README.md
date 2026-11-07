@@ -18,7 +18,7 @@ are rerun at sclk 6 from their commits, each with the flags it had then:
 
 | status | steps | settings |
 |---|---|---|
-| measured | 48, 50, 53, 57, 62, 66, 67, 68, 71, 73, 74 | `--spec --canon` with the cache (200 loads/s at 48, 800/s every 8 tokens from 50) |
+| measured | 48, 50, 53, 57, 62, 66, 67, 68, 71, 73, 74, 80 | `--spec --canon` with the cache (200 loads/s at 48, 800/s every 8 tokens from 50) |
 | rerun (tier 1) | 6, 7 | dense on GPU 0 (`--gpu 0 --rt`), every routed expert on the CPU |
 | | 14, 18 | `--placement study30`: experts split per layer between GPUs and the CPU |
 | | 20, 21a, 21b, 22, 23, 24, 25 | `--dspark --spec`: speculative decoding as it was built up |
@@ -28,7 +28,7 @@ are rerun at sclk 6 from their commits, each with the flags it had then:
 
 Not in the history: step 4 (ggml's GPU path, removed in step 11; it needs the fork's HIP build),
 steps without a decode change (prompt work 37-44, studies such as 77, docs), step 67's state is not a commit
-(measured before its commit, which also holds stage 3), and 56, 59, 64, 65, 75, 76, 78 (tried, not kept).
+(measured before its commit, which also holds stage 3), and 56, 59, 64, 65, 75, 76, 78, 79 (tried, not kept).
 
 Outputs: points from 32 on run `--canon` and must equal `results/cache-test/plain-canon-static`
 ("output same"). Earlier points use the fast numerics of their time, so their outputs differ
