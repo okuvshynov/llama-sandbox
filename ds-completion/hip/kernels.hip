@@ -1023,6 +1023,8 @@ void k_repeat(const float* x, int n, int copies, float* y, hipStream_t s) {
 
 // ---- argmax (one block): lowest index among the maxima
 __global__ void argmax_kernel(const float* x, int n, int* out) {
+  x += (size_t)blockIdx.x * n;  // one row per workgroup (k_argmax_rows)
+  out += blockIdx.x;
   __shared__ float bv[1024];
   __shared__ int bi[1024];
   float v = -INFINITY;
@@ -1044,6 +1046,10 @@ __global__ void argmax_kernel(const float* x, int n, int* out) {
 }
 
 void k_argmax(const float* x, int n, int* out, hipStream_t s) { argmax_kernel<<<1, 1024, 0, s>>>(x, n, out); }
+
+void k_argmax_rows(const float* x, int n, int rows, int* out, hipStream_t s) {
+  if (rows > 0) argmax_kernel<<<rows, 1024, 0, s>>>(x, n, out);
+}
 
 __global__ void gather_bf16_row_kernel(const uint16_t* table, const int* row, int dim, float* y) {
   const int k = blockIdx.x * blockDim.x + threadIdx.x;

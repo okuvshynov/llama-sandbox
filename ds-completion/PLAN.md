@@ -2,8 +2,8 @@
 
 Status: **done**, **next** (agreed, in order), **planned** (agreed, later), **idea** (not
 decided). Today (sclk 6, 16 CPU threads): `--spec` with the adaptive cache (`--canon
---cache-loads 800 --cache-period 8`) 40.82 t/s mean on the 8 held-out prompts (31.5-50.1; README
-step 86; every decode change on the same ruler: `results/heldout-history/`). Prompt processing
+--cache-loads 800 --cache-period 8`) 41.19 t/s mean on the 8 held-out prompts (31.7-50.8; README
+step 88; every decode change on the same ruler: `results/heldout-history/`). Prompt processing
 93 t/s (63 `--canon`; 1,989 tokens, README step 68). Earlier milestones (sclk 2): no GPU experts
 ~12 t/s; the study30 placement 17.7-21.7; + `--spec` and the cache at 200 loads/s 25.6. The cost
 model below (2026-10-27) says where a token's time went before the cache; today: TIMING.md.
@@ -407,6 +407,11 @@ cache loaded into die 0; the home die now keeps its startup experts (dies 1-3 ad
   used half (~190 slots freed; acceptance may drop, outputs cannot change), first a cache
   simulation of what the slots are worth;
 - the draft's window seeded for all of a commit's kept tokens at once (commit's ~1 ms).
+Step 87: the draft router's usage: concentrated per prompt, unstable across prompts (top 64 of
+seven prompts cover 88% of the eighth's choices, 70% for the worst); fixed pruning not done.
+Idea: a draft-expert cache following the prompt (~120 of 384 used per run; ~4-5 GB). The verify
+step's tail: the host's argmax of all logits ~0.3-0.8 ms plus their copy ~0.2-0.3 ms.
+Step 88: that argmax on the GPU (M ids back): held-out 40.82 -> 41.19 t/s.
 
 **A. Tuning the expert cache** (the CPU experts' ~25 ms)
 - Hysteresis: a newcomer must beat its victim by a margin, so the cache settles in long runs

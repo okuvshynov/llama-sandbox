@@ -1,0 +1,19 @@
+# the verify step after the GPU's head (README step 87): host spans 'tail: ...' on the steps track
+# --trace with the command of results/trace/README.txt; commit a85b373 + the spans; sclk 6; 2026-11-07
+
+## cpp-matrix: generation: 300 tokens in 6.69 s = 44.83 t/s (traced)
+GPU head end -> host's verify end: median 2.834 ms (mean 2.877) over 67 steps
+tail: the head's wait and logits to host     median 2.473  mean 2.421  max 3.515  (n=67)
+tail: argmax on the host                     median 0.802  mean 0.682  max 0.935  (n=67)
+tail: cache step                             median 0.130  mean 0.298  max 0.715  (n=67)
+tail: profile and trace bookkeeping          median 1.633  mean 1.615  max 2.413  (n=67)
+
+## tcp-udp: generation: 300 tokens in 9.29 s = 32.29 t/s (traced)
+GPU head end -> host's verify end: median 1.867 ms (mean 2.011) over 139 steps
+tail: the head's wait and logits to host     median 2.087  mean 2.149  max 3.575  (n=139)
+tail: argmax on the host                     median 0.322  mean 0.353  max 0.808  (n=139)
+tail: cache step                             median 0.076  mean 0.174  max 0.779  (n=139)
+tail: profile and trace bookkeeping          median 1.194  mean 1.251  max 5.930  (n=139)
+
+# 'the head's wait and logits to host' starts when the host has issued the head (it waits for the head's ~2.2 ms on the GPU too);
+# the copy itself: the gap minus argmax, cache step and bookkeeping (~0.2-0.3 ms); the bookkeeping runs in traced and profiled runs only

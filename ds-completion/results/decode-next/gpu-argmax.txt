@@ -1,0 +1,19 @@
+# the verify step's argmax on the GPU (README step 88)
+# traces with the command of results/trace/README.txt; commit a85b373 + step 87's spans + step 88; sclk 6; 2026-11-07
+# GPU head end -> the host's verify end, median ms; of it the profile and trace bookkeeping (traced runs only)
+cpp-matrix, host argmax (step 87): 44.83 t/s traced; gap 2.834, bookkeeping 1.633, the rest 1.201
+cpp-matrix, GPU argmax (step 88): 45.01 t/s traced; gap 2.121, bookkeeping 1.715, the rest 0.406
+tcp-udp, host argmax (step 87): 32.29 t/s traced; gap 1.867, bookkeeping 1.194, the rest 0.673
+tcp-udp, GPU argmax (step 88): 32.45 t/s traced; gap 1.516, bookkeeping 1.281, the rest 0.235
+
+## held-out: results/spec-measure-sclk6-cacheloads800cacheperiod8-gpuargmax/ (step 86: -homefixed/)
+# name: generation t/s, tokens per step, drafts accepted per step, output vs results/cache-test/plain-canon-static
+tcp-udp: 35.74 t/s, 2.11 tokens per step, 1.11 accepted, output same
+py-lru: 43.07 t/s, 3.03 tokens per step, 2.02 accepted, output same
+cpp-matrix: 50.80 t/s, 4.62 tokens per step, 3.60 accepted, output same
+sql-report: 43.78 t/s, 3.90 tokens per step, 2.92 accepted, output same
+geometry: 49.73 t/s, 4.06 tokens per step, 3.07 accepted, output same
+zh-travel: 31.71 t/s, 1.55 tokens per step, 0.54 accepted, output same
+ja-email: 33.53 t/s, 1.70 tokens per step, 0.70 accepted, output same
+summary-json: 41.12 t/s, 3.50 tokens per step, 2.54 accepted, output same
+long-proof: 52.08 t/s, 3.77 tokens per step, 2.77 accepted, output n/a

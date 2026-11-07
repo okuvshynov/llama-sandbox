@@ -214,6 +214,7 @@ class Runtime {
   // device scratch (one token)
   float *h, *h2, *pre, *a_pre, *a_post, *a_comb, *f_pre, *f_post, *f_comb, *mixes;
   float *x, *t1, *qr, *q, *kvv, *o, *oa, *y, *ysh, *yr, *logits_d, *partial;
+  int* next_d = nullptr;  // a verify chunk's argmax ids (README step 88)
   // activation codes + scales for the GEMVs, two sets: A holds a layer input (x) that several
   // GEMVs read, B the intermediate ones (qr, o, oa, act, engram rows); up to 32768 values each
   struct Codes { uint8_t* q; float* s; };

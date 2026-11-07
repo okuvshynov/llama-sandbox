@@ -65,6 +65,8 @@ class DSpark {
   };
   Runtime& rt;
   int n_expert = 128, n_used = 3;
+  FILE* route_log = nullptr;          // DS_DRAFT_ROUTE_LOG (README step 87)
+  std::vector<int32_t> route_buf;    // [layer][block][8]
   float route_scale = 1.5f;
   bool route_norm = true;
   std::vector<LayerW> L;

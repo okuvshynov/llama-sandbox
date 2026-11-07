@@ -1,0 +1,27 @@
+# the draft router's expert usage (README step 87)
+# DS_DRAFT_ROUTE_LOG=<name>.log with the held-out command (scripts/spec-measure.sh's flags), 300 tokens each; commit a85b373 + the log; sclk 6; 2026-11-07
+# the logs: results/decode-next/draft-route/<prompt>.log; scripts/draft_route_stats.py results/decode-next/draft-route/{tcp-udp,py-lru,cpp-matrix,sql-report,geometry,zh-travel,ja-email,summary-json}.log
+# the runs (logging on): tcp-udp: 35.47 t/s, output same, 124 drafts logged;py-lru: 42.69 t/s, output same, 86 drafts logged;cpp-matrix: 49.47 t/s, output same, 66 drafts logged;sql-report: 43.32 t/s, output same, 76 drafts logged;geometry: 49.25 t/s, output same, 84 drafts logged;zh-travel: 31.45 t/s, output same, 122 drafts logged;ja-email: 33.29 t/s, output same, 128 drafts logged;summary-json: 40.78 t/s, output same, 27 drafts logged
+
+# 8 prompts, 713 draft calls; 3 draft layers x 128 experts, every block position's choices
+
+## concentration over all prompts: experts covering 50 / 90 / 95 / 99% of the choices, never chosen
+  layer 0: 10695 choices; 17 / 57 / 73 / 94 experts; never chosen 19
+  layer 1: 10695 choices; 10 / 39 / 48 / 62 experts; never chosen 47
+  layer 2: 10695 choices; 8 / 25 / 32 / 41 experts; never chosen 72
+
+## kept: the top k of the other prompts' choices, the share of the held-out prompt's choices covered (mean, worst prompt)
+     k          layer 0          layer 1          layer 2   all layers: mean, worst
+    32    50.0%  28.3%     68.4%  47.2%     77.6%  57.6%    65.3%  44.7%
+    48    69.3%  40.6%     80.3%  52.2%     91.3%  70.3%    80.3%  58.9%
+    64    82.0%  62.8%     89.3%  61.8%     94.2%  70.3%    88.5%  70.0%
+    80    85.4%  66.0%     97.0%  83.7%     94.2%  70.3%    92.2%  78.3%
+    96    92.0%  71.6%     97.0%  83.7%     94.2%  70.3%    94.4%  83.0%
+
+# prompts: tcp-udp, py-lru, cpp-matrix, sql-report, geometry, zh-travel, ja-email, summary-json; a choice outside the kept set would be renormalized over the call's remaining experts
+
+## one prompt alone (tcp-udp)
+## concentration over all prompts: experts covering 50 / 90 / 95 / 99% of the choices, never chosen
+  layer 0: 1860 choices; 9 / 36 / 48 / 68 experts; never chosen 47
+  layer 1: 1860 choices; 4 / 15 / 21 / 31 experts; never chosen 87
+  layer 2: 1860 choices; 3 / 13 / 16 / 23 experts; never chosen 97

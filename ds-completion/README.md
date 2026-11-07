@@ -14,8 +14,8 @@ Status, 2026-11-07 (the milestones in order; details in [OVERVIEW.md](OVERVIEW.m
 - Placement-invariant numerics (`--canon`, step 31) and the adaptive expert cache (step 32):
   with `--spec`, 25.6 t/s mean on held-out prompts at sclk 2 (step 32), every output
   byte-identical. Since then, at sclk 6 with the cache tuned (800 loads/s every 8 tokens) and
-  the decode work of steps 50-86: **40.8 t/s mean (31.5-50.1)** on the 8 held-out prompts, every
-  output byte-identical (step 86; the whole history: `results/heldout-history/`, step 72). The
+  the decode work of steps 50-88: **41.2 t/s mean (31.7-50.8)** on the 8 held-out prompts, every
+  output byte-identical (step 88; the whole history: `results/heldout-history/`, step 72). The
   fastest settings per job: QUICKSTART.md.
 - Prompt processing in chunks of 512 (steps 37-45, 68): ~17 -> 93 t/s on a 1,989-token prompt
   (63 with `--canon`; sclk 6), output byte-identical to token by token.
@@ -3182,4 +3182,61 @@ loads in the CPU phase if it is; die 0 seeded with the most stable experts; the 
 experts pruned to free die 0's space; the draft's window seeded for all kept tokens at once.
 `results/trace/` holds the traces of this build (32.28 / 45.02 t/s traced, outputs identical),
 `compare-step84.txt` and `critpath.txt`.
+
+## Step 87: the draft router's usage; the verify step after the head
+
+**Could the draft's experts be pruned?** Its 3 x 128 routed experts are 7.2 GB on die 0, the
+room of ~384 of the main model's experts. A smaller draft cannot change the output (the main
+model verifies every drafted token), only how much of it is accepted. `DS_DRAFT_ROUTE_LOG=path`
+writes each draft call's choices (layer, block position, 3 experts);
+`scripts/draft_route_stats.py` reads them (`results/decode-next/draft-route.txt`, the 8 held-out
+prompts, 713 draft calls):
+
+| draft layer | experts covering 50 / 90 / 95 / 99% of its choices | never chosen |
+|---|---|---|
+| 0 | 17 / 57 / 73 / 94 | 19 |
+| 1 | 10 / 39 / 48 / 62 | 47 |
+| 2 | 8 / 25 / 32 / 41 | 72 |
+
+Concentrated within a prompt (tcp-udp alone: 68 / 31 / 23 experts for 99%), but not stable across
+prompts. Kept per layer the top k of seven prompts' choices, the eighth prompt's choices covered:
+k = 96 (96 experts freed, ~1.8 GB) 94% on average, 83% for the worst prompt; k = 64 (~3.6 GB) 88%,
+70%; layer 2 alone stays at 70% for the worst prompt from k = 64 on (experts only one prompt
+uses). A fixed pruning would cost the draft most on unfamiliar prompts, for ~3% more expert
+capacity: not done. A draft-expert cache following the prompt (one uses ~120 of the 384) could
+free ~4-5 GB; recorded as an idea.
+
+**The verify step after the GPU's head** (`results/decode-next/verify-tail.txt`, host spans
+`tail: ...`): the host returns 2.8 ms (code) / 1.9 ms (chat) after the head ends. Of that, the
+profile and trace bookkeeping (1.6 / 1.2 ms) runs in traced runs only; in every run the logits of
+all the step's tokens (~3 MB at 6) are copied to pageable host memory (~0.2-0.3 ms) and scanned
+for the argmax on one thread (0.80 / 0.32 ms), and the cache's step takes ~0.1 ms (~0.7 on a
+rebalance). The argmax on the GPU is step 88.
+
+## Step 88: the verify step's argmax on the GPU
+
+Step 87 found the host copying all of a verify step's logits (~3 MB at 6 tokens, into pageable
+memory) and scanning them for the argmax on one thread. `k_argmax_rows` now does it on the GPU,
+one workgroup per token, and only the M ids come back. The first maximum wins, as
+`std::max_element`'s, so the tokens cannot change (`results/decode-next/gpu-argmax.txt`):
+
+| GPU head end -> the host's verify end, median ms | step 87 | step 88 |
+|---|---|---|
+| cpp-matrix, without the trace's own bookkeeping | 1.20 | 0.41 |
+| tcp-udp, the same | 0.67 | 0.24 |
+
+Held-out (`spec-measure-sclk6-cacheloads800cacheperiod8-gpuargmax/`): mean **40.82 -> 41.19 t/s
+(+0.9%)**, 31.7-50.8; outputs identical, every prompt with the same tokens per step as step 86's.
+
+| prompt | step 86 | step 88 |
+|---|---|---|
+| tcp-udp | 35.28 | 35.74 |
+| py-lru | 42.62 | 43.07 |
+| cpp-matrix | 50.08 | 50.80 |
+| sql-report | 43.14 | 43.78 |
+| geometry | 49.73 | 49.73 |
+| zh-travel | 31.52 | 31.71 |
+| ja-email | 33.34 | 33.53 |
+| summary-json | 40.87 | 41.12 |
+| long-proof | 51.62 | 52.08 |
 

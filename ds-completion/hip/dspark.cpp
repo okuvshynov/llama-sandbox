@@ -203,6 +203,12 @@ DSpark::DSpark(Runtime& r, const std::string& path) : rt(r) {
   up = dz((size_t)B * F);
   act = dz((size_t)B * F);
   rlog = dz((size_t)B * n_expert);
+  if (const char* p = getenv("DS_DRAFT_ROUTE_LOG")) {  // README step 87: the draft router's choices
+    route_log = fopen(p, "w");
+    if (!route_log) throw std::runtime_error(std::string("cannot write ") + p);
+    fprintf(route_log, "# DS_DRAFT_ROUTE_LOG: per draft call: its main position, then per draft layer and block position '|' and the %d chosen experts (of %d)\n", n_used, n_expert);
+    route_buf.resize((size_t)8 * B * 8);
+  }
   rw = dz((size_t)B * 8);
   xfin = dz((size_t)B * E);
   xn = dz((size_t)B * E);
@@ -227,6 +233,7 @@ DSpark::DSpark(Runtime& r, const std::string& path) : rt(r) {
 
 DSpark::~DSpark() {
   if (hidden_log) fclose(hidden_log);
+  if (route_log) fclose(route_log);
   for (LayerW& w : L) {
     fp4_free(w.ex.gate);
     fp4_free(w.ex.up);
@@ -374,6 +381,7 @@ DraftResult DSpark::draft(int32_t anchor, int pos, bool keep_logits) {
     mark("ffn.routed");
     k_gemv_f32_m(w.gate_inp, n_expert, E, xa, B, rlog, rt.partial, s);
     k_router(rlog, w.gate_bias, n_expert, n_used, route_norm, route_scale, rids, rw, s, B, 8);
+    if (route_log) CHECK(hipMemcpyAsync(route_buf.data() + l * B * 8, rids, (size_t)B * 8 * 4, hipMemcpyDeviceToHost, s));
     fp4_moe_chunk(w.ex, xa, ExpertSel{rids, rw, nullptr, 8}, n_used, B, w.clamp, yr, moe_scratch, s);
     mark("ffn.shared");
     rt.quant(xa, E, rt.A, B);
@@ -426,6 +434,15 @@ DraftResult DSpark::draft(int32_t anchor, int pos, bool keep_logits) {
   }
   mark("end");
   CHECK(hipStreamSynchronize(s));
+  if (route_log) {  // README step 87: per draft, per layer, per block position, the chosen experts
+    fprintf(route_log, "%d", pos);
+    for (size_t l = 0; l < L.size(); l++)
+      for (int j = 0; j < B; j++) {
+        fprintf(route_log, " |");
+        for (int k = 0; k < n_used; k++) fprintf(route_log, " %d", route_buf[l * B * 8 + j * 8 + k]);
+      }
+    fprintf(route_log, "\n");
+  }
   if (tracing) rt.trace_host("draft: issue", t_call0, t_issued, 3);
   if (tracing && ev_i > 1) {  // on the host clock from the end, which completed just before the sync returned
     const double t_end = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - rt.trace_epoch).count();

@@ -211,6 +211,7 @@ Runtime::Runtime(const Model& model, RtOptions options, const std::string& fp8_p
     canon_where = dalloc<int>((size_t)C * kMoeIdStride);
   }
   logits_d = dalloc<float>((size_t)DSpark::kMaxChunk * hp.n_vocab);  // only verify chunks get logits
+  next_d = dalloc<int>(DSpark::kMaxChunk);  // their argmax (README step 88)
   partial = dalloc<float>((size_t)kSplitMax * std::max(hp.n_vocab, 32768));
   A = {dalloc<uint8_t>((size_t)C * NH * HD), dalloc<float>((size_t)C * NH * HD / 32)};
   B = {dalloc<uint8_t>((size_t)C * NH * HD), dalloc<float>((size_t)C * NH * HD / 32)};
@@ -632,20 +633,25 @@ std::vector<int32_t> Runtime::forward_chunk(const std::vector<int32_t>& toks, bo
     k_hc_pre(h, pre, E, x, s, M);
     k_rms_norm(x, out_norm, x, E, M, hp.rms_eps, s);
     k_gemv_bf16_m(out_w, (int)V, E, x, M, logits_d, partial, s);
-    std::vector<float> lg((size_t)M * V);
+    // the argmax on the GPU, M ids back (README step 88: the host's copy of all the logits and
+    // its scan took ~0.5-1 ms per step); the first maximum, as std::max_element
+    k_argmax_rows(logits_d, (int)V, M, next_d, s);
     mark("end");
-    CHECK(hipMemcpyAsync(lg.data(), logits_d, lg.size() * 4, hipMemcpyDeviceToHost, s));
-    CHECK(hipStreamSynchronize(s));
+    const auto t_h0 = Clock::now();  // README step 87: the verify step's tail on the steps track
     next.resize(M);
-    for (int t = 0; t < M; t++)
-      next[t] = (int32_t)(std::max_element(lg.begin() + (size_t)t * V, lg.begin() + (size_t)(t + 1) * V) - (lg.begin() + (size_t)t * V));
+    CHECK(hipMemcpyAsync(next.data(), next_d, (size_t)M * 4, hipMemcpyDeviceToHost, s));
+    CHECK(hipStreamSynchronize(s));
+    trace_host("tail: the head's wait and the ids to host", t_h0, Clock::now(), 3);
   } else {
     mark("end");
     CHECK(hipStreamSynchronize(s));
   }
   if (route_log) write_route_records(toks.data(), M);
+  const auto t_c0 = Clock::now();
   if (cache) cache->step(M);  // a step boundary: the forward's GPU work has finished
+  if (cache) trace_host("tail: cache step", t_c0, Clock::now(), 3);
   n_past_ += M;
+  const auto t_b0 = Clock::now();
   tokens_.insert(tokens_.end(), toks.begin(), toks.end());
   if (profile) {
     last_groups.clear();
@@ -657,6 +663,7 @@ std::vector<int32_t> Runtime::forward_chunk(const std::vector<int32_t>& toks, bo
   }
   if (profile) fold_misses();
   trace_step_end();
+  trace_host("tail: profile and trace bookkeeping", t_b0, Clock::now(), 3);
   if (ra_logits) ra_step_end();
   last.total_ms = ms_since(t0);
   return next;
@@ -909,7 +916,7 @@ Runtime::~Runtime() {
     for (float* p : {st.win, st.cmp_kv, st.cmp_score, st.comp, st.idx_k}) if (p) (void)hipFree(p);
   for (void* p : {(void*)h, (void*)h2, (void*)pre, (void*)a_pre, (void*)a_post, (void*)a_comb, (void*)f_pre, (void*)f_post,
                   (void*)f_comb, (void*)mixes, (void*)x, (void*)t1, (void*)qr, (void*)q, (void*)kvv, (void*)o, (void*)oa,
-                  (void*)y, (void*)ysh, (void*)yr, (void*)canon_rows, (void*)canon_where, (void*)logits_d, (void*)partial, (void*)A.q, (void*)A.s, (void*)B.q, (void*)B.s, (void*)cmp_kvn,
+                  (void*)y, (void*)ysh, (void*)yr, (void*)canon_rows, (void*)canon_where, (void*)logits_d, (void*)next_d, (void*)partial, (void*)A.q, (void*)A.s, (void*)B.q, (void*)B.s, (void*)cmp_kvn,
                   (void*)cmp_sc, (void*)lat, (void*)ik, (void*)iq, (void*)iw, (void*)iscore, (void*)cand_keep, (void*)cand_bscore, (void*)cand_bidx, (void*)gate, (void*)up,
                   (void*)act, (void*)router_logits, (void*)d_moe.lists, (void*)rw, (void*)rids, (void*)att_scratch, (void*)erows, (void*)ekv, (void*)iota,
                   fp8_buf, (void*)freqs_buf})

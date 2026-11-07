@@ -570,6 +570,8 @@ Estimates were made before measuring wherever possible; this is how they fared.
 | the CPU's rows copied by a kernel, not the copy engine (84) | most of ~5-6 ms per code step, +3-5% | +1.1% held-out | the dies' results then arrive last in ~10% of layers: their own copies wait behind their loads |
 | background loads paced by the layers (85) | the dies' ~3 ms per code step of waiting | slower or no change | one matrix per layer starves the cache; more bunch up against the next layer's attention; holding loads back in the expert phase is too late |
 | the home die keeps its startup experts (86) | the slow drafts (~3%), +4-5% in traces | +8.7% held-out | die 0's loads had also slowed its own dense work, not only the draft |
+| the draft's experts pruned by usage (87, measured only) | skewed: half of them for ~3% more capacity | skewed within a prompt, not across prompts: top 64 cover 70-89% of an unseen prompt's choices | a draft for every kind of prompt needs most of its experts; the per-prompt working set is the small one |
+| the verify step's argmax on the GPU (88) | ~1% on code, ~0.8% on chat | +0.9% held-out (+1.1-1.5% on code, +0.6% on chat) | as estimated from the step's tail |
 | expert parallelism for the draft (62) | proposed by the person | ~1 ms at best | experts are 16% of the draft; the head (27%) was the item |
 | the head through LDS (62) | ~1-2% | +1.4% held-out, +2% on code | as estimated from the per-part times |
 | the draft in fp8 frees ~4 GB (60 -> 61) | ~210 slots | nothing | its dense part was already fp8 and its experts mxfp4: assumed from the file's name |
