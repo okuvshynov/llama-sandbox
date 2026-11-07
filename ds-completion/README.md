@@ -2938,3 +2938,30 @@ input phase takes ~0.05 ms instead of the bench's 7 us (perhaps the core's first
 idling); the next CPU items are a task scheduler that claims ahead (memory and compute still add
 up in a cold call) and a weight layout made for the CPU.
 
+## Step 81: the CPU call after the runtime's idle gap (tried, not kept)
+
+Step 80 left the input phase at ~0.05 ms after the runtime's ~1.5 ms wait for the GPU, against
+7 us in the bench. It is not that phase: whichever phase comes first after a gap loses ~0.03-0.04
+ms (`results/cpu-decode/after-gap.txt`; in `bench-fp4-decode call` gate + up goes 0.137 -> 0.17
+ms with the digits written once or by one thread), while every thread still joins within 2-4 us.
+
+- **The master's core idles.** The host thread is the team's master, and it sleeps through the
+  gap: in 1,000 bench calls its core entered C6 1,483 times, the workers' cores (spinning in
+  libgomp) almost never. With the master spinning instead, the call after a gap is 0.243 ->
+  0.221 ms (no gap: 0.206), ~60% of the loss back.
+- **C6 is not the cause:** disabled on every CPU (root), the bench is unchanged (0.242-0.256 ms
+  after a gap). Nor is the writer: the digits by a worker whose core spun through the gap gain
+  ~0.01 ms (0.233). What a spinning master keeps is its core's state in the shallow idle states
+  as well (clock, caches), not C6 alone.
+- **The runtime's wait** for the staged block (`hipEventSynchronize`, before each layer's CPU
+  experts) made to poll: by `HSA_ENABLE_INTERRUPT=0` it changed nothing (cpp-matrix 43.42 ->
+  43.44, tcp-udp 32.40 -> 32.45; C6 entries of a run about the same); as a loop of
+  `hipEventQuery` (`DS_SPIN_WAIT=1`, `spin-wait.patch`) cpp-matrix 43.15 -> 43.79 and tcp-udp
+  32.50 -> 32.54 in two alternating rounds, but the 8 held-out prompts
+  (`spec-measure-sclk6-cacheloads800cacheperiod8-spinwait/`) **36.31 -> 36.14 t/s (-0.5%)**, the
+  prompts with the same steps flat (sql-report 37.60 -> 37.51, geometry 43.95 -> 43.93).
+
+Not kept. The loss after the gap (~0.03-0.04 ms per call with CPU experts, ~1-1.5 ms per code
+step) stays; a spinning host thread takes a core the CPU's experts share, and the held-out set
+does not show a gain. Next on the CPU: the task scheduler that claims ahead (step 80).
+

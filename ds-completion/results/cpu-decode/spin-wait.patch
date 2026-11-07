@@ -1,0 +1,20 @@
+diff --git a/ds-completion/hip/rt.cpp b/ds-completion/hip/rt.cpp
+index 32e9d11..08eb317 100644
+--- a/ds-completion/hip/rt.cpp
++++ b/ds-completion/hip/rt.cpp
+@@ -1454,7 +1454,14 @@ void Runtime::moe_finish(int L, float* out, int M, Taps* taps) {
+   for (const Die& d : dies) local |= !d.st;
+   // the host: the lists (counts for the statistics) and the CPU's misses
+   auto t0 = Clock::now();
+-  CHECK(hipEventSynchronize(ev_staged));
++  static const bool spin_wait = getenv("DS_SPIN_WAIT") != nullptr;  // experiment (README step 81): poll, never sleep
++  if (spin_wait) {
++    hipError_t e;
++    while ((e = hipEventQuery(ev_staged)) == hipErrorNotReady) {}
++    CHECK(e);
++  } else {
++    CHECK(hipEventSynchronize(ev_staged));
++  }
+   last.wait_ms += ms_since(t0);
+   trace_host("wait for the staged block", t0, Clock::now(), 1);
+   if (!trace_path.empty() && !in_prefill && !marks.empty()) {  // die 0's clock vs the host's (above)

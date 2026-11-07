@@ -514,6 +514,10 @@ Each rule is followed by where it mattered most.
   vector version checked byte for byte against the scalar one (kept as the specification) on 2M
   blocks of edge cases made one writer cost 7 us, and the finding applied as is: +1.0%, where
   the workarounds (copies, flushes, aligned chunks) had given 0-0.2%.
+- **Two prompts are not the held-out set (README step 81).** A spinning host wait won both
+  cpp-matrix pairs (+1.5%) and was flat on tcp-udp; on all 8 prompts it was -0.5%. The A/B is
+  for a quick no; a keep needs the full set. Also: one variable per sudo request (C6 off was
+  answered in one bench run and switched back before the next test).
 
 ## 4. Predictions against outcomes
 
@@ -545,6 +549,7 @@ Estimates were made before measuring wherever possible; this is how they fared.
 | per-thread activation copies in the CPU call (78) | ~8-10% on code (from -0.1 ms per expert back to back) | flat | the runtime's calls follow a ~1.5 ms idle gap, after which the copy costs what it saves |
 | aligned 16-block activation chunks (79) | ~40% of the read penalty, ~1-2% end to end | +0.2% held-out (chat +0.5-1.1%) | the remaining penalty is the spread over 16 writers; the cold path and the gap dominate a call |
 | one writer per token / pair, AVX-512 digits (80) | the bench's -0.1 ms per call; +2-4% | +1.0% held-out (A/B +1.2-1.7%) | a call is ~1 per layer with CPU experts; the rest of it (cold memory, compute) is unchanged |
+| a spinning host wait after the idle gap (81) | ~1-2% (the bench's ~0.02 ms per call, and a quicker handoff) | -0.5% held-out (A/B: code +1.5%) | a spinning host thread takes a core the CPU's experts share; the A/B's code gain did not carry over |
 | expert parallelism for the draft (62) | proposed by the person | ~1 ms at best | experts are 16% of the draft; the head (27%) was the item |
 | the head through LDS (62) | ~1-2% | +1.4% held-out, +2% on code | as estimated from the per-part times |
 | the draft in fp8 frees ~4 GB (60 -> 61) | ~210 slots | nothing | its dense part was already fp8 and its experts mxfp4: assumed from the file's name |

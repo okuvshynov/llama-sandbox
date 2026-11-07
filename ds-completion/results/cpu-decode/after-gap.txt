@@ -1,0 +1,52 @@
+# the CPU call after the runtime's idle gap (README step 81): what the first phase loses, and the host's wait for the GPU
+# commit 1acc84f (+ results/cpu-decode/spin-wait.patch for DS_SPIN_WAIT); W-3245, CPU defaults (intel_pstate powersave; idle states POLL C1 C1E C6); sclk 6; 2026-11-06/07
+
+## 1. bin/bench-fp4-decode call 16 2m G <single|worker> 1000: the digits written by the master (single) or by worker 1; G = 0, 1500 (master sleeping), -1500 (master spinning)
+gap 0 single: dynamic  warm      0.206    0.137    0.069       91    0.002
+gap 1500 single: dynamic  warm      0.246    0.173    0.073       76    0.004
+gap -1500 single: dynamic  warm      0.222    0.157    0.065       85    0.002
+gap 0 worker: dynamic  warm      0.204    0.137    0.067       92    0.002
+gap 1500 worker: dynamic  warm      0.233    0.167    0.066       81    0.003
+gap -1500 worker: dynamic  warm      0.220    0.158    0.062       85    0.002
+gap 0 single: dynamic  warm      0.207    0.138    0.069       91    0.002
+gap 1500 single: dynamic  warm      0.243    0.169    0.075       77    0.004
+gap -1500 single: dynamic  warm      0.221    0.155    0.066       85    0.002
+gap 0 worker: dynamic  warm      0.205    0.137    0.068       92    0.002
+gap 1500 worker: dynamic  warm      0.234    0.168    0.067       80    0.003
+gap -1500 worker: dynamic  warm      0.220    0.157    0.062       86    0.002
+
+## 2. C6 entries (cpuidle state3 usage) during 1000 bench calls with a 1.5 ms gap (the master ran on cpu3): cpu0 +463, cpu1 +29, cpu2 +16, cpu3 +1483
+## 3. C6 disabled on all CPUs (state3/disable = 1, root), the same bench: gap 0 single 0.206 / 0.208 ms, gap 1500 single 0.242 / 0.256 ms (no change)
+
+## 4. end to end, alternating: HIP waits by interrupt (default) vs polled (HSA_ENABLE_INTERRUPT=0)
+cpp-matrix interrupt round 1: 43.14 t/s output same
+cpp-matrix poll round 1: 43.48 t/s output same
+tcp-udp interrupt round 1: 32.38 t/s output same
+tcp-udp poll round 1: 32.41 t/s output same
+cpp-matrix interrupt round 2: 43.70 t/s output same
+cpp-matrix poll round 2: 43.40 t/s output same
+tcp-udp interrupt round 2: 32.42 t/s output same
+tcp-udp poll round 2: 32.48 t/s output same
+(C6 entries over a whole tcp-udp run, all CPUs, loading included: interrupt 2,829,093, polled 2,733,462)
+
+## 5. end to end, alternating: the wait for the staged block sleeping (hipEventSynchronize) vs spinning (DS_SPIN_WAIT=1: hipEventQuery in a loop)
+cpp-matrix sleep round 1: 42.87 t/s output same
+cpp-matrix spin round 1: 43.72 t/s output same
+tcp-udp sleep round 1: 32.68 t/s output same
+tcp-udp spin round 1: 32.55 t/s output same
+cpp-matrix sleep round 2: 43.43 t/s output same
+cpp-matrix spin round 2: 43.86 t/s output same
+tcp-udp sleep round 2: 32.31 t/s output same
+tcp-udp spin round 2: 32.53 t/s output same
+
+## 6. held-out with DS_SPIN_WAIT=1: results/spec-measure-sclk6-cacheloads800cacheperiod8-spinwait/ (step 80 without: -actsingle/)
+# name: generation t/s, tokens per step, drafts accepted per step, output vs results/cache-test/plain-canon-static
+tcp-udp: 32.15 t/s, 2.14 tokens per step, 1.14 accepted, output same
+py-lru: 37.81 t/s, 3.16 tokens per step, 2.15 accepted, output same
+cpp-matrix: 42.75 t/s, 4.55 tokens per step, 3.53 accepted, output same
+sql-report: 37.51 t/s, 4.05 tokens per step, 3.08 accepted, output same
+geometry: 43.93 t/s, 4.21 tokens per step, 3.22 accepted, output same
+zh-travel: 29.52 t/s, 1.59 tokens per step, 0.59 accepted, output same
+ja-email: 32.04 t/s, 1.89 tokens per step, 0.88 accepted, output same
+summary-json: 33.38 t/s, 3.63 tokens per step, 2.67 accepted, output same
+long-proof: 50.67 t/s, 3.88 tokens per step, 2.87 accepted, output n/a

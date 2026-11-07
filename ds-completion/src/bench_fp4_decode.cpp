@@ -24,7 +24,8 @@
 //     activations written once (as above), rewritten by the team every call (as forward_batch does),
 //     or rewritten and then copied by each thread into its own buffer, or rewritten by one thread only
 //     (single: no two writers share a line), or rewritten by the team in 16-block chunks of the
-//     64-byte aligned arrays (aligned16: every thread whole lines of its own) (README step 79: under perf stat)
+//     64-byte aligned arrays (aligned16: every thread whole lines of its own) (README step 79: under perf stat),
+//     or rewritten by one worker, not the master (worker: its core spun through the gap; README step 81)
 //     part; -1500: the master spins through it instead of sleeping); 'late' is when the last thread entered the call's parallel region, after the call began
 #include "canon_dot.h"
 
@@ -165,7 +166,7 @@ int main(int argc, char** argv) {
   if (argc > 1 && !strcmp(argv[1], "act")) return act_main();
   if (argc > 1 && !strcmp(argv[1], "call"))
     return call_main(argc > 2 ? atoi(argv[2]) : 16, argc > 3 && !strcmp(argv[3], "4k"), argc > 4 ? atoi(argv[4]) : 0,
-                     argc > 5 ? (!strcmp(argv[5], "once") ? 0 : !strcmp(argv[5], "rewrite") ? 1 : !strcmp(argv[5], "copy") ? 2 : !strcmp(argv[5], "single") ? 3 : !strcmp(argv[5], "aligned16") ? 4 : -1) : -1,
+                     argc > 5 ? (!strcmp(argv[5], "once") ? 0 : !strcmp(argv[5], "rewrite") ? 1 : !strcmp(argv[5], "copy") ? 2 : !strcmp(argv[5], "single") ? 3 : !strcmp(argv[5], "aligned16") ? 4 : !strcmp(argv[5], "worker") ? 5 : -1) : -1,
                      argc > 6 ? atoi(argv[6]) : 400);
   const int T = argc > 1 ? atoi(argv[1]) : 16;
   if (argc > 2) { K = atoi(argv[2]); NB = K / QB; }
@@ -285,7 +286,7 @@ int call_main(int T, bool small_pages, int gap_us, int act, int calls) {
     return (int)(((uintptr_t)a.d0.data() | (uintptr_t)a.d1.data() | (uintptr_t)a.d2.data() | (uintptr_t)a.corr.data() | (uintptr_t)a.c.data()) % 64);
   };
   if (act >= 0) printf("# arrays 64-byte aligned: %s\n", mis(xc) == 0 && mis(ac) == 0 ? "yes" : "NO");
-  if (act >= 0) printf("# activations: %s; %d calls\n", act == 0 ? "written once" : act == 1 ? "rewritten every call" : act == 2 ? "rewritten, then per-thread copies" : act == 3 ? "rewritten by one thread" : "rewritten in 16-block chunks (whole lines per thread)", calls);
+  if (act >= 0) printf("# activations: %s; %d calls\n", act == 0 ? "written once" : act == 1 ? "rewritten every call" : act == 2 ? "rewritten, then per-thread copies" : act == 3 ? "rewritten by one thread" : act == 4 ? "rewritten in 16-block chunks (whole lines per thread)" : "rewritten by one worker (not the master)", calls);
   for (int sched = 0; sched < (act >= 0 ? 1 : 2); sched++) {
     omp_set_schedule(sched ? omp_sched_static : omp_sched_dynamic, 0);
     for (int hot = 1; hot >= (act >= 0 ? 1 : 0); hot--) {
@@ -318,6 +319,10 @@ int call_main(int T, bool small_pages, int gap_us, int act, int calls) {
 #pragma omp for schedule(static)
             for (int b0 = 0; b0 < E / QB; b0 += 16) canon_act_blocks(x.data(), b0, std::min(b0 + 16, E / QB), xc);
           }
+          if (act == 5) {
+            if (tid == std::min(1, T - 1)) canon_act_blocks(x.data(), 0, E / QB, xc);
+#pragma omp barrier
+          }
           if (act == 2) { copy_act(xc, pxc[tid]); xa = &pxc[tid]; }
 #pragma omp for schedule(runtime)
           for (int task = 0; task < 2 * (F / CH); task++) {
@@ -335,6 +340,10 @@ int call_main(int T, bool small_pages, int gap_us, int act, int calls) {
           if (act == 4) {
 #pragma omp for schedule(static)
             for (int b0 = 0; b0 < F / QB; b0 += 16) canon_act_blocks(a.data(), b0, std::min(b0 + 16, F / QB), ac);
+          }
+          if (act == 5) {
+            if (tid == std::min(1, T - 1)) canon_act_blocks(a.data(), 0, F / QB, ac);
+#pragma omp barrier
           }
           if (act == 2) { copy_act(ac, pac[tid]); aa = &pac[tid]; }
 #pragma omp master
