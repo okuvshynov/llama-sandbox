@@ -11,8 +11,10 @@ Per verify step (the "verify N tokens" spans) and per layer of it:
              step 84's traces split into: issuing the copy (host), the lag until the copy starts
              on die 0, and the copy itself (die 0's "ffn.cpu_rows_copy" group)
   tail       the rest of the layer after the wait (the sum, the next layer's hyper-connections)
-and per step: the time outside its layers (the head, the step's own overhead) and the draft
-before it. Medians over the steps of each size, ms per step; then the CPU's experts per layer.
+and per step: the time outside its layers and the draft before it. With step 88's traces (the
+"tail: ..." spans) the time outside the layers is split: before layer 0 (the embedding, its
+copies, the issue), the head on die 0 (norm, logits, argmax), the ids to the host after it, the
+cache's step, the profile and trace bookkeeping (traced runs only), the rest. Medians over the steps of each size, ms per step; then the CPU's experts per layer.
 
 With step 86's traces also: per speculative cycle the host's spans (draft, verify, commit and its
 parts, emitting the tokens), the draft's parts per call (its GPU spans), and each draft against
@@ -111,6 +113,21 @@ def main():
         first = min(e['ts'] for e in layers.values())
         last = max(e['ts'] + e['dur'] for e in layers.values())
         t['outside layers'] += s['dur'] - (last - first)
+        # step 88's traces: the time outside the layers, before layer 0 and after the last one
+        tails = {e['name']: e for e in within(STEPS, a0, a1) if e['name'].startswith('tail: ')}
+        if tails:
+            hd = [e for e in g if e['name'] == 'head' and e['ts'] >= last - 1]
+            head_end = hd[0]['ts'] + hd[0]['dur'] if hd else last
+            w = tails.get("tail: the head's wait and the ids to host")
+            ids = max(0.0, w['ts'] + w['dur'] - head_end) if w else 0.0
+            cache = tails['tail: cache step']['dur'] if 'tail: cache step' in tails else 0.0
+            book = tails['tail: profile and trace bookkeeping']['dur'] if 'tail: profile and trace bookkeeping' in tails else 0.0
+            t['  before layer 0'] += first - a0
+            t['  head (die 0)'] += head_end - last
+            t['  ids to host'] += ids
+            t['  cache step'] += cache
+            t['  bookkeeping (traced)'] += book
+            t['  rest'] += (a1 - last) - (head_end - last) - ids - cache - book
         prev = [d for d in drafts if d['ts'] + d['dur'] <= a0 + 1]
         if prev:
             t['draft'] += prev[-1]['dur']
@@ -119,7 +136,8 @@ def main():
             rows[n][k].append(v / 1000)
     sizes = sorted(rows) if not a.sizes else [int(x) for x in a.sizes.split(',')]
     parts = ['front', 'handoff in', 'CPU', 'handoff out', '  issue the copy (host)', '  lag to the copy', '  the copy (die 0)',
-             'die 0 waits for CPU', 'tail', 'outside layers', 'draft', 'step']
+             'die 0 waits for CPU', 'tail', 'outside layers', '  before layer 0',
+             '  head (die 0)', '  ids to host', '  cache step', '  bookkeeping (traced)', '  rest', 'draft', 'step']
     print(f"# {a.trace}: verify steps by size, median ms per step (die 0 front + its wait for the CPU + tail + outside = step)")
     print(f"{'part':26s}" + ''.join(f"{f'{n} tok ({len(rows[n][chr(115)+chr(116)+chr(101)+chr(112)])})':>14s}" for n in sizes if n in rows))
     for p in parts:

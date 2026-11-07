@@ -3240,3 +3240,34 @@ Held-out (`spec-measure-sclk6-cacheloads800cacheperiod8-gpuargmax/`): mean **40.
 | summary-json | 40.87 | 41.12 |
 | long-proof | 51.62 | 52.08 |
 
+## Step 89: traces at step 88; the time outside the layers
+
+`results/trace/` regenerated at step 88 (b3d3b24; the command in `trace/README.txt`, sclk 6):
+cpp-matrix 45.97 t/s and tcp-udp 32.46 t/s traced, outputs identical to step 32's.
+`compare-step86.txt` against step 86's traces: no span within the layers moved by more than ~0.3 ms
+per step; the head +0.07 ms (it now includes the argmax), and the new `tail: ...` spans.
+
+`scripts/trace_critpath.py` now splits a verify step's time outside its layers (from step 87's
+`tail: ...` spans; older traces print the total only). Median ms per verify step, a 6-token code
+step and a 2-token chat step:
+
+| outside the layers | cpp-matrix, 6 tokens | tcp-udp, 2 tokens |
+|---|---|---|
+| before layer 0 (embedding, its copies, the issue) | 0.28 | 0.21 |
+| the head on die 0 (norm, logits, argmax) | 2.47 | 1.81 |
+| the ids to the host after it | 0.06 | 0.10 |
+| the cache's step | 0.45 | 0.07 |
+| profile and trace bookkeeping (traced runs only) | 1.74 | 1.20 |
+| the rest | 0.00 | 0.00 |
+| total | 4.98 | 3.47 |
+
+So untraced, the time outside the layers is ~2-3 ms, almost all the head: what is left there is the
+head's kernel (bf16, 1.32 GB: ~730 GB/s for 1-2 tokens, ~600 for 5-6, against ~880 GB/s per die),
+the same kernel as the draft's head (2.2 ms of its 8.3 ms per call, 5 tokens). A faster kernel could
+save ~0.3-0.5 ms per head; reading fewer rows is the larger lever. `critpath.txt` (step 88's and
+step 86's traces): a 6-token code step ~89 ms with the draft 8.4, die 0's front 54, its wait for the
+CPU 25, the tail 6.3.
+
+PLAN's sections B (the dense part) and D (the draft) rewritten: what is done (steps 53, 61-62,
+66-68, 73-74, 86, 88), tried (65, 70, 75, 76), left, with the current per-part times.
+

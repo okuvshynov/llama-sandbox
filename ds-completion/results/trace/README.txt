@@ -1,8 +1,9 @@
 # Chrome traces of generation (README step 51): open the .json.gz in ui.perfetto.dev ("Open trace file")
 # bin-hip/ds-completion -m $M --rt $F8 --placement placements/study30.txt --dspark $D --spec --canon --cache-loads 800 --cache-period 8 --cache-wait -p <prompt> --chat -n 300 --trace <name>.json
-# prompts: tcp-udp, cpp-matrix of results/spec-heldout/prompts.txt; commit of README step 86 (its build and trace additions); sclk 6 (manual, all four cards); CPU defaults; 2026-11-07; 32.28 and 45.02 t/s traced (35.28 and 50.08 untraced in step 86), outputs identical
-# compare-step58.txt, compare-step69.txt, compare-step73.txt, compare-step74.txt, compare-step84.txt: span totals per verify step against the earlier traces (scripts/trace_compare.py)
-# critpath.txt: per verify size, die 0's front, the handoffs to and from the CPU, the CPU's experts, the tail, the draft (scripts/trace_critpath.py)
+# prompts: tcp-udp, cpp-matrix of results/spec-heldout/prompts.txt; commit b3d3b24 (README step 88; regenerated in step 89); sclk 6 (manual, all four cards); CPU defaults; 2026-11-07; 32.46 and 45.97 t/s traced (35.74 and 50.80 untraced in step 88), outputs identical
+# compare-step58.txt, compare-step69.txt, compare-step73.txt, compare-step74.txt, compare-step84.txt, compare-step86.txt: span totals per verify step against the earlier traces (scripts/trace_compare.py)
+# critpath.txt: per verify size, die 0's front, the handoffs to and from the CPU, the CPU's experts, the tail, the time outside
+# the layers (split since step 89: before layer 0, the head, the ids to host, the cache step, bookkeeping), the draft (scripts/trace_critpath.py)
 # since step 73 the engram rows are fetched on the host track ("engram fetch") while die 0 runs layer 0; no "engram.fetch" group on die 0
 # tracks: steps (host): drafts and verify steps; host thread: per layer the wait for the staged block and the CPU's experts
 # (args: distinct experts, pairs, tokens) with its phases nested (cpu.inputs, cpu.gate_up, cpu.act, cpu.down; the weight phases
@@ -15,3 +16,5 @@
 # anchor there: die 0 can come out a few tenths of a ms early).
 # since step 86: steps (host) also commit and its parts, 'draft: issue', and the loop's spans after verify and after commit;
 # GPU 0 main stream also the draft ('draft (GPU)', 'draft layer N', draft.* parts); 'GPU d cache loads (host view)': each background load
+# since step 87: steps (host) also the verify step's tail ('tail: the head's wait and the ids to host', 'tail: cache step',
+# 'tail: profile and trace bookkeeping'); since step 88 the head's group on die 0 includes the argmax

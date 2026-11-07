@@ -412,6 +412,8 @@ seven prompts cover 88% of the eighth's choices, 70% for the worst); fixed pruni
 Idea: a draft-expert cache following the prompt (~120 of 384 used per run; ~4-5 GB). The verify
 step's tail: the host's argmax of all logits ~0.3-0.8 ms plus their copy ~0.2-0.3 ms.
 Step 88: that argmax on the GPU (M ids back): held-out 40.82 -> 41.19 t/s.
+Step 89: traces at step 88; the time outside the layers split: ~2-3 ms untraced, almost all the
+head (the bf16 head kernel, as the draft's). Sections B and D below updated.
 
 **A. Tuning the expert cache** (the CPU experts' ~25 ms)
 - Hysteresis: a newcomer must beat its victim by a margin, so the cache settles in long runs
@@ -427,16 +429,23 @@ Step 88: that argmax on the GPU (M ids back): held-out 40.82 -> 41.19 t/s.
 - Hardware (discussed, not planned): DDR5 or a multi-socket box with experts striped by rows
   across sockets (exact under the canonical numerics).
 
-**B. The dense part of a verify step** (~78 ms)
-- Attention core batched over the chunk's tokens (~16 ms, today token by token in order).
-- The router's per-token top-k (6 launches per layer) as one launch; router + dispatch fusion
-  (item 22a); the per-layer routing is ~11 ms.
-- fp8 GEMVs over 64-lane rows at 6 tokens are still ~2x one token (attention output, shared
-  expert ~25 ms together): more rows per wave / tile reuse.
-- Kernel fusion of the small ops (hc, norms, quantize): item 14.
-- Tensor parallelism (items 17, 18, 23): attention projections and the shared expert split over
-  the XGMI pair 0-1 (dies 2-3 through host memory, so likely not); worth it once the above is
-  done, since it adds two all-reduces per layer.
+**B. The dense part of a verify step** (updated after README step 88: a 6-token code step's die 0
+spans in step 86's traces, ms per step: attn.out 11.5, ffn.shared 8.9, attn.core 5.7, attn.q 5.1,
+hc 5.0, the wait for dies 1-3's experts 5.1, attn.compressor 4.0, dispatch 2.5, router 2.4, the
+head 2.2, attn.kv 1.6, engram 1.3, indexer 1.2)
+- Done: the router's top-k in one launch (step 53), the head through LDS (step 62), the batched
+  attention core (steps 66-68: 17.7 -> ~6 ms), the engram fetch off the critical path (step 73),
+  the indexer skipped while it picks every position (step 74), the head's argmax on the GPU
+  (step 88).
+- Tried, not kept: verify steps in two halves (step 70), the fp8 GEMV for 2-8 inputs as local
+  variants (steps 65, 75), attention's output over the XGMI pair 0-1 (step 76).
+- Left: the fp8 GEMVs at 6 tokens (attn.out, shared expert, q: ~25 ms, weights read at ~270 GB/s
+  against ~580 at one token) need a restructured kernel: more rows per wave without holding M
+  decoded inputs (step 75's conclusion).
+- Kernel fusion of the small ops (hc, norms, quantize; item 14): launches are not the limit
+  (step 65: the host is ahead), so only the GPU time of the fused ops would be saved.
+- Tensor parallelism (items 17, 18, 23): step 76 split attention's output over the pair 0-1 and
+  lost to the exchange; not before the kernels above.
 
 **C. Tuning speculation**
 - The draft-length rule refits its verify-cost line online, so with the cache it already sees
@@ -452,15 +461,25 @@ Step 88: that argmax on the GPU (M ids back): held-out 40.82 -> 41.19 t/s.
 - The rule is at 94% of a hindsight lower bound per step (step 48): little left in draft-length
   choices; the cost side (verify step, draft) is where speculation still gains.
 
-**D. A faster draft** (~12 ms per step: 3 layers, dense BF16, 128 experts top-3, on die 0)
-- fp8 for the draft's dense weights if the release is fp8 (an exact repack, as the main model).
-- Fewer launches (its per-layer kernels are small and latency-bound); its experts are already
-  on GPU 0.
-- Overlap: start drafting on another die as soon as layer 39's states of the accepted prefix
-  exist, next to the main model's head and argmax (a few ms); or draft ahead assuming every
-  draft is accepted, kept only if it was.
-- TP does not fit a 3-layer latency-bound model; batching it with the verify (one forward for
-  both) is the bigger structural idea, and the hardest.
+**D. A faster draft** (updated after README step 88: 8.3 ms of GPU time per call on die 0, GPU-bound
+(step 86); 3 layers, fp8 dense weights (step 61), 128 mxfp4 experts top-3 per layer, all resident)
+- Its parts per call (step 86's traces): the head 2.2 (the main model's bf16 head, 1.32 GB, for 5
+  tokens), routed experts 1.7, the Markov part 1.0, attn.out 0.8, attn.core 0.75, attn.proj 0.6,
+  shared expert 0.5, hc 0.3.
+- Done: fp8 dense weights (an exact repack at load), the head through LDS (step 62), no cache
+  loads into its die (step 86: drafts had doubled while die 0 loaded).
+- The head over a subset of the vocabulary (the most frequent ~32k tokens by a row-index list,
+  from prompts outside the held-out set): ~2.2 -> ~0.6 ms; outputs cannot change (the verify
+  decides), its confidence is its own projection (not the logits); acceptance may drop on chat
+  in other languages.
+- Its experts in less memory (step 87: concentrated per prompt, not across prompts): a draft
+  expert cache following the prompt (~4-5 GB of the 7.2 freed for the main model); a cache
+  simulation first.
+- Overlap: start drafting as soon as the verify's accepted prefix is known (a few ms), or draft
+  ahead assuming every draft is accepted, kept only if it was; on another die it needs the
+  draft's weights there.
+- Batching it with the verify (one forward for both) is the larger structural idea, and the
+  hardest.
 
 **E. Build-level specialization** (2026-11-01, after README step 45's -O2 finding)
 - PGO (`-fprofile-generate`, a prompt or two, `-fprofile-use`) for the host code. Expected
