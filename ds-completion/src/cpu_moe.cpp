@@ -31,9 +31,9 @@ const ScaleTable kScale;
 inline int lane_code(int d) { return 4 * (d % 4) + d / 4; }
 
 // R consecutive rows (row stride row_bytes) dotted with x (in lane order), for nb blocks of 32
-// Software prefetch into L2, this many bytes ahead of each row's position: with the static
-// schedule a thread's next task is the adjacent block of rows, so 16 KB ahead is the rows it
-// needs next. Measured (results/bench-cpu-moe-*.txt): 79 -> 67 ms per token at 16 threads,
+// Software prefetch into L2, this many bytes ahead of each row's position: a thread's next task
+// is often the adjacent block of rows (forward(): static; forward_batch and forward_canon_rows
+// hand out tasks in pairs, README step 82), so 16 KB ahead is the rows it needs next. Measured (results/bench-cpu-moe-*.txt): 79 -> 67 ms per token at 16 threads,
 // 69 -> 66 at 32; L1 prefetch, other distances and SMT helper threads did not help.
 constexpr int kPrefetch = 16384;
 // 32-row tasks handed out two at a time (README step 82)
@@ -392,8 +392,8 @@ void CpuMoeKernel::forward_batch(const CpuExperts& L, const float* x, int T, con
   omp_set_schedule(batch_sched == kStatic ? omp_sched_static : omp_sched_dynamic, batch_sched == kStatic ? 0 : kTaskPair);
 #pragma omp parallel num_threads(n_threads)
   {
-    // the inputs: forward()'s fq8 + lane order, or forward_canon_rows' digits; a few blocks of
-    // one token per task (README step 50: per token, a verify chunk's few tokens left most threads idle)
+    // the inputs: forward()'s fq8 + lane order (a few blocks of one token per task), or
+    // forward_canon_rows' digits (one token per task, below) (README step 50: per token, a verify chunk's few tokens left most threads idle)
     // canonical: each token's digits by one thread (README step 80: written by the whole team they
     // cost every later read ~2x; the AVX-512 canon_act_blocks takes ~7 us per token)
     if (canon) {

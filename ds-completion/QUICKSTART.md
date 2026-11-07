@@ -29,11 +29,11 @@ bin/fp8pack -m $M -o ~/llms/ds-1017-fp8/dense-fp8.gguf   # lossless fp8 repack, 
 ## Run
 
 Run from this directory (the placement path is relative). Which setting is fastest depends on
-the job (sclk 2; README steps 32, 37-41):
+the job (sclk 6; README steps 32, 37-82):
 
 **Long generation** (reasoning, long answers): speculative decoding + the adaptive expert cache.
-~25.6 t/s mean on held-out prompts (28.0 at sclk 6, 29.1 at sclk 8; a 9.8k-token reasoning run
-reached 31.7 at sclk 6). The cache first registers the experts' memory with the GPUs (~95-135 s in the
+~37 t/s mean on the held-out prompts at sclk 6 (30-45; README step 82); a long reasoning run
+gains most (50.7 t/s on the held-out long proof). The cache first registers the experts' memory with the GPUs (~95-135 s in the
 background; generation runs at the static placement's speed meanwhile), so it pays off for runs
 of a few minutes or more:
 
@@ -47,8 +47,8 @@ bin-hip/ds-completion -m $M --rt ~/llms/ds-1017-fp8/dense-fp8.gguf \
 ```
 
 **Short runs and long prompts with short answers:** without the cache (it would not start
-loading before the run ends) and without `--canon` (the prompt runs ~25% faster: 76 t/s vs
-57-62 at sclk 6). Speculative decoding
+loading before the run ends) and without `--canon` (the prompt runs ~48% faster: 93 t/s vs
+63 at sclk 6, README step 68). Speculative decoding
 gives the same bytes as plain decoding, +22% on generation on average (more on code and math,
 least on Chinese/Japanese):
 
@@ -93,8 +93,8 @@ Options:
   per-step data.
 - `--canon`: placement-invariant expert numerics: the output no longer depends on where the
   experts run (any placement, any `--moe-dies`, with or without the draft, with or without the
-  cache give the same bytes); generation ~2% slower, the prompt ~25% (its CPU expert kernel is
-  slower).
+  cache give the same bytes); generation ~2% slower, the prompt ~32% (93 -> 63 t/s; its CPU expert
+  kernel is slower).
 - `--cache-loads R`: the adaptive expert cache (README step 32): the GPUs keep the experts used
   most in the last 256 tokens, loading up to R experts per second in the background (800 with
   `--cache-period 8` is the fastest measured, README step 50; 0 = the static placement). Use with `--canon`, or the output depends on load
@@ -111,11 +111,11 @@ Without `--rt` (or with `bin/ds-completion`) everything runs on the CPU.
 With `--placement placements/study30.txt` the four GPUs hold the routed experts used most in
 the 30-prompt routing study (43% of all, 10-30 s upload); 17.7-21.7 t/s on the test prompts (README step 18).
 
-## Current results (2026-10-30)
+## Current results (2026-11-07)
 
 | mode | command | decode | KL vs reference*: median / mean without the near-tie step |
 |---|---|---|---|
-| **+ adaptive expert cache** | `... --placement placements/study30.txt --dspark ... --spec --canon --cache-loads 800 --cache-period 8` | **30.0-45.1 t/s, mean 37.2** at sclk 6 (300 tokens, held-out prompts; README steps 50, 53, 57, 62, 68, 71, 73, 74; `--cache-loads 200`: 25.6 at sclk 2, 28.0 at sclk 6) | output byte-identical to the plain `--canon` run |
+| **+ adaptive expert cache** | `... --placement placements/study30.txt --dspark ... --spec --canon --cache-loads 800 --cache-period 8` | **30.0-45.1 t/s, mean 37.2** at sclk 6 (300 tokens, held-out prompts; README steps 50, 53, 57, 62, 68, 71, 73, 74, 80, 82; `--cache-loads 200`: 25.6 at sclk 2, 28.0 at sclk 6) | output byte-identical to the plain `--canon` run |
 | + speculative decoding | `... --placement placements/study30.txt --dspark ... --spec` | 16-24 t/s (300 tokens, held-out prompts; +22% geometric mean) | output byte-identical to the row below |
 | own runtime + experts placed on GPUs | `bin-hip/ds-completion --rt ... --placement placements/study30.txt` | 17.7-21.7 t/s (128 tokens) | same numerics: per-layer gate identical to below |
 | own runtime, dense on GPU 0 | `bin-hip/ds-completion --rt ...` | 12.0-12.5 t/s | 5.9e-6 / 4.8e-3 (earlier run 1.7e-5 / 6.3e-4) |
@@ -131,13 +131,15 @@ Means over all 17 steps: 1.8e-2 to 2.5e-2 for every mode.
 - **The runtime is also gated per layer:** attention and FFN output within ~1e-7 of the fp32 +
   fake-quant reference. It has no inexact op left, and repeated runs are bit-identical.
 - **Prompt processing** (`--rt`, chunks of 512, the CPU's experts overlapped with the GPU's
-  work; README steps 37-45): 76 t/s, 57-62 with `--canon` (364- and 1,989-token prompts, sclk 6),
+  work; README steps 37-45, 68): 93 t/s, 63 with `--canon` (1,989 tokens; 97 / 73 at 6,106; sclk 6),
   output byte-identical to token-by-token processing; ~7.7 t/s on the CPU path. The
   runtime's mean KL varies run to run with fp8 rounding flips (README step 10); every exact mode
   scatters the same way.
-- **Where a step goes** (`--spec`, cache, sclk 8; README step 33): a 6-token verify step ~111 ms
-  + the draft ~12 ms: dense part ~64%, CPU experts ~20%, draft ~10%, GPU experts ~3% visible.
-  Prompt (1,989 tokens): the CPU's experts ~30 s of ~36 s, the GPU busy ~27 s.
+- **Where a step goes** (`--spec`, cache, sclk 6; the traces of README step 75, before steps
+  80-82 sped up the CPU's part): a 6-token code verify step ~110 ms with the draft: die 0's
+  dense part before the CPU starts ~41 ms, the CPU's experts ~42 ms, the draft ~10 ms, handoffs
+  and the head ~13 ms. The prompt: the CPU's experts and the GPU's work overlap and the slower
+  sets the pace (TIMING.md).
 - **GPU memory with `--rt`:** 6.37 GiB fp8 + 1.75 GiB small weights + ~1 GB of prompt-chunk
   buffers on die 0; the rest holds experts (and the 8.5 GB draft with `--dspark`).
 
@@ -145,7 +147,7 @@ Means over all 17 steps: 1.8e-2 to 2.5e-2 for every mode.
 
 - Context with `--rt`: 65,536 tokens by default (prompt + generation), up to the model's
   1,048,576 with `--max-ctx N` (~6.4 KB of GPU 0 memory per position). A 30k-token prompt takes
-  ~7-9 min at 57-76 t/s (it took ~30 min token by token). Without `--rt` (the CPU path): 4,096 by
+  ~5-8 min at 63-97 t/s (it took ~30 min token by token). Without `--rt` (the CPU path): 4,096 by
   default, at most 16k (no candidate-block selection there).
 - The dense part uses one GPU; the others only hold experts with `--placement`.
 - Sampling is greedy only. Greedy decoding can fall into a repetition loop on long reasoning

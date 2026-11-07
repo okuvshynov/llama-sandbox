@@ -1,4 +1,4 @@
-# ds-completion: overview (2026-10-28)
+# ds-completion: overview (2026-10-28, numbers updated 2026-11-07)
 
 A ~20-minute read: what was built, how it works, what we measured, what we learned, and what
 is next. How to run it: [QUICKSTART.md](QUICKSTART.md). Where the time goes, one page: [TIMING.md](TIMING.md). Every step and number in detail:
@@ -36,7 +36,7 @@ Decode speed (sclk level 2, 16 CPU threads, 128 generated tokens):
 
 (The speculative and cache numbers are 300-token runs on held-out prompts; README steps 26, 32.)
 
-Prompt processing (chunks of 512, README steps 37-45): 76 t/s, 57-62 with `--canon` (sclk 6),
+Prompt processing (chunks of 512, README steps 37-45, 68): 93 t/s, 63 with `--canon` (1,989 tokens, sclk 6),
 output byte-identical to token by token (which ran at ~17 t/s). Startup: ~15 s, plus 10-30 s to upload
 experts with a placement; with the cache, its loads start after the experts' memory is registered
 (~95-135 s in the background; README step 43). The fastest settings per job: QUICKSTART.md.
@@ -74,7 +74,8 @@ token -> embedding (host) -> 40 x [ engram (layers 1, 14) -> attention block -> 
   chose them in a 30-prompt study; at startup the top ones that fit are uploaded (6,626 experts =
   43%). The fp4 kernel is exact too (fp4 and fp8 values are exact in fp16).
 - **Routed experts on the CPU** (`src/cpu_moe.cpp`): an AVX-512 kernel reading the mxfp4 weights in
-  place from the memory-mapped GGUF; exact; ~85 GB/s.
+  place from the memory-mapped GGUF; exact; a cold call ~0.25-0.3 ms per expert after the
+  runtime's wait for the GPU (README steps 77-82: neither DRAM nor arithmetic alone sets it).
 - **Per layer, the split:** a dispatch kernel sorts the router's 6 experts into one list per die
   and one for the CPU. One 20 KB copy brings the input and lists to host memory; dies 1-3 get it
   from there (cards are not peer-connected), GPU 0 runs its own list next to the shared expert,
@@ -145,7 +146,7 @@ token -> embedding (host) -> 40 x [ engram (layers 1, 14) -> attention block -> 
   +9% `--spec`, for ~30% more power (README step 27); level 0 is slower at the same energy per
   token as level 2.
 
-## 6. Where a token's time goes now (sclk 2, 16 threads)
+## 6. Where a token's time went (sclk 2, 16 threads; 2026-10-28, before the cache; today: TIMING.md)
 
 | ms per token | experts on CPU only | study30 placement (81% on GPUs) | perfect placement (97%) |
 |---|---|---|---|
@@ -197,26 +198,22 @@ experts ~3% visible.
 
 ## 7. What is next
 
-1. **Long context** (PLAN.md "Long context", README step 34): the runtime now runs past
-   4,096 tokens (65,536 by default, 1M with `--max-ctx`): a top-k for any number of positions and
-   the candidate-block pre-filter beyond 16k, both checked against the reference's own
-   functions; a 29.5k-token prompt decodes at 17.2 t/s; at 20k tokens the runtime gives the
-   reference's greedy tokens with short-context KL (step 35). Left: compressed caches in fp8/fp4
-   (for contexts far beyond 64k), faster prompt processing (in progress, README step 37:
-   chunks of up to 512, CPU experts batched and overlapped with the GPU, an fp8 matrix-multiply
-   kernel, the runtime built with -O3: ~17 -> 76 t/s so far, ~17 -> 57 with `--canon`).
-2. **Prompt processing, next** (PLAN "Prompt processing: where it stands and the options"): the
-   CPU's experts and the GPU's own work are now close (streaming the experts was tried and
-   dropped, README step 44); options: larger chunks, then the GPU side (batched attention core).
-3. **Adaptive expert cache, tuning** (README steps 28-32): built and working (`--canon
-   --cache-loads R`: +28% with `--spec` at sclk 2, every output identical); rate and period
-   tuned and the CPU kernel's preparation parallel (README step 50: +8% at sclk 6); left:
-   hysteresis so it settles in long runs. A miss costs ~0.27 ms, linear and barely hidden, and
-   the next layer's CPU expert is too unpredictable to prefetch (steps 50, 52).
-4. **The rest of a verify step:** fp8 projections over 64-lane rows are still ~2x one token at
-   6 tokens; the router's 6 top-k launches; attention core per token.
-5. **The ~35 ms floor:** a higher GPU clock (free, if the power is acceptable), fusing the router
-   and dispatch, fusing small kernels; tensor parallelism across dies last.
+1. **The CPU's experts** (~40% of a code verify step before steps 80-82): steps 77-82 took a
+   CPU call apart (activations written by many threads read slowly: one writer each, step 80;
+   tasks handed out in pairs, step 82; +3.4% together). Next: a CPU weight layout (step 83,
+   benchmarked: the same bits, compute x1.8, a cold call -9%, est. +1.5-2.5%), which needs a
+   repacked ~269 GB expert file as the only source of expert weights; the ~0.03-0.04 ms a call
+   loses after the runtime's idle gap (step 81) stays.
+2. **Die 0's dense part** (~41 ms of a code step): attention over the XGMI pair 0-1 with the core
+   split by heads (step 76 split only the output projections: +0.6%, not kept; the core needs the
+   KV state on die 1); the fp8 GEMV at 2-8 inputs needs a new work split (steps 65, 75).
+3. **Long context** (PLAN.md "Long context", steps 34-35): runs to 1M with `--max-ctx`, gated
+   against the reference at 20k tokens. Left: compressed caches in fp8/fp4 (far beyond 64k), and
+   the indexer batched over a verify step past 512 keys (PLAN F; step 74 skips it below).
+4. **The prompt:** 93 / 63 t/s (fast / `--canon`); with `--canon` the CPU's experts set the pace,
+   so the CPU work above helps there too.
+5. **More hardware** (studied, not built): a second machine as a layer pipeline, or many more
+   experts on GPUs; the CPU stays on the critical path for larger models.
 
 Explored, not planned: a second machine (pipeline split; ~1-2 ms gain once the cache adapts),
 RDMA between machines, an MI210 for the dense part (~33 t/s estimated), and a hypothetical
@@ -225,7 +222,7 @@ V4.1-Pro (engram on SSD is easy; experts barely fit in two machines' RAM).
 ## 8. Open questions for review
 
 - Which prompts represent real use? The placement and the cache's starting set depend on it.
-- Which GPU clock level is acceptable for power (sclk 2 today; 4-6 is the sweet spot; level 8
+- Which GPU clock level is acceptable for power (sclk 6 for every measurement since step 48; 4-6 is the sweet spot; level 8
   costs ~17-25% more energy per token for ~8-9% speed while CPU misses dominate)?
 - Is the remaining correctness risk acceptable: near-tie fp8 rounding flips make the top token
   differ from the reference occasionally (1 of 17 steps on the test prompt), in every

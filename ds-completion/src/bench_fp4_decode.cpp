@@ -18,6 +18,10 @@
 //     OpenMP dynamic (the runtime's), static, and claim-ahead (an atomic counter; a thread claims its next
 //     task when it starts one and prefetches that task's first 0 / 16 / 32 KB or all of it into L2), guided, and
 //     dynamic with chunks of 2, 3, 5 tasks; SCHEDS=a,b,... picks some
+//   bin/bench-fp4-decode layout [gap_us]   the canonical kernel on a CPU layout (README step 83): each row's
+//     codes contiguous (byte j of a 64-byte group: element j low, j + 64 high; = two registers of two blocks
+//     in natural order) and the scales in their own array; bits against canon_dot_rows, compute in L2,
+//     and a whole call (dynamic chunks of 2) cold and warm after the gap, both layouts
 //   bin/bench-fp4-decode call [threads]   a whole one-token call as forward_batch runs it: gate +
 //     up in 32-row tasks, then down in 32-row tasks (canon_dot_rows), on whole experts in today's
 //     layout; warm (the same expert every call: L2 + L3) and cold (24 experts in turn, 450 MB:
@@ -169,9 +173,11 @@ float arith4(const int8_t* d0, const int8_t* d1, const int8_t* d2, int nrows) {
 int call_main(int T, bool small_pages, int gap_us, int act, int calls);
 int act_main();
 int sched_main(int gap_us);
+int layout_main(int gap_us);
 int main(int argc, char** argv) {
   if (argc > 1 && !strcmp(argv[1], "act")) return act_main();
   if (argc > 1 && !strcmp(argv[1], "sched")) return sched_main(argc > 2 ? atoi(argv[2]) : 0);
+  if (argc > 1 && !strcmp(argv[1], "layout")) return layout_main(argc > 2 ? atoi(argv[2]) : 1500);
   if (argc > 1 && !strcmp(argv[1], "call"))
     return call_main(argc > 2 ? atoi(argv[2]) : 16, argc > 3 && !strcmp(argv[3], "4k"), argc > 4 ? atoi(argv[4]) : 0,
                      argc > 5 ? (!strcmp(argv[5], "once") ? 0 : !strcmp(argv[5], "rewrite") ? 1 : !strcmp(argv[5], "copy") ? 2 : !strcmp(argv[5], "single") ? 3 : !strcmp(argv[5], "aligned16") ? 4 : !strcmp(argv[5], "worker") ? 5 : -1) : -1,
@@ -531,6 +537,202 @@ int sched_main(int gap_us) {
         }
         printf("%-9s %-5s %8.3f %8.3f %8.3f %8.0f\n", sc.name, hot ? "warm" : "cold", t_all / N * 1e3, t_gu / N * 1e3, t_d / N * 1e3,
                bytes / (t_all / N) / 1e9);
+      }
+  g_sink = (uint64_t)(yg[3] + yu[5] + yd[7]);
+  return 0;
+}
+
+// ---------------------------------------------------------------- layout: a CPU layout for the experts
+// repack: rows of nb 17-byte mxfp4 blocks -> codes [N][nb * 16] and scales [N][nb]
+static void repack64(const uint8_t* src, int N, int nb, uint8_t* codes, uint8_t* scales) {
+  for (int r = 0; r < N; r++) {
+    const uint8_t* row = src + (size_t)r * nb * BLK;
+    uint8_t* cr = codes + (size_t)r * nb * 16;
+    for (int b = 0; b < nb; b++) scales[(size_t)r * nb + b] = row[(size_t)b * BLK];
+    auto code = [&](int i) {  // element i of the row (block i / 32, ggml: byte j low = j, high = j + 16)
+      const uint8_t* blk = row + (size_t)(i / 32) * BLK + 1;
+      const int j = i % 32;
+      return j < 16 ? blk[j] & 15 : blk[j - 16] >> 4;
+    };
+    for (int g = 0; g < nb / 4; g++)
+      for (int j = 0; j < 64; j++) cr[g * 64 + j] = (uint8_t)(code(128 * g + j) | code(128 * g + 64 + j) << 4);
+  }
+}
+
+struct Consts64 {
+  __m512i lut, low4, unperm, xor_idx[4];
+  Consts64() {
+    lut = _mm512_broadcast_i32x4(_mm_setr_epi8(12, 13, 14, 15, 16, 18, 20, 24, 12, 11, 10, 9, 8, 6, 4, 0));
+    low4 = _mm512_set1_epi8(0x0F);
+    unperm = _mm512_setr_epi32(0, 4, 1, 5, 2, 6, 3, 7, 8, 12, 9, 13, 10, 14, 11, 15);
+    for (int i = 0, o = 8; o > 0; i++, o >>= 1) {
+      alignas(64) int32_t t[16];
+      for (int l = 0; l < 16; l++) t[l] = l ^ o;
+      xor_idx[i] = _mm512_load_si512(t);
+    }
+  }
+};
+
+// canon_dot_rows' arithmetic on the CPU layout: R rows; per 16-block group four 64-byte loads per row
+// give its 8 two-block registers, and one 16-byte load its scales
+static int kPf64 = 8192;  // prefetch distance (bytes; 0 = none; 8 KB best, README step 83); BENCH_PF64 overrides
+template <int R>
+static inline void dot_rows64_r(const Consts64& K, const uint8_t* codes, size_t crow, const uint8_t* scales, int nb, const CanonAct& a, float* y) {
+  __m512 acc[R];
+  for (int i = 0; i < R; i++) acc[i] = _mm512_setzero_ps();
+  for (int b0 = 0; b0 < nb; b0 += 16) {
+    const int nk = nb - b0 >= 16 ? 8 : (nb - b0) / 2;
+    const __mmask16 live = nk == 8 ? (__mmask16)0xFFFF : (__mmask16)((1u << (2 * nk)) - 1);
+    __m512i T[R][8];
+    for (int q = 0; q < 4; q++) {
+      const int k = 2 * q;
+      if (k >= nk) {
+        for (int i = 0; i < R; i++) T[i][k] = T[i][k + 1] = _mm512_setzero_si512();
+        continue;
+      }
+      const size_t offA = (size_t)(b0 + 2 * k) * QB, offB = offA + 2 * QB;
+      const __m512i a2 = _mm512_loadu_si512(a.d2.data() + offA), a1 = _mm512_loadu_si512(a.d1.data() + offA), a0 = _mm512_loadu_si512(a.d0.data() + offA);
+      const __m512i b2 = _mm512_loadu_si512(a.d2.data() + offB), b1 = _mm512_loadu_si512(a.d1.data() + offB), bb0 = _mm512_loadu_si512(a.d0.data() + offB);
+      for (int i = 0; i < R; i++) {
+        const uint8_t* line = codes + i * crow + (size_t)(b0 / 4 + q) * 64;
+        if (kPf64) _mm_prefetch((const char*)line + kPf64, _MM_HINT_T1);  // as canon_dot_rows: 16 KB ahead, into L2
+        const __m512i v = _mm512_loadu_si512(line);
+        const __m512i wA = _mm512_shuffle_epi8(K.lut, _mm512_and_si512(v, K.low4));
+        const __m512i wB = _mm512_shuffle_epi8(K.lut, _mm512_and_si512(_mm512_srli_epi16(v, 4), K.low4));
+        __m512i t = _mm512_dpbusd_epi32(_mm512_setzero_si512(), wA, a2);
+        t = _mm512_dpbusd_epi32(_mm512_slli_epi32(t, 7), wA, a1);
+        T[i][k] = _mm512_dpbusd_epi32(_mm512_slli_epi32(t, 7), wA, a0);
+        __m512i u = _mm512_dpbusd_epi32(_mm512_setzero_si512(), wB, b2);
+        u = _mm512_dpbusd_epi32(_mm512_slli_epi32(u, 7), wB, b1);
+        T[i][k + 1] = _mm512_dpbusd_epi32(_mm512_slli_epi32(u, 7), wB, bb0);
+      }
+    }
+    const __m512i corr = _mm512_maskz_loadu_epi32(live, a.corr.data() + b0);
+    const __m512 c = _mm512_maskz_loadu_ps(live, a.c.data() + b0);
+    for (int i = 0; i < R; i++) {
+      const __m512i S = _mm512_sub_epi32(_mm512_permutexvar_epi32(K.unperm, reduce8(T[i])), corr);
+      const __m512i e = _mm512_cvtepu8_epi32(_mm_maskz_loadu_epi8(live, scales + (size_t)i * nb + b0));
+      const __m512 scale = _mm512_mul_ps(_mm512_castsi512_ps(_mm512_slli_epi32(e, 23)), c);
+      acc[i] = _mm512_mask_add_ps(acc[i], live, acc[i], _mm512_mul_ps(_mm512_cvtepi32_ps(S), scale));
+    }
+  }
+  for (int i = 0; i < R; i++) {
+    __m512 v = acc[i];
+    for (int j = 0; j < 4; j++) v = _mm512_add_ps(v, _mm512_permutexvar_ps(K.xor_idx[j], v));
+    y[i] = _mm512_cvtss_f32(v);
+  }
+}
+
+static void canon_dot_rows64(const uint8_t* codes, const uint8_t* scales, int nb, const CanonAct& a, int r0, int r1, float* y) {
+  static const Consts64 K;
+  const size_t crow = (size_t)nb * 16;
+  int r = r0;
+  for (; r + 4 <= r1; r += 4) dot_rows64_r<4>(K, codes + (size_t)r * crow, crow, scales + (size_t)r * nb, nb, a, y + r);
+  for (; r < r1; r++) dot_rows64_r<1>(K, codes + (size_t)r * crow, crow, scales + (size_t)r * nb, nb, a, y + r);
+}
+
+int layout_main(int gap_us) {
+  if (getenv("BENCH_PF64")) kPf64 = atoi(getenv("BENCH_PF64"));
+  printf("# CPU layout prefetch distance: %d bytes\n", kPf64);
+  constexpr int E = 5120, F = 2304, CH = 32, NE = 24, T = 16, PAIR = 2;
+  const int nbe = E / QB, nbf = F / QB;
+  const size_t gu_row = (size_t)nbe * BLK, d_row = (size_t)nbf * BLK;
+  struct Ex { uint8_t *gate, *up, *down; uint8_t *gc, *gs, *uc, *us, *dc, *ds; };
+  std::vector<Ex> ex(NE);
+  std::mt19937 rng(5);
+  auto alloc = [](size_t n) { return (uint8_t*)aligned_alloc(64, (n + 63) / 64 * 64 + 64); };
+  auto fill = [&](size_t n) {
+    uint8_t* p = alloc(n);
+    for (size_t i = 0; i < n + 64; i++) p[i] = (uint8_t)rng();
+    for (size_t i = 0; i < n; i += BLK) p[i] = (uint8_t)(118 + rng() % 8);
+    return p;
+  };
+  for (auto& e : ex) {
+    e.gate = fill(F * gu_row); e.up = fill(F * gu_row); e.down = fill(E * d_row);
+    e.gc = alloc((size_t)F * nbe * 16); e.gs = alloc((size_t)F * nbe); repack64(e.gate, F, nbe, e.gc, e.gs);
+    e.uc = alloc((size_t)F * nbe * 16); e.us = alloc((size_t)F * nbe); repack64(e.up, F, nbe, e.uc, e.us);
+    e.dc = alloc((size_t)E * nbf * 16); e.ds = alloc((size_t)E * nbf); repack64(e.down, E, nbf, e.dc, e.ds);
+  }
+  std::normal_distribution<float> nd(0.0f, 1.0f);
+  std::vector<float> x(E), a(F);
+  for (auto& v : x) v = nd(rng);
+  for (auto& v : a) v = nd(rng);
+  CanonAct xc, ac;
+  canon_act(x.data(), E, xc);
+  canon_act(a.data(), F, ac);
+  // 1. bits: every row of expert 0's three matrices, both layouts
+  {
+    std::vector<float> y1(E), y2(E);
+    long bad = 0;
+    canon_dot_rows(ex[0].gate, gu_row, xc, 0, F, y1.data()); canon_dot_rows64(ex[0].gc, ex[0].gs, nbe, xc, 0, F, y2.data());
+    bad += memcmp(y1.data(), y2.data(), F * 4) != 0;
+    canon_dot_rows(ex[0].up, gu_row, xc, 0, F, y1.data()); canon_dot_rows64(ex[0].uc, ex[0].us, nbe, xc, 0, F, y2.data());
+    bad += memcmp(y1.data(), y2.data(), F * 4) != 0;
+    long rows_bad = 0;
+    canon_dot_rows(ex[0].down, d_row, ac, 0, E, y1.data()); canon_dot_rows64(ex[0].dc, ex[0].ds, nbf, ac, 0, E, y2.data());
+    for (int i = 0; i < E; i++) rows_bad += memcmp(&y1[i], &y2[i], 4) != 0;
+    printf("# bits: canon_dot_rows64 vs canon_dot_rows, gate / up (%d rows each): %s; down (%d rows): %ld differ\n", F,
+           bad ? "DIFFER" : "same", E, rows_bad);
+  }
+  // 2. compute alone: one thread, 64 rows in L2, repeated
+  {
+    const int R = 64, n = 400;
+    std::vector<float> y(R);
+    double best[2][2] = {{1e9, 1e9}, {1e9, 1e9}};  // [layout][shape]
+    for (int rep = 0; rep < 3; rep++)
+      for (int shape = 0; shape < 2; shape++)
+        for (int lay = 0; lay < 2; lay++) {
+          const int nb = shape ? nbf : nbe;
+          const auto t0 = Clock::now();
+          for (int i = 0; i < n; i++) {
+            if (lay == 0) canon_dot_rows(shape ? ex[0].down : ex[0].gate, shape ? d_row : gu_row, shape ? ac : xc, 0, R, y.data());
+            else canon_dot_rows64(shape ? ex[0].dc : ex[0].gc, shape ? ex[0].ds : ex[0].gs, nb, shape ? ac : xc, 0, R, y.data());
+          }
+          best[lay][shape] = std::min(best[lay][shape], std::chrono::duration<double, std::micro>(Clock::now() - t0).count() / n);
+        }
+    for (int shape = 0; shape < 2; shape++) {
+      const double w = 64.0 * (shape ? F : E);
+      printf("# compute, one thread, 64 rows of K = %d in L2: today %.2f us (%.1f Gw/s), CPU layout %.2f us (%.1f Gw/s), x%.2f\n",
+             shape ? F : E, best[0][shape], w / best[0][shape] / 1e3, best[1][shape], w / best[1][shape] / 1e3, best[0][shape] / best[1][shape]);
+    }
+  }
+  // 3. a whole call, 16 threads, dynamic chunks of 2 (the runtime's schedule), cold and warm, with the gap
+  omp_set_schedule(omp_sched_dynamic, PAIR);
+  std::vector<float> yg(F), yu(F), yd(E);
+  printf("# a whole one-token call, %d threads, dynamic chunks of %d tasks, idle gap %d us; ms per call\n", T, PAIR, gap_us);
+  printf("%-7s %-5s %8s %8s %8s\n", "layout", "data", "call", "gate_up", "down");
+  for (int rep = 0; rep < 2; rep++)
+    for (int lay = 0; lay < 2; lay++)
+      for (int hot = 0; hot < 2; hot++) {
+        const int N = 400;
+        double t_gu = 0, t_d = 0;
+        for (int c = -8; c < N; c++) {
+          const Ex& e = ex[hot ? 0 : (c + 8) % NE];
+          if (gap_us > 0) std::this_thread::sleep_for(std::chrono::microseconds(gap_us));
+          double a1 = 0, a2 = 0;
+          const double start = omp_get_wtime();
+#pragma omp parallel num_threads(T)
+          {
+#pragma omp for schedule(runtime)
+            for (int task = 0; task < 2 * (F / CH); task++) {
+              const int m = task / (F / CH), r = (task % (F / CH)) * CH;
+              float* y = (m ? yu : yg).data();
+              if (lay == 0) canon_dot_rows(m ? e.up : e.gate, gu_row, xc, r, r + CH, y);
+              else canon_dot_rows64(m ? e.uc : e.gc, m ? e.us : e.gs, nbe, xc, r, r + CH, y);
+            }
+#pragma omp master
+            a1 = omp_get_wtime();
+#pragma omp for schedule(runtime)
+            for (int task = 0; task < E / CH; task++) {
+              if (lay == 0) canon_dot_rows(e.down, d_row, ac, task * CH, task * CH + CH, yd.data());
+              else canon_dot_rows64(e.dc, e.ds, nbf, ac, task * CH, task * CH + CH, yd.data());
+            }
+#pragma omp master
+            a2 = omp_get_wtime();
+          }
+          if (c >= 0) { t_gu += a1 - start; t_d += a2 - a1; }
+        }
+        printf("%-7s %-5s %8.3f %8.3f %8.3f\n", lay ? "cpu64" : "today", hot ? "warm" : "cold", (t_gu + t_d) / N * 1e3, t_gu / N * 1e3, t_d / N * 1e3);
       }
   g_sink = (uint64_t)(yg[3] + yu[5] + yd[7]);
   return 0;

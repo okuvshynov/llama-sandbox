@@ -1,0 +1,25 @@
+# the canonical CPU expert kernel on a CPU weight layout (README step 83; bench only, not deployed)
+# bin/bench-fp4-decode layout 1500 (and BENCH_PF64=0/4096/16384/32768 for the prefetch distance); commit e892b82 + src/bench_fp4_decode.cpp; W-3245, 16 threads, CPU defaults; 2026-11-06T23:59:21-05:00
+# layout: per row, the codes contiguous (byte j of a 64-byte group: element j in the low nibble, j + 64 in the high one, so one load gives the two two-block registers canon_dot_rows builds by broadcasts) and the e8m0 scales in their own [N][nb] array; the same arithmetic
+
+# CPU layout prefetch distance: 8192 bytes
+# bits: canon_dot_rows64 vs canon_dot_rows, gate / up (2304 rows each): same; down (5120 rows): 0 differ
+# compute, one thread, 64 rows of K = 5120 in L2: today 18.49 us (17.7 Gw/s), CPU layout 10.47 us (31.3 Gw/s), x1.77
+# compute, one thread, 64 rows of K = 2304 in L2: today 8.74 us (16.9 Gw/s), CPU layout 5.13 us (28.7 Gw/s), x1.70
+# a whole one-token call, 16 threads, dynamic chunks of 2 tasks, idle gap 1500 us; ms per call
+layout  data      call  gate_up     down
+today   cold     0.282    0.178    0.104
+today   warm     0.218    0.149    0.069
+cpu64   cold     0.257    0.179    0.078
+cpu64   warm     0.175    0.130    0.045
+today   cold     0.283    0.180    0.103
+today   warm     0.226    0.157    0.069
+cpu64   cold     0.255    0.177    0.078
+cpu64   warm     0.190    0.142    0.048
+
+## prefetch distance (the CPU layout's 16 KB-ahead equivalent), cold / warm call, ms, two runs each
+0 bytes: cold 0.363   warm 0.204   cold 0.362   warm 0.202   
+4096 bytes: cold 0.278   warm 0.189   cold 0.283   warm 0.193   
+16384 bytes: cold 0.274   warm 0.176   cold 0.276   warm 0.194   
+32768 bytes: cold 0.350   warm 0.182   cold 0.354   warm 0.195   
+8192 bytes: see the table above (the default)

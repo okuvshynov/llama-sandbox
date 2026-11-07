@@ -4,18 +4,21 @@ Goal: `./ds-completion -m <model> -p "prompt"`. One model, one machine, one
 sequence. Priorities: correctness, clarity, then performance. Non-goals: other
 models, other quants, other hardware, serving features.
 
-Status, 2026-10-30 (sclk 2, 16 CPU threads; details in [OVERVIEW.md](OVERVIEW.md)):
+Status, 2026-11-07 (the milestones in order; details in [OVERVIEW.md](OVERVIEW.md), today's numbers in [TIMING.md](TIMING.md)):
 
 - CPU only: 3.5 t/s decode, matching the reference (the llama.cpp fork: 3.5 t/s).
 - Own GPU runtime (exact fp8, deterministic), routed experts on the CPU: ~12 t/s.
 - The most-used experts placed on the 4 GPUs (`--placement placements/study30.txt`): 17.7-21.7 t/s.
 - Speculative decoding with the DSpark draft (`--dspark ... --spec`): +7% to +33% on held-out
   prompts, output byte-identical to plain greedy decoding.
-- Placement-invariant numerics (`--canon`, step 31) and the adaptive expert cache
-  (`--cache-loads 200`, step 32): with `--spec`, 25.6 t/s mean on held-out prompts (29.1 at
-  sclk 8), every output byte-identical. The fastest settings per job: QUICKSTART.md.
-- Prompt processing in chunks of 512 (steps 37-45): ~17 -> 76 t/s (57-62 with `--canon`; sclk 6),
-  output byte-identical to token by token.
+- Placement-invariant numerics (`--canon`, step 31) and the adaptive expert cache (step 32):
+  with `--spec`, 25.6 t/s mean on held-out prompts at sclk 2 (step 32), every output
+  byte-identical. Since then, at sclk 6 with the cache tuned (800 loads/s every 8 tokens) and
+  the decode work of steps 50-82: **37.2 t/s mean (30.0-45.1)** on the 8 held-out prompts, every
+  output byte-identical (step 82; the whole history: `results/heldout-history/`, step 72). The
+  fastest settings per job: QUICKSTART.md.
+- Prompt processing in chunks of 512 (steps 37-45, 68): ~17 -> 93 t/s on a 1,989-token prompt
+  (63 with `--canon`; sclk 6), output byte-identical to token by token.
 - Long context: 65,536 tokens by default, up to 1M (step 34); gated against the reference at
   20,000 tokens: same greedy tokens, KL as at short context, indexer differences are near-ties
   (step 35).
@@ -32,7 +35,7 @@ Operand types and accumulation: [NUMERICS.md](NUMERICS.md). A 20-minute overview
 Every commit that changes code, scripts or results updates, in the same commit: this file (a
 step: what was done and measured), PROCESS.md (the question, prediction, result and decision),
 REPRODUCE.md (new scripts and results and what produces them), and QUICKSTART.md / OVERVIEW.md /
-PLAN.md when what they say changed. New result files start with a `#` header naming the command
+PLAN.md / TIMING.md when what they say changed. New result files start with a `#` header naming the command
 or script, the commit, the clock level and the date. (The rule for the assistant is in the
 sandbox's CLAUDE.md.)
 
@@ -3017,4 +3020,31 @@ gained 2.7% and 1.4%.) Code-like prompts gain most, as the per-call numbers pred
 layers send 2-6 experts to the CPU. Next on the CPU: a cold call is still ~0.29 ms against
 ~0.2 ms of DRAM time; the CPU weight layout (step 78's decode at ~half the cost) is the next
 candidate.
+
+## Step 83: a CPU weight layout for the experts, benchmarked (not deployed)
+
+The canonical kernel decodes the experts' mxfp4 rows as stored in the GGUF: 17-byte blocks (a
+scale byte, 16 code bytes), two blocks per register by two 16-byte loads, broadcasts and an
+insert, and the 16 scales of a group by a gather. Step 78 measured that decode at ~0.045-0.065 ms
+of ~0.15 ms of compute per expert. `bench-fp4-decode layout` repacks an expert into a CPU layout:
+each row's codes contiguous (byte j of a 64-byte group holds element j in its low nibble and j +
+64 in its high one, so one load gives the two registers of two blocks each that the kernel
+builds today, in the same order) and the scales in their own [N][nb] array; `canon_dot_rows64`
+is `canon_dot_rows` with those loads, the same arithmetic and reduction
+(`results/cpu-decode/layout.txt`):
+
+- **The same bits:** every row of an expert's gate, up and down: identical.
+- **Compute (one core, 64 rows in L2) x1.7-1.85:** 17.7 -> 31-33 G weights/s.
+- **A whole one-token call** (16 threads, dynamic chunks of 2, after a 1.5 ms gap): cold 0.282
+  -> 0.256 ms (-9%), warm 0.22 -> 0.18 (-18%). A cold call is mostly DRAM time now, so it gains
+  less than the compute. The new kernel needs its own prefetch distance: 8 KB ahead (none:
+  cold 0.36; 4 KB 0.28; 16 KB 0.275; 32 KB 0.35).
+
+Estimated +1.5-2.5% end to end (CPU experts are nearly always cold). Not deployed: the CPU
+reads its experts from the GGUF mmap, and RAM (755 GB, ~488 GB of model files cached) cannot hold
+a second copy, so the layout would have to become the only source of expert weights: a one-time
+repacked file (~269 GB; 555 GB free), CPU-layout versions of the multi-token canonical kernel,
+the fast path's two kernels and the read-only control, a variant of the GPU loader's
+`fp4_unpack` that reads it (producing today's GPU layout, checked buffer for buffer), and the
+model's experts pointed at the new file. Recorded for later.
 

@@ -5,8 +5,8 @@
 Before proposing or making a commit that touches `ds-completion/`, check every doc against the
 change and update in the same commit: `README.md` (a step: what was done and measured),
 `PROCESS.md` (the question, the prediction, the result and the decision), `REPRODUCE.md` (any new
-script or results file and what produces it), and `QUICKSTART.md` / `OVERVIEW.md` / `PLAN.md`
-when what they say changed (CLI options, status, plan items). New results files start with a `#`
+script or results file and what produces it), and `QUICKSTART.md` / `OVERVIEW.md` / `PLAN.md` /
+`TIMING.md` when what they say changed (CLI options, status, plan items, the current numbers). New results files start with a `#`
 header: command or script, commit, sclk level, date. The goal is that the work can be published
 as a tutorial on the process and reproduced by someone else (ds-completion README "Docs and
 commits").

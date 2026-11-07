@@ -12,8 +12,8 @@ speculation-specific (the prompts that accept many drafted tokens gain most).
 
 ## Points
 
-Steps 48-71 were measured at the time with `scripts/spec-measure.sh` at sclk 6 (the source column
-names the directory). Earlier steps were measured at sclk 2 or 8 or with other settings, so they
+Steps 48-82 marked `measured` were measured at the time with `scripts/spec-measure.sh` at sclk 6
+(the source column names the directory). Earlier steps were measured at sclk 2 or 8 or with other settings, so they
 are rerun at sclk 6 from their commits, each with the flags it had then:
 
 | status | steps | settings |
@@ -27,8 +27,8 @@ are rerun at sclk 6 from their commits, each with the flags it had then:
 | | 31 | `--canon` before the cache (its cost) |
 
 Not in the history: step 4 (ggml's GPU path, removed in step 11; it needs the fork's HIP build),
-steps without a decode change (prompt work 37-44, studies such as 77, docs), step 67's state is not a commit
-(measured before its commit, which also holds stage 3), and 56, 59, 64, 65, 75, 76, 78, 79, 81 (tried, not kept).
+steps without a decode change (prompt work 37-44, studies such as 72, 77 and 83, docs), step 67's state is not a commit
+(measured before its commit, which also holds stage 3), and 56, 59, 64, 65, 70, 75, 76, 78, 79, 81 (tried, not kept).
 
 Outputs: points from 32 on run `--canon` and must equal `results/cache-test/plain-canon-static`
 ("output same"). Earlier points use the fast numerics of their time, so their outputs differ

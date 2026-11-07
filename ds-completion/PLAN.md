@@ -1,10 +1,12 @@
 # ds-completion plan
 
 Status: **done**, **next** (agreed, in order), **planned** (agreed, later), **idea** (not
-decided). Today (sclk 2, 16 CPU threads): generation with no GPU experts ~12 t/s; the study30
-placement 17.7-21.7 t/s; + `--spec` and the adaptive cache (`--canon --cache-loads 200`) 25.6
-t/s mean on held-out prompts (29.1 at sclk 8). Prompt processing 76 t/s (57-62 `--canon`; sclk 6).
-The cost model below (2026-10-27) says where a token's time went before the cache.
+decided). Today (sclk 6, 16 CPU threads): `--spec` with the adaptive cache (`--canon
+--cache-loads 800 --cache-period 8`) 37.16 t/s mean on the 8 held-out prompts (30.0-45.1; README
+step 82; every decode change on the same ruler: `results/heldout-history/`). Prompt processing
+93 t/s (63 `--canon`; 1,989 tokens, README step 68). Earlier milestones (sclk 2): no GPU experts
+~12 t/s; the study30 placement 17.7-21.7; + `--spec` and the cache at 200 loads/s 25.6. The cost
+model below (2026-10-27) says where a token's time went before the cache; today: TIMING.md.
 
 ## Overview
 
@@ -18,7 +20,7 @@ Correctness and the base path
 | 4 | fp8 repack of dense weights (B0) | done | lossless 6.4 GB fp8 file instead of 14 GB bf16 |
 | 5 | Exact fp8 GEMV (B1) | done | 311 us per layer vs ggml's 832, bit-exact products |
 | 6 | Own HIP decode runtime (D3) | done | every op of a token in our kernels on one die: 9.4 -> ~10 t/s |
-| 7 | Exact CPU expert kernel (A3) | done | AVX-512 fp4 x fp8, exact; ~85 GB/s at 16 threads (0.22 ms per expert in a 6-expert call) |
+| 7 | Exact CPU expert kernel (A3) | done | AVX-512 fp4 x fp8, exact; ~85 GB/s at 16 threads in its benchmark, back to back (0.22 ms per expert in a 6-expert call); in the runtime, after its wait for the GPU, a cold call ~0.24-0.32 ms per expert (README steps 77-82) |
 | 8 | Exact GPU expert kernel | done | 4 launches, 4-byte weight decode: 1/2/3/6 experts in 72/110/151/281 us (406 GB/s for 6) (README step 17) |
 | 9 | Whole expert layers on GPUs | done, replaced | `--gpu-moe`: 15 layers resident on 4 dies -> 12.2 t/s; superseded by item 15 |
 | 10 | Prompt through the runtime | done | frees 14 GB on die 0; prompt 6 -> 10 t/s |
@@ -34,11 +36,11 @@ Speed
 | 14 | HIP graphs + kernel fusion (D) | started | engram per step + experts mapped at load done (~1%); graphs save little on this ROCm, fusion ~37 -> ~22 launches per layer for ~2-3 ms (README step 12) |
 | 15 | Per-layer expert split, CPU and all dies concurrently (A1/EP) | done | `--placement`: fixed set from the study; 17.7-21.7 t/s (README steps 14-18) |
 | 15a | Expert path fixes: no die waits for the host; faster small-count kernel; 16 threads | done | oracle bound 16 -> ~25 t/s (README steps 15-18) |
-| 16 | Adaptive expert cache (A1 + A2) | done; rate and period tuned (step 50) | `--canon --cache-loads R`: frequency rebalance, held-out `--spec` +28% at sclk 2 (25.6 t/s), 29.1 at sclk 8, outputs identical (README steps 28-33); tuning: "Further optimization ideas" A |
+| 16 | Adaptive expert cache (A1 + A2) | done; rate and period tuned (step 50) | `--canon --cache-loads R`: frequency rebalance, held-out `--spec` +28% at sclk 2 (25.6 t/s), 29.1 at sclk 8, outputs identical (README steps 28-33; with steps 50-82 37.16 at sclk 6); tuning: "Further optimization ideas" A |
 | 17 | Tensor parallelism, 2-way then 4-way (C1/C2) | planned; step 76 tried wo_a/wo_b over 0-1 (+0.6%, not kept) | split the dense GEMVs over dies: ~-6..10 ms per step, matters once experts are mostly on GPUs |
 | 18 | Shared expert by TP, routed by EP (C4) | planned | the dense shared expert splits like any other GEMV under TP |
 | 19 | DSpark speculative decoding (E1) | done | `--dspark ... --spec`, output identical to plain greedy; held-out prompts +7% to +33% (geometric mean +22%), oracle placement +19% / +71% (README steps 19-26) |
-| 20 | Batched prompt processing (F) | in progress | README steps 37-38: chunks of up to 512, CPU experts batched, CPU/GPU overlap; byte-identical output: 16.8 -> 51.6 t/s (fast), 17.4 -> 40.0 (canon), 1,989 tokens. CPU and GPU now balanced (~33 s each): step 39 (fp8_gemm, bit-identical): 57.1 t/s fast; now the CPU experts are the limit (30 of 36 s). Options and the expert-streaming estimate: "Prompt processing: where it stands and the options" (P1-P9) |
+| 20 | Batched prompt processing (F) | done (steps 37-46, 68: 93 / 63 t/s fast / `--canon`, 1,989 tokens) | README steps 37-38: chunks of up to 512, CPU experts batched, CPU/GPU overlap; byte-identical output: 16.8 -> 51.6 t/s (fast), 17.4 -> 40.0 (canon), 1,989 tokens. CPU and GPU now balanced (~33 s each): step 39 (fp8_gemm, bit-identical): 57.1 t/s fast; now the CPU experts are the limit (30 of 36 s). Options and the expert-streaming estimate: "Prompt processing: where it stands and the options" (P1-P9) |
 | 30 | Expert registration stalls the GPU | done | README step 43: not HIP calls but the memory-map lock: one registration call holds it, any mmap/munmap meanwhile waits (up to seconds for the ~48 GB ranges). 64 MB pieces (copies split at piece boundaries): no stall; registration (~95-135 s) still delays the cache's first loads |
 | 21 | Dynamic expert cache (A2) | merged into 16 | item 13 showed recent usage beats fixed sets |
 | 22 | Faster GPU fp4 expert kernel | partly done | 287 -> 406 GB/s (item 8); the per-row fp8 activation decode is the next cost; matters little while it overlaps |
@@ -352,6 +354,9 @@ the lookahead guesses; verify steps in halves (the prompt's overlap) tried: exac
 Step 71: the handoffs: a short forward's copies back from the dies issued before the host waits
 (the CPU's experts start ~5 us after staging instead of ~80-190): held-out 34.33 -> 34.98 t/s,
 generation after a long prompt +8-10%.
+Step 72: the held-out history: every decode change measured on the same 8 prompts at sclk 6
+(older commits rebuilt and rerun overnight; `results/heldout-history/`), 10.06 t/s (step 6) to
+the current point; each kept step since adds its point.
 Step 73: the engram fetch (~1.4 ms of host page faults while the GPU idled at each step's start)
 read with pread, after layer 0 is queued, copied on its own stream: a step reaches layer 1 ~1 ms
 sooner; held-out 34.98 -> 35.09 t/s (steps 0.4-2.3% faster on 8 of 9 prompts).
@@ -359,6 +364,7 @@ Step 74: the indexer skipped while it keeps every compressed position (<= 512 ke
 were computed and dropped): held-out 35.09 -> 35.94 t/s; batching it for long context is F below.
 Step 75: the fp8 GEMV at 2-8 inputs (attn.out ~12 ms of a code step at ~270 GB/s): fp16 inputs,
 shared memory, fewer registers, a register cap: none faster at M = 4-6; it needs a new work split.
+The traces in `results/trace/` were regenerated with step 74's build (c4bd99b).
 Step 76: attention's output projections over dies 0-1 (flags in fine-grained memory, ~6-8 us per
 hand-off; exact): +0.6%, not kept (~55 us per layer of hand-offs, and die 1's copy of the weights
 cost its expert cache 1.41 GiB); `results/decode-next/attn-split.patch`. With the core and q_b
@@ -380,6 +386,9 @@ helped an A/B but was -0.5% held-out. Not kept.
 Step 82: the CPU's 32-row tasks handed out in pairs (dynamic, 2): contiguity, not prefetching the
 next task, makes a cold call faster; a call with 2-6 experts -12-13% after the gap, held-out
 36.31 -> 37.16 t/s (+2.3%). Next: the CPU weight layout (cheaper decode).
+Step 83: the CPU weight layout benchmarked (bench only): the same bits, compute x1.8, a cold call
+-9% (8 KB prefetch); est. +1.5-2.5%. Not deployed: it needs a repacked ~269 GB expert file as the
+only source of expert weights (CPU kernels, the GPU loader's unpack, model loading).
 
 **A. Tuning the expert cache** (the CPU experts' ~25 ms)
 - Hysteresis: a newcomer must beat its victim by a margin, so the cache settles in long runs
@@ -389,8 +398,9 @@ next task, makes a cold call faster; a call with 2-6 experts -12-13% after the g
   slot).
 - More slots: compressed caches in fp8/fp4 (part of "Long context") and anything else freed on
   die 0.
-- The fast path's CPU preparation on one thread (the fix the canonical path got: -14 to -22% at
-  1-2 experts); the CPU's fixed per-layer latency (wake-up, event waits).
+- The fast path's activation (`fq_fp8_host`, scalar, written in parallel 8-block tasks): the
+  canonical path's step 80 (AVX-512, one writer per token / pair) has no fast-path counterpart;
+  the CPU's fixed per-layer latency (~0.03-0.04 ms after the idle gap, step 81).
 - Hardware (discussed, not planned): DDR5 or a multi-socket box with experts striped by rows
   across sockets (exact under the canonical numerics).
 
@@ -578,7 +588,8 @@ Sections 1-6 below are the original brainstorm (2026-10-26) and the first re-pri
 their numbers are from their dates and describe paths that have since changed: the ggml GPU
 path they start from was removed (README step 11; the CPU Engine is now the gate), the 32-thread
 numbers were superseded by 16 threads (step 18), and the order in section 6 has been carried
-out up to the adaptive cache. The overview and cost model above are current.
+out up to the adaptive cache. The overview above is kept current; the cost model above is from
+2026-10-27, before the cache (today's breakdown: TIMING.md).
 
 ## 1. Where a decode token went at step 4 (ggml GPU path, 32 threads)
 

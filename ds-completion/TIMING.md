@@ -28,9 +28,9 @@ verify step 108 -> 96 ms; cpp-matrix now 41.4 t/s); **35.0** since a verify step
 the dies are issued before the host waits (step 71: the CPU's experts start ~80 us sooner per
 layer, ~4 ms per code step); **35.1** since the engram rows are read while layer 0 runs (step 73); **35.9** since the indexer
 is skipped while it keeps every compressed position (step 74, <= 512 keys: every held-out prompt); **36.3** since
-the CPU's activation digits are written by one thread each (step 80: AVX-512, ~0.03-0.04 ms off a CPU call); **37.2**
+the CPU's activation digits are written by one thread each (step 80: AVX-512, a CPU call -5-14% after the gap); **37.2**
 since the CPU's 32-row tasks are handed out in pairs (step 82: a cold call with 2-6 experts -12-13%).
-The table below is from before step 68. For scale: step 48 measured 28.0 at the same clock before
+The tables below are from step 57's runs, before steps 66-82. For scale: step 48 measured 28.0 at the same clock before
 the cache tuning and the router and CPU-routine fixes (steps 50, 53, 57).
 
 **What a millisecond is worth:** on the code step 1 ms is 0.8% (~0.3 t/s), on the chat step 1.3%
@@ -39,7 +39,7 @@ the cache tuning and the router and CPU-routine fixes (steps 50, 53, 57).
 | draft per step | code step | code t/s | chat step | chat t/s |
 |---|---|---|---|---|
 | 1 ms | 110 ms | 40.7 (+10%) | 66 ms | 32.8 (+14%) |
-| **today (12 / 10 ms)** | **121 ms** | **36.9** | **75 ms** | **28.9** |
+| **step 57 (12 / 10 ms)** | **121 ms** | **36.9** | **75 ms** | **28.9** |
 | 24 ms | 133 ms | 33.6 (-9%) | 89 ms | 24.3 (-16%) |
 
 (A cheaper draft also gets used more: the rule would draft on more steps and verify more, so the
@@ -61,12 +61,17 @@ adds ~5%, README step 58):
 the GPU waits for the host's own work at most 3-5% of the time; README step 65.) So the dense
 part is ~60% of a step, the CPU's misses about a fifth: per layer a CPU miss costs
 ~0.27 ms per distinct expert plus ~0.1 ms for having any, little of it hidden behind the GPUs
-(README step 50), so every miss avoided is ~0.27 ms off the step. The attention core runs token
+(README step 50), so every miss avoided is ~0.27 ms off the step (after steps 80-82 a cold CPU
+call is ~0.24-0.32 ms per expert, README step 82). The attention core runs token
 by token, so it grows fastest with the tokens verified (5.6 -> 17.7 ms from 2 to 6). Kernel
 launches (~3,000-3,900 per step at ~2.4 us) are at most 7-12% (step 49). On the dies an expert
 costs ~30 us per (token, expert) pair, mostly arithmetic rather than weight reads (steps 54-55).
-On the CPU a verify step's expert streams at ~55-62 GB/s against ~90-105 GB/s for a plain read;
-a static schedule, 2 MB pages and CPU power settings did not close that end to end (step 56).
+On the CPU a verify step's expert streamed at ~55-62 GB/s against ~90-105 GB/s for a plain read
+(step 56). That gap is not DRAM: from cache the call is only x1.2 faster (step 77); about half of
+a warm call was reading activation digits written by 16 threads (one writer each since step 80),
+a cold call's memory and compute nearly add up, and after the runtime's wait for the GPU a call
+loses ~0.03-0.04 ms (step 81). Contiguous rows per thread stream best; the tasks go out in pairs
+(step 82), as a static schedule waits for the core that idled longest.
 
 ## Prompt (chunks of 512 tokens)
 
@@ -99,25 +104,25 @@ alone gains nothing:
 With `--canon` the CPU is the limit (15.0 vs ~10.3 ms): its exact integer kernel costs ~1.5x the
 fast one per (token, expert) pair, so only the CPU side helps there.
 
-**Scale:** a 30,000-token document takes ~6 min at ~83 t/s (it took ~30 min token by token).
-10,000 tokens of reasoning take ~5 min at ~32 t/s.
+**Scale:** a 30,000-token document takes ~5.4 min at ~93 t/s (it took ~30 min token by token).
+10,000 tokens of reasoning take ~4.5 min at ~37 t/s.
 
 ## Seeing a step: traces
 
 `results/trace/tcp-udp.json.gz` (chat) and `cpp-matrix.json.gz` (code), 300 tokens each with
-speculation and the tuned cache (README steps 51, 58, 69, 73), open in ui.perfetto.dev. Per layer: die
+speculation and the tuned cache (README steps 51, 58, 69, 73, 75; the current ones from step 75, commit c4bd99b), open in ui.perfetto.dev. Per layer: die
 0's "layer N" span with its groups nested (attention, router, shared expert, the wait for the
 CPU, the sum); the host's "CPU experts" span with how many experts and tokens; each die's routed
 experts with theirs. The things above show up directly: a verify step is ~40 layers of 1.6-2.5
 ms; in a layer with CPU experts die 0 sits in `ffn.wait_for_cpu_experts` for most of the CPU's
 span, while the dies' experts finish in 0.1-0.35 ms.
 
-Measuring costs time: `--profile` 5-6% of generation speed, `--trace` 6-9% (31.4 / 42.1 t/s
-untraced vs 29.3 / 38.2 traced; README steps 58, 69, 73), so a trace's times run a few percent long;
+Measuring costs time: `--profile` 5-6% of generation speed, `--trace` 6-9% (step 75's: 32.26 / 43.14 t/s
+untraced vs 29.94 / 40.45 traced; README steps 58, 69, 73, 75), so a trace's times run a few percent long;
 its proportions hold. `--trace FILE` writes the file for any run; `scripts/trace_compare.py OLD
 NEW` lists two traces' spans side by side (`results/trace/compare-step58.txt`: the attention
 core 14.8 -> 6.0 ms per code verify step, everything else within ~1 ms; `compare-step69.txt`: the
-handoffs and the engram fetch of steps 71 and 73).
+handoffs and the engram fetch of steps 71 and 73; `compare-step73.txt`: the indexer skip of step 74).
 
 ## Background expert loads (the adaptive cache)
 
@@ -139,7 +144,7 @@ overwritten, so outputs never depend on load timing.
 **What the cache asks for:** every 8 tokens it swaps the most-used experts not on a GPU for the
 least-used ones that are, at up to 800 loads/s. In 300-token runs it starts 310-465 loads/s,
 **~11-12 per generated token**, about a quarter of what the links could carry (README step 62's
-runs). A token takes ~31 ms; a missed expert costs the CPU ~0.27 ms on the critical path, a load
+runs). A token takes ~27 ms (at ~37 t/s); a missed expert costs the CPU ~0.25-0.3 ms on the critical path, a load
 ~2 ms of one GPU's copy engine in the background.
 
 **What loads cost generation:** not nothing. Loading at 100 / 200 loads/s cost a decode 1-2% / 5%
