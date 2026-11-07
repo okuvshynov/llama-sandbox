@@ -36,6 +36,8 @@ inline int lane_code(int d) { return 4 * (d % 4) + d / 4; }
 // needs next. Measured (results/bench-cpu-moe-*.txt): 79 -> 67 ms per token at 16 threads,
 // 69 -> 66 at 32; L1 prefetch, other distances and SMT helper threads did not help.
 constexpr int kPrefetch = 16384;
+// 32-row tasks handed out two at a time (README step 82)
+constexpr int kTaskPair = 2;
 
 template <int R>
 inline void dot_rows(const uint8_t* rows, size_t row_bytes, int nb, const float* x, float* out) {
@@ -203,7 +205,7 @@ void CpuMoeKernel::forward_canon_rows(const CpuExperts& L, const float* x, const
     // written by the whole team they cost every later read of them ~2x)
 #pragma omp single
     canon_act_blocks(x, 0, E / QB, x_c);
-#pragma omp for schedule(static)
+#pragma omp for schedule(dynamic, kTaskPair)  // README step 82: static waited for the core that idled longest
     for (int t = 0; t < gu_tasks; t++) {
       const int per = F / CH, j = t / (2 * per), m = (t / per) % 2, c = t % per;
       const ggml_tensor* W = m ? L.up : L.gate;
@@ -224,7 +226,7 @@ void CpuMoeKernel::forward_canon_rows(const CpuExperts& L, const float* x, const
     // each expert's activation digits by one thread (README step 80)
 #pragma omp for schedule(static)
     for (int j = 0; j < k; j++) canon_act_blocks(act_q.data() + (size_t)j * F, 0, F / QB, act_c[j]);
-#pragma omp for schedule(static)
+#pragma omp for schedule(dynamic, kTaskPair)
     for (int t = 0; t < d_tasks; t++) {
       const int per = E / CH, j = t / per, c = t % per;
       canon_dot_rows(expert_base(L.down, ids[j]), d_row, act_c[j], c * CH, (c + 1) * CH, rows + (size_t)j * E);
@@ -384,7 +386,10 @@ void CpuMoeKernel::forward_batch(const CpuExperts& L, const float* x, int T, con
   }
   Clk::time_point tp[6];
   tp[0] = Clk::now();
-  omp_set_schedule(batch_sched == kStatic ? omp_sched_static : omp_sched_dynamic, 0);  // the two weight phases (schedule(runtime))
+  // the two weight phases (schedule(runtime)): dynamic in pairs of 32-row tasks (README step 82: a
+  // thread streams 64 contiguous rows before it jumps; -12-13% per cold call with 2-6 experts
+  // after the runtime's idle gap, against single tasks; larger chunks wait on the slowest core)
+  omp_set_schedule(batch_sched == kStatic ? omp_sched_static : omp_sched_dynamic, batch_sched == kStatic ? 0 : kTaskPair);
 #pragma omp parallel num_threads(n_threads)
   {
     // the inputs: forward()'s fq8 + lane order, or forward_canon_rows' digits; a few blocks of

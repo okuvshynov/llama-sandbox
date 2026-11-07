@@ -14,6 +14,10 @@
 //   bin/bench-fp4-decode [threads] [K]   (K: 5120, gate / up rows; 2304, down rows)
 //   bin/bench-fp4-decode act   canon_act_blocks (AVX-512) against canon_act_blocks_ref byte for byte on
 //     mixed inputs (README step 80), and both timed on one thread for 160 and 72 blocks
+//   bin/bench-fp4-decode sched [gap_us]   a one-token call's two phases under task schedulers (README step 82):
+//     OpenMP dynamic (the runtime's), static, and claim-ahead (an atomic counter; a thread claims its next
+//     task when it starts one and prefetches that task's first 0 / 16 / 32 KB or all of it into L2), guided, and
+//     dynamic with chunks of 2, 3, 5 tasks; SCHEDS=a,b,... picks some
 //   bin/bench-fp4-decode call [threads]   a whole one-token call as forward_batch runs it: gate +
 //     up in 32-row tasks, then down in 32-row tasks (canon_dot_rows), on whole experts in today's
 //     layout; warm (the same expert every call: L2 + L3) and cold (24 experts in turn, 450 MB:
@@ -32,6 +36,7 @@
 #include <immintrin.h>
 #include <omp.h>
 
+#include <atomic>
 #include <chrono>
 #include <sys/mman.h>
 #include <cstdint>
@@ -39,6 +44,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <random>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -162,8 +168,10 @@ float arith4(const int8_t* d0, const int8_t* d1, const int8_t* d2, int nrows) {
 
 int call_main(int T, bool small_pages, int gap_us, int act, int calls);
 int act_main();
+int sched_main(int gap_us);
 int main(int argc, char** argv) {
   if (argc > 1 && !strcmp(argv[1], "act")) return act_main();
+  if (argc > 1 && !strcmp(argv[1], "sched")) return sched_main(argc > 2 ? atoi(argv[2]) : 0);
   if (argc > 1 && !strcmp(argv[1], "call"))
     return call_main(argc > 2 ? atoi(argv[2]) : 16, argc > 3 && !strcmp(argv[3], "4k"), argc > 4 ? atoi(argv[4]) : 0,
                      argc > 5 ? (!strcmp(argv[5], "once") ? 0 : !strcmp(argv[5], "rewrite") ? 1 : !strcmp(argv[5], "copy") ? 2 : !strcmp(argv[5], "single") ? 3 : !strcmp(argv[5], "aligned16") ? 4 : !strcmp(argv[5], "worker") ? 5 : -1) : -1,
@@ -424,5 +432,106 @@ int act_main() {
     printf("%d blocks (%d values), one thread: AVX-512 %.2f us, scalar %.2f us (x%.1f)\n", nb, nb * QB, best[0], best[1], best[1] / best[0]);
   }
   g_sink = (uint64_t)a.corr[7];
+  return 0;
+}
+
+// ---------------------------------------------------------------- sched: task schedulers for a call
+int sched_main(int gap_us) {
+  constexpr int E = 5120, F = 2304, CH = 32, NE = 24, T = 16;
+  const size_t gu_row = (size_t)E / QB * BLK, d_row = (size_t)F / QB * BLK;
+  const size_t gu_bytes = (size_t)F * gu_row, d_bytes = (size_t)E * d_row;
+  struct Ex { uint8_t *gate, *up, *down; };
+  std::vector<Ex> ex(NE);
+  std::mt19937 rng(5);
+  auto fill = [&](size_t n) {
+    uint8_t* p = (uint8_t*)aligned_alloc(64, (n + 63) / 64 * 64 + 64);
+    for (size_t i = 0; i < n + 64; i++) p[i] = (uint8_t)rng();
+    for (size_t i = 0; i < n; i += BLK) p[i] = (uint8_t)(118 + rng() % 8);
+    return p;
+  };
+  for (auto& e : ex) e = {fill(gu_bytes), fill(gu_bytes), fill(d_bytes)};
+  std::normal_distribution<float> nd(0.0f, 1.0f);
+  std::vector<float> x(E), a(F), yg(F), yu(F), yd(E);
+  for (auto& v : x) v = nd(rng);
+  for (auto& v : a) v = nd(rng);
+  CanonAct xc, ac;
+  canon_act(x.data(), E, xc);
+  canon_act(a.data(), F, ac);
+  const double bytes = 2.0 * gu_bytes + d_bytes;
+  const int n_gu = 2 * (F / CH), n_d = E / CH;
+  // a task's rows: gate + up tasks 0..n_gu, down tasks 0..n_d
+  auto gu_task = [&](const Ex& e, int task, const uint8_t*& base, int& r) { const int m = task / (F / CH); r = (task % (F / CH)) * CH; base = m ? e.up : e.gate; };
+  enum { kOmp, kAhead };
+  struct Sch { const char* name; int kind; size_t pf; omp_sched_t os; int chunk; };
+  const Sch all[] = {{"dynamic", kOmp, 0, omp_sched_dynamic, 1}, {"static", kOmp, 0, omp_sched_static, 0},
+                     {"ahead0", kAhead, 0, omp_sched_dynamic, 0}, {"ahead16", kAhead, 16384, omp_sched_dynamic, 0},
+                     {"ahead32", kAhead, 32768, omp_sched_dynamic, 0}, {"aheadall", kAhead, (size_t)1 << 30, omp_sched_dynamic, 0},
+                     {"guided", kOmp, 0, omp_sched_guided, 1}, {"dynamic2", kOmp, 0, omp_sched_dynamic, 2},
+                     {"dynamic3", kOmp, 0, omp_sched_dynamic, 3}, {"dynamic5", kOmp, 0, omp_sched_dynamic, 5}};
+  std::vector<Sch> scheds;
+  const char* only = getenv("SCHEDS");  // e.g. SCHEDS=dynamic,static,guided
+  for (const Sch& sc : all)
+    if (!only || strstr((std::string(",") + only + ",").c_str(), (std::string(",") + sc.name + ",").c_str())) scheds.push_back(sc);
+  printf("# bench-fp4-decode sched: one token, one expert per call (%.1f MB), %d threads, 32-row tasks, digits written once;\n", bytes / 1e6, T);
+  printf("# idle gap before each call: %d us; ms per call (phases from the call's start, at the team's barriers)\n", gap_us);
+  printf("%-9s %-5s %8s %8s %8s %8s\n", "schedule", "data", "call", "gate_up", "down", "GB/s");
+  std::atomic<int> c_gu{0}, c_d{0};
+  for (int rep = 0; rep < 2; rep++)
+    for (const Sch& sc : scheds)
+      for (int hot = 0; hot < 2; hot++) {
+        omp_set_schedule(sc.os, sc.chunk);
+        const int N = 400;
+        double t_gu = 0, t_d = 0, t_all = 0;
+        for (int c = -8; c < N; c++) {
+          const Ex& e = ex[hot ? 0 : (c + 8) % NE];
+          if (gap_us > 0) std::this_thread::sleep_for(std::chrono::microseconds(gap_us));
+          c_gu = 0;
+          c_d = 0;
+          double a1 = 0, a2 = 0;
+          const double start = omp_get_wtime();
+#pragma omp parallel num_threads(T)
+          {
+            auto prefetch = [&](const uint8_t* p, size_t n) { for (size_t o = 0; o < n; o += 64) _mm_prefetch((const char*)p + o, _MM_HINT_T1); };
+            if (sc.kind != kAhead) {
+#pragma omp for schedule(runtime)
+              for (int task = 0; task < n_gu; task++) {
+                const uint8_t* base; int r; gu_task(e, task, base, r);
+                canon_dot_rows(base, gu_row, xc, r, r + CH, (base == e.up ? yu : yg).data());
+              }
+            } else {
+              int cur = c_gu.fetch_add(1);
+              while (cur < n_gu) {
+                const int nxt = c_gu.fetch_add(1);
+                if (nxt < n_gu && sc.pf) { const uint8_t* b; int r; gu_task(e, nxt, b, r); prefetch(b + (size_t)r * gu_row, std::min(sc.pf, CH * gu_row)); }
+                const uint8_t* base; int r; gu_task(e, cur, base, r);
+                canon_dot_rows(base, gu_row, xc, r, r + CH, (base == e.up ? yu : yg).data());
+                cur = nxt;
+              }
+#pragma omp barrier
+            }
+#pragma omp master
+            a1 = omp_get_wtime();
+            if (sc.kind != kAhead) {
+#pragma omp for schedule(runtime)
+              for (int task = 0; task < n_d; task++) canon_dot_rows(e.down, d_row, ac, task * CH, task * CH + CH, yd.data());
+            } else {
+              int cur = c_d.fetch_add(1);
+              while (cur < n_d) {
+                const int nxt = c_d.fetch_add(1);
+                if (nxt < n_d && sc.pf) prefetch(e.down + (size_t)nxt * CH * d_row, std::min(sc.pf, CH * d_row));
+                canon_dot_rows(e.down, d_row, ac, cur * CH, cur * CH + CH, yd.data());
+                cur = nxt;
+              }
+#pragma omp barrier
+            }
+#pragma omp master
+            a2 = omp_get_wtime();
+          }
+          if (c >= 0) { t_gu += a1 - start; t_d += a2 - a1; t_all += a2 - start; }
+        }
+        printf("%-9s %-5s %8.3f %8.3f %8.3f %8.0f\n", sc.name, hot ? "warm" : "cold", t_all / N * 1e3, t_gu / N * 1e3, t_d / N * 1e3,
+               bytes / (t_all / N) / 1e9);
+      }
+  g_sink = (uint64_t)(yg[3] + yu[5] + yd[7]);
   return 0;
 }

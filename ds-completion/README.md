@@ -2965,3 +2965,56 @@ Not kept. The loss after the gap (~0.03-0.04 ms per call with CPU experts, ~1-1.
 step) stays; a spinning host thread takes a core the CPU's experts share, and the held-out set
 does not show a gain. Next on the CPU: the task scheduler that claims ahead (step 80).
 
+## Step 82: the CPU's 32-row tasks handed out in pairs
+
+The next CPU item (step 80): a cold call reads ~0.2 ms of DRAM and computes ~0.15 ms, and the two
+nearly add up. The plan was a scheduler that claims its next task ahead and prefetches its
+first rows (each 32-row task starts on rows nobody prefetched; the kernel's prefetch looks 16 KB
+ahead within its own rows). `bench-fp4-decode sched [gap]`: one expert per call, the digits
+written once, cold (24 experts in turn) and warm, ms per call (`results/cpu-decode/sched.txt`):
+
+| schedule | cold, no gap | cold, 1.5 ms gap | warm, 1.5 ms gap |
+|---|---|---|---|
+| OpenMP dynamic, 1 task (the runtime) | 0.29-0.32 | 0.30-0.32 | 0.21 |
+| claim-ahead, no prefetch / 16 KB / 32 KB / the whole next task | 0.28 / 0.30 / 0.33 / 0.35 | | |
+| static (contiguous rows per thread) | 0.21-0.22 | 0.36-0.39 | 0.31-0.36 |
+| guided | 0.22-0.23 | 0.29-0.30 | 0.26 |
+| **dynamic, 2 tasks** | 0.25 | **0.27** | 0.23 |
+| dynamic, 3 / 5 tasks | 0.24 / 0.22 | 0.28-0.31 / 0.28-0.29 | 0.25-0.26 |
+
+**Prefetching the next task only costs** (the more, the slower). **Contiguity is what helps:**
+a thread walking a long run of rows keeps its prefetchers streaming, and static gets a cold call
+to ~90 GB/s, near a plain read. But static waits for its slowest thread, and after the
+runtime's idle gap that is the master's core (step 81): the worst of all there. Chunks of two
+tasks (64 rows) are the balance; three and more wait on the slow core again.
+
+In the real kernel (`bench-cpu-moe --warm`, chunk 1 vs 2 in `forward_batch`) after the gap: two
+experts 0.328 -> 0.29 ms cold (-12%), six 0.28 -> 0.24 (-13%), one 0.35 -> 0.32-0.36; warm -9 to
+-17%. The one-token path (`forward_canon_rows`, verify steps of one token) was static: after
+the gap one expert 0.35-0.44 -> 0.32, two 0.65-0.84 -> 0.51-0.56, six 1.78-2.20 -> 1.39 (with no
+gap static is ~10% better there; the runtime never calls without one). Both now hand out their
+weight tasks two at a time (`kTaskPair`); the same bits (`--batch 1 / 3 / 8`: 0 of 40 layers
+differ).
+
+Held-out (`spec-measure-sclk6-cacheloads800cacheperiod8-taskpair/`): mean **36.31 -> 37.16 t/s
+(+2.3%)**, 30.0-45.1; outputs identical.
+
+| prompt | step 80 | step 82 |
+|---|---|---|
+| tcp-udp | 32.25 | 33.38 |
+| py-lru | 38.20 | 38.71 |
+| cpp-matrix | 43.41 | 44.95 |
+| sql-report | 37.60 | 38.16 |
+| geometry | 43.95 | 45.14 |
+| zh-travel | 29.58 | 30.00 |
+| ja-email | 32.31 | 32.38 |
+| summary-json | 33.14 | 34.58 |
+| long-proof | 50.68 | 50.71 |
+
+(Steps per token moved both ways in this run: tcp-udp and summary-json took more tokens per step
+than in step 80's, py-lru, cpp-matrix and sql-report fewer; geometry and zh-travel, the same,
+gained 2.7% and 1.4%.) Code-like prompts gain most, as the per-call numbers predict: their
+layers send 2-6 experts to the CPU. Next on the CPU: a cold call is still ~0.29 ms against
+~0.2 ms of DRAM time; the CPU weight layout (step 78's decode at ~half the cost) is the next
+candidate.
+

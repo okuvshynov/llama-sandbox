@@ -1,0 +1,119 @@
+# task schedulers for the CPU's expert call (README step 82)
+# commit 3ae09c6 + src/bench_fp4_decode.cpp's sched mode and src/cpu_moe.cpp's 2-task chunks; W-3245, 16 threads, CPU defaults; 2026-11-06T23:06:41-05:00
+
+## 1. bin/bench-fp4-decode sched 0 / sched 1500: one expert per call, digits written once, cold (24 experts in turn) and warm
+
+# bench-fp4-decode sched: one token, one expert per call (18.8 MB), 16 threads, 32-row tasks, digits written once;
+# idle gap before each call: 0 us; ms per call (phases from the call's start, at the team's barriers)
+schedule  data      call  gate_up     down     GB/s
+dynamic   cold     0.303    0.176    0.127       62
+dynamic   warm     0.183    0.118    0.064      103
+static    cold     0.219    0.139    0.080       86
+static    warm     0.179    0.115    0.064      105
+ahead0    cold     0.279    0.167    0.112       67
+ahead0    warm     0.205    0.130    0.075       92
+ahead16   cold     0.318    0.177    0.141       59
+ahead16   warm     0.209    0.132    0.077       90
+ahead32   cold     0.331    0.189    0.142       57
+ahead32   warm     0.218    0.137    0.081       86
+aheadall  cold     0.358    0.221    0.137       52
+aheadall  warm     0.226    0.145    0.081       83
+guided    cold     0.230    0.146    0.083       82
+guided    warm     0.183    0.118    0.065      103
+dynamic2  cold     0.253    0.156    0.097       74
+dynamic2  warm     0.184    0.119    0.066      102
+dynamic3  cold     0.237    0.143    0.094       79
+dynamic3  warm     0.190    0.121    0.069       99
+dynamic5  cold     0.226    0.143    0.083       83
+dynamic5  warm     0.185    0.118    0.067      102
+dynamic   cold     0.287    0.166    0.122       65
+dynamic   warm     0.181    0.117    0.064      104
+static    cold     0.216    0.138    0.078       87
+static    warm     0.176    0.113    0.063      107
+ahead0    cold     0.281    0.168    0.113       67
+ahead0    warm     0.203    0.130    0.073       93
+ahead16   cold     0.321    0.179    0.143       58
+ahead16   warm     0.211    0.134    0.077       89
+ahead32   cold     0.333    0.190    0.142       57
+ahead32   warm     0.218    0.138    0.081       86
+aheadall  cold     0.355    0.220    0.136       53
+aheadall  warm     0.226    0.145    0.081       83
+guided    cold     0.221    0.141    0.080       85
+guided    warm     0.175    0.112    0.063      107
+dynamic2  cold     0.253    0.157    0.096       74
+dynamic2  warm     0.184    0.119    0.065      102
+dynamic3  cold     0.239    0.146    0.094       79
+dynamic3  warm     0.184    0.117    0.068      102
+dynamic5  cold     0.225    0.143    0.083       83
+dynamic5  warm     0.181    0.117    0.064      104
+
+# bench-fp4-decode sched: one token, one expert per call (18.8 MB), 16 threads, 32-row tasks, digits written once;
+# idle gap before each call: 1500 us; ms per call (phases from the call's start, at the team's barriers)
+schedule  data      call  gate_up     down     GB/s
+dynamic   cold     0.300    0.186    0.114       63
+dynamic   warm     0.211    0.147    0.064       89
+static    cold     0.362    0.246    0.116       52
+static    warm     0.439    0.302    0.137       43
+ahead0    cold     0.322    0.209    0.113       58
+ahead0    warm     0.234    0.162    0.073       80
+ahead16   cold     0.353    0.215    0.138       53
+ahead16   warm     0.246    0.169    0.077       76
+ahead32   cold     0.349    0.210    0.140       54
+ahead32   warm     0.241    0.164    0.077       78
+aheadall  cold     0.389    0.250    0.139       48
+aheadall  warm     0.259    0.181    0.079       73
+guided    cold     0.291    0.201    0.090       65
+guided    warm     0.282    0.194    0.088       67
+dynamic2  cold     0.283    0.186    0.098       66
+dynamic2  warm     0.224    0.156    0.068       84
+dynamic3  cold     0.279    0.190    0.089       67
+dynamic3  warm     0.239    0.170    0.069       79
+dynamic5  cold     0.278    0.173    0.105       68
+dynamic5  warm     0.263    0.181    0.082       71
+dynamic   cold     0.324    0.201    0.123       58
+dynamic   warm     0.231    0.163    0.068       82
+static    cold     0.451    0.308    0.143       42
+static    warm     0.437    0.300    0.137       43
+ahead0    cold     0.319    0.207    0.112       59
+ahead0    warm     0.245    0.169    0.076       77
+ahead16   cold     0.359    0.218    0.141       52
+ahead16   warm     0.237    0.163    0.074       79
+ahead32   cold     0.363    0.219    0.144       52
+ahead32   warm     0.240    0.164    0.076       78
+aheadall  cold     0.410    0.260    0.150       46
+aheadall  warm     0.270    0.190    0.080       70
+guided    cold     0.289    0.197    0.092       65
+guided    warm     0.261    0.184    0.077       72
+dynamic2  cold     0.283    0.186    0.098       66
+dynamic2  warm     0.223    0.156    0.067       84
+dynamic3  cold     0.292    0.202    0.090       64
+dynamic3  warm     0.262    0.188    0.075       72
+dynamic5  cold     0.283    0.180    0.103       66
+dynamic5  warm     0.270    0.189    0.081       70
+
+## 2. the real kernel, bench-cpu-moe --warm 1,2,6 --steps 20, dynamic chunks of 1 vs 2 tasks in forward_batch
+## (measured 2026-11-06 with a temporary DS_CPU_CHUNK switch, not in the commit; two runs each, ms per expert)
+chunk 1: gap 0:    D 1 cold 0.324 / 0.325 warm 0.226 / 0.226 | D 2 cold 0.286 / 0.286 warm 0.226 / 0.227 | D 6 cold 0.264 / 0.263 warm 0.241 / 0.242
+chunk 1: gap 1500: D 1 cold 0.355 / 0.344 warm 0.303 / 0.291 | D 2 cold 0.328 / 0.328 warm 0.270 / 0.270 | D 6 cold 0.281 / 0.279 warm 0.257 / 0.262
+chunk 2: gap 0:    D 1 cold 0.288 / 0.283 warm 0.215 / 0.213 | D 2 cold 0.251 / 0.251 warm 0.210 / 0.210 | D 6 cold 0.228 / 0.228 warm 0.208 / 0.208
+chunk 2: gap 1500: D 1 cold 0.357 / 0.317 warm 0.252 / 0.249 | D 2 cold 0.288 / 0.290 warm 0.237 / 0.241 | D 6 cold 0.246 / 0.241 warm 0.233 / 0.232
+
+## 3. the one-token path (forward_canon_rows), bench-cpu-moe --decode 1,2,6 --steps 10 --layers 4, per call, ms
+## (measured 2026-11-06 with a temporary DS_ROWS_STATIC switch: static, before, vs dynamic chunks of 2; two runs each)
+static: gap 0:    D 1 0.236 / 0.228 | D 2 0.421 / 0.465 | D 6 1.218 / 1.194
+static: gap 1500: D 1 0.442 / 0.354 | D 2 0.836 / 0.647 | D 6 2.198 / 1.779
+dyn 2:  gap 0:    D 1 0.266 / 0.263 | D 2 0.475 / 0.476 | D 6 1.314 / 1.305
+dyn 2:  gap 1500: D 1 0.319 / 0.317 | D 2 0.562 / 0.513 | D 6 1.393 / 1.390
+
+## 4. bits: bench-cpu-moe --batch 1 / 3 / 8: layers differing 0 (fast and canonical)
+## 5. held-out: results/spec-measure-sclk6-cacheloads800cacheperiod8-taskpair/ (step 80: -actsingle/)
+# name: generation t/s, tokens per step, drafts accepted per step, output vs results/cache-test/plain-canon-static
+tcp-udp: 33.38 t/s, 2.19 tokens per step, 1.18 accepted, output same
+py-lru: 38.71 t/s, 3.12 tokens per step, 2.11 accepted, output same
+cpp-matrix: 44.95 t/s, 4.62 tokens per step, 3.60 accepted, output same
+sql-report: 38.16 t/s, 3.95 tokens per step, 2.97 accepted, output same
+geometry: 45.14 t/s, 4.16 tokens per step, 3.17 accepted, output same
+zh-travel: 30.00 t/s, 1.63 tokens per step, 0.62 accepted, output same
+ja-email: 32.38 t/s, 1.95 tokens per step, 0.95 accepted, output same
+summary-json: 34.58 t/s, 3.77 tokens per step, 2.81 accepted, output same
+long-proof: 50.71 t/s, 3.83 tokens per step, 2.83 accepted, output n/a

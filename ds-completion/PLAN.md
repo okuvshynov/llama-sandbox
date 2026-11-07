@@ -377,6 +377,9 @@ scheduler that claims ahead (overlap memory and compute), then a CPU weight layo
 Step 81: a call's first phase loses ~0.03-0.04 ms after the runtime's idle gap (the master's core
 idles); C6 off, polled HIP waits and a worker as the writer do not help; a spinning host wait
 helped an A/B but was -0.5% held-out. Not kept.
+Step 82: the CPU's 32-row tasks handed out in pairs (dynamic, 2): contiguity, not prefetching the
+next task, makes a cold call faster; a call with 2-6 experts -12-13% after the gap, held-out
+36.31 -> 37.16 t/s (+2.3%). Next: the CPU weight layout (cheaper decode).
 
 **A. Tuning the expert cache** (the CPU experts' ~25 ms)
 - Hysteresis: a newcomer must beat its victim by a margin, so the cache settles in long runs

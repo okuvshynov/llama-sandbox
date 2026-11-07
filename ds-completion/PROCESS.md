@@ -518,6 +518,11 @@ Each rule is followed by where it mattered most.
   cpp-matrix pairs (+1.5%) and was flat on tcp-udp; on all 8 prompts it was -0.5%. The A/B is
   for a quick no; a keep needs the full set. Also: one variable per sudo request (C6 off was
   answered in one bench run and switched back before the next test).
+- **Bench the alternatives next to the plan (README step 82).** The plan was to prefetch the next
+  task; the same bench run also tried static, guided and larger chunks. Prefetching only hurt;
+  contiguity was the effect, and the plain OpenMP setting that keeps most of it after the gap
+  (chunks of two) gave +2.3%. A one-constant change, found because the bench measured the cases
+  the plan did not expect.
 
 ## 4. Predictions against outcomes
 
@@ -550,6 +555,7 @@ Estimates were made before measuring wherever possible; this is how they fared.
 | aligned 16-block activation chunks (79) | ~40% of the read penalty, ~1-2% end to end | +0.2% held-out (chat +0.5-1.1%) | the remaining penalty is the spread over 16 writers; the cold path and the gap dominate a call |
 | one writer per token / pair, AVX-512 digits (80) | the bench's -0.1 ms per call; +2-4% | +1.0% held-out (A/B +1.2-1.7%) | a call is ~1 per layer with CPU experts; the rest of it (cold memory, compute) is unchanged |
 | a spinning host wait after the idle gap (81) | ~1-2% (the bench's ~0.02 ms per call, and a quicker handoff) | -0.5% held-out (A/B: code +1.5%) | a spinning host thread takes a core the CPU's experts share; the A/B's code gain did not carry over |
+| a claim-ahead scheduler prefetching the next task (82) | -10-25% per cold CPU expert, 3-8% end to end | the prefetch slower; chunks of 2 tasks instead: +2.3% held-out | the cold starts cost less than lost contiguity; prefetch bursts compete with the streams |
 | expert parallelism for the draft (62) | proposed by the person | ~1 ms at best | experts are 16% of the draft; the head (27%) was the item |
 | the head through LDS (62) | ~1-2% | +1.4% held-out, +2% on code | as estimated from the per-part times |
 | the draft in fp8 frees ~4 GB (60 -> 61) | ~210 slots | nothing | its dense part was already fp8 and its experts mxfp4: assumed from the file's name |
