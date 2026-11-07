@@ -2854,3 +2854,87 @@ gate + up) costs what it saves: its ~0.09 ms of single-thread work replaces the 
 reading digits the team has just written is slow, when a thread's copy of them is fast, is
 open; hardware counters (snoops, L2 misses) would answer it rather than more variants.
 
+## Step 79: why freshly written activations read slowly (hardware counters); aligned chunks (tried, not kept)
+
+Step 78 left open why the canonical call's activation digits, written by the 16 threads, are slow
+for the same threads to read. `bench-fp4-decode call 16 2m 0 <variant> N` runs only the warm call
+(dynamic schedule, no gap) with the activations written once, rewritten every call by the team
+(as `forward_batch`), rewritten then copied per thread, rewritten by one thread, or rewritten by
+the team in 16-block chunks of 64-byte aligned arrays (each thread whole cache lines of its own).
+Counted with perf (`results/cpu-decode/counters.txt`, user space, 2000 calls minus 0, all threads),
+per call:
+
+| | once | rewrite | copy | one writer | aligned 16-block |
+|---|---|---|---|---|---|
+| ms per call | 0.179 | 0.323 | 0.238 | 0.321 (its writing alone ~0.14) | 0.276 |
+| down phase (excludes the rewrite), ms | 0.064 | 0.113 | 0.061 | **0.063** | 0.083 |
+| cycles | 8.6M | 16.1M | 11.3M | 15.7M | 13.7M |
+| loads missing L2 | 3.8K | 17.8K | 7.5K | **4.4K** | 13.3K |
+| of them from another core's modified line (HITM) | 163 | 2,916 | 1,176 | 286 | 1,693 |
+| memory-ordering machine clears | 38 | 6,177 | 1,964 | **136** | 3,976 |
+| cycles stalled on an L2 miss | 0.31M | 4.53M | 2.15M | **0.46M** | 2.77M |
+
+4K aliasing, DRAM misses and prefetches do not change. **The penalty comes from the digits being
+written by many threads, not from their being freshly written:** written by one thread they read
+as if never rewritten. Whole lines per thread remove ~40% of it (false sharing at the 8-block
+chunk edges: `corr` and `c` are 32 bytes per chunk, the digit arrays only 16-byte aligned); the
+rest goes with lines spread over 16 writers' caches. One writer is not a fix as it stands:
+`canon_act_blocks` is scalar, ~0.14 ms for the 5,120 input values on one thread.
+
+The aligned 16-block chunks went into `forward_batch` and `forward_canon_rows` (the same bits:
+`bench-cpu-moe --batch 3`, 0 of 40 layers differ): per call after the runtime's gap 0.433 ->
+0.413 ms with one expert, 0.321 -> 0.306 with two, none with six. End to end, alternating
+(`aligned16-ab.txt`): cpp-matrix 43.32 -> 43.43, tcp-udp 32.17 -> 32.47 (every run above every
+base run); the 8 held-out prompts (`spec-measure-sclk6-cacheloads800cacheperiod8-aligned16/`):
+mean **35.94 -> 36.00 t/s (+0.2%)**, chat-like prompts +0.5-1.1%, code flat; outputs identical.
+Below the +0.5% kept for a change; not kept (`results/cpu-decode/aligned16.patch`). Next: a fast
+(AVX-512, bit-exact) `canon_act_blocks`, so that one thread, or a few, can write the digits.
+
+## Step 80: the canonical activation digits on one thread each (AVX-512)
+
+Step 79 showed the penalty goes away when one thread writes the digits, but the scalar
+`canon_act_blocks` took ~0.14 ms for one token's input on one thread. It is now AVX-512, with the
+scalar version kept as the specification (`canon_act_blocks_ref`): per block of 32, the absolute
+maximum, the scale's next power of two from its exponent bits, `x * (1 / s)` (the same rounding as
+`x / s` for a power of two), the e4m3 rounding as a step 2^(binade - 3) from the exponent bits and
+`roundscale` to nearest even, and the digits by masked integer ops
+(`results/cpu-decode/act-single.txt`):
+
+- **The same bytes:** `bench-fp4-decode act`, 2,097,152 blocks of mixed inputs (zeros,
+  subnormals, amax below 1e-4 and above 448, ties, exact powers of two): 0 differing bytes in
+  d0, d1, d2, x9, corr and c.
+- **~12.5x faster on one thread:** gate's input (5,120 values) 87 -> 7.0 us, down's (2,304) 38.5
+  -> 3.0 us.
+
+`forward_batch` and `forward_canon_rows` now give each token's input digits and each pair's
+activation digits one writer (a task per token / pair); the SwiGLU stays parallel, in its
+8-block tasks, writing floats that the one writer reads once. The same bits (`bench-cpu-moe
+--batch 1 / 3 / 8`: 0 of 40 layers differ; the canonical rows against the scalar specification:
+0 differ). Per call (`bench-cpu-moe --warm`, against `warm.txt` part 1), cold after the runtime's
+1.5 ms gap: one expert 0.405 -> 0.383 ms (-5%), two 0.341 -> 0.302 (-11%), six 0.289 -> 0.265
+(-8%); warm -6 to -14%; back to back up to -33%. In the bench the warm call is 0.355 -> 0.201 ms
+with no gap and 0.341 -> 0.239 after one (written once: 0.189 / 0.217).
+
+End to end, alternating with step 79's base (`act-single-ab.txt`, outputs identical): cpp-matrix
+42.92 -> 43.65 t/s, tcp-udp 32.14 -> 32.53 (every run above every base run). Held-out
+(`spec-measure-sclk6-cacheloads800cacheperiod8-actsingle/`): mean **35.94 -> 36.31 t/s (+1.0%)**,
+29.6-44.0; outputs identical.
+
+| prompt | step 74 | step 80 |
+|---|---|---|
+| tcp-udp | 32.26 | 32.25 |
+| py-lru | 37.21 | 38.20 |
+| cpp-matrix | 43.14 | 43.41 |
+| sql-report | 36.88 | 37.60 |
+| geometry | 43.69 | 43.95 |
+| zh-travel | 29.44 | 29.58 |
+| ja-email | 31.61 | 32.31 |
+| summary-json | 33.26 | 33.14 |
+| long-proof | 50.62 | 50.68 |
+
+(tcp-udp and summary-json took fewer tokens per step in this run, 2.14 / 3.63 against 2.19 /
+3.77: the draft-length rule, not the CPU.) Left open: after an idle gap the single-threaded
+input phase takes ~0.05 ms instead of the bench's 7 us (perhaps the core's first AVX-512 after
+idling); the next CPU items are a task scheduler that claims ahead (memory and compute still add
+up in a cold call) and a weight layout made for the CPU.
+

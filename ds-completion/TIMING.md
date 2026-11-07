@@ -27,7 +27,8 @@ attention core runs a chunk in one launch (steps 66-68: 17.7 -> 7.8 ms per 6-tok
 verify step 108 -> 96 ms; cpp-matrix now 41.4 t/s); **35.0** since a verify step's copies back from
 the dies are issued before the host waits (step 71: the CPU's experts start ~80 us sooner per
 layer, ~4 ms per code step); **35.1** since the engram rows are read while layer 0 runs (step 73); **35.9** since the indexer
-is skipped while it keeps every compressed position (step 74, <= 512 keys: every held-out prompt).
+is skipped while it keeps every compressed position (step 74, <= 512 keys: every held-out prompt); **36.3** since
+the CPU's activation digits are written by one thread each (step 80: AVX-512, ~0.03-0.04 ms off a CPU call).
 The table below is from before step 68. For scale: step 48 measured 28.0 at the same clock before
 the cache tuning and the router and CPU-routine fixes (steps 50, 53, 57).
 

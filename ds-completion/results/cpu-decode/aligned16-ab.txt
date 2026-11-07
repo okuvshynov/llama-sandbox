@@ -1,0 +1,15 @@
+# end to end (README step 79): aligned CanonAct / scratch arrays and 16-block activation tasks (results/cpu-decode/aligned16.patch, 'priv' below) vs without ('base'), alternating, page cache warm
+# ds-completion -m $M -p <prompt> --chat -n 300 --rt $F8 --placement placements/study30.txt --dspark $D --spec --canon --cache-loads 800 --cache-period 8 --cache-wait; commit 3f1ca2c (+ the patch); sclk 6; 2026-11-06
+cpp-matrix base round 1: 43.36 t/s output same
+cpp-matrix priv round 1: 43.30 t/s output same
+tcp-udp base round 1: 32.14 t/s output same
+tcp-udp priv round 1: 32.56 t/s output same
+cpp-matrix base round 2: 43.44 t/s output same
+cpp-matrix priv round 2: 43.67 t/s output same
+tcp-udp base round 2: 32.22 t/s output same
+tcp-udp priv round 2: 32.57 t/s output same
+cpp-matrix base round 3: 43.16 t/s output same
+cpp-matrix priv round 3: 43.31 t/s output same
+tcp-udp base round 3: 32.15 t/s output same
+tcp-udp priv round 3: 32.27 t/s output same
+AB DONE

@@ -1,0 +1,173 @@
+diff --git a/ds-completion/src/canon_dot.h b/ds-completion/src/canon_dot.h
+index 8386874..34c185b 100644
+--- a/ds-completion/src/canon_dot.h
++++ b/ds-completion/src/canon_dot.h
+@@ -20,18 +20,33 @@
+ 
+ #include <cstddef>
+ #include <cstdint>
++#include <new>
+ #include <vector>
+ 
++// 64-byte aligned storage (README step 79): a cache line per 16 blocks of corr / c and per 2 blocks
++// of each digit array, so threads writing disjoint 16-block ranges never share a line
++template <class T>
++struct Aligned64 {
++  using value_type = T;
++  Aligned64() = default;
++  template <class U> Aligned64(const Aligned64<U>&) {}
++  T* allocate(size_t n) { return static_cast<T*>(::operator new(n * sizeof(T), std::align_val_t(64))); }
++  void deallocate(T* p, size_t) { ::operator delete(p, std::align_val_t(64)); }
++  template <class U> bool operator==(const Aligned64<U>&) const { return true; }
++  template <class U> bool operator!=(const Aligned64<U>&) const { return false; }
++};
++template <class T> using AVec = std::vector<T, Aligned64<T>>;
++
+ // The activations of one GEMV, fake-quantized (act_quant(x, 32, ue8m0)) and split for the
+ // integer block sums.
+ struct CanonAct {
+   int nb = 0;
+   // 2^9 x = d0 + d1 2^7 + d2 2^14, every digit with the sign of x and |d| <= 127; [nb * 32] each,
+   // natural element order within a block
+-  std::vector<int8_t> d0, d1, d2;
+-  std::vector<int32_t> corr;  // per block: 12 * sum of 2^9 x (the weights enter as 2 w + 12 >= 0)
+-  std::vector<float> c;       // per block: s_b * 2^-10
+-  std::vector<int32_t> x9;    // [nb * 32]: 2^9 x (for the scalar specification)
++  AVec<int8_t> d0, d1, d2;
++  AVec<int32_t> corr;  // per block: 12 * sum of 2^9 x (the weights enter as 2 w + 12 >= 0)
++  AVec<float> c;       // per block: s_b * 2^-10
++  AVec<int32_t> x9;    // [nb * 32]: 2^9 x (for the scalar specification)
+ };
+ 
+ // x [n] (n a multiple of 32, not yet quantized) -> a
+diff --git a/ds-completion/src/cpu_moe.cpp b/ds-completion/src/cpu_moe.cpp
+index 838227f..5ee9569 100644
+--- a/ds-completion/src/cpu_moe.cpp
++++ b/ds-completion/src/cpu_moe.cpp
+@@ -191,17 +191,20 @@ void CpuMoeKernel::forward_canon(const CpuExperts& L, const float* x, const int*
+ 
+ void CpuMoeKernel::forward_canon_rows(const CpuExperts& L, const float* x, const int* ids, const float* w, int k, float* rows) {
+   constexpr int CH = 32;  // rows per task
+-  constexpr int AB = 8;   // activation blocks (of 32 values) per task
++  // activation blocks (of 32 values) per task: 16 = whole 64-byte lines of every CanonAct array
++  // per task (README step 79: threads sharing lines there slowed every later read of them)
++  constexpr int AB = 16;
+   canon_act_size(E, x_c);
+   for (int j = 0; j < k; j++) canon_act_size(F, act_c[j]);
+   const size_t gu_row = L.gate->nb[1], d_row = L.down->nb[1];
+   const int gu_tasks = k * 2 * (F / CH), d_tasks = k * (E / CH);
+-  const int x_tasks = E / QB / AB, a_per = F / QB / AB, a_tasks = k * a_per;  // E / 32 and F / 32 are multiples of 8
++  const int nbx = E / QB, nba = F / QB;  // 160 and 72 blocks: the last task of an activation may be short
++  const int x_tasks = (nbx + AB - 1) / AB, a_per = (nba + AB - 1) / AB, a_tasks = k * a_per;
+ #pragma omp parallel num_threads(n_threads)
+   {
+     // the input's digits, a few blocks per task (one thread for all of it cost ~8% at 1 expert)
+ #pragma omp for schedule(static)
+-    for (int t = 0; t < x_tasks; t++) canon_act_blocks(x, t * AB, (t + 1) * AB, x_c);
++    for (int t = 0; t < x_tasks; t++) canon_act_blocks(x, t * AB, std::min((t + 1) * AB, nbx), x_c);
+ #pragma omp for schedule(static)
+     for (int t = 0; t < gu_tasks; t++) {
+       const int per = F / CH, j = t / (2 * per), m = (t / per) % 2, c = t % per;
+@@ -212,14 +215,14 @@ void CpuMoeKernel::forward_canon_rows(const CpuExperts& L, const float* x, const
+     // the activation and its digits, a few blocks of one expert per task
+ #pragma omp for schedule(static)
+     for (int t = 0; t < a_tasks; t++) {
+-      const int j = t / a_per, b0 = (t % a_per) * AB;
++      const int j = t / a_per, b0 = (t % a_per) * AB, b1 = std::min(b0 + AB, nba);
+       float* a = act_q.data() + (size_t)j * F;
+-      for (int i = b0 * QB; i < (b0 + AB) * QB; i++) {
++      for (int i = b0 * QB; i < b1 * QB; i++) {
+         const float g = std::min(gate_out[(size_t)j * F + i], L.limit);
+         const float u = std::clamp(up_out[(size_t)j * F + i], -L.limit, L.limit);
+         a[i] = w[j] * (canon_silu(g) * u);
+       }
+-      canon_act_blocks(a, b0, b0 + AB, act_c[j]);
++      canon_act_blocks(a, b0, b1, act_c[j]);
+     }
+ #pragma omp for schedule(static)
+     for (int t = 0; t < d_tasks; t++) {
+@@ -342,8 +345,10 @@ void CpuMoeKernel::forward_batch(const CpuExperts& L, const float* x, int T, con
+ 
+   b_gate.resize((size_t)P * F);
+   b_up.resize((size_t)P * F);
+-  constexpr int AB = 8;  // blocks of 32 per task in the element-wise phases
+-  const int x_per = E / QB / AB, a_per = F / QB / AB;
++  // blocks of 32 per task in the element-wise phases: 16 = whole 64-byte lines of every array a
++  // task writes (README step 79); the last task of an activation may be short (F: 72 blocks)
++  constexpr int AB = 16;
++  const int nbx = E / QB, nba = F / QB, x_per = (nbx + AB - 1) / AB, a_per = (nba + AB - 1) / AB;
+   if (canon) {
+     b_xc.resize(T);
+     b_ac.resize(P);
+@@ -388,15 +393,15 @@ void CpuMoeKernel::forward_batch(const CpuExperts& L, const float* x, int T, con
+     // one token per task (README step 50: per token, a verify chunk's few tokens left most threads idle)
+ #pragma omp for schedule(static)
+     for (int task = 0; task < T * x_per; task++) {
+-      const int t = task / x_per, b0 = (task % x_per) * AB;
++      const int t = task / x_per, b0 = (task % x_per) * AB, b1 = std::min(b0 + AB, nbx), n = (b1 - b0) * QB;
+       if (!routes[t].count) continue;
+       const float* xt = x + (size_t)t * E;
+       if (canon) {
+-        canon_act_blocks(xt, b0, b0 + AB, b_xc[t]);
++        canon_act_blocks(xt, b0, b1, b_xc[t]);
+       } else {
+         float* q = b_xl.data() + (size_t)t * 2 * E + b0 * QB;
+-        fq_fp8_host(xt + b0 * QB, q, AB * QB);
+-        permute_blocks(q, q + E, AB * QB);
++        fq_fp8_host(xt + b0 * QB, q, n);
++        permute_blocks(q, q + E, n);
+       }
+     }
+ #pragma omp master
+@@ -420,27 +425,27 @@ void CpuMoeKernel::forward_batch(const CpuExperts& L, const float* x, int T, con
+     // of one pair per task (every step is per element or per block of 32)
+ #pragma omp for schedule(static)
+     for (int task = 0; task < P * a_per; task++) {
+-      const int p = task / a_per, b0 = (task % a_per) * AB, o = b0 * QB;
++      const int p = task / a_per, b0 = (task % a_per) * AB, b1 = std::min(b0 + AB, nba), o = b0 * QB, n = (b1 - b0) * QB;
+       const float wj = routes[pair_tok[p]].w[pair_j[p]];
+       const float* gt = b_gate.data() + (size_t)p * F + o;
+       const float* ut = b_up.data() + (size_t)p * F + o;
+       if (canon) {
+         float* a = b_gate.data() + (size_t)p * F;  // in place: each element read before written
+-        for (int i = 0; i < AB * QB; i++) {
++        for (int i = 0; i < n; i++) {
+           const float g = std::min(gt[i], L.limit);
+           const float u = std::clamp(ut[i], -L.limit, L.limit);
+           a[o + i] = wj * (canon_silu(g) * u);
+         }
+-        canon_act_blocks(a, b0, b0 + AB, b_ac[p]);
++        canon_act_blocks(a, b0, b1, b_ac[p]);
+       } else {
+         float* a = b_act.data() + (size_t)p * 2 * F + o;
+-        for (int i = 0; i < AB * QB; i++) {
++        for (int i = 0; i < n; i++) {
+           const float g = std::min(gt[i], L.limit);
+           const float u = std::clamp(ut[i], -L.limit, L.limit);
+           a[i] = wj * (g / (1.0f + expf(-g)) * u);
+         }
+-        fq_fp8_host(a, a, AB * QB);
+-        permute_blocks(a, a + F, AB * QB);
++        fq_fp8_host(a, a, n);
++        permute_blocks(a, a + F, n);
+       }
+     }
+ #pragma omp master
+diff --git a/ds-completion/src/cpu_moe.h b/ds-completion/src/cpu_moe.h
+index 6bf491e..0adc8e6 100644
+--- a/ds-completion/src/cpu_moe.h
++++ b/ds-completion/src/cpu_moe.h
+@@ -55,9 +55,11 @@ class CpuMoeKernel {
+ 
+  private:
+   int E, F, n_threads;
+-  std::vector<float> xq, gate_out, up_out, act_q, act_l, down_out;  // scratch (act_l: lane order)
++  std::vector<float> xq, act_l, down_out;  // scratch (act_l: lane order)
++  AVec<float> gate_out, up_out, act_q;     // written by tasks in whole 64-byte lines (README step 79)
+   CanonAct x_c;
+   std::vector<CanonAct> act_c;
+-  std::vector<float> b_gate, b_up, b_xl, b_act, b_down;  // forward_batch scratch
++  AVec<float> b_gate, b_up;  // forward_batch scratch, 64-byte aligned (its tasks write whole lines; README step 79)
++  std::vector<float> b_xl, b_act, b_down;
+   std::vector<CanonAct> b_xc, b_ac;
+ };

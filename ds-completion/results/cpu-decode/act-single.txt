@@ -1,0 +1,35 @@
+# the canonical activation digits on one thread per token / pair (README step 80)
+# commit 3f1ca2c + the AVX-512 canon_act_blocks (src/canon_dot.cpp) and single-writer phases (src/cpu_moe.cpp); W-3245, CPU defaults; 2026-11-06T20:13:07-05:00
+
+## 1. bin/bench-fp4-decode act: the AVX-512 canon_act_blocks against the scalar specification, and their speed
+# canon_act_blocks (AVX-512) vs canon_act_blocks_ref, 2097152 blocks of mixed inputs: differing d0 0, d1 0, d2 0, x9 0, corr 0, c 0
+160 blocks (5120 values), one thread: AVX-512 6.95 us, scalar 87.03 us (x12.5)
+72 blocks (2304 values), one thread: AVX-512 2.98 us, scalar 38.52 us (x12.9)
+
+## 2. bin/bench-fp4-decode call 16 2m G <variant> N: the warm call with the activations written once, by the team (8-block chunks, as before), or by one thread (now AVX-512)
+gap 0, once: dynamic  warm      0.189    0.123    0.066      100    0.002
+gap 0, rewrite: dynamic  warm      0.355    0.214    0.141       53    0.002
+gap 0, single: dynamic  warm      0.201    0.134    0.067       93    0.002
+gap 1500, once: dynamic  warm      0.217    0.151    0.066       87    0.003
+gap 1500, rewrite: dynamic  warm      0.341    0.216    0.125       55    0.002
+gap 1500, single: dynamic  warm      0.231    0.165    0.065       81    0.002
+
+## 3. bin-hip/bench-cpu-moe -m $M -t 16 --check-layers "" --warm 1,2,6 --steps 20 with the change (before: results/cpu-decode/warm.txt part 1)
+gap    0 us, D 1: canonical cold 0.316 (  59) warm 0.226 (  83) (x1.40) | fast cold 0.394 (  48) warm 0.268 (  70) (x1.47) | control cold 0.186 ( 101) warm 0.033 ( 565) (x5.58)
+    cold phases per call: prep 0.001 inputs 0.011 gate_up 0.165 act 0.009 down 0.127 sum 0.002
+    warm phases per call: prep 0.001 inputs 0.010 gate_up 0.120 act 0.010 down 0.082 sum 0.002
+gap    0 us, D 2: canonical cold 0.281 (  67) warm 0.232 (  81) (x1.22) | fast cold 0.319 (  59) warm 0.241 (  78) (x1.32) | control cold 0.183 ( 103) warm 0.102 ( 183) (x1.78)
+    cold phases per call: prep 0.001 inputs 0.010 gate_up 0.305 act 0.011 down 0.232 sum 0.002
+    warm phases per call: prep 0.003 inputs 0.013 gate_up 0.253 act 0.013 down 0.177 sum 0.002
+gap    0 us, D 6: canonical cold 0.260 (  72) warm 0.237 (  79) (x1.10) | fast cold 0.289 (  65) warm 0.274 (  69) (x1.06) | control cold 0.175 ( 107) warm 0.152 ( 123) (x1.15)
+    cold phases per call: prep 0.003 inputs 0.014 gate_up 0.864 act 0.019 down 0.656 sum 0.002
+    warm phases per call: prep 0.005 inputs 0.014 gate_up 0.834 act 0.019 down 0.545 sum 0.002
+gap 1500 us, D 1: canonical cold 0.383 (  49) warm 0.303 (  62) (x1.26) | fast cold 0.484 (  39) warm 0.350 (  54) (x1.38) | control cold 0.206 (  91) warm 0.070 ( 269) (x2.94)
+    cold phases per call: prep 0.003 inputs 0.048 gate_up 0.179 act 0.018 down 0.130 sum 0.002
+    warm phases per call: prep 0.003 inputs 0.049 gate_up 0.144 act 0.021 down 0.082 sum 0.002
+gap 1500 us, D 2: canonical cold 0.302 (  62) warm 0.246 (  76) (x1.22) | fast cold 0.367 (  51) warm 0.292 (  64) (x1.26) | control cold 0.226 (  83) warm 0.163 ( 115) (x1.38)
+    cold phases per call: prep 0.002 inputs 0.023 gate_up 0.333 act 0.018 down 0.224 sum 0.002
+    warm phases per call: prep 0.005 inputs 0.019 gate_up 0.279 act 0.015 down 0.171 sum 0.002
+gap 1500 us, D 6: canonical cold 0.265 (  71) warm 0.254 (  74) (x1.04) | fast cold 0.315 (  60) warm 0.305 (  62) (x1.03) | control cold 0.193 (  97) warm 0.173 ( 109) (x1.12)
+    cold phases per call: prep 0.006 inputs 0.025 gate_up 0.899 act 0.030 down 0.624 sum 0.002
+    warm phases per call: prep 0.011 inputs 0.041 gate_up 0.870 act 0.039 down 0.554 sum 0.002

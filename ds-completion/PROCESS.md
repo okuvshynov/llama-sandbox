@@ -505,6 +505,15 @@ Each rule is followed by where it mattered most.
   was set aside and the cache warmed before measuring.
   The suspected after-gap cost then measured at 5-10%; the open question (why fresh activations
   read slowly) was left for hardware counters instead of a fifth variant.
+- **Counters turn guesses into one experiment (README step 79).** Four variants had failed to
+  explain the slow reads. The counters (machine clears, HITM loads, L2-miss stalls) pointed at
+  sharing, and one more variant (a single writer) isolated it: the lines were slow because many
+  threads wrote them. Installing perf took one apt command; it would have saved the earlier guesses.
+- **Make the fix cheap enough, then apply the finding directly (README step 80).** The counters
+  said one writer removes the penalty; it was too slow only because its code was scalar. A
+  vector version checked byte for byte against the scalar one (kept as the specification) on 2M
+  blocks of edge cases made one writer cost 7 us, and the finding applied as is: +1.0%, where
+  the workarounds (copies, flushes, aligned chunks) had given 0-0.2%.
 
 ## 4. Predictions against outcomes
 
@@ -534,6 +543,8 @@ Estimates were made before measuring wherever possible; this is how they fared.
 | attention's output over dies 0-1 (76) | ~3.5% of a code step | +0.6% | ~55 us per layer of hand-off kernels and waits; the weights on die 1 cost its cache 1.41 GiB (CPU expert pairs +4.4%) |
 | a CPU expert from cache vs DRAM, the ceiling of an LLC prefetch (77) | ~3x (assumed, for a large-LLC EPYC) | x1.2 | DRAM is not the call's limit: half of a warm call is neither DRAM nor arithmetic (step 78) |
 | per-thread activation copies in the CPU call (78) | ~8-10% on code (from -0.1 ms per expert back to back) | flat | the runtime's calls follow a ~1.5 ms idle gap, after which the copy costs what it saves |
+| aligned 16-block activation chunks (79) | ~40% of the read penalty, ~1-2% end to end | +0.2% held-out (chat +0.5-1.1%) | the remaining penalty is the spread over 16 writers; the cold path and the gap dominate a call |
+| one writer per token / pair, AVX-512 digits (80) | the bench's -0.1 ms per call; +2-4% | +1.0% held-out (A/B +1.2-1.7%) | a call is ~1 per layer with CPU experts; the rest of it (cold memory, compute) is unchanged |
 | expert parallelism for the draft (62) | proposed by the person | ~1 ms at best | experts are 16% of the draft; the head (27%) was the item |
 | the head through LDS (62) | ~1-2% | +1.4% held-out, +2% on code | as estimated from the per-part times |
 | the draft in fp8 frees ~4 GB (60 -> 61) | ~210 slots | nothing | its dense part was already fp8 and its experts mxfp4: assumed from the file's name |

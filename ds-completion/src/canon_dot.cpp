@@ -41,7 +41,8 @@ void canon_act_size(int n, CanonAct& a) {
   a.c.resize(a.nb);
 }
 
-void canon_act_blocks(const float* x, int b0, int b1, CanonAct& a) {
+// the specification (README step 80: canon_act_blocks below must give the same bytes)
+void canon_act_blocks_ref(const float* x, int b0, int b1, CanonAct& a) {
   for (int b = b0; b < b1; b++) {
     float q[QB];
     const float s = fq_fp8_split(x + b * QB, q);
@@ -58,6 +59,58 @@ void canon_act_blocks(const float* x, int b0, int b1, CanonAct& a) {
       sum += v;
     }
     a.corr[b] = 12 * sum;
+  }
+}
+
+// AVX-512, the same bytes as canon_act_blocks_ref (README step 80): per block of 32 (two registers)
+//   s   = pow2_ceil(max(amax, 1e-4) / 448): the next power of two at or above (exponent bits)
+//   y   = x / s, as x * (1 / s): s is a power of two, so both give the correctly rounded x 2^-k
+//   q   = e4m3 round of y: step 2^(binade - 3), binade = max(floor(log2 |y|), -6), ties to even
+//   v   = q * 512 (exact), its three signed 7-bit digits, corr = 12 sum v, c = s 2^-10
+void canon_act_blocks(const float* x, int b0, int b1, CanonAct& a) {
+  const __m512 absmask = _mm512_castsi512_ps(_mm512_set1_epi32(0x7FFFFFFF));
+  const __m512 lim = _mm512_set1_ps(448.0f), nlim = _mm512_set1_ps(-448.0f);
+  const __m512i m127 = _mm512_set1_epi32(127), emin = _mm512_set1_epi32(-6);
+  for (int b = b0; b < b1; b++) {
+    const float* xb = x + (size_t)b * QB;
+    const __m512 x0 = _mm512_loadu_ps(xb), x1 = _mm512_loadu_ps(xb + 16);
+    const float amax = _mm512_reduce_max_ps(_mm512_max_ps(_mm512_and_ps(x0, absmask), _mm512_and_ps(x1, absmask)));
+    // pow2_ceil of a positive normal t: t itself if its mantissa is zero, else the next binade
+    const float t = std::max(amax, 1e-4f) * (1.0f / 448.0f);
+    uint32_t tb;
+    memcpy(&tb, &t, 4);
+    const uint32_t sb = (tb & 0x007FFFFFu) ? ((tb & 0x7F800000u) + 0x00800000u) : tb;
+    float sc, inv;
+    memcpy(&sc, &sb, 4);
+    const uint32_t ib = (uint32_t)(254 - (int)(sb >> 23)) << 23;  // 1 / s, exact
+    memcpy(&inv, &ib, 4);
+    a.c[b] = sc * 0x1p-10f;
+    __m512i vsum = _mm512_setzero_si512();
+    for (int h = 0; h < 2; h++) {
+      const __m512 y = _mm512_min_ps(_mm512_max_ps(_mm512_mul_ps(h ? x1 : x0, _mm512_set1_ps(inv)), nlim), lim);
+      const __m512 ay = _mm512_and_ps(y, absmask);
+      // binade from the exponent bits (subnormals and zero give <= -127, clamped to -6)
+      const __m512i ex = _mm512_max_epi32(_mm512_sub_epi32(_mm512_srli_epi32(_mm512_castps_si512(ay), 23), m127), emin);
+      // y / step and step: 2^(3 - binade) and 2^(binade - 3) as exponent bits
+      const __m512 up = _mm512_castsi512_ps(_mm512_slli_epi32(_mm512_sub_epi32(_mm512_set1_epi32(130), ex), 23));
+      const __m512 step = _mm512_castsi512_ps(_mm512_slli_epi32(_mm512_add_epi32(ex, _mm512_set1_epi32(124)), 23));
+      __m512 r = _mm512_mul_ps(_mm512_roundscale_ps(_mm512_mul_ps(ay, up), _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC), step);
+      r = _mm512_min_ps(r, lim);
+      const __m512 q = _mm512_or_ps(r, _mm512_andnot_ps(absmask, y));  // the sign of y (copysign)
+      const __m512i v = _mm512_cvttps_epi32(_mm512_mul_ps(q, _mm512_set1_ps(512.0f)));  // exact
+      const __m512i m = _mm512_abs_epi32(v);
+      const __mmask16 neg = _mm512_cmplt_epi32_mask(v, _mm512_setzero_si512());
+      auto sgn = [&](__m512i d) { return _mm512_mask_sub_epi32(d, neg, _mm512_setzero_si512(), d); };
+      const __m512i e0 = sgn(_mm512_and_si512(m, m127)), e1 = sgn(_mm512_and_si512(_mm512_srli_epi32(m, 7), m127)),
+                    e2 = sgn(_mm512_srli_epi32(m, 14));
+      const size_t i = (size_t)b * QB + 16 * h;
+      _mm512_storeu_si512(a.x9.data() + i, v);
+      _mm_storeu_si128((__m128i*)(a.d0.data() + i), _mm512_cvtepi32_epi8(e0));
+      _mm_storeu_si128((__m128i*)(a.d1.data() + i), _mm512_cvtepi32_epi8(e1));
+      _mm_storeu_si128((__m128i*)(a.d2.data() + i), _mm512_cvtepi32_epi8(e2));
+      vsum = _mm512_add_epi32(vsum, v);
+    }
+    a.corr[b] = 12 * _mm512_reduce_add_epi32(vsum);
   }
 }
 

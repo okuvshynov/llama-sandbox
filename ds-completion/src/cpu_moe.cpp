@@ -196,12 +196,13 @@ void CpuMoeKernel::forward_canon_rows(const CpuExperts& L, const float* x, const
   for (int j = 0; j < k; j++) canon_act_size(F, act_c[j]);
   const size_t gu_row = L.gate->nb[1], d_row = L.down->nb[1];
   const int gu_tasks = k * 2 * (F / CH), d_tasks = k * (E / CH);
-  const int x_tasks = E / QB / AB, a_per = F / QB / AB, a_tasks = k * a_per;  // E / 32 and F / 32 are multiples of 8
+  const int a_per = F / QB / AB, a_tasks = k * a_per;  // F / 32 is a multiple of 8
 #pragma omp parallel num_threads(n_threads)
   {
-    // the input's digits, a few blocks per task (one thread for all of it cost ~8% at 1 expert)
-#pragma omp for schedule(static)
-    for (int t = 0; t < x_tasks; t++) canon_act_blocks(x, t * AB, (t + 1) * AB, x_c);
+    // the input's digits by one thread (README step 80: with the AVX-512 canon_act_blocks ~7 us;
+    // written by the whole team they cost every later read of them ~2x)
+#pragma omp single
+    canon_act_blocks(x, 0, E / QB, x_c);
 #pragma omp for schedule(static)
     for (int t = 0; t < gu_tasks; t++) {
       const int per = F / CH, j = t / (2 * per), m = (t / per) % 2, c = t % per;
@@ -219,8 +220,10 @@ void CpuMoeKernel::forward_canon_rows(const CpuExperts& L, const float* x, const
         const float u = std::clamp(up_out[(size_t)j * F + i], -L.limit, L.limit);
         a[i] = w[j] * (canon_silu(g) * u);
       }
-      canon_act_blocks(a, b0, b0 + AB, act_c[j]);
     }
+    // each expert's activation digits by one thread (README step 80)
+#pragma omp for schedule(static)
+    for (int j = 0; j < k; j++) canon_act_blocks(act_q.data() + (size_t)j * F, 0, F / QB, act_c[j]);
 #pragma omp for schedule(static)
     for (int t = 0; t < d_tasks; t++) {
       const int per = E / CH, j = t / per, c = t % per;
@@ -386,16 +389,19 @@ void CpuMoeKernel::forward_batch(const CpuExperts& L, const float* x, int T, con
   {
     // the inputs: forward()'s fq8 + lane order, or forward_canon_rows' digits; a few blocks of
     // one token per task (README step 50: per token, a verify chunk's few tokens left most threads idle)
+    // canonical: each token's digits by one thread (README step 80: written by the whole team they
+    // cost every later read ~2x; the AVX-512 canon_act_blocks takes ~7 us per token)
+    if (canon) {
 #pragma omp for schedule(static)
-    for (int task = 0; task < T * x_per; task++) {
-      const int t = task / x_per, b0 = (task % x_per) * AB;
-      if (!routes[t].count) continue;
-      const float* xt = x + (size_t)t * E;
-      if (canon) {
-        canon_act_blocks(xt, b0, b0 + AB, b_xc[t]);
-      } else {
+      for (int t = 0; t < T; t++)
+        if (routes[t].count) canon_act_blocks(x + (size_t)t * E, 0, E / QB, b_xc[t]);
+    } else {
+#pragma omp for schedule(static)
+      for (int task = 0; task < T * x_per; task++) {
+        const int t = task / x_per, b0 = (task % x_per) * AB;
+        if (!routes[t].count) continue;
         float* q = b_xl.data() + (size_t)t * 2 * E + b0 * QB;
-        fq_fp8_host(xt + b0 * QB, q, AB * QB);
+        fq_fp8_host(x + (size_t)t * E + b0 * QB, q, AB * QB);
         permute_blocks(q, q + E, AB * QB);
       }
     }
@@ -431,7 +437,6 @@ void CpuMoeKernel::forward_batch(const CpuExperts& L, const float* x, int T, con
           const float u = std::clamp(ut[i], -L.limit, L.limit);
           a[o + i] = wj * (canon_silu(g) * u);
         }
-        canon_act_blocks(a, b0, b0 + AB, b_ac[p]);
       } else {
         float* a = b_act.data() + (size_t)p * 2 * F + o;
         for (int i = 0; i < AB * QB; i++) {
@@ -442,6 +447,11 @@ void CpuMoeKernel::forward_batch(const CpuExperts& L, const float* x, int T, con
         fq_fp8_host(a, a, AB * QB);
         permute_blocks(a, a + F, AB * QB);
       }
+    }
+    // canonical: each pair's activation digits by one thread (README step 80)
+    if (canon) {
+#pragma omp for schedule(static)
+      for (int p = 0; p < P; p++) canon_act_blocks(b_gate.data() + (size_t)p * F, 0, F / QB, b_ac[p]);
     }
 #pragma omp master
     tp[3] = Clk::now();

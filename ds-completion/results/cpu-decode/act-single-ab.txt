@@ -1,0 +1,15 @@
+# end to end (README step 80): canonical activation digits by one thread per token / pair with the AVX-512 canon_act_blocks ('priv') vs HEAD ('base'), alternating, page cache warm
+# ds-completion -m $M -p <prompt> --chat -n 300 --rt $F8 --placement placements/study30.txt --dspark $D --spec --canon --cache-loads 800 --cache-period 8 --cache-wait; base commit 3f1ca2c; sclk 6; 2026-11-06
+cpp-matrix base round 1: 43.09 t/s output same
+cpp-matrix priv round 1: 43.66 t/s output same
+tcp-udp base round 1: 32.11 t/s output same
+tcp-udp priv round 1: 32.54 t/s output same
+cpp-matrix base round 2: 43.26 t/s output same
+cpp-matrix priv round 2: 43.66 t/s output same
+tcp-udp base round 2: 32.05 t/s output same
+tcp-udp priv round 2: 32.43 t/s output same
+cpp-matrix base round 3: 42.40 t/s output same
+cpp-matrix priv round 3: 43.63 t/s output same
+tcp-udp base round 3: 32.25 t/s output same
+tcp-udp priv round 3: 32.62 t/s output same
+AB DONE

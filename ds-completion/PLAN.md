@@ -369,7 +369,11 @@ on a faster call. Step 78 takes the call apart.
 Step 78: a warm one-token call is ~2x its compute; ~45% of it is reading activation digits the
 team just wrote. Per-thread copies: -25% back to back, nothing after the runtime's idle gap
 (end to end flat); not kept. After the runtime's idle gap a call loses only 5-10% (libgomp's
-workers spin through it). Open: why freshly written activations read slowly (hardware counters).
+workers spin through it). Step 79 (perf counters): the digits read slowly because 16 threads wrote
+them (one writer: no penalty; whole lines per thread: -40%); aligned 16-block chunks +0.2% held-out,
+not kept. Step 80: an AVX-512 canon_act_blocks (the same bytes, ~12.5x faster) and one writer per
+token / pair: a CPU call -5-14% after the gap, held-out 35.94 -> 36.31 t/s. Next on the CPU: a task
+scheduler that claims ahead (overlap memory and compute), then a CPU weight layout.
 
 **A. Tuning the expert cache** (the CPU experts' ~25 ms)
 - Hysteresis: a newcomer must beat its victim by a margin, so the cache settles in long runs

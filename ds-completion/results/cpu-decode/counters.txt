@@ -1,0 +1,33 @@
+# hardware counters for bench-fp4-decode call's activation variants (README step 79), dynamic schedule, warm, no gap
+# perf stat -x, -e cycles:u,instructions:u,<group of 4> -- bin/bench-fp4-decode call 16 2m 0 <variant> N, N = 2000 and 0 (start-up subtracted); perf 5.15 (/usr/lib/linux-tools/5.15.0-202-generic/perf) on kernel 6.10.5-1-t2-jammy, user-space counts, perf_event_paranoid 2
+# commit 3f1ca2c + results/cpu-decode/aligned16.patch (64-byte aligned CanonAct arrays) + the bench's variants; W-3245, 16 threads, CPU defaults; 2026-11-06T18:53:19-05:00
+# variants: once (activations written once), rewrite (rewritten by the team every call in 8-block chunks, as forward_batch), copy (rewritten, then per-thread copies), single (rewritten by one thread), aligned16 (rewritten by the team in 16-block chunks: whole lines per thread)
+
+## time per call, ms (2000 calls)
+once: dynamic  warm      0.179    0.115    0.064      105    0.003
+rewrite: dynamic  warm      0.323    0.210    0.113       58    0.003
+copy: dynamic  warm      0.238    0.176    0.061       79    0.002
+single: dynamic  warm      0.321    0.258    0.063       59    0.003
+aligned16: dynamic  warm      0.276    0.193    0.083       68    0.003
+
+## counters
+# per call (all 16 threads summed): (counts with 2000 calls - counts with 0) / 2000
+event                                           once     rewrite        copy      single   aligned16
+cycles:u                                     8559034    16126574    11286328    15689930    13678230
+instructions:u                              16007114    17391953    17340274    18289515    17356809
+mem_load_retired.l1_miss:u                     42567       55789       45612       42794       51265
+mem_load_retired.l2_miss:u                      3787       17821        7479        4390       13308
+mem_load_retired.l3_miss:u                         0           2           1           1           3
+mem_load_l3_hit_retired.xsnp_hitm:u              163        2916        1176         286        1693
+mem_load_l3_hit_retired.xsnp_hit:u                10         377         356          29         253
+mem_load_l3_hit_retired.xsnp_miss:u                1           1           0           1           1
+mem_load_l3_hit_retired.xsnp_none:u             3575       14249        6015        4107       11544
+machine_clears.memory_ordering:u                  38        6177        1964         136        3976
+machine_clears.count:u                            69        6384        2030         158        3990
+ld_blocks_partial.address_alias:u             326593      314716      326265      285700      364068
+mem_load_retired.fb_hit:u                      42639       58528       45084       43795       64147
+cycle_activity.stalls_l1d_miss:u              332777     6100954     2283905      532865     3849825
+cycle_activity.stalls_l2_miss:u               308151     4533492     2148898      460183     2768385
+cycle_activity.stalls_total:u                1871634     8062896     4005915     7604321     5962421
+l2_rqsts.demand_data_rd_miss:u                  5068       23637       21683        5571       17508
+l2_rqsts.all_pf:u                            1386741     1580101     1406968     1394776     1538015
