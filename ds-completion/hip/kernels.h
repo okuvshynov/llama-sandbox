@@ -155,3 +155,9 @@ void k_repeat(const float* x, int n, int copies, float* y, hipStream_t s);
 void k_argmax(const float* x, int n, int* out, hipStream_t s);
 // y[k] = bf16 table[*row][k] as f32, k < dim (a row picked by a device-side index)
 void k_gather_bf16_row(const uint16_t* table, const int* row, int dim, float* y, hipStream_t s);
+
+// ---- small copies without the copy engine (README step 84) ----
+// dst <- src, bytes a multiple of 16; either side may be pinned host memory the device can address
+// (hipHostMalloc): the GPU's own loads and stores, so the copy does not queue behind the expert
+// cache's background loads on the copy engine
+void k_copy16(void* dst, const void* src, size_t bytes, hipStream_t s);

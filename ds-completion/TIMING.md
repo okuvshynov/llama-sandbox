@@ -29,7 +29,8 @@ the dies are issued before the host waits (step 71: the CPU's experts start ~80 
 layer, ~4 ms per code step); **35.1** since the engram rows are read while layer 0 runs (step 73); **35.9** since the indexer
 is skipped while it keeps every compressed position (step 74, <= 512 keys: every held-out prompt); **36.3** since
 the CPU's activation digits are written by one thread each (step 80: AVX-512, a CPU call -5-14% after the gap); **37.2**
-since the CPU's 32-row tasks are handed out in pairs (step 82: a cold call with 2-6 experts -12-13%).
+since the CPU's 32-row tasks are handed out in pairs (step 82: a cold call with 2-6 experts -12-13%); **37.6**
+since the CPU's rows go to die 0 by a kernel, not behind the cache's loads on the copy engine (step 84).
 The tables below are from step 57's runs, before steps 66-82. For scale: step 48 measured 28.0 at the same clock before
 the cache tuning and the router and CPU-routine fixes (steps 50, 53, 57).
 
@@ -110,19 +111,23 @@ fast one per (token, expert) pair, so only the CPU side helps there.
 ## Seeing a step: traces
 
 `results/trace/tcp-udp.json.gz` (chat) and `cpp-matrix.json.gz` (code), 300 tokens each with
-speculation and the tuned cache (README steps 51, 58, 69, 73, 75; the current ones from step 75, commit c4bd99b), open in ui.perfetto.dev. Per layer: die
+speculation and the tuned cache (README steps 51, 58, 69, 73, 75, 84; the current ones from step 84), open in ui.perfetto.dev. Per layer: die
 0's "layer N" span with its groups nested (attention, router, shared expert, the wait for the
-CPU, the sum); the host's "CPU experts" span with how many experts and tokens; each die's routed
+CPU, the sum); the host's "CPU experts" span with how many experts and tokens and its phases (`cpu.*`, step 84);
+die 0's `ffn.cpu_rows_copy`, the CPU's rows coming back; each die's routed
 experts with theirs. The things above show up directly: a verify step is ~40 layers of 1.6-2.5
 ms; in a layer with CPU experts die 0 sits in `ffn.wait_for_cpu_experts` for most of the CPU's
 span, while the dies' experts finish in 0.1-0.35 ms.
 
-Measuring costs time: `--profile` 5-6% of generation speed, `--trace` 6-9% (step 75's: 32.26 / 43.14 t/s
-untraced vs 29.94 / 40.45 traced; README steps 58, 69, 73, 75), so a trace's times run a few percent long;
+Measuring costs time: `--profile` 5-6% of generation speed, `--trace` 6-7% (step 84's: 33.41 / 45.60 t/s
+untraced vs 31.40 / 42.67 traced; README steps 58, 69, 73, 75, 84), so a trace's times run a few percent long;
 its proportions hold. `--trace FILE` writes the file for any run; `scripts/trace_compare.py OLD
 NEW` lists two traces' spans side by side (`results/trace/compare-step58.txt`: the attention
 core 14.8 -> 6.0 ms per code verify step, everything else within ~1 ms; `compare-step69.txt`: the
-handoffs and the engram fetch of steps 71 and 73; `compare-step73.txt`: the indexer skip of step 74).
+handoffs and the engram fetch of steps 71 and 73; `compare-step73.txt`: the indexer skip of step 74;
+`compare-step74.txt`: steps 80-84). `scripts/trace_critpath.py TRACE` splits each verify size into
+die 0's front, the handoffs to and from the CPU, the CPU's experts, the tail and the draft
+(`results/trace/critpath.txt`).
 
 ## Background expert loads (the adaptive cache)
 

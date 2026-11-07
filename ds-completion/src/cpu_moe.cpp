@@ -173,6 +173,8 @@ inline void dot_row_multi(const uint8_t* row, int nb, const float* const* x, int
 }  // namespace
 
 CpuMoeKernel::CpuMoeKernel(int n_embd, int n_ff, int k_max, int nt) : E(n_embd), F(n_ff), n_threads(nt) {
+  t_end_gu.resize(nt);
+  t_end_d.resize(nt);
   xq.resize(2 * E);
   gate_out.resize((size_t)k_max * F);
   up_out.resize((size_t)k_max * F);
@@ -199,19 +201,31 @@ void CpuMoeKernel::forward_canon_rows(const CpuExperts& L, const float* x, const
   const size_t gu_row = L.gate->nb[1], d_row = L.down->nb[1];
   const int gu_tasks = k * 2 * (F / CH), d_tasks = k * (E / CH);
   const int a_per = F / QB / AB, a_tasks = k * a_per;  // F / 32 is a multiple of 8
+  using Clk = std::chrono::steady_clock;
+  int nthr = 1;
+  last_call.t[0] = Clk::now();
 #pragma omp parallel num_threads(n_threads)
   {
+    const int tid = omp_get_thread_num();
+#pragma omp master
+    nthr = omp_get_num_threads();
     // the input's digits by one thread (README step 80: with the AVX-512 canon_act_blocks ~7 us;
     // written by the whole team they cost every later read of them ~2x)
 #pragma omp single
     canon_act_blocks(x, 0, E / QB, x_c);
-#pragma omp for schedule(dynamic, kTaskPair)  // README step 82: static waited for the core that idled longest
+#pragma omp master
+    last_call.t[1] = Clk::now();
+#pragma omp for schedule(dynamic, kTaskPair) nowait  // README step 82: static waited for the core that idled longest
     for (int t = 0; t < gu_tasks; t++) {
       const int per = F / CH, j = t / (2 * per), m = (t / per) % 2, c = t % per;
       const ggml_tensor* W = m ? L.up : L.gate;
       float* out = (m ? up_out.data() : gate_out.data()) + (size_t)j * F;
       canon_dot_rows(expert_base(W, ids[j]), gu_row, x_c, c * CH, (c + 1) * CH, out);
     }
+    t_end_gu[tid] = Clk::now();  // this thread's last gate / up task (last_call's spread)
+#pragma omp barrier
+#pragma omp master
+    last_call.t[2] = Clk::now();
     // the activation and its digits, a few blocks of one expert per task
 #pragma omp for schedule(static)
     for (int t = 0; t < a_tasks; t++) {
@@ -226,12 +240,28 @@ void CpuMoeKernel::forward_canon_rows(const CpuExperts& L, const float* x, const
     // each expert's activation digits by one thread (README step 80)
 #pragma omp for schedule(static)
     for (int j = 0; j < k; j++) canon_act_blocks(act_q.data() + (size_t)j * F, 0, F / QB, act_c[j]);
-#pragma omp for schedule(dynamic, kTaskPair)
+#pragma omp master
+    last_call.t[3] = Clk::now();
+#pragma omp for schedule(dynamic, kTaskPair) nowait
     for (int t = 0; t < d_tasks; t++) {
       const int per = E / CH, j = t / per, c = t % per;
       canon_dot_rows(expert_base(L.down, ids[j]), d_row, act_c[j], c * CH, (c + 1) * CH, rows + (size_t)j * E);
     }
+    t_end_d[tid] = Clk::now();
   }
+  last_call.t[4] = Clk::now();
+  fill_spreads(nthr);
+}
+
+// last_call's per-phase spread: the last thread's end of its tasks minus the first's
+void CpuMoeKernel::fill_spreads(int nthr) {
+  auto spread = [&](const std::vector<std::chrono::steady_clock::time_point>& v) {
+    auto lo = v[0], hi = v[0];
+    for (int i = 1; i < nthr; i++) lo = std::min(lo, v[i]), hi = std::max(hi, v[i]);
+    return std::chrono::duration<double, std::micro>(hi - lo).count();
+  };
+  last_call.gu_spread_us = spread(t_end_gu);
+  last_call.d_spread_us = spread(t_end_d);
 }
 
 void CpuMoeKernel::forward(const CpuExperts& L, const float* x, const int* ids, const float* w, int k, float* y) {
@@ -385,6 +415,7 @@ void CpuMoeKernel::forward_batch(const CpuExperts& L, const float* x, int T, con
       for (int p : groups[g].pairs) ga[g].push_back(b_act.data() + (size_t)p * 2 * F + F);
   }
   Clk::time_point tp[6];
+  int nthr = 1;
   tp[0] = Clk::now();
   // the two weight phases (schedule(runtime)): dynamic in pairs of 32-row tasks (README step 82: a
   // thread streams 64 contiguous rows before it jumps; -12-13% per cold call with 2-6 experts
@@ -412,8 +443,10 @@ void CpuMoeKernel::forward_batch(const CpuExperts& L, const float* x, int T, con
     }
 #pragma omp master
     tp[1] = Clk::now();
+#pragma omp master
+    nthr = omp_get_num_threads();
     // gate and up rows: per expert, every row once for all its tokens
-#pragma omp for schedule(runtime)
+#pragma omp for schedule(runtime) nowait
     for (int task = 0; task < G * 2 * per_f; task++) {
       const int g = task / (2 * per_f), m = (task / per_f) % 2, c = task % per_f;
       const uint8_t* base = expert_base(m ? L.up : L.gate, groups[g].e);
@@ -425,6 +458,8 @@ void CpuMoeKernel::forward_batch(const CpuExperts& L, const float* x, int T, con
       else if (canon) canon_dot_rows_multi(base, gu_row, gxc[g].data(), nx, c * CH, (c + 1) * CH, ys);
       else dot_range_multi(base, gu_row, nb_e, gx[g].data(), nx, ys, c * CH, (c + 1) * CH);
     }
+    t_end_gu[omp_get_thread_num()] = Clk::now();  // this thread's last gate / up task (last_call)
+#pragma omp barrier
 #pragma omp master
     tp[2] = Clk::now();
     // the activation of every pair (forward()'s / forward_canon_rows' expressions), a few blocks
@@ -461,7 +496,7 @@ void CpuMoeKernel::forward_batch(const CpuExperts& L, const float* x, int T, con
 #pragma omp master
     tp[3] = Clk::now();
     // down rows: per expert, every row once for all its tokens
-#pragma omp for schedule(runtime)
+#pragma omp for schedule(runtime) nowait
     for (int task = 0; task < G * per_e; task++) {
       const int g = task / per_e, c = task % per_e;
       const uint8_t* base = expert_base(L.down, groups[g].e);
@@ -470,6 +505,8 @@ void CpuMoeKernel::forward_batch(const CpuExperts& L, const float* x, int T, con
       else if (canon) canon_dot_rows_multi(base, d_row, gac[g].data(), nx, c * CH, (c + 1) * CH, gd[g].data());
       else dot_range_multi(base, d_row, nb_f, ga[g].data(), nx, gd[g].data(), c * CH, (c + 1) * CH);
     }
+    t_end_d[omp_get_thread_num()] = Clk::now();
+#pragma omp barrier
 #pragma omp master
     tp[4] = Clk::now();
     // fast: each token's sum over its experts, in list order (forward()'s)
@@ -487,6 +524,8 @@ void CpuMoeKernel::forward_batch(const CpuExperts& L, const float* x, int T, con
     }
   }
   tp[5] = Clk::now();
+  for (int i = 0; i < 5; i++) last_call.t[i] = tp[i];
+  fill_spreads(nthr);
   bstats.prep += ms(t_start, tp[0]);
   bstats.inputs += ms(tp[0], tp[1]);
   bstats.gate_up += ms(tp[1], tp[2]);

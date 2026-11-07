@@ -12,6 +12,7 @@
 #include "ggml.h"
 
 #include <cstdint>
+#include <chrono>
 #include <vector>
 
 struct CpuExperts {
@@ -51,11 +52,20 @@ class CpuMoeKernel {
     double prep = 0, inputs = 0, gate_up = 0, act = 0, down = 0, sum = 0;
     long calls = 0, pairs = 0, experts = 0, by_tokens[5] = {};
   } bstats;
+  // the last call's phases (README step 84, for traces; forward_batch and forward_canon_rows): its
+  // start and the ends of its input digits, gate + up, activation and down phases; per weight
+  // phase the spread between the first and the last thread to finish its tasks, in us
+  struct CallTimes {
+    std::chrono::steady_clock::time_point t[5];
+    double gu_spread_us = 0, d_spread_us = 0;
+  } last_call;
   // control for the benchmark: the same tasks and rows, only reading the bytes
   uint64_t touch(const CpuExperts& L, const int* ids, int k);
 
  private:
   int E, F, n_threads;
+  std::vector<std::chrono::steady_clock::time_point> t_end_gu, t_end_d;  // per thread (last_call)
+  void fill_spreads(int nthr);
   std::vector<float> xq, gate_out, up_out, act_q, act_l, down_out;  // scratch (act_l: lane order)
   CanonAct x_c;
   std::vector<CanonAct> act_c;

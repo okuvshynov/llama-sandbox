@@ -523,6 +523,11 @@ Each rule is followed by where it mattered most.
   contiguity was the effect, and the plain OpenMP setting that keeps most of it after the gap
   (chunks of two) gave +2.3%. A one-constant change, found because the bench measured the cases
   the plan did not expect.
+- **Look at the distribution, not the median (README step 84).** A breakdown script showed ~160
+  us per layer for a copy of a few hundred KB; its median was 44 us, the cost was the tail (p99
+  1.5 ms), and one run without background loads named the cause. A fix that removes a delay can
+  expose the next one: half the gain came back as waiting for the other dies, whose copies
+  share the same problem.
 
 ## 4. Predictions against outcomes
 
@@ -557,6 +562,7 @@ Estimates were made before measuring wherever possible; this is how they fared.
 | a spinning host wait after the idle gap (81) | ~1-2% (the bench's ~0.02 ms per call, and a quicker handoff) | -0.5% held-out (A/B: code +1.5%) | a spinning host thread takes a core the CPU's experts share; the A/B's code gain did not carry over |
 | a claim-ahead scheduler prefetching the next task (82) | -10-25% per cold CPU expert, 3-8% end to end | the prefetch slower; chunks of 2 tasks instead: +2.3% held-out | the cold starts cost less than lost contiguity; prefetch bursts compete with the streams |
 | a CPU weight layout (83, bench) | decode ~0.03 ms cheaper per expert, 2-4% | compute x1.8, a cold call -9%, warm -18%; est. +1.5-2.5%, not deployed | a cold call is mostly DRAM time now; deploying needs a second 269 GB expert store |
+| the CPU's rows copied by a kernel, not the copy engine (84) | most of ~5-6 ms per code step, +3-5% | +1.1% held-out | the dies' results then arrive last in ~10% of layers: their own copies wait behind their loads |
 | expert parallelism for the draft (62) | proposed by the person | ~1 ms at best | experts are 16% of the draft; the head (27%) was the item |
 | the head through LDS (62) | ~1-2% | +1.4% held-out, +2% on code | as estimated from the per-part times |
 | the draft in fp8 frees ~4 GB (60 -> 61) | ~210 slots | nothing | its dense part was already fp8 and its experts mxfp4: assumed from the file's name |

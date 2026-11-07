@@ -2,8 +2,8 @@
 
 Status: **done**, **next** (agreed, in order), **planned** (agreed, later), **idea** (not
 decided). Today (sclk 6, 16 CPU threads): `--spec` with the adaptive cache (`--canon
---cache-loads 800 --cache-period 8`) 37.16 t/s mean on the 8 held-out prompts (30.0-45.1; README
-step 82; every decode change on the same ruler: `results/heldout-history/`). Prompt processing
+--cache-loads 800 --cache-period 8`) 37.57 t/s mean on the 8 held-out prompts (30.0-45.6; README
+step 84; every decode change on the same ruler: `results/heldout-history/`). Prompt processing
 93 t/s (63 `--canon`; 1,989 tokens, README step 68). Earlier milestones (sclk 2): no GPU experts
 ~12 t/s; the study30 placement 17.7-21.7; + `--spec` and the cache at 200 loads/s 25.6. The cost
 model below (2026-10-27) says where a token's time went before the cache; today: TIMING.md.
@@ -389,6 +389,10 @@ next task, makes a cold call faster; a call with 2-6 experts -12-13% after the g
 Step 83: the CPU weight layout benchmarked (bench only): the same bits, compute x1.8, a cold call
 -9% (8 KB prefetch); est. +1.5-2.5%. Not deployed: it needs a repacked ~269 GB expert file as the
 only source of expert weights (CPU kernels, the GPU loader's unpack, model loading).
+Step 84: traces split the CPU's handoff back (new `scripts/trace_critpath.py`): the copy of the
+CPU's rows waited behind the cache's background loads on die 0's copy engine; copied by a kernel
+from the pinned buffer instead: held-out 37.16 -> 37.57 t/s. Left: the dies' own small copies
+behind their loads (~3 ms per code step; kernels there and smaller load pieces were slower).
 
 **A. Tuning the expert cache** (the CPU experts' ~25 ms)
 - Hysteresis: a newcomer must beat its victim by a margin, so the cache settles in long runs

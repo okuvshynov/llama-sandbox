@@ -1,0 +1,71 @@
+# scripts/trace_compare.py: step 74's traces (commit c4bd99b) vs step 84's (4f72523 + step 84), sclk 6, 2026-11-07T01:42:58-05:00
+## cpp-matrix
+# ms per verify step in generation: old-cpp-matrix.json (64 steps) vs cpp-matrix.json (64 steps)
+span                                     old       new    change
+layer                                  96.47     90.32     -6.15
+verify 6 tokens                        62.01     58.54     -3.47
+experts                                60.73     60.78     +0.06
+CPU experts                            42.09     35.57     -6.51
+ffn.wait_for_cpu_experts               39.04     27.25    -11.79
+wait for the staged block              23.10     24.11     +1.01
+verify 4 tokens                        15.91     13.11     -2.80
+verify 5 tokens                        13.90     14.81     +0.92
+attn.out                               12.15     12.12     -0.04
+draft                                  11.52     11.53     +0.01
+ffn.shared                             10.36     10.58     +0.22
+verify 3 tokens                         9.40      8.79     -0.60
+attn.core                               6.06      6.08     +0.02
+hc                                      5.99      6.28     +0.29
+attn.q                                  5.81      5.95     +0.13
+attn.compressor                         4.35      4.52     +0.17
+ffn.dispatch                            2.77      2.79     +0.02
+ffn.router                              2.67      2.70     +0.03
+head                                    2.23      2.21     -0.02
+ffn.wait_for_gpu_experts                2.00      5.46     +3.46
+attn.kv                                 1.82      1.89     +0.07
+engram                                  1.41      1.47     +0.06
+attn.indexer                            1.25      1.28     +0.03
+engram fetch                            1.04      1.06     +0.02
+verify 2 tokens                         0.95      0.88     -0.08
+ffn.add                                 0.78      0.86     +0.07
+profile bookkeeping                     0.00      0.51     +0.51
+cpu.inputs                              0.00      0.94     +0.94
+ffn.cpu_rows_copy                       0.00      1.10     +1.10
+cpu.down                                0.00     11.66    +11.66
+cpu.gate_up                             0.00     21.30    +21.30
+cpu.act                                 0.00      0.69     +0.69
+issue the CPU rows' copy                0.00      0.51     +0.51
+## tcp-udp
+# ms per verify step in generation: old-tcp-udp.json (133 steps) vs tcp-udp.json (131 steps)
+span                                     old       new    change
+layer                                  60.80     58.28     -2.52
+experts                                37.10     37.34     +0.23
+verify 2 tokens                        22.21     19.68     -2.53
+verify 3 tokens                        20.09     18.31     -1.78
+CPU experts                            19.44     16.95     -2.49
+ffn.wait_for_cpu_experts               17.16     12.75     -4.41
+wait for the staged block              14.42     14.37     -0.05
+verify 4 tokens                        11.91     11.76     -0.15
+draft                                   9.35      9.34     -0.01
+attn.out                                9.18      9.23     +0.05
+ffn.shared                              7.10      7.17     +0.07
+verify 1 tokens                         5.28      6.03     +0.75
+hc                                      4.96      5.05     +0.08
+attn.q                                  4.81      4.84     +0.03
+verify 5 tokens                         3.81      5.85     +2.04
+attn.core                               3.80      3.86     +0.06
+ffn.wait_for_gpu_experts                3.35      4.20     +0.85
+ffn.dispatch                            2.46      2.50     +0.04
+ffn.router                              2.14      2.22     +0.07
+attn.compressor                         2.10      2.13     +0.03
+head                                    1.84      1.84     +0.00
+verify 6 tokens                         1.73      0.99     -0.75
+attn.kv                                 1.50      1.50     +0.01
+engram                                  0.97      0.97     -0.00
+ffn.add                                 0.65      0.66     +0.01
+attn.indexer                            0.61      0.62     +0.01
+engram fetch                            0.56      0.60     +0.03
+cpu.gate_up                             0.00      9.97     +9.97
+ffn.cpu_rows_copy                       0.00      0.59     +0.59
+cpu.down                                0.00      5.35     +5.35
+cpu.inputs                              0.00      0.69     +0.69

@@ -14,8 +14,8 @@ Status, 2026-11-07 (the milestones in order; details in [OVERVIEW.md](OVERVIEW.m
 - Placement-invariant numerics (`--canon`, step 31) and the adaptive expert cache (step 32):
   with `--spec`, 25.6 t/s mean on held-out prompts at sclk 2 (step 32), every output
   byte-identical. Since then, at sclk 6 with the cache tuned (800 loads/s every 8 tokens) and
-  the decode work of steps 50-82: **37.2 t/s mean (30.0-45.1)** on the 8 held-out prompts, every
-  output byte-identical (step 82; the whole history: `results/heldout-history/`, step 72). The
+  the decode work of steps 50-84: **37.6 t/s mean (30.0-45.6)** on the 8 held-out prompts, every
+  output byte-identical (step 84; the whole history: `results/heldout-history/`, step 72). The
   fastest settings per job: QUICKSTART.md.
 - Prompt processing in chunks of 512 (steps 37-45, 68): ~17 -> 93 t/s on a 1,989-token prompt
   (63 with `--canon`; sclk 6), output byte-identical to token by token.
@@ -3047,4 +3047,56 @@ repacked file (~269 GB; 555 GB free), CPU-layout versions of the multi-token can
 the fast path's two kernels and the read-only control, a variant of the GPU loader's
 `fp4_unpack` that reads it (producing today's GPU layout, checked buffer for buffer), and the
 model's experts pointed at the new file. Recorded for later.
+
+## Step 84: traces that split the CPU's handoff; the CPU's rows copied by a kernel
+
+The traces were regenerated with step 82's build and read with a new script,
+`scripts/trace_critpath.py`: per verify size, die 0's front, the handoff to the CPU, the CPU's
+experts, the handoff back, the tail, the time outside the layers and the draft (medians per
+step). It showed a handoff back of ~6.6 ms per 6-token code step (~160 us per layer for a few
+hundred KB), not visible as such before. Two additions to `--trace` (no change untraced):
+
+- **The handoff back in parts.** The copy of the CPU's rows to die 0 is its own group on die 0
+  (`ffn.cpu_rows_copy`); on the host, issuing it and the profile's bookkeeping are spans. The
+  bookkeeping (which ran before the copy was issued, in traced and profiled runs only, and
+  counted as CPU time) now runs after it.
+- **The CPU call's phases** nested in "CPU experts": `cpu.inputs`, `cpu.gate_up`, `cpu.act`,
+  `cpu.down`, the weight phases with the spread between the first and the last thread to finish
+  (`CpuMoeKernel::last_call`). Per layer: digits ~17 us, activation ~12-20 us, threads within
+  ~15-30 us of each other, the rest the weight phases (~0.28-0.30 ms per expert).
+
+**The copy waited behind the cache's background loads** (`results/decode-next/copy-engine.txt`):
+on die 0's copy engine the copies of a code run had a median of 44 us but p75 222 us, p90 507,
+p99 1,455: 367 of their 433 ms in copies over 100 us, waiting for an 18.8 MB expert load (~1.4
+ms) to pass. Without loads (`--cache-loads 0`) the tail is gone (p90 55 us). **The CPU's rows of
+a short forward (M <= 8) are now copied by a kernel** that reads the pinned buffer (`k_copy16`;
+die 0 addresses it by its host pointer, checked at startup): median 23 us, p99 123, 71 ms in all;
+the handoff back per 6-token code step 7.6 -> 1.8 ms. Prompt chunks (megabytes) keep the copy
+engine.
+
+About half of that comes back as a wait for the other dies: die 0 reaching its wait for their
+results sooner, they arrive last in ~10% of layers (their own copies wait behind their loads;
+`ffn.wait_for_gpu_experts` 2.0 -> 5.3 ms per code step). Tried and not kept: the gathers of
+their results by kernel (no change), their input and result copies by kernels on dies 1-3 (40.1
+t/s traced against 42.3: kernels reading and writing host memory across the cards cost more),
+and the background loads in 512 KB or 128 KB copies instead of whole matrices (41.9, 40.7).
+
+Held-out (`spec-measure-sclk6-cacheloads800cacheperiod8-kcopy/`): mean **37.16 -> 37.57 t/s
+(+1.1%)**, 30.0-45.6; outputs identical.
+
+| prompt | step 82 | step 84 |
+|---|---|---|
+| tcp-udp | 33.38 | 33.41 |
+| py-lru | 38.71 | 39.55 |
+| cpp-matrix | 44.95 | 45.60 |
+| sql-report | 38.16 | 38.69 |
+| geometry | 45.14 | 45.45 |
+| zh-travel | 30.00 | 29.96 |
+| ja-email | 32.38 | 32.81 |
+| summary-json | 34.58 | 35.12 |
+| long-proof | 50.71 | 51.31 |
+
+`results/trace/` holds the traces of this build (31.40 / 42.67 t/s traced, outputs identical),
+`compare-step74.txt` against step 74's and `critpath.txt`. Left: the dies' small copies behind
+their loads (~3 ms per code step), e.g. loads paused while a layer's copies are in flight.
 

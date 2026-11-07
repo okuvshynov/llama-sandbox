@@ -295,6 +295,11 @@ Runtime::Runtime(const Model& model, RtOptions options, const std::string& fp8_p
     }
   }
   CHECK(hipHostMalloc(&h_yr, (size_t)C * (opt.canon ? hp.n_expert_used : 1) * E * 4, 0));  // canon: the CPU's rows
+  {  // k_copy16 reads pinned buffers by their host pointers (README step 84): they must be the device's too
+    void* dp = nullptr;
+    CHECK(hipHostGetDevicePointer(&dp, h_yr, 0));
+    if (dp != (void*)h_yr) throw std::runtime_error("pinned host memory: device pointer differs from the host pointer");
+  }
   CHECK(hipHostMalloc(&h_erows, hp.engram_layers.size() * C * hp.engram_cols() * hp.engram_dim * 4, 0));
   CHECK(hipEventCreateWithFlags(&ev_staged, hipEventDisableTiming));
 
@@ -1433,6 +1438,7 @@ void Runtime::moe_launch(int L, int M) {
     CHECK(hipSetDevice(opt.gpu));
     if (early_gather) {
       CHECK(hipStreamWaitEvent(s_gather, d.done, 0));
+      // on the copy engine: these run during the CPU's experts (README step 84 tried kernels here)
       CHECK(hipMemcpyAsync(opt.canon ? place_rows(i) : d.y_home, d.h_y, early_rows * E * 4, hipMemcpyHostToDevice, s_gather));
     }
   }
@@ -1543,6 +1549,20 @@ void Runtime::moe_finish(int L, float* out, int M, Taps* taps) {
     }
     last.cpu_moe_ms += ms_since(t1c);
   }
+  // the CPU's rows to die 0 at once (README step 84: the profile's bookkeeping below used to run
+  // first, in traced runs only, and counted as CPU time); in a trace their copy is its own group
+  const auto t_cpu1 = Clock::now();
+  if (any_cpu) {
+    mark("ffn.cpu_rows_copy");
+    // a short forward's: by die 0's own loads from the pinned buffer, not the copy engine, where it
+    // queued behind the cache's background loads (a quarter of them waited 0.1-2 ms; README step
+    // 84); a prompt chunk's (megabytes) stay on the copy engine
+    void* dst = opt.canon ? (void*)place_rows(n_dies) : (void*)yr;
+    const size_t bytes = (opt.canon ? (size_t)cpu_row : (size_t)M) * E * 4;
+    if (M <= kEarlyGatherMaxM) k_copy16(dst, h_yr, bytes, s);
+    else CHECK(hipMemcpyAsync(dst, h_yr, bytes, hipMemcpyHostToDevice, s));
+  }
+  const auto t_copied = Clock::now();
   if (profile && !in_prefill) {
     std::set<int> distinct;
     int pairs = 0;
@@ -1551,7 +1571,8 @@ void Runtime::moe_finish(int L, float* out, int M, Taps* taps) {
       for (int j = 0; j < lc.count; j++) distinct.insert(lc.ids[j]);
       pairs += lc.count;
     }
-    miss_recs.push_back({M, (int)distinct.size(), pairs, any_cpu ? ms_since(t_cpu0) : 0.0, any_cpu ? (int)mk0 : -1});
+    miss_recs.push_back({M, (int)distinct.size(), pairs, any_cpu ? std::chrono::duration<double, std::milli>(t_cpu1 - t_cpu0).count() : 0.0,
+                         any_cpu ? (int)mk0 : -1});
     if (cache) {  // the prefetch prediction (README step 52)
       if (prev_top.empty()) prev_top.assign(hp.n_layer, -1);
       const std::vector<int> f3 = cache->top_nonresident(L, 3);
@@ -1577,14 +1598,22 @@ void Runtime::moe_finish(int L, float* out, int M, Taps* taps) {
         if (n > bn) best = e, bn = n;
       prev_top[L] = best;
     }
-    if (any_cpu)
-      trace_host(("CPU experts L" + std::to_string(L)).c_str(), t_cpu0, Clock::now(), 1,
+    if (any_cpu && !trace_path.empty()) {
+      trace_host(("CPU experts L" + std::to_string(L)).c_str(), t_cpu0, t_cpu1, 1,
                  "\"distinct experts\":" + std::to_string(distinct.size()) + ",\"pairs\":" + std::to_string(pairs) +
                  ",\"tokens\":" + std::to_string(M));
-  }
-  if (any_cpu) {
-    if (opt.canon) CHECK(hipMemcpyAsync(place_rows(n_dies), h_yr, (size_t)cpu_row * E * 4, hipMemcpyHostToDevice, s));
-    else CHECK(hipMemcpyAsync(yr, h_yr, (size_t)M * E * 4, hipMemcpyHostToDevice, s));
+      // its phases (README step 84; the last call of the layer: with M == 1 there is one), nested
+      const CpuMoeKernel::CallTimes& c = cpu_moe->last_call;
+      char sp[64];
+      trace_host("cpu.inputs", c.t[0], c.t[1], 1);
+      snprintf(sp, sizeof sp, "\"thread spread us\":%.1f", c.gu_spread_us);
+      trace_host("cpu.gate_up", c.t[1], c.t[2], 1, sp);
+      trace_host("cpu.act", c.t[2], c.t[3], 1);
+      snprintf(sp, sizeof sp, "\"thread spread us\":%.1f", c.d_spread_us);
+      trace_host("cpu.down", c.t[3], c.t[4], 1, sp);
+      trace_host("issue the CPU rows' copy", t_cpu1, t_copied, 1);
+      trace_host("profile bookkeeping", t_copied, Clock::now(), 1);
+    }
   }
   // the dies' results, waited for in the stream
   if (n_dies) mark("ffn.wait_for_gpu_experts");

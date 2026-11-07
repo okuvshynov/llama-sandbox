@@ -1053,3 +1053,21 @@ __global__ void gather_bf16_row_kernel(const uint16_t* table, const int* row, in
 void k_gather_bf16_row(const uint16_t* table, const int* row, int dim, float* y, hipStream_t s) {
   gather_bf16_row_kernel<<<cdiv(dim, 256), 256, 0, s>>>(table, row, dim, y);
 }
+
+// ---------------------------------------------------------------- copies by the GPU's loads (step 84)
+
+// the stores are made visible system-wide before the kernel ends (a host destination is read by
+// the host or another die once the kernel's event completes)
+__global__ void copy16_kernel(uint4* __restrict__ dst, const uint4* __restrict__ src, size_t n) {
+  for (size_t i = (size_t)blockIdx.x * blockDim.x + threadIdx.x; i < n; i += (size_t)gridDim.x * blockDim.x) dst[i] = src[i];
+  __threadfence_system();
+}
+
+
+void k_copy16(void* dst, const void* src, size_t bytes, hipStream_t s) {
+  if (bytes == 0) return;
+  if (bytes % 16) throw std::runtime_error("k_copy16: bytes not a multiple of 16");
+  const size_t n = bytes / 16;
+  const int blocks = (int)std::min<size_t>(120, (n + 255) / 256);
+  copy16_kernel<<<blocks, 256, 0, s>>>((uint4*)dst, (const uint4*)src, n);
+}
