@@ -29,3 +29,4 @@ step	commit	mean	tcp-udp	py-lru	cpp-matrix	sql-report	geometry	zh-travel	ja-emai
 74	c4bd99b	35.94	32.32	37.08	43.09	36.86	43.88	29.41	31.85	33.04	results/heldout-history/runs/74-c4bd99b
 80	81432f4	36.30	32.25	38.20	43.41	37.60	43.95	29.58	32.31	33.14	results/spec-measure-sclk6-cacheloads800cacheperiod8-actsingle
 82	8a80448	37.16	33.38	38.71	44.95	38.16	45.14	30.00	32.38	34.58	results/spec-measure-sclk6-cacheloads800cacheperiod8-taskpair
+84	ecb5af9	37.57	33.41	39.55	45.60	38.69	45.45	29.96	32.81	35.12	results/spec-measure-sclk6-cacheloads800cacheperiod8-kcopy
