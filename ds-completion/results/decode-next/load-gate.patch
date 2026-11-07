@@ -1,0 +1,134 @@
+diff --git a/ds-completion/hip/expert_loader.cpp b/ds-completion/hip/expert_loader.cpp
+index 8b84d15..a5bbad2 100644
+--- a/ds-completion/hip/expert_loader.cpp
++++ b/ds-completion/hip/expert_loader.cpp
+@@ -1,7 +1,11 @@
+ #include "expert_loader.h"
+ 
+ #include <algorithm>
++#include <mutex>
++#include <condition_variable>
++#include <atomic>
+ #include <chrono>
++#include <cstdlib>
+ #include <cstring>
+ #include <random>
+ #include <stdexcept>
+@@ -19,6 +23,55 @@
+ // the loader's direct path is on)
+ static std::vector<uintptr_t> g_piece_ends;
+ 
++// the layer gate (README step 85)
++namespace {
++std::mutex g_gate_mu;
++std::condition_variable g_gate_cv;
++long g_epoch = 0;
++std::atomic<bool> g_gate_on{false};
++int g_gate_mode = 0;              // 1: one matrix per layer; 2: none while a layer's expert phase runs
++bool g_in_phase = false;          // mode 2: between loader_phase(true) and (false)
++void gate_wait(long& last, int& count) {
++  if (!g_gate_on) return;
++  std::unique_lock<std::mutex> lk(g_gate_mu);
++  if (g_gate_mode == 2) {
++    g_gate_cv.wait_for(lk, std::chrono::milliseconds(20), [&] { return !g_in_phase || !g_gate_on; });
++    return;
++  }
++  // mode 1: up to g_per_layer matrices per stage per layer (DS_LOAD_PER_LAYER, default 1)
++  static const int per_layer = getenv("DS_LOAD_PER_LAYER") ? atoi(getenv("DS_LOAD_PER_LAYER")) : 1;
++  if (g_epoch > last) { last = g_epoch; count = 0; }
++  if (count < per_layer) { count++; return; }
++  g_gate_cv.wait_for(lk, std::chrono::milliseconds(20), [&] { return g_epoch > last || !g_gate_on; });
++  last = g_epoch;
++  count = 1;
++}
++}  // namespace
++
++void loader_gate_enable(int mode) {
++  g_gate_mode = mode;
++  g_gate_on = mode > 0;
++  g_gate_cv.notify_all();
++}
++
++void loader_phase(bool in) {
++  if (!g_gate_on || g_gate_mode != 2) return;
++  {
++    std::lock_guard<std::mutex> lk(g_gate_mu);
++    g_in_phase = in;
++  }
++  if (!in) g_gate_cv.notify_all();
++}
++
++void loader_layer_done() {
++  if (!g_gate_on) return;
++  {
++    std::lock_guard<std::mutex> lk(g_gate_mu);
++    g_epoch++;
++  }
++  g_gate_cv.notify_all();
++}
++
+ LoadStage load_stage_create(int dev, size_t bytes, int priority) {
+   LoadStage st;
+   st.dev = dev;
+@@ -58,6 +111,7 @@ void load_expert(LoadStage& st, ExpertPool& p, int slot, const Layer& l, int e,
+     const int b = st.next;
+     st.next ^= 1;
+     CHECK(hipEventSynchronize(st.free[b]));  // at most 2 matrices in flight
++    gate_wait(st.gate_last, st.gate_count);                  // README step 85: one matrix per layer, right after it
+     if (!direct) {
+       memcpy(st.host[b], src, bytes);
+       src = st.host[b];
+diff --git a/ds-completion/hip/expert_loader.h b/ds-completion/hip/expert_loader.h
+index 2f38d88..8bbe998 100644
+--- a/ds-completion/hip/expert_loader.h
++++ b/ds-completion/hip/expert_loader.h
+@@ -34,10 +34,20 @@ struct LoadStage {
+   uint8_t* dstage[2] = {nullptr, nullptr};
+   hipEvent_t free[2] = {nullptr, nullptr};  // the copy and unpack out of buffer b are done
+   int next = 0;
++  long gate_last = 0;  // the layer epoch of this stage's last matrix (loader_gate)
++  int gate_count = 0;  // matrices copied in that epoch
+ };
+ // priority: hipDeviceGetStreamPriorityRange's least (numerically greatest) for background loads
+ LoadStage load_stage_create(int dev, size_t matrix_bytes, int priority);
+ void load_stage_free(LoadStage& st);
++// pacing the background loads by the runtime's layers (README step 85, experiment): when on, a
++// stage copies at most one matrix per layer the runtime finishes, right after it (the next
++// layer's attention leaves the copy engine to it; the layer's own small copies find it idle).
++// A stage that sees no layer for 20 ms copies anyway (idle, or the end of a run).
++// mode 2: no copy starts between loader_phase(true) and loader_phase(false) (a layer's expert phase)
++void loader_gate_enable(int mode);
++void loader_layer_done();
++void loader_phase(bool in);
+ // Queue the load of expert e of layer l into `slot` of `pool` (current device = st.dev); returns
+ // once the host side is done (the GPU side completes in order on st.s). direct: l's expert
+ // tensors are registered (register_expert_tensors).
+diff --git a/ds-completion/hip/rt.cpp b/ds-completion/hip/rt.cpp
+index 4cb6ea9..7f6ffca 100644
+--- a/ds-completion/hip/rt.cpp
++++ b/ds-completion/hip/rt.cpp
+@@ -306,6 +306,7 @@ Runtime::Runtime(const Model& model, RtOptions options, const std::string& fp8_p
+   mem_mark("sequence state: window, compressed KV, indexer keys (--max-ctx)");
+   if (!opt.dspark.empty()) dspark.reset(new DSpark(*this, opt.dspark));  // before the pools take the rest
+   mem_mark("draft (DSpark)");
++  loader_gate_enable(getenv("DS_LOAD_GATE") ? atoi(getenv("DS_LOAD_GATE")) : 0);  // experiment (README step 85)
+   setup_experts();
+ 
+   // the per-token buffers, for addressing half a chunk (set_half); h / h2 are kept per half
+@@ -1340,6 +1341,7 @@ void Runtime::moe(int L, float* out, int M, Taps* taps) {
+ 
+ // the GPU part: router, dispatch, staging to the host, the dies' experts, the shared expert
+ void Runtime::moe_launch(int L, int M) {
++  loader_phase(true);  // README step 85, experiment: no background load starts until moe_finish
+   const LayerW& w = W[L];
+   const int E = hp.n_embd, F = hp.n_ff_exp, KE = hp.n_expert_used;
+   const float* xin = d_moe.x;  // [M][E]
+@@ -1647,6 +1649,8 @@ void Runtime::moe_finish(int L, float* out, int M, Taps* taps) {
+     CHECK(hipMemcpy(ti.i.data(), rids, KE * 4, hipMemcpyDeviceToHost));
+     (*taps)["router_i"] = ti;
+   }
++  loader_layer_done();  // README step 85: a gated background load may go now
++  loader_phase(false);
+ }
+ 
+ void Runtime::block(int L, Taps* taps, int M) {

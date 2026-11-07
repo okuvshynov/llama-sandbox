@@ -3100,3 +3100,25 @@ Held-out (`spec-measure-sclk6-cacheloads800cacheperiod8-kcopy/`): mean **37.16 -
 `compare-step74.txt` against step 74's and `critpath.txt`. Left: the dies' small copies behind
 their loads (~3 ms per code step), e.g. loads paused while a layer's copies are in flight.
 
+## Step 85: the background loads paced by the runtime's layers (tried, not kept)
+
+Step 84 left the dies' own small copies waiting behind the cache's background loads (die 0's
+wait for their results ~5 ms per code step). A load already on a copy engine cannot be
+interrupted, so the loads were timed instead (`results/decode-next/load-gate.txt`,
+`load-gate.patch`; traces against step 84's, outputs identical in every run):
+
+| | cpp-matrix t/s | layer, ms per step | wait for the dies | tcp-udp t/s |
+|---|---|---|---|---|
+| no gate (step 84) | 42.67 | | | 31.40 |
+| one matrix per die per layer, right after it | 35.34 | +18.7 | -2.6 | 30.87 |
+| two per layer | 41.24 | +7.3 | +0.4 | 30.82 |
+| three per layer | 41.53 | +4.7 | +0.4 | 31.14 |
+| none starting during a layer's expert phase | 42.47 | +0.6 | -0.2 | 31.26 |
+
+One matrix per layer does halve the wait for the dies, but the cache falls behind (3,281 loads
+published instead of 3,614 in the run; the CPU's experts +14 ms per step). Two or three keep up
+with the loads, but bunched right after a layer they slow the next layer's attention (their
+unpack kernels and copies meet die 0's work) and the wait does not shrink. Holding new loads
+back during the expert phase changes nothing: the ones started during attention are still on
+the copy engine when the phase begins. Not kept; the dies' copies stay as they are.
+

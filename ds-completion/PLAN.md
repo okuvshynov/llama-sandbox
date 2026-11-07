@@ -393,6 +393,8 @@ Step 84: traces split the CPU's handoff back (new `scripts/trace_critpath.py`): 
 CPU's rows waited behind the cache's background loads on die 0's copy engine; copied by a kernel
 from the pinned buffer instead: held-out 37.16 -> 37.57 t/s. Left: the dies' own small copies
 behind their loads (~3 ms per code step; kernels there and smaller load pieces were slower).
+Step 85: the background loads paced by the layers (k matrices per layer right after it, or none
+during the expert phase): slower or no change; not kept (`results/decode-next/load-gate.patch`).
 
 **A. Tuning the expert cache** (the CPU experts' ~25 ms)
 - Hysteresis: a newcomer must beat its victim by a margin, so the cache settles in long runs
