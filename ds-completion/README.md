@@ -3332,8 +3332,45 @@ on 2 MB pages, the layout unchanged).
   invalid chunk size`), once in 27 runs with a copy; none in any earlier run's log, not
   repeated in 6 py-lru runs with `MALLOC_CHECK_=3`; no core was kept and no cause found (the new
   code's writes stay inside their buffers). The patch also has a fatal-signal backtrace handler
-  in `ds_completion.cpp` for a next look.
+  in `ds_completion.cpp` for a next look. Step 92 then saw the same abort without this code
+  (`double free or corruption`, at the same point of the exit): an older teardown bug.
 
 Not kept: +1.6% for a 269 GiB copy that fills RAM next to the page cache, ~45 s more per start,
 and an unexplained abort. A deployment would need a repacked expert file as the only source
 (step 83's list: the GPU loader's unpack reading it), not a second copy.
+
+## Step 92: the draft's head over part of the vocabulary, simulated (not built)
+
+The draft reads the full head (129,280 rows, 2.2 ms per call) and adds its Markov bias over the
+full vocabulary (1.0 ms), then takes the argmax. Over a subset S the argmax is the same token
+whenever the full one is in S, so this can be simulated exactly for accepted drafts: a step
+keeps its accepted drafts up to the first one outside S. `DS_DRAFT_TOKEN_LOG` (new, a study log
+like step 87's) writes per verify step the drafted and emitted ids; one held-out run with it
+(`results/decode-next/draft-vocab/`, every output identical), then `scripts/draft_vocab_sim.py`
+(`results/decode-next/draft-vocab.txt`) for K from 1k to 96k and four orders of the vocabulary
+(every subset also holds the 1,280 ids from 128,000: special tokens):
+
+- **id:** token id order (contiguous rows, no copy needed). The ids are not close to frequency
+  order: 10% of generated tokens have ids above 39k.
+- **calib:** frequency among the 20,919 generated tokens of the 30 routing-study prompts (step 13,
+  8 categories; no held-out prompt), the rest by id.
+- **calib+ctx:** calib plus every token the run has emitted so far.
+- **oracle:** frequency in the held-out run's own tokens: an upper bound only.
+
+| K | share of emitted tokens in S (calib) | est. t/s: id | calib | calib+ctx | oracle |
+|---|---|---|---|---|---|
+| 1k | 44.0% | -49.6% | -46.3% | -27.1% | -3.0% |
+| 4k | 57.9% | -38.7% | -35.7% | -21.1% | +4.0% |
+| 16k | 79.4% | -19.5% | -17.8% | -11.2% | +3.6% |
+| 32k | 87.7% | -11.9% | -8.8% | -4.8% | +3.1% |
+| 64k | 94.5% | -5.6% | -4.8% | -2.9% | +2.0% |
+| 96k | 98.2% | -0.6% | -0.5% | -0.1% | +1.0% |
+
+(8-prompt means against the full vocabulary; the estimate takes each step's measured time minus
+the draft's saved head and Markov time, scaled by 1 - K / V, and the simulated tokens per step;
+at the full vocabulary it gives 41.07 t/s against 41.04 measured.) Every deployable subset loses:
+a missed token cuts the chain of accepted drafts, which costs more than the at most ~3.2 ms per
+step the smaller head saves; even the oracle gains at most ~4%. Not built; the triage's item 2 is
+closed. In the same run ja-email's process aborted at exit after its results (`double free or
+corruption (fasttop)`): step 91's abort, without step 91's code.
+

@@ -1,0 +1,37 @@
+# the draft's head over part of the vocabulary, simulated (README step 92)
+# DS_DRAFT_TOKEN_LOG=results/decode-next/draft-vocab/<name>.log with scripts/spec-measure.sh's command for the 8 held-out prompts and long-proof
+# (commit 78d97f3 + the log; sclk 6; 2026-11-07), then ~/venvs/ds-ref/bin/python scripts/draft_vocab_sim.py results/decode-next/draft-vocab results/decode-next/draft-vocab (the runs' .err files there)
+# the runs: tcp-udp: 35.54 t/s output same;py-lru: 42.79 t/s output same;cpp-matrix: 50.52 t/s output same;sql-report: 43.53 t/s output same;geometry: 49.95 t/s output same;zh-travel: 31.54 t/s output same;ja-email: 33.62 t/s output same;summary-json: 40.75 t/s output same;long-proof: 51.86 t/s output DIFF/n.a.;
+# ja-email's process aborted at exit after its results ("double free or corruption (fasttop)"): the abort of step 91, without its code
+
+# 9 runs (cpp-matrix, geometry, ja-email, long-proof, py-lru, sql-report, summary-json, tcp-udp, zh-travel); the 8-prompt mean over tcp-udp, py-lru, cpp-matrix, sql-report, geometry, zh-travel, ja-email, summary-json
+# calibration: 20919 generated tokens, 5822 distinct; held-out emitted: 5241 tokens, 1167 distinct
+
+## share of the held-out run's emitted tokens inside S (8 prompts pooled)
+      K       id    calib calib+ctx   oracle
+   1000    37.8%    44.0%    44.0%    93.2%
+   2000    46.8%    51.9%    51.9%   100.0%
+   4000    57.6%    57.9%    57.9%   100.0%
+   8000    67.5%    69.1%    69.1%   100.0%
+  16000    77.3%    79.4%    79.4%   100.0%
+  24000    81.9%    83.9%    83.9%   100.0%
+  32000    86.0%    87.7%    87.7%   100.0%
+  48000    90.2%    90.9%    90.9%   100.0%
+  64000    94.1%    94.5%    94.5%   100.0%
+  96000    98.1%    98.2%    98.2%   100.0%
+ 129280   100.0%   100.0%   100.0%   100.0%
+
+## per K and ranking: accepted drafts per step (all steps of the 8 prompts); est. t/s change against the full vocabulary, 8-prompt mean and the worst prompt (oracle: an upper bound only)
+      K                                 id                              calib                          calib+ctx                             oracle
+   1000  0.348 -49.56% -68.57% summary-json  0.418 -46.33% -66.48% summary-json  0.882 -27.14% -45.53% summary-json  1.442  -2.97%  -9.91% summary-json
+   2000  0.434 -46.38% -67.54% summary-json  0.565 -40.00% -62.30% summary-json  0.956 -23.71% -40.31% summary-json   1.595  +4.02%  +3.57% cpp-matrix
+   4000  0.597 -38.73% -50.81% summary-json  0.674 -35.72% -62.32% summary-json  1.023 -21.09% -40.34% summary-json   1.595  +3.96%  +3.51% cpp-matrix
+   8000  0.763 -31.94% -43.55% summary-json  0.872 -28.44% -60.27% summary-json  1.116 -17.65% -38.32% summary-json   1.595  +3.83%  +3.40% cpp-matrix
+  16000   1.015 -19.53% -28.93% sql-report   1.087 -17.80% -30.64% sql-report  1.260 -11.24% -22.82% summary-json   1.595  +3.56%  +3.17% cpp-matrix
+  24000   1.134 -15.00% -22.61% sql-report   1.219 -11.78% -22.27% sql-report   1.358  -6.76% -14.77% sql-report   1.595  +3.30%  +2.94% cpp-matrix
+  32000   1.229 -11.90% -19.01%     py-lru   1.307  -8.81% -18.02% sql-report  1.418  -4.77% -10.71% summary-json   1.595  +3.05%  +2.71% cpp-matrix
+  48000   1.346  -7.64% -16.69% sql-report   1.369  -6.72% -16.02% sql-report  1.466  -3.25%  -9.05% summary-json   1.595  +2.53%  +2.25% cpp-matrix
+  64000   1.420  -5.58% -12.01% sql-report   1.441  -4.76% -11.33% sql-report  1.491  -2.87%  -9.47% summary-json   1.595  +2.02%  +1.80% cpp-matrix
+  96000   1.547  -0.63%  -4.43% sql-report   1.550  -0.54%  -3.76% sql-report   1.562  -0.14%  -3.43% sql-report   1.595  +1.02%  +0.91% cpp-matrix
+ 129280   1.595  +0.00%  +0.00%    tcp-udp   1.595  +0.00%  +0.00%    tcp-udp   1.595  +0.00%  +0.00%    tcp-udp   1.595  +0.00%  +0.00%    tcp-udp
+# full vocabulary: est. 41.07 t/s from the logs' step times (the runs measured 41.04)

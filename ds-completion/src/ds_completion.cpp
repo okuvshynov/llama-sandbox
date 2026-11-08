@@ -246,6 +246,10 @@ int main(int argc, char** argv) {
       return n_gen < n_predict;
     };
     FILE* spec_log = spec_log_path.empty() ? nullptr : fopen(spec_log_path.c_str(), "w");
+    // README step 92: per verify step the draft's token ids and the ids it emitted (a study of the
+    // draft's head over part of the vocabulary: scripts/draft_vocab_sim.py)
+    FILE* tok_log = getenv("DS_DRAFT_TOKEN_LOG") ? fopen(getenv("DS_DRAFT_TOKEN_LOG"), "w") : nullptr;
+    if (tok_log) fprintf(tok_log, "# n_verified accepted verify_ms draft_ms | drafted ids (all of the block; none on a plain step) | emitted ids\n");
     if (spec_log) fprintf(spec_log, "# n_verified accepted verify_ms draft_ms conf[0..block)\n");
     // Draft length per step (unless --spec-n): the confidence head's sigmoid is the chance a draft
     // is accepted given the earlier ones were (calibrated: scripts/spec_conf.py, README step 25);
@@ -340,6 +344,13 @@ int main(int argc, char** argv) {
           for (float c : d.conf) fprintf(spec_log, " %.4f", c);
           fprintf(spec_log, "\n");
         }
+        if (tok_log) {
+          fprintf(tok_log, "%d %d %.2f %.2f |", (int)chunk.size() - 1, k, vms, dms);
+          for (size_t i = 1; i < d.ids.size(); i++) fprintf(tok_log, " %d", d.ids[i]);
+          fprintf(tok_log, " |");
+          for (int i = 0; i <= k; i++) fprintf(tok_log, " %d", next[i]);
+          fprintf(tok_log, "\n");
+        }
         rt->trace_host("after verify: draft rule, logs", tv1, Clock::now(), 3);
         rt->commit(k + 1);
         t_emit = Clock::now();
@@ -353,6 +364,7 @@ int main(int argc, char** argv) {
       }
     }
     if (spec_log) fclose(spec_log);
+    if (tok_log) fclose(tok_log);
     fprintf(stderr, "\n# drafts verified per step:");
     for (size_t n = 0; n < n_hist.size(); n++) fprintf(stderr, " %zu: %ld", n, n_hist[n]);
     fprintf(stderr, " (of the 0s, %ld plain steps without a draft); verify cost fit %.1f + %.1f n ms", plain_steps,

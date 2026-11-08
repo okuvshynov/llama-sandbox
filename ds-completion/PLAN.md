@@ -419,6 +419,10 @@ sclk 6 scales with the clock, ~65% (the CPU's experts, handoffs, host) does not.
 Step 91: the CPU layout as a copy in RAM: -7-12% per CPU expert in the same run, held-out +1.6%
 with all layers, but 269 GiB, ~45 s per start and an unexplained abort; not kept
 (`results/cpu-decode/layout-live.patch`).
+Step 92: the draft's head over part of the vocabulary, simulated: every deployable subset loses
+(32k -8.8%, with the run's own tokens -4.8%; an oracle at most +4%); not built. Open: an abort at
+exit, rare (2 in ~40 runs), seen with and without step 91's code (`malloc_consolidate` / `double
+free`, right after the expert cache's stats): a teardown bug to find.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front
@@ -428,7 +432,7 @@ ms untraced (step 89). Die 0 and the CPU still take turns.
 Promising, in order:
 1. Tried (step 91, not kept): +1.6% with all layers as a copy in RAM, too costly for the gain.
    Only as a repacked expert file that is the only source (the GPU loader reading it), if ever.
-2. The draft's head over the most frequent ~32k tokens (~1.5-2%; outputs cannot change).
+2. Closed (step 92, simulated): a vocabulary subset for the draft's head loses at every size.
 3. A trace of step 70's verify halves (`results/decode-next/verify-halves.patch`): its loss was
    never measured. Host blocking -> a separate launch thread; doubled per-call costs -> drop.
 4. The tail's 6.3 ms split (measure only): the dies' results behind their loads (~3 ms)?
