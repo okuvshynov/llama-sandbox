@@ -22,6 +22,9 @@
 #endif
 
 #include <algorithm>
+#include <csignal>
+#include <execinfo.h>
+#include <unistd.h>
 #include <cmath>
 #include <chrono>
 #include <cstdio>
@@ -51,7 +54,25 @@ static std::string piece(const llama_vocab* v, int32_t tok) {
   return n > 0 ? std::string(buf, n) : std::string();
 }
 
+// A fatal signal (an abort from glibc's heap checks, a crash) prints the stack before the default
+// action (README step 93: a rare abort at exit; no core is kept on this machine). Addresses
+// resolve with addr2line -f -C -e bin-hip/ds-completion <+offset>.
+static void on_fatal(int sig) {
+  static const char msg[] = "# fatal signal; backtrace:\n";
+  ssize_t w = write(2, msg, sizeof msg - 1);
+  (void)w;
+  void* bt[64];
+  backtrace_symbols_fd(bt, backtrace(bt, 64), 2);
+  signal(sig, SIG_DFL);
+  raise(sig);
+}
+
 int main(int argc, char** argv) {
+  {
+    void* bt[1];
+    (void)backtrace(bt, 1);  // its first call loads libgcc (it allocates): not inside the handler, after a corruption
+  }
+  for (int sig : {SIGABRT, SIGSEGV, SIGBUS, SIGILL, SIGFPE}) signal(sig, on_fatal);
   std::string model_path, prompt, mode = "raw", rt_path;
   int n_predict = 128;
   int effort = 75;  // --think's reasoning effort (encoding.py's default)

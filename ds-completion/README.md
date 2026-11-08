@@ -3374,3 +3374,35 @@ step the smaller head saves; even the oracle gains at most ~4%. Not built; the t
 closed. In the same run ja-email's process aborted at exit after its results (`double free or
 corruption (fasttop)`): step 91's abort, without step 91's code.
 
+## Step 93: a rare abort at exit, investigated (no cause found yet)
+
+Steps 91 and 92 each saw one process abort at exit, after all its results: py-lru with
+`malloc_consolidate(): invalid chunk size` (step 91, with its copy) and ja-email with `double
+free or corruption (fasttop)` (step 92, without it). Both came right after the expert cache's
+stats, which the `Runtime` destructor prints once the cache's loader threads are joined; so the
+error was detected in the rest of the teardown (the draft, the CPU kernel, the GPU buffers and
+streams), `main`'s locals, static destructors or the HIP / HSA runtime's exit. Both are glibc's
+checks on small freed blocks (<= 128 bytes): one freed twice, or its header written after the
+free. `results/decode-next/exit-abort.txt`:
+
+- **Not repeated in 56 runs** of the same command: 14 plain (ja-email and py-lru in turn), 30
+  under gdb (stopping only on SIGABRT / SIGSEGV / SIGBUS, with every thread's stack at one) and
+  10 under AddressSanitizer (`bin-asan/`: the g++ objects instrumented, malloc and free
+  intercepted for the whole process, HIP runtime included; ja-email, then all 9 held-out
+  prompts): no signal, no report, every output identical.
+- **So not a double free on every run:** ASan checks every free and would have caught one in its
+  first run, while glibc catches a fastbin double free only when the block is the last one freed.
+  It is rare and timing-dependent: most likely a race at shutdown, between two threads or between
+  our teardown and the HIP runtime's own.
+- **Not the cause:** step 91's layout code (seen without it), loads in flight (ja-email had every
+  started load published; loads are synchronous in their threads, which are joined first), a
+  device buffer freed twice in the destructor's list (no two names hold one allocation).
+- **No measurement affected:** outputs and timings are written before the teardown (the trace
+  file too).
+
+Kept for the next occurrence: a fatal-signal handler in `ds_completion.cpp` prints the stack
+(`backtrace` is called once at startup so the handler does not load libgcc after a corruption;
+addresses resolve with `addr2line -f -C -e bin-hip/ds-completion <+offset>`), and
+`scripts/spec-measure.sh` notes a nonzero exit code on the prompt's summary line. No workaround
+(an `_exit` after the results would hide where it is).
+

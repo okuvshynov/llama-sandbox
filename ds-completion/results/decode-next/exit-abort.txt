@@ -1,0 +1,38 @@
+# the rare abort at exit (README step 93): occurrences and the runs that did not repeat it; commit f0d5abc + the handler; sclk 6; 2026-11-07
+# every run: scripts/spec-measure.sh's command (300 tokens, --spec --canon --cache-loads 800 --cache-period 8 --cache-wait)
+
+## seen twice, both after all results, right after "# expert cache: ..." (the Runtime's destructor, the cache's loader joined)
+step 91, held-out with --cpu-layout all, py-lru: malloc_consolidate(): invalid chunk size  (results/spec-measure-sclk6-cacheloads800cacheperiod8cpulayoutall/py-lru.err)
+step 92, held-out with DS_DRAFT_TOKEN_LOG, ja-email: double free or corruption (fasttop)  (results/decode-next/draft-vocab/vocab-ja-email.err)
+# ~51 runs in those two days of work had the same command (27 with step 91's copy); no earlier results directory's kept .err has one
+
+## not repeated since: 56 runs
+# 14 plain runs, ja-email and py-lru in turn (stopped at 14 for the gdb loop):
+run 1 ja-email rc=0 33.63 t/s
+run 2 py-lru rc=0 42.84 t/s
+run 3 ja-email rc=0 33.46 t/s
+run 4 py-lru rc=0 42.82 t/s
+run 5 ja-email rc=0 33.48 t/s
+run 6 py-lru rc=0 42.93 t/s
+run 7 ja-email rc=0 33.35 t/s
+run 8 py-lru rc=0 42.91 t/s
+run 9 ja-email rc=0 33.45 t/s
+run 10 py-lru rc=0 42.77 t/s
+run 11 ja-email rc=0 33.49 t/s
+run 12 py-lru rc=0 42.85 t/s
+run 13 ja-email rc=0 33.41 t/s
+run 14 py-lru rc=0 42.80 t/s
+# 30 runs under gdb (every signal passed except SIGABRT / SIGSEGV / SIGBUS, all threads' stacks at one), plus one test run:
+30 of 30 exited normally
+# 10 runs under AddressSanitizer (bin-asan/ds-completion: the g++ objects instrumented, malloc / free intercepted for the whole process;
+# ASAN_OPTIONS=detect_leaks=0:protect_shadow_gap=0:halt_on_error=1): ja-email once, then the 9 held-out prompts; no report, outputs identical
+ja-email rc=0 19.09 t/s reports: 0
+tcp-udp rc=0 18.15 t/s reports: 0
+py-lru rc=0 19.02 t/s reports: 0
+cpp-matrix rc=0 20.56 t/s reports: 0
+sql-report rc=0 18.04 t/s reports: 0
+geometry rc=0 24.40 t/s reports: 0
+zh-travel rc=0 17.56 t/s reports: 0
+ja-email rc=0 19.30 t/s reports: 0
+summary-json rc=0 17.39 t/s reports: 0
+long-proof rc=0 39.88 t/s reports: 0

@@ -30,11 +30,12 @@ LONG="long-proof|think|3000|Prove that there are infinitely many primes of the f
   ./bin-hip/ds-completion -m "$M" -p "$P" --$m "${extra[@]}" -n "$nt" --rt "$F8" --placement placements/study30.txt \
     --dspark "$D" --spec --canon $CACHE --cache-wait --spec-log "$OUT/$name.log" \
     > "$OUT/$name.out" 2> "$OUT/$name.err" < /dev/null
+  rc=$?  # README step 93: a rare abort at exit, after the results; noted in the summary
   tps=$(grep -o 'generation: .* = [0-9.]* t/s' "$OUT/$name.err" | sed 's/.*= \([0-9.]*\) t\/s/\1/')
   tps_step=$(grep -o '[0-9.]* tokens per step' "$OUT/$name.err" | awk '{print $1}')
   acc=$(grep -o '[0-9.]* drafts accepted per step' "$OUT/$name.err" | awk '{print $1}')
   ref=results/cache-test/plain-canon-static/$name.out
   same=n/a
   [ -f "$ref" ] && { cmp -s "$OUT/$name.out" "$ref" && same=same || same=DIFFERS; }
-  echo "$name: ${tps:-?} t/s, ${tps_step:-?} tokens per step, ${acc:-?} accepted, output $same" | tee -a "$OUT/summary.txt"
+  echo "$name: ${tps:-?} t/s, ${tps_step:-?} tokens per step, ${acc:-?} accepted, output $same$([ $rc = 0 ] || echo ", exit code $rc")" | tee -a "$OUT/summary.txt"
 done

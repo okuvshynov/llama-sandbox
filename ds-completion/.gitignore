@@ -2,3 +2,4 @@ bin/
 bin-hip/
 __pycache__/
 data/
+bin-asan/

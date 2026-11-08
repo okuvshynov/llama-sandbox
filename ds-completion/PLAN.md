@@ -423,6 +423,9 @@ Step 92: the draft's head over part of the vocabulary, simulated: every deployab
 (32k -8.8%, with the run's own tokens -4.8%; an oracle at most +4%); not built. Open: an abort at
 exit, rare (2 in ~40 runs), seen with and without step 91's code (`malloc_consolidate` / `double
 free`, right after the expert cache's stats): a teardown bug to find.
+Step 93: that abort not repeated in 56 runs (plain, gdb, ASan: no double free on every run); a
+race at shutdown, likely; a stack handler and the exit code in the held-out summary kept for the
+next one.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front

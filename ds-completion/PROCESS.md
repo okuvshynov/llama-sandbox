@@ -576,6 +576,7 @@ Estimates were made before measuring wherever possible; this is how they fared.
 | the GPU clock level (90: sclk 2 / 6 / 8) | a third or so of the time scales with the clock | 36.8 / 41.1 / 42.1 t/s: ~35% of a token's time at sclk 6 scales with it | the fit on two levels predicts the third within 0.1%; the CPU side is ~65% |
 | the CPU layout as a copy in RAM (91, not kept) | +1.5-2.5% (step 83's bench), +0.5-1% with half the layers | -7-12% per CPU expert in the same run (control 0%); all layers +1.6% held-out | down gains, gate + up is memory-bound after the gap; 269 GiB, ~45 s per start and an unexplained abort for 1.6% |
 | the draft's head over the most frequent ~32k tokens (92, simulated) | ~1.5-2% (the head's 2.2 ms at a quarter) | -8.8% at 32k, -0.5% at 96k; at best +4% with an oracle | 12% of emitted tokens fall outside 32k, and each cuts a chain of accepted drafts; the Markov part was a second V-wide cost |
+| a rare abort at exit (93, investigated) | a double free in our teardown, found with gdb or ASan | not repeated in 56 runs (14 plain, 30 gdb, 10 ASan) | rare and timing-dependent: a race at shutdown; a stack handler kept for the next one |
 | expert parallelism for the draft (62) | proposed by the person | ~1 ms at best | experts are 16% of the draft; the head (27%) was the item |
 | the head through LDS (62) | ~1-2% | +1.4% held-out, +2% on code | as estimated from the per-part times |
 | the draft in fp8 frees ~4 GB (60 -> 61) | ~210 slots | nothing | its dense part was already fp8 and its experts mxfp4: assumed from the file's name |
