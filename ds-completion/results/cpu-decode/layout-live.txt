@@ -1,0 +1,55 @@
+# the CPU layout in the runtime (README step 91, tried, not kept; the code: layout-live.patch): --cpu-layout even|odd|all repacked those layers' experts at startup (canon_repack64) for the canonical CPU kernels
+# commit 880b0b6 + step 91's changes; sclk 6; W-3245, 16 threads; 2026-11-07; the command of results/trace/README.txt plus the flag (traced runs), or
+# CACHE="--cache-loads 800 --cache-period 8 --cpu-layout all" scripts/spec-measure.sh (held-out); every output identical to results/cache-test/plain-canon-static
+
+## bits (bin/bench-fp4-decode layout)
+# bits: canon_dot_rows64 vs canon_dot_rows, gate / up (2304 rows each): same; down (5120 rows): 0 differ
+# bits: canon_dot_rows64_multi vs canon_dot_rows_multi, 1-8 activations, gate rows 3..63 and all of down: same
+
+## within one traced run: ms per CPU expert (the 'CPU experts' spans: time / distinct experts), layers with and without the copy
+## (the patch's scripts/trace_cpu_copy.py over the spans' 'cpu copy' argument: 0 the GGUF, 1 the CPU layout, 2 the control: a copy in the GGUF's layout, 2 MB pages)
+# --cpu-layout even, cpp-matrix: 46.14 t/s output same (traced)
+  copy 0 (GGUF): 1201 layer calls, 4316 experts, 1238 ms; per expert: median 0.293 mean 0.302 ms; gate_up 0.173, down 0.094; total ms / experts 0.287
+  copy 1 (CPU layout): 1208 layer calls, 3959 experts, 1060 ms; per expert: median 0.273 mean 0.281 ms; gate_up 0.167, down 0.079; total ms / experts 0.268
+# --cpu-layout even, tcp-udp: 32.86 t/s output same (traced)
+  copy 0 (GGUF): 1781 layer calls, 3899 experts, 1154 ms; per expert: median 0.306 mean 0.312 ms; gate_up 0.178, down 0.095; total ms / experts 0.296
+  copy 1 (CPU layout): 1779 layer calls, 3638 experts, 1000 ms; per expert: median 0.288 mean 0.292 ms; gate_up 0.175, down 0.077; total ms / experts 0.275
+# --cpu-layout odd, cpp-matrix: 46.33 t/s output same (traced)
+  copy 0 (GGUF): 1209 layer calls, 3960 experts, 1156 ms; per expert: median 0.298 mean 0.304 ms; gate_up 0.175, down 0.095; total ms / experts 0.292
+  copy 1 (CPU layout): 1201 layer calls, 4325 experts, 1111 ms; per expert: median 0.263 mean 0.272 ms; gate_up 0.163, down 0.077; total ms / experts 0.257
+# --cpu-layout odd, tcp-udp: 32.91 t/s output same (traced)
+  copy 0 (GGUF): 1780 layer calls, 3641 experts, 1091 ms; per expert: median 0.308 mean 0.316 ms; gate_up 0.178, down 0.095; total ms / experts 0.300
+  copy 1 (CPU layout): 1781 layer calls, 3902 experts, 1047 ms; per expert: median 0.283 mean 0.286 ms; gate_up 0.172, down 0.077; total ms / experts 0.268
+# --cpu-layout ctl (even, --cpu-layout-control), cpp-matrix: 45.92 t/s output same (traced)
+  copy 0 (GGUF): 1191 layer calls, 4330 experts, 1250 ms; per expert: median 0.291 mean 0.303 ms; gate_up 0.173, down 0.095; total ms / experts 0.289
+  copy 2 (control copy): 1199 layer calls, 4006 experts, 1166 ms; per expert: median 0.296 mean 0.302 ms; gate_up 0.174, down 0.095; total ms / experts 0.291
+# --cpu-layout ctl (even, --cpu-layout-control), tcp-udp: 32.54 t/s output same (traced)
+  copy 0 (GGUF): 1786 layer calls, 3902 experts, 1152 ms; per expert: median 0.304 mean 0.312 ms; gate_up 0.176, down 0.094; total ms / experts 0.295
+  copy 2 (control copy): 1785 layer calls, 3640 experts, 1077 ms; per expert: median 0.304 mean 0.312 ms; gate_up 0.174, down 0.094; total ms / experts 0.296
+# step 88's traces for comparison: cpp-matrix 45.97, tcp-udp 32.46 t/s (traced)
+
+## held-out, all 40 layers repacked (results/spec-measure-sclk6-cacheloads800cacheperiod8cpulayoutall/; 269 GiB, 44-51 s per startup)
+# prompt: t/s at sclk 6 today (results/spec-measure-sclk6-cacheloads800cacheperiod8-sclkcmp/, step 90) -> with --cpu-layout all
+tcp-udp       35.53 -> 36.29
+py-lru        42.90 -> 43.60
+cpp-matrix    50.62 -> 51.74
+sql-report    43.39 -> 44.25
+geometry      50.19 -> 50.35
+zh-travel     31.59 -> 31.84
+ja-email      33.65 -> 33.51
+summary-json  40.94 -> 42.50
+mean of the 8: 41.10 -> 41.76 (+1.6%); step 88's 41.19 -> +1.4%
+# memory (/proc/meminfo every 4-5 s): free memory reached 0 during the repack; the page cache 489 -> 475 GB (14 GB of model pages
+# evicted), no disk reads during generation
+# py-lru's process aborted at exit, after its results ("malloc_consolidate(): invalid chunk size"); not reproduced in 6 more py-lru
+# runs (3 all, 3 even; MALLOC_CHECK_=3): py-lru 43.97 / 44.01 / 44.05 (all), 43.36 / 43.37 / 43.43 (even)
+
+## a second held-out run with all layers (after a fatal-signal backtrace handler was added), stopped after 6 prompts when the step was dropped
+# name: generation t/s, tokens per step, drafts accepted per step, output vs results/cache-test/plain-canon-static
+tcp-udp: 36.31 t/s, 2.13 tokens per step, 1.12 accepted, output same
+py-lru: 43.97 t/s, 3.03 tokens per step, 2.02 accepted, output same
+cpp-matrix: 51.80 t/s, 4.62 tokens per step, 3.60 accepted, output same
+sql-report: 44.48 t/s, 3.85 tokens per step, 2.87 accepted, output same
+geometry: 50.81 t/s, 4.06 tokens per step, 3.07 accepted, output same
+zh-travel: 32.15 t/s, 1.55 tokens per step, 0.54 accepted, output same
+# no abort in these 6; 27 runs with a copy in all, one abort

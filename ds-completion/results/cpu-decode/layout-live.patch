@@ -1,0 +1,783 @@
+diff --git a/ds-completion/hip/rt.cpp b/ds-completion/hip/rt.cpp
+index 5a42a4a..4f1db30 100644
+--- a/ds-completion/hip/rt.cpp
++++ b/ds-completion/hip/rt.cpp
+@@ -29,6 +29,15 @@
+ using Clock = std::chrono::steady_clock;
+ static double ms_since(Clock::time_point t) { return std::chrono::duration<double, std::milli>(Clock::now() - t).count(); }
+ 
++// README step 91: a layer's experts copied to RAM for the CPU (Runtime::copy_cpu_layers)
++struct CpuLayerCopy {
++  uint8_t* buf = nullptr;  // 2 MB aligned, MADV_HUGEPAGE
++  size_t bytes = 0;
++  bool control = false;  // the GGUF's layout (t), else the CPU layout (lay)
++  CpuLayout lay;
++  ggml_tensor t[3];
++};
++
+ template <class T>
+ static T* dalloc(size_t n) {
+   void* p;
+@@ -182,6 +191,7 @@ Runtime::Runtime(const Model& model, RtOptions options, const std::string& fp8_p
+   fprintf(stderr, "# runtime: %s of small weights on GPU %d\n", fmt_bytes((double)small_bytes).c_str(), opt.gpu);
+   mem_mark("small weights (rotary, embeddings, head, norms, ...)");
+   cpu_moe.reset(new CpuMoeKernel(hp.n_embd, hp.n_ff_exp, hp.n_expert_used, opt.n_threads));
++  copy_cpu_layers();
+ 
+   const int E = hp.n_embd, HC = hp.hc_mult, HD = hp.head_dim, NH = hp.n_head;
+   // per-token buffers hold a whole chunk: [kChunk][...]
+@@ -877,6 +887,11 @@ Runtime::~Runtime() {
+   }
+   dspark.reset();
+   cpu_moe.reset();
++  for (CpuLayerCopy* c : cpu_copy)
++    if (c) {
++      free(c->buf);
++      delete c;
++    }
+   for (Die& d : dies) {
+     (void)hipSetDevice(d.dev);
+     if (d.st) (void)hipStreamSynchronize(d.st);
+@@ -1554,9 +1569,7 @@ void Runtime::moe_finish(int L, float* out, int M, Taps* taps) {
+     if (any_cpu) {
+       mark("ffn.wait_for_cpu_experts");
+       auto t1c = Clock::now();
+-      const Layer& hl = m.layers[L];
+-      const CpuExperts ce{hl.gate_exps, hl.up_exps, hl.down_exps, hp.swiglu_clamp[L]};
+-      cpu_moe->forward_batch(ce, h_moe.x, M, routes.data(), opt.canon, h_yr);
++      cpu_moe->forward_batch(cpu_experts(L), h_moe.x, M, routes.data(), opt.canon, h_yr);
+       last.cpu_moe_ms += ms_since(t1c);
+     }
+   }
+@@ -1566,8 +1579,7 @@ void Runtime::moe_finish(int L, float* out, int M, Taps* taps) {
+     if (!any_cpu) mark("ffn.wait_for_cpu_experts");
+     any_cpu = has_cpu[t] = true;
+     auto t1c = Clock::now();
+-    const Layer& hl = m.layers[L];  // host tensors: the experts live in the mmap
+-    const CpuExperts ce{hl.gate_exps, hl.up_exps, hl.down_exps, hp.swiglu_clamp[L]};
++    const CpuExperts ce = cpu_experts(L);  // the mmap's tensors, or the layer's copy (README step 91)
+     if (opt.canon) {
+       cpu_moe->forward_canon_rows(ce, h_moe.x + (size_t)t * E, lc.ids, lc.w, lc.count, h_yr + (size_t)cpu_row * E);
+       cpu_row += lc.count;
+@@ -1628,7 +1640,8 @@ void Runtime::moe_finish(int L, float* out, int M, Taps* taps) {
+     if (any_cpu && !trace_path.empty()) {
+       trace_host(("CPU experts L" + std::to_string(L)).c_str(), t_cpu0, t_cpu1, 1,
+                  "\"distinct experts\":" + std::to_string(distinct.size()) + ",\"pairs\":" + std::to_string(pairs) +
+-                 ",\"tokens\":" + std::to_string(M));
++                 ",\"tokens\":" + std::to_string(M) +
++                 ",\"cpu copy\":" + std::to_string(cpu_copy[L] ? (cpu_copy[L]->control ? 2 : 1) : 0));
+       // its phases (README step 84; the last call of the layer: with M == 1 there is one), nested
+       const CpuMoeKernel::CallTimes& c = cpu_moe->last_call;
+       char sp[64];
+@@ -1899,3 +1912,86 @@ std::vector<float> Runtime::decode(int32_t tok, bool want_logits) {
+   trace_host("decode", t0, Clock::now(), 3);
+   return logits;
+ }
++
++// ---- README step 91: some layers' experts copied to RAM for the CPU
++
++
++void Runtime::copy_cpu_layers() {
++  cpu_copy.assign(hp.n_layer, nullptr);
++  if (opt.cpu_layout_layers.empty()) return;
++  if (!opt.canon && !opt.cpu_layout_control) throw std::runtime_error("--cpu-layout: the CPU layout has canonical kernels only (--canon)");
++  const auto t0 = Clock::now();
++  const int nt = std::max(1, opt.n_threads);
++  size_t total = 0;
++  for (int L : opt.cpu_layout_layers) {
++    if (L < 0 || L >= hp.n_layer || !m.layers[L].gate_exps || cpu_copy[L])
++      throw std::runtime_error("--cpu-layout: layer " + std::to_string(L) + " (out of range, without routed experts, or twice)");
++    const ggml_tensor* src[3] = {m.layers[L].gate_exps, m.layers[L].up_exps, m.layers[L].down_exps};
++    auto* c = new CpuLayerCopy;
++    c->control = opt.cpu_layout_control;
++    const int nexp = (int)src[0]->ne[2];
++    auto al = [](size_t n) { return (n + 63) / 64 * 64; };
++    size_t off_c[3], off_s[3], o = 0;
++    for (int i = 0; i < 3; i++) {
++      const int K = (int)src[i]->ne[0], N = (int)src[i]->ne[1], nb = K / 32;
++      if (src[i]->type != GGML_TYPE_MXFP4 || nb % 4 || (size_t)src[i]->nb[1] != (size_t)nb * 17 || (int)src[i]->ne[2] != nexp)
++        throw std::runtime_error("--cpu-layout: layer " + std::to_string(L) + ": unexpected expert tensor");
++      off_c[i] = o;
++      if (c->control) {
++        o += al(ggml_nbytes(src[i]));
++        off_s[i] = 0;
++        continue;
++      }
++      c->lay.nb[i] = nb;
++      c->lay.codes_per_expert[i] = (size_t)N * nb * 16;
++      c->lay.scales_per_expert[i] = (size_t)N * nb;
++      o += al(c->lay.codes_per_expert[i] * nexp);
++      off_s[i] = o;
++      o += al(c->lay.scales_per_expert[i] * nexp);
++    }
++    constexpr size_t kHuge = (size_t)2 << 20;
++    c->bytes = (o + 64 + kHuge - 1) / kHuge * kHuge;  // + 64: canon_dot_rows' scale gather reads 3 bytes past a row's end
++    c->buf = (uint8_t*)aligned_alloc(kHuge, c->bytes);
++    if (!c->buf) throw std::runtime_error("--cpu-layout: out of memory");
++    madvise(c->buf, c->bytes, MADV_HUGEPAGE);
++    std::vector<std::thread> th;
++    for (int w = 0; w < nt; w++)
++      th.emplace_back([&, w] {
++        for (int e = w; e < nexp; e += nt)
++          for (int i = 0; i < 3; i++) {
++            const uint8_t* se = (const uint8_t*)src[i]->data + (size_t)e * src[i]->nb[2];
++            if (c->control)
++              memcpy(c->buf + off_c[i] + (size_t)e * src[i]->nb[2], se, src[i]->nb[2]);
++            else
++              canon_repack64(se, src[i]->nb[1], (int)src[i]->ne[1], c->lay.nb[i], c->buf + off_c[i] + e * c->lay.codes_per_expert[i],
++                             c->buf + off_s[i] + e * c->lay.scales_per_expert[i]);
++          }
++      });
++    for (auto& t : th) t.join();
++    memset(c->buf + o, 0, c->bytes - o);
++    for (int i = 0; i < 3; i++) {
++      if (c->control) {
++        c->t[i] = *src[i];
++        c->t[i].data = c->buf + off_c[i];
++      } else {
++        c->lay.codes[i] = c->buf + off_c[i];
++        c->lay.scales[i] = c->buf + off_s[i];
++      }
++    }
++    cpu_copy[L] = c;
++    total += c->bytes;
++  }
++  fprintf(stderr, "# runtime: %zu layers' experts copied for the CPU (%s, %s) in %.1f s\n", opt.cpu_layout_layers.size(),
++          opt.cpu_layout_control ? "the GGUF's layout: the control" : "the CPU layout", fmt_bytes((double)total).c_str(),
++          ms_since(t0) / 1000);
++}
++
++CpuExperts Runtime::cpu_experts(int L) const {
++  const Layer& hl = m.layers[L];
++  const CpuLayerCopy* c = cpu_copy[L];
++  if (c && c->control) return CpuExperts{&c->t[0], &c->t[1], &c->t[2], hp.swiglu_clamp[L]};
++  CpuExperts ce{hl.gate_exps, hl.up_exps, hl.down_exps, hp.swiglu_clamp[L]};
++  if (c) ce.lay = &c->lay;
++  return ce;
++}
++
+diff --git a/ds-completion/hip/rt.h b/ds-completion/hip/rt.h
+index 6d85501..d6f7068 100644
+--- a/ds-completion/hip/rt.h
++++ b/ds-completion/hip/rt.h
+@@ -30,6 +30,8 @@
+ #include <vector>
+ 
+ class CpuMoeKernel;  // src/cpu_moe.h: the routed experts on the CPU, exact fp4 x fp8
++struct CpuExperts;
++struct CpuLayerCopy;  // rt.cpp: a layer's experts copied for the CPU (README step 91)
+ 
+ struct RtOptions {
+   int gpu = 0;         // the die for the dense part and the state (ROCm device index)
+@@ -59,6 +61,11 @@ struct RtOptions {
+   int cache_period = 16, cache_window = 256, cache_min = 2;
+   bool cache_wait = false;  // wait at startup until the cache can load (expert_cache.h)
+   bool load_pinned = false;  // the load test's path: pinned staging instead of direct (expert_loader.h)
++  // README step 91: these layers' experts copied to RAM at startup for the CPU's canonical
++  // kernels, in the CPU layout (canon_dot.h), or with cpu_layout_control in the GGUF's own layout
++  // (the control: a fresh copy, 2 MB pages); the GPUs keep loading from the GGUF
++  std::vector<int> cpu_layout_layers;
++  bool cpu_layout_control = false;
+ };
+ 
+ class Runtime {
+@@ -176,6 +183,9 @@ class Runtime {
+   void* fp8_buf = nullptr;  // all fp8 weights + scales
+   float* freqs_buf = nullptr;
+   std::unique_ptr<CpuMoeKernel> cpu_moe;
++  std::vector<CpuLayerCopy*> cpu_copy;  // per layer, null: the CPU reads the GGUF (README step 91)
++  void copy_cpu_layers();
++  CpuExperts cpu_experts(int L) const;
+   // Routed experts on GPUs: per die a pool of expert slots (placement die i = opt.moe_dies[i]).
+   // Each layer, a dispatch kernel splits the chosen experts into one list per die and one for
+   // the CPU. No die waits for the host: the home die runs its list on a second stream next to
+diff --git a/ds-completion/scripts/trace_cpu_copy.py b/ds-completion/scripts/trace_cpu_copy.py
+new file mode 100755
+index 0000000..cfb85f2
+--- /dev/null
++++ b/ds-completion/scripts/trace_cpu_copy.py
+@@ -0,0 +1,33 @@
++#!/usr/bin/env python3
++"""The CPU's experts per layer copy (README step 91), from --trace files of runs with --cpu-layout.
++
++The "CPU experts L<n>" spans carry "cpu copy": 0 the GGUF's rows, 1 the CPU layout, 2 the control
++(a copy in the GGUF's layout). Per kind, in generation: layer calls, experts, ms, and ms per
++distinct expert (median and mean per call, the gate_up and down phases, total ms / experts).
++
++  scripts/trace_cpu_copy.py TRACE.json[.gz] ...
++"""
++import gzip
++import json, sys, statistics as st
++from collections import defaultdict
++for path in sys.argv[1:]:
++    ev = [e for e in json.load(gzip.open(path, 'rt') if path.endswith('.gz') else open(path))['traceEvents'] if e.get('ph') == 'X']
++    gen0 = min(e['ts'] for e in ev if e['name'].startswith('verify '))
++    cpu = [e for e in ev if e['name'].startswith('CPU experts L') and e['ts'] >= gen0]
++    host = sorted([e for e in ev if e['tid'] == 1 and e['name'].startswith('cpu.') and e['ts'] >= gen0], key=lambda e: e['ts'])
++    by = defaultdict(lambda: defaultdict(list))
++    for c in cpu:
++        a = c['args']; k = a.get('cpu copy', 0); d = a['distinct experts']
++        if d == 0: continue
++        by[k]['ms per expert'].append(c['dur'] / 1000 / d)
++        by[k]['n'].append(1); by[k]['experts'].append(d); by[k]['ms'].append(c['dur'] / 1000)
++        for ph in ('cpu.gate_up', 'cpu.down'):
++            p = [h for h in host if h['name'] == ph and c['ts'] - 1 <= h['ts'] <= c['ts'] + c['dur']]
++            if p: by[k][ph + ' per expert'].append(p[-1]['dur'] / 1000 / d)
++    print(f"# {path.split('/')[-1]}")
++    for k in sorted(by):
++        b = by[k]
++        print(f"  copy {k} ({['GGUF', 'CPU layout', 'control copy'][k]}): {len(b['n'])} layer calls, {sum(b['experts'])} experts, "
++              f"{sum(b['ms']):.0f} ms; per expert: median {st.median(b['ms per expert']):.3f} mean {st.mean(b['ms per expert']):.3f} ms; "
++              f"gate_up {st.median(b['cpu.gate_up per expert']):.3f}, down {st.median(b['cpu.down per expert']):.3f}; "
++              f"total ms / experts {sum(b['ms']) / sum(b['experts']):.3f}")
+diff --git a/ds-completion/src/bench_fp4_decode.cpp b/ds-completion/src/bench_fp4_decode.cpp
+index 92da9e4..ccd3863 100644
+--- a/ds-completion/src/bench_fp4_decode.cpp
++++ b/ds-completion/src/bench_fp4_decode.cpp
+@@ -543,97 +543,14 @@ int sched_main(int gap_us) {
+ }
+ 
+ // ---------------------------------------------------------------- layout: a CPU layout for the experts
+-// repack: rows of nb 17-byte mxfp4 blocks -> codes [N][nb * 16] and scales [N][nb]
++// the layout and its kernel live in canon_dot.cpp since README step 91 (canon_repack64,
++// canon_dot_rows64; prefetch 8 KB ahead)
+ static void repack64(const uint8_t* src, int N, int nb, uint8_t* codes, uint8_t* scales) {
+-  for (int r = 0; r < N; r++) {
+-    const uint8_t* row = src + (size_t)r * nb * BLK;
+-    uint8_t* cr = codes + (size_t)r * nb * 16;
+-    for (int b = 0; b < nb; b++) scales[(size_t)r * nb + b] = row[(size_t)b * BLK];
+-    auto code = [&](int i) {  // element i of the row (block i / 32, ggml: byte j low = j, high = j + 16)
+-      const uint8_t* blk = row + (size_t)(i / 32) * BLK + 1;
+-      const int j = i % 32;
+-      return j < 16 ? blk[j] & 15 : blk[j - 16] >> 4;
+-    };
+-    for (int g = 0; g < nb / 4; g++)
+-      for (int j = 0; j < 64; j++) cr[g * 64 + j] = (uint8_t)(code(128 * g + j) | code(128 * g + 64 + j) << 4);
+-  }
+-}
+-
+-struct Consts64 {
+-  __m512i lut, low4, unperm, xor_idx[4];
+-  Consts64() {
+-    lut = _mm512_broadcast_i32x4(_mm_setr_epi8(12, 13, 14, 15, 16, 18, 20, 24, 12, 11, 10, 9, 8, 6, 4, 0));
+-    low4 = _mm512_set1_epi8(0x0F);
+-    unperm = _mm512_setr_epi32(0, 4, 1, 5, 2, 6, 3, 7, 8, 12, 9, 13, 10, 14, 11, 15);
+-    for (int i = 0, o = 8; o > 0; i++, o >>= 1) {
+-      alignas(64) int32_t t[16];
+-      for (int l = 0; l < 16; l++) t[l] = l ^ o;
+-      xor_idx[i] = _mm512_load_si512(t);
+-    }
+-  }
+-};
+-
+-// canon_dot_rows' arithmetic on the CPU layout: R rows; per 16-block group four 64-byte loads per row
+-// give its 8 two-block registers, and one 16-byte load its scales
+-static int kPf64 = 8192;  // prefetch distance (bytes; 0 = none; 8 KB best, README step 83); BENCH_PF64 overrides
+-template <int R>
+-static inline void dot_rows64_r(const Consts64& K, const uint8_t* codes, size_t crow, const uint8_t* scales, int nb, const CanonAct& a, float* y) {
+-  __m512 acc[R];
+-  for (int i = 0; i < R; i++) acc[i] = _mm512_setzero_ps();
+-  for (int b0 = 0; b0 < nb; b0 += 16) {
+-    const int nk = nb - b0 >= 16 ? 8 : (nb - b0) / 2;
+-    const __mmask16 live = nk == 8 ? (__mmask16)0xFFFF : (__mmask16)((1u << (2 * nk)) - 1);
+-    __m512i T[R][8];
+-    for (int q = 0; q < 4; q++) {
+-      const int k = 2 * q;
+-      if (k >= nk) {
+-        for (int i = 0; i < R; i++) T[i][k] = T[i][k + 1] = _mm512_setzero_si512();
+-        continue;
+-      }
+-      const size_t offA = (size_t)(b0 + 2 * k) * QB, offB = offA + 2 * QB;
+-      const __m512i a2 = _mm512_loadu_si512(a.d2.data() + offA), a1 = _mm512_loadu_si512(a.d1.data() + offA), a0 = _mm512_loadu_si512(a.d0.data() + offA);
+-      const __m512i b2 = _mm512_loadu_si512(a.d2.data() + offB), b1 = _mm512_loadu_si512(a.d1.data() + offB), bb0 = _mm512_loadu_si512(a.d0.data() + offB);
+-      for (int i = 0; i < R; i++) {
+-        const uint8_t* line = codes + i * crow + (size_t)(b0 / 4 + q) * 64;
+-        if (kPf64) _mm_prefetch((const char*)line + kPf64, _MM_HINT_T1);  // as canon_dot_rows: 16 KB ahead, into L2
+-        const __m512i v = _mm512_loadu_si512(line);
+-        const __m512i wA = _mm512_shuffle_epi8(K.lut, _mm512_and_si512(v, K.low4));
+-        const __m512i wB = _mm512_shuffle_epi8(K.lut, _mm512_and_si512(_mm512_srli_epi16(v, 4), K.low4));
+-        __m512i t = _mm512_dpbusd_epi32(_mm512_setzero_si512(), wA, a2);
+-        t = _mm512_dpbusd_epi32(_mm512_slli_epi32(t, 7), wA, a1);
+-        T[i][k] = _mm512_dpbusd_epi32(_mm512_slli_epi32(t, 7), wA, a0);
+-        __m512i u = _mm512_dpbusd_epi32(_mm512_setzero_si512(), wB, b2);
+-        u = _mm512_dpbusd_epi32(_mm512_slli_epi32(u, 7), wB, b1);
+-        T[i][k + 1] = _mm512_dpbusd_epi32(_mm512_slli_epi32(u, 7), wB, bb0);
+-      }
+-    }
+-    const __m512i corr = _mm512_maskz_loadu_epi32(live, a.corr.data() + b0);
+-    const __m512 c = _mm512_maskz_loadu_ps(live, a.c.data() + b0);
+-    for (int i = 0; i < R; i++) {
+-      const __m512i S = _mm512_sub_epi32(_mm512_permutexvar_epi32(K.unperm, reduce8(T[i])), corr);
+-      const __m512i e = _mm512_cvtepu8_epi32(_mm_maskz_loadu_epi8(live, scales + (size_t)i * nb + b0));
+-      const __m512 scale = _mm512_mul_ps(_mm512_castsi512_ps(_mm512_slli_epi32(e, 23)), c);
+-      acc[i] = _mm512_mask_add_ps(acc[i], live, acc[i], _mm512_mul_ps(_mm512_cvtepi32_ps(S), scale));
+-    }
+-  }
+-  for (int i = 0; i < R; i++) {
+-    __m512 v = acc[i];
+-    for (int j = 0; j < 4; j++) v = _mm512_add_ps(v, _mm512_permutexvar_ps(K.xor_idx[j], v));
+-    y[i] = _mm512_cvtss_f32(v);
+-  }
+-}
+-
+-static void canon_dot_rows64(const uint8_t* codes, const uint8_t* scales, int nb, const CanonAct& a, int r0, int r1, float* y) {
+-  static const Consts64 K;
+-  const size_t crow = (size_t)nb * 16;
+-  int r = r0;
+-  for (; r + 4 <= r1; r += 4) dot_rows64_r<4>(K, codes + (size_t)r * crow, crow, scales + (size_t)r * nb, nb, a, y + r);
+-  for (; r < r1; r++) dot_rows64_r<1>(K, codes + (size_t)r * crow, crow, scales + (size_t)r * nb, nb, a, y + r);
++  canon_repack64(src, (size_t)nb * BLK, N, nb, codes, scales);
+ }
+ 
+ int layout_main(int gap_us) {
+-  if (getenv("BENCH_PF64")) kPf64 = atoi(getenv("BENCH_PF64"));
+-  printf("# CPU layout prefetch distance: %d bytes\n", kPf64);
++  printf("# CPU layout prefetch distance: 8192 bytes (canon_dot.cpp)\n");
+   constexpr int E = 5120, F = 2304, CH = 32, NE = 24, T = 16, PAIR = 2;
+   const int nbe = E / QB, nbf = F / QB;
+   const size_t gu_row = (size_t)nbe * BLK, d_row = (size_t)nbf * BLK;
+@@ -673,6 +590,29 @@ int layout_main(int gap_us) {
+     for (int i = 0; i < E; i++) rows_bad += memcmp(&y1[i], &y2[i], 4) != 0;
+     printf("# bits: canon_dot_rows64 vs canon_dot_rows, gate / up (%d rows each): %s; down (%d rows): %ld differ\n", F,
+            bad ? "DIFFER" : "same", E, rows_bad);
++    // the multi-token kernels (README step 91): 1-8 activations, gate (odd row count: the 1-row tail) and down
++    long multi_bad = 0;
++    for (int nx = 1; nx <= 8; nx++) {
++      std::vector<CanonAct> xs(nx), as(nx);
++      std::vector<std::vector<float>> o1(nx, std::vector<float>(E)), o2(nx, std::vector<float>(E));
++      std::vector<const CanonAct*> px(nx), pa(nx);
++      std::vector<float*> p1(nx), p2(nx);
++      for (int j = 0; j < nx; j++) {
++        std::vector<float> v(E), w(F);
++        for (auto& q : v) q = nd(rng);
++        for (auto& q : w) q = nd(rng);
++        canon_act(v.data(), E, xs[j]); canon_act(w.data(), F, as[j]);
++        px[j] = &xs[j]; pa[j] = &as[j]; p1[j] = o1[j].data(); p2[j] = o2[j].data();
++      }
++      canon_dot_rows_multi(ex[0].gate, gu_row, px.data(), nx, 3, 3 + 61, p1.data());
++      canon_dot_rows64_multi(ex[0].gc, ex[0].gs, nbe, px.data(), nx, 3, 3 + 61, p2.data());
++      for (int j = 0; j < nx; j++) multi_bad += memcmp(p1[j] + 3, p2[j] + 3, 61 * 4) != 0;
++      canon_dot_rows_multi(ex[0].down, d_row, pa.data(), nx, 0, E, p1.data());
++      canon_dot_rows64_multi(ex[0].dc, ex[0].ds, nbf, pa.data(), nx, 0, E, p2.data());
++      for (int j = 0; j < nx; j++) multi_bad += memcmp(p1[j], p2[j], (size_t)E * 4) != 0;
++    }
++    printf("# bits: canon_dot_rows64_multi vs canon_dot_rows_multi, 1-8 activations, gate rows 3..63 and all of down: %s\n",
++           multi_bad ? "DIFFER" : "same");
+   }
+   // 2. compute alone: one thread, 64 rows in L2, repeated
+   {
+diff --git a/ds-completion/src/canon_dot.cpp b/ds-completion/src/canon_dot.cpp
+index 0776d25..4a511d6 100644
+--- a/ds-completion/src/canon_dot.cpp
++++ b/ds-completion/src/canon_dot.cpp
+@@ -372,3 +372,170 @@ void canon_dot_rows_multi(const uint8_t* rows, size_t row_bytes, const CanonAct*
+   for (; r < r1; r++)
+     for (int j = 0; j < nx; j += XB) dot_rows_tile<1>(K, rows + (size_t)r * row_bytes, row_bytes, a + j, std::min(XB, nx - j), y + j, r, acc.p);
+ }
++
++// ---- the CPU layout (README steps 83, 91)
++
++void canon_repack64(const uint8_t* src, size_t row_bytes, int N, int nb, uint8_t* codes, uint8_t* scales) {
++  for (int r = 0; r < N; r++) {
++    const uint8_t* row = src + (size_t)r * row_bytes;
++    uint8_t* cr = codes + (size_t)r * nb * 16;
++    for (int b = 0; b < nb; b++) scales[(size_t)r * nb + b] = row[(size_t)b * BLK];
++    auto code = [&](int i) {  // element i of the row (block i / 32: byte j low = j, high = j + 16)
++      const uint8_t* blk = row + (size_t)(i / 32) * BLK + 1;
++      const int j = i % 32;
++      return j < 16 ? blk[j] & 15 : blk[j - 16] >> 4;
++    };
++    for (int g = 0; g < nb / 4; g++)
++      for (int j = 0; j < 64; j++) cr[g * 64 + j] = (uint8_t)(code(128 * g + j) | code(128 * g + 64 + j) << 4);
++  }
++}
++
++namespace {
++
++constexpr int kPrefetch64 = 8192;  // README step 83: 8 KB ahead (none 0.36 ms per cold call, 4 KB 0.28, 8 KB 0.256, 16 KB 0.275)
++
++// the line of blocks 4q .. 4q + 3 of a group: blocks 4q, 4q + 1 in the low nibbles (the register
++// canon_dot_rows builds for them) and 4q + 2, 4q + 3 in the high ones
++inline void decode64(const Consts& K, const uint8_t* line, __m512i& wA, __m512i& wB) {
++  const __m512i v = _mm512_loadu_si512(line);
++  wA = _mm512_shuffle_epi8(K.lut, _mm512_and_si512(v, K.low4));
++  wB = _mm512_shuffle_epi8(K.lut, _mm512_and_si512(_mm512_srli_epi16(v, 4), K.low4));
++}
++
++template <int R>
++inline void dot_rows64_r(const Consts& K, const uint8_t* codes, const uint8_t* scales, int nb, const CanonAct& a, float* y) {
++  const size_t crow = (size_t)nb * 16;
++  __m512 acc[R];
++  for (int i = 0; i < R; i++) acc[i] = _mm512_setzero_ps();
++  for (int b0 = 0; b0 < nb; b0 += 16) {
++    const int nk = nb - b0 >= 16 ? 8 : (nb - b0) / 2;  // even: nb is a multiple of 4
++    const __mmask16 live = nk == 8 ? (__mmask16)0xFFFF : (__mmask16)((1u << (2 * nk)) - 1);
++    __m512i T[R][8];
++    for (int k = 0; k < 8; k += 2) {
++      if (k >= nk) {
++        for (int i = 0; i < R; i++) T[i][k] = T[i][k + 1] = _mm512_setzero_si512();
++        continue;
++      }
++      const size_t offA = (size_t)(b0 + 2 * k) * QB, offB = offA + 2 * QB;
++      const __m512i a2 = _mm512_loadu_si512(a.d2.data() + offA), a1 = _mm512_loadu_si512(a.d1.data() + offA),
++                    a0 = _mm512_loadu_si512(a.d0.data() + offA);
++      const __m512i b2 = _mm512_loadu_si512(a.d2.data() + offB), b1 = _mm512_loadu_si512(a.d1.data() + offB),
++                    bb0 = _mm512_loadu_si512(a.d0.data() + offB);
++      for (int i = 0; i < R; i++) {
++        const uint8_t* line = codes + i * crow + (size_t)(b0 + 2 * k) * 16;
++        _mm_prefetch((const char*)line + kPrefetch64, _MM_HINT_T1);
++        __m512i wA, wB;
++        decode64(K, line, wA, wB);
++        __m512i t = _mm512_dpbusd_epi32(_mm512_setzero_si512(), wA, a2);
++        t = _mm512_dpbusd_epi32(_mm512_slli_epi32(t, 7), wA, a1);
++        T[i][k] = _mm512_dpbusd_epi32(_mm512_slli_epi32(t, 7), wA, a0);
++        __m512i u = _mm512_dpbusd_epi32(_mm512_setzero_si512(), wB, b2);
++        u = _mm512_dpbusd_epi32(_mm512_slli_epi32(u, 7), wB, b1);
++        T[i][k + 1] = _mm512_dpbusd_epi32(_mm512_slli_epi32(u, 7), wB, bb0);
++      }
++    }
++    const __m512i corr = _mm512_maskz_loadu_epi32(live, a.corr.data() + b0);
++    const __m512 c = _mm512_maskz_loadu_ps(live, a.c.data() + b0);
++    for (int i = 0; i < R; i++) {
++      const __m512i S = _mm512_sub_epi32(_mm512_permutexvar_epi32(K.unperm, reduce8(T[i])), corr);
++      const __m512i e = _mm512_cvtepu8_epi32(_mm_maskz_loadu_epi8(live, scales + (size_t)i * nb + b0));
++      const __m512 scale = _mm512_mul_ps(_mm512_castsi512_ps(_mm512_slli_epi32(e, 23)), c);
++      acc[i] = _mm512_mask_add_ps(acc[i], live, acc[i], _mm512_mul_ps(_mm512_cvtepi32_ps(S), scale));
++    }
++  }
++  for (int i = 0; i < R; i++) {
++    __m512 v = acc[i];
++    for (int j = 0; j < 4; j++) v = _mm512_add_ps(v, _mm512_permutexvar_ps(K.xor_idx[j], v));
++    y[i] = _mm512_cvtss_f32(v);
++  }
++}
++
++// dot_rows_tile on the layout: the rows' decoded weights to an L1 buffer, each activation's
++// digits loaded once for the R rows; per (row, activation) exactly dot_rows_r's steps
++template <int R>
++inline void dot_rows64_tile(const Consts& K, const uint8_t* codes, const uint8_t* scales, int nb, const CanonAct* const* a, int nx,
++                            float* const* y, int r, __m512* acc) {
++  const size_t crow = (size_t)nb * 16;
++  alignas(64) __m512i wb[R][8];
++  for (int j = 0; j < nx * R; j++) acc[j] = _mm512_setzero_ps();
++  for (int b0 = 0; b0 < nb; b0 += 16) {
++    const int nk = nb - b0 >= 16 ? 8 : (nb - b0) / 2;
++    const __mmask16 live = nk == 8 ? (__mmask16)0xFFFF : (__mmask16)((1u << (2 * nk)) - 1);
++    __m512 escale[R];
++    for (int i = 0; i < R; i++) {
++      for (int k = 0; k < nk; k += 2) {
++        const uint8_t* line = codes + i * crow + (size_t)(b0 + 2 * k) * 16;
++        _mm_prefetch((const char*)line + kPrefetch64, _MM_HINT_T1);
++        decode64(K, line, wb[i][k], wb[i][k + 1]);
++      }
++      const __m512i e = _mm512_cvtepu8_epi32(_mm_maskz_loadu_epi8(live, scales + (size_t)i * nb + b0));
++      escale[i] = _mm512_castsi512_ps(_mm512_slli_epi32(e, 23));
++    }
++    for (int j = 0; j < nx; j++) {
++      const CanonAct& aj = *a[j];
++      __m512i T[R][8];
++      for (int k = 0; k < 8; k++) {
++        if (k >= nk) {
++          for (int i = 0; i < R; i++) T[i][k] = _mm512_setzero_si512();
++          continue;
++        }
++        const size_t off = (size_t)(b0 + 2 * k) * QB;
++        const __m512i d2 = _mm512_loadu_si512(aj.d2.data() + off), d1 = _mm512_loadu_si512(aj.d1.data() + off),
++                      d0 = _mm512_loadu_si512(aj.d0.data() + off);
++        for (int i = 0; i < R; i++) {
++          const __m512i w = _mm512_load_si512(&wb[i][k]);
++          __m512i t = _mm512_dpbusd_epi32(_mm512_setzero_si512(), w, d2);
++          t = _mm512_dpbusd_epi32(_mm512_slli_epi32(t, 7), w, d1);
++          T[i][k] = _mm512_dpbusd_epi32(_mm512_slli_epi32(t, 7), w, d0);
++        }
++      }
++      const __m512i corr = _mm512_maskz_loadu_epi32(live, aj.corr.data() + b0);
++      const __m512 c = _mm512_maskz_loadu_ps(live, aj.c.data() + b0);
++      for (int i = 0; i < R; i++) {
++        const __m512i S = _mm512_sub_epi32(_mm512_permutexvar_epi32(K.unperm, reduce8(T[i])), corr);
++        __m512& ac = acc[j * R + i];
++        ac = _mm512_mask_add_ps(ac, live, ac, _mm512_mul_ps(_mm512_cvtepi32_ps(S), _mm512_mul_ps(escale[i], c)));
++      }
++    }
++  }
++  for (int j = 0; j < nx; j++)
++    for (int i = 0; i < R; i++) {
++      __m512 v = acc[j * R + i];
++      for (int s = 0; s < 4; s++) v = _mm512_add_ps(v, _mm512_permutexvar_ps(K.xor_idx[s], v));
++      y[j][r + i] = _mm512_cvtss_f32(v);
++    }
++}
++
++}  // namespace
++
++void canon_dot_rows64(const uint8_t* codes, const uint8_t* scales, int nb, const CanonAct& a, int r0, int r1, float* y) {
++  static const Consts K;
++  const size_t crow = (size_t)nb * 16;
++  int r = r0;
++  for (; r + 4 <= r1; r += 4) dot_rows64_r<4>(K, codes + (size_t)r * crow, scales + (size_t)r * nb, nb, a, y + r);
++  for (; r < r1; r++) dot_rows64_r<1>(K, codes + (size_t)r * crow, scales + (size_t)r * nb, nb, a, y + r);
++}
++
++void canon_dot_rows64_multi(const uint8_t* codes, const uint8_t* scales, int nb, const CanonAct* const* a, int nx, int r0, int r1,
++                            float* const* y) {
++  static const Consts K;
++  thread_local struct Acc {
++    __m512* p = nullptr;
++    size_t n = 0;
++    ~Acc() { free(p); }
++  } acc;
++  if (acc.n < (size_t)nx * 2) {
++    free(acc.p);
++    acc.n = (size_t)nx * 2;
++    acc.p = (__m512*)aligned_alloc(64, acc.n * sizeof(__m512));
++  }
++  constexpr int XB = 8;
++  const size_t crow = (size_t)nb * 16;
++  int r = r0;
++  for (; r + 2 <= r1; r += 2)
++    for (int j = 0; j < nx; j += XB)
++      dot_rows64_tile<2>(K, codes + (size_t)r * crow, scales + (size_t)r * nb, nb, a + j, std::min(XB, nx - j), y + j, r, acc.p);
++  for (; r < r1; r++)
++    for (int j = 0; j < nx; j += XB)
++      dot_rows64_tile<1>(K, codes + (size_t)r * crow, scales + (size_t)r * nb, nb, a + j, std::min(XB, nx - j), y + j, r, acc.p);
++}
+diff --git a/ds-completion/src/canon_dot.h b/ds-completion/src/canon_dot.h
+index d8569c2..87665bf 100644
+--- a/ds-completion/src/canon_dot.h
++++ b/ds-completion/src/canon_dot.h
+@@ -50,3 +50,15 @@ void canon_dot_rows(const uint8_t* rows, size_t row_bytes, const CanonAct& a, in
+ // the same rows against nx activations (y[j][r] for a[j]), each row decoded once per 16 blocks;
+ // every y[j] is bit-identical to canon_dot_rows on a[j] alone
+ void canon_dot_rows_multi(const uint8_t* rows, size_t row_bytes, const CanonAct* const* a, int nx, int r0, int r1, float* const* y);
++
++// A CPU layout of an mxfp4 matrix's rows (README steps 83, 91): per row its codes contiguous,
++// byte j of each 64-byte group holding element j (low nibble) and j + 64 (high nibble) of the
++// group's 128 elements, and the scale bytes in their own [N][nb] array. Repacking is exact; one
++// 64-byte load gives two of the two-block registers canon_dot_rows builds from 17-byte blocks.
++// nb must be a multiple of 4 (gate / up 160, down 72).
++void canon_repack64(const uint8_t* src, size_t row_bytes, int N, int nb, uint8_t* codes, uint8_t* scales);
++// canon_dot_rows and canon_dot_rows_multi on that layout (codes / scales of one matrix, rows
++// r0..r1): every result bit-identical to theirs on the original rows
++void canon_dot_rows64(const uint8_t* codes, const uint8_t* scales, int nb, const CanonAct& a, int r0, int r1, float* y);
++void canon_dot_rows64_multi(const uint8_t* codes, const uint8_t* scales, int nb, const CanonAct* const* a, int nx, int r0, int r1,
++                            float* const* y);
+diff --git a/ds-completion/src/cpu_moe.cpp b/ds-completion/src/cpu_moe.cpp
+index ebf7ab1..4bcfab3 100644
+--- a/ds-completion/src/cpu_moe.cpp
++++ b/ds-completion/src/cpu_moe.cpp
+@@ -89,6 +89,27 @@ inline void dot_range(const uint8_t* base, size_t row_bytes, int nb, const float
+ 
+ const uint8_t* expert_base(const ggml_tensor* t, int e) { return (const uint8_t*)t->data + (size_t)e * t->nb[2]; }
+ 
++// a canonical row range of matrix m (0 gate, 1 up, 2 down) of expert e: from the layer's CPU
++// layout when it has one (README step 91), else from the GGUF's rows; the same bits either way
++inline void canon_rows(const CpuExperts& L, int m, int e, const CanonAct& a, int r0, int r1, float* y) {
++  if (L.lay) {
++    const CpuLayout& c = *L.lay;
++    canon_dot_rows64(c.codes[m] + e * c.codes_per_expert[m], c.scales[m] + e * c.scales_per_expert[m], c.nb[m], a, r0, r1, y);
++  } else {
++    const ggml_tensor* W = m == 0 ? L.gate : m == 1 ? L.up : L.down;
++    canon_dot_rows(expert_base(W, e), W->nb[1], a, r0, r1, y);
++  }
++}
++inline void canon_rows_multi(const CpuExperts& L, int m, int e, const CanonAct* const* a, int nx, int r0, int r1, float* const* y) {
++  if (L.lay) {
++    const CpuLayout& c = *L.lay;
++    canon_dot_rows64_multi(c.codes[m] + e * c.codes_per_expert[m], c.scales[m] + e * c.scales_per_expert[m], c.nb[m], a, nx, r0, r1, y);
++  } else {
++    const ggml_tensor* W = m == 0 ? L.gate : m == 1 ? L.up : L.down;
++    canon_dot_rows_multi(expert_base(W, e), W->nb[1], a, nx, r0, r1, y);
++  }
++}
++
+ // One row against nx inputs (lane order; prompt chunks: several tokens routed to one expert):
+ // each block decoded once, then every input takes exactly dot_rows' steps, so each y[j][r] is
+ // bit-identical to a one-input call.
+@@ -198,7 +219,6 @@ void CpuMoeKernel::forward_canon_rows(const CpuExperts& L, const float* x, const
+   constexpr int AB = 8;   // activation blocks (of 32 values) per task
+   canon_act_size(E, x_c);
+   for (int j = 0; j < k; j++) canon_act_size(F, act_c[j]);
+-  const size_t gu_row = L.gate->nb[1], d_row = L.down->nb[1];
+   const int gu_tasks = k * 2 * (F / CH), d_tasks = k * (E / CH);
+   const int a_per = F / QB / AB, a_tasks = k * a_per;  // F / 32 is a multiple of 8
+   using Clk = std::chrono::steady_clock;
+@@ -218,9 +238,8 @@ void CpuMoeKernel::forward_canon_rows(const CpuExperts& L, const float* x, const
+ #pragma omp for schedule(dynamic, kTaskPair) nowait  // README step 82: static waited for the core that idled longest
+     for (int t = 0; t < gu_tasks; t++) {
+       const int per = F / CH, j = t / (2 * per), m = (t / per) % 2, c = t % per;
+-      const ggml_tensor* W = m ? L.up : L.gate;
+       float* out = (m ? up_out.data() : gate_out.data()) + (size_t)j * F;
+-      canon_dot_rows(expert_base(W, ids[j]), gu_row, x_c, c * CH, (c + 1) * CH, out);
++      canon_rows(L, m, ids[j], x_c, c * CH, (c + 1) * CH, out);
+     }
+     t_end_gu[tid] = Clk::now();  // this thread's last gate / up task (last_call's spread)
+ #pragma omp barrier
+@@ -245,7 +264,7 @@ void CpuMoeKernel::forward_canon_rows(const CpuExperts& L, const float* x, const
+ #pragma omp for schedule(dynamic, kTaskPair) nowait
+     for (int t = 0; t < d_tasks; t++) {
+       const int per = E / CH, j = t / per, c = t % per;
+-      canon_dot_rows(expert_base(L.down, ids[j]), d_row, act_c[j], c * CH, (c + 1) * CH, rows + (size_t)j * E);
++      canon_rows(L, 2, ids[j], act_c[j], c * CH, (c + 1) * CH, rows + (size_t)j * E);
+     }
+     t_end_d[tid] = Clk::now();
+   }
+@@ -454,8 +473,8 @@ void CpuMoeKernel::forward_batch(const CpuExperts& L, const float* x, int T, con
+       const int nx = (int)groups[g].pairs.size();
+       // one token: the one-token routine (canon_dot_rows_multi's L1 round trip of the decoded
+       // weights and 2 rows per step cost 35% at one expert; README step 57); the same bits
+-      if (canon && nx == 1) canon_dot_rows(base, gu_row, *gxc[g][0], c * CH, (c + 1) * CH, ys[0]);
+-      else if (canon) canon_dot_rows_multi(base, gu_row, gxc[g].data(), nx, c * CH, (c + 1) * CH, ys);
++      if (canon && nx == 1) canon_rows(L, m, groups[g].e, *gxc[g][0], c * CH, (c + 1) * CH, ys[0]);
++      else if (canon) canon_rows_multi(L, m, groups[g].e, gxc[g].data(), nx, c * CH, (c + 1) * CH, ys);
+       else dot_range_multi(base, gu_row, nb_e, gx[g].data(), nx, ys, c * CH, (c + 1) * CH);
+     }
+     t_end_gu[omp_get_thread_num()] = Clk::now();  // this thread's last gate / up task (last_call)
+@@ -501,8 +520,8 @@ void CpuMoeKernel::forward_batch(const CpuExperts& L, const float* x, int T, con
+       const int g = task / per_e, c = task % per_e;
+       const uint8_t* base = expert_base(L.down, groups[g].e);
+       const int nx = (int)groups[g].pairs.size();
+-      if (canon && nx == 1) canon_dot_rows(base, d_row, *gac[g][0], c * CH, (c + 1) * CH, gd[g][0]);
+-      else if (canon) canon_dot_rows_multi(base, d_row, gac[g].data(), nx, c * CH, (c + 1) * CH, gd[g].data());
++      if (canon && nx == 1) canon_rows(L, 2, groups[g].e, *gac[g][0], c * CH, (c + 1) * CH, gd[g][0]);
++      else if (canon) canon_rows_multi(L, 2, groups[g].e, gac[g].data(), nx, c * CH, (c + 1) * CH, gd[g].data());
+       else dot_range_multi(base, d_row, nb_f, ga[g].data(), nx, gd[g].data(), c * CH, (c + 1) * CH);
+     }
+     t_end_d[omp_get_thread_num()] = Clk::now();
+diff --git a/ds-completion/src/cpu_moe.h b/ds-completion/src/cpu_moe.h
+index 2e862b4..c47dd3a 100644
+--- a/ds-completion/src/cpu_moe.h
++++ b/ds-completion/src/cpu_moe.h
+@@ -1,8 +1,9 @@
+ // The routed experts of one layer for one token on the CPU (PLAN.md A3), in the reference's
+ // numerics: y = sum_j down_j(fq8(w_j * swiglu_clamp(gate_j(fq8 x), up_j(fq8 x)))).
+ //
+-// Weights are read in place from the GGUF mmap (mxfp4: per 32 values one e8m0 scale byte and
+-// 16 bytes, low nibbles = values 0..15, high nibbles = 16..31). The fp4 codes are decoded with
++// Weights are read in place from the GGUF mmap (mxfp4: per 32 values one e8m0 scale byte and 16
++// bytes, low nibbles = values 0..15, high nibbles = 16..31), or by the canonical kernels from a
++// CPU-layout copy when the layer has one (CpuExperts::lay, README step 91). The fp4 codes are decoded with
+ // a 16-entry float table (one AVX-512 vpermps per 16 values); every fp4 x fp8 product is exact
+ // in fp32, so this is the reference's fp8_gemm/fp4_gemm up to the order of the fp32 additions.
+ // (ggml's CPU kernel instead re-quantizes the activations to int8, ~1e-2 off.)
+@@ -15,10 +16,22 @@
+ #include <chrono>
+ #include <vector>
+ 
++// One layer's experts in the CPU layout (canon_dot.h, README step 91): per matrix (gate, up,
++// down) the codes and scales of expert 0 and the strides to the next expert.
++struct CpuLayout {
++  const uint8_t* codes[3] = {};
++  const uint8_t* scales[3] = {};
++  int nb[3] = {};
++  size_t codes_per_expert[3] = {}, scales_per_expert[3] = {};
++};
++
+ struct CpuExperts {
+   // one layer's [K, N, n_expert] mxfp4 tensors (ggml layout: ne0 = K = input dim)
+   const ggml_tensor *gate, *up, *down;
+   float limit;  // swiglu clamp
++  // the canonical kernels read this copy instead when set (README step 91); the fast path and
++  // touch() always read the tensors
++  const CpuLayout* lay = nullptr;
+ };
+ 
+ class CpuMoeKernel {
+diff --git a/ds-completion/src/ds_completion.cpp b/ds-completion/src/ds_completion.cpp
+index 7a92f47..5cc30c2 100644
+--- a/ds-completion/src/ds_completion.cpp
++++ b/ds-completion/src/ds_completion.cpp
+@@ -2,7 +2,7 @@
+ //
+ //   ds-completion -m <model-00001-of-000NN.gguf> (-p "prompt" | -f prompt.txt) [--chat | --think [--effort 75]] [-n 128]
+ //                 [-t 16] [--no-quant] [--max-ctx 4096]
+-//                 [--rt <dense-fp8.gguf> [--gpu D] [--placement file [--moe-dies 0,1,2,3] [--load-test R [--load-pinned]] [--cache-loads R [--cache-period N] [--cache-window N] [--cache-min N] [--cache-wait]]] [--canon] [--profile]]
++//                 [--rt <dense-fp8.gguf> [--gpu D] [--placement file [--moe-dies 0,1,2,3] [--load-test R [--load-pinned]] [--cpu-layout even|odd|all|a,b-c [--cpu-layout-control]] [--cache-loads R [--cache-period N] [--cache-window N] [--cache-min N] [--cache-wait]]] [--canon] [--profile]]
+ //
+ // The prompt is fed as one chunk (prefill), then one token per step, greedy. --chat wraps the
+ // prompt as one user turn in the model's chat format without thinking, --think with it (the
+@@ -22,6 +22,9 @@
+ #endif
+ 
+ #include <algorithm>
++#include <csignal>
++#include <execinfo.h>
++#include <unistd.h>
+ #include <cmath>
+ #include <chrono>
+ #include <cstdio>
+@@ -51,7 +54,21 @@ static std::string piece(const llama_vocab* v, int32_t tok) {
+   return n > 0 ? std::string(buf, n) : std::string();
+ }
+ 
++// a fatal signal (an abort from the heap checks, a crash) prints the stack before the default
++// action (README step 91: an abort at exit seen once; no core is kept on this machine).
++// Addresses resolve with addr2line -f -e bin-hip/ds-completion <+offset>.
++static void on_fatal(int sig) {
++  static const char msg[] = "# fatal signal; backtrace:\n";
++  ssize_t w = write(2, msg, sizeof msg - 1);
++  (void)w;
++  void* bt[64];
++  backtrace_symbols_fd(bt, backtrace(bt, 64), 2);
++  signal(sig, SIG_DFL);
++  raise(sig);
++}
++
+ int main(int argc, char** argv) {
++  for (int sig : {SIGABRT, SIGSEGV, SIGBUS, SIGILL, SIGFPE}) signal(sig, on_fatal);
+   std::string model_path, prompt, mode = "raw", rt_path;
+   int n_predict = 128;
+   int effort = 75;  // --think's reasoning effort (encoding.py's default)
+@@ -64,6 +81,8 @@ int main(int argc, char** argv) {
+   std::vector<int> moe_dies = {0, 1, 2, 3};
+   [[maybe_unused]] double load_test = -1;
+   [[maybe_unused]] bool load_pinned = false;
++  [[maybe_unused]] std::string cpu_layout;  // README step 91: even | odd | all | a,b,c-d
++  [[maybe_unused]] bool cpu_layout_control = false;
+   [[maybe_unused]] bool canon = false;
+   bool max_ctx_set = false;
+   [[maybe_unused]] int prefill_chunk = 512;
+@@ -106,6 +125,8 @@ int main(int argc, char** argv) {
+     else if (a == "--placement") placement = next();  // runtime: routed experts on GPUs (expert_pool.h)
+     else if (a == "--load-test") load_test = atof(next());  // runtime: background loads to spare slots (rt.h)
+     else if (a == "--load-pinned") load_pinned = true;
++    else if (a == "--cpu-layout") cpu_layout = next();  // runtime: these layers' experts in the CPU layout (README step 91)
++    else if (a == "--cpu-layout-control") cpu_layout_control = true;  // ... copied in the GGUF's layout instead
+     else if (a == "--canon") canon = true;  // runtime: placement-invariant expert numerics (rt.h)
+     else if (a == "--cache-loads") cache_loads = atof(next());  // runtime: adaptive expert cache (expert_cache.h)
+     else if (a == "--cache-period") cache_period = atoi(next());
+@@ -127,7 +148,7 @@ int main(int argc, char** argv) {
+     else { fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
+   }
+   if (model_path.empty() || prompt.empty()) {
+-    fprintf(stderr, "usage: ds-completion -m <model.gguf> (-p \"prompt\" | -f prompt.txt) [--chat|--think [--effort 1-100|low|high|max]] [-n N] [-t N] [--no-quant] [--max-ctx N] [--rt dense-fp8.gguf [--gpu D] [--placement file [--moe-dies 0,1,2,3] [--load-test R [--load-pinned]] [--cache-loads R [--cache-period N] [--cache-window N] [--cache-min N] [--cache-wait]]] [--canon] [--profile]]\n");
++    fprintf(stderr, "usage: ds-completion -m <model.gguf> (-p \"prompt\" | -f prompt.txt) [--chat|--think [--effort 1-100|low|high|max]] [-n N] [-t N] [--no-quant] [--max-ctx N] [--rt dense-fp8.gguf [--gpu D] [--placement file [--moe-dies 0,1,2,3] [--load-test R [--load-pinned]] [--cpu-layout even|odd|all|a,b-c [--cpu-layout-control]] [--cache-loads R [--cache-period N] [--cache-window N] [--cache-min N] [--cache-wait]]] [--canon] [--profile]]\n");
+     return 2;
+   }
+ 
+@@ -189,6 +210,26 @@ int main(int argc, char** argv) {
+     ro.moe_dies = moe_dies;
+     ro.load_test = load_test;
+     ro.load_pinned = load_pinned;
++    if (!cpu_layout.empty()) {  // the layers with routed experts: every one, every other, or a list
++      const int nl = (int)m.layers.size();
++      std::vector<int> moe;
++      for (int L = 0; L < nl; L++)
++        if (m.layers[L].gate_exps) moe.push_back(L);
++      if (cpu_layout == "all" || cpu_layout == "even" || cpu_layout == "odd") {
++        for (size_t i = 0; i < moe.size(); i++)
++          if (cpu_layout == "all" || (int)(i % 2) == (cpu_layout == "odd")) ro.cpu_layout_layers.push_back(moe[i]);
++      } else {
++        for (char* q = (char*)cpu_layout.c_str(); *q;) {
++          const int a0 = (int)strtol(q, &q, 10);
++          int a1 = a0;
++          if (*q == '-') a1 = (int)strtol(q + 1, &q, 10);
++          for (int L = a0; L <= a1; L++) ro.cpu_layout_layers.push_back(L);
++          if (*q == ',') q++;
++          else if (*q) { fprintf(stderr, "--cpu-layout: even | odd | all | a,b,c-d\n"); return 2; }
++        }
++      }
++    }
++    ro.cpu_layout_control = cpu_layout_control;
+     ro.canon = canon;
+     ro.prefill_chunk = prefill_chunk;
+     ro.prefill_overlap = prefill_overlap;

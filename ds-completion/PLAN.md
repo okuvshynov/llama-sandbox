@@ -416,6 +416,34 @@ Step 89: traces at step 88; the time outside the layers split: ~2-3 ms untraced,
 head (the bf16 head kernel, as the draft's). Sections B and D below updated.
 Step 90: the GPU clock: held-out 36.8 / 41.1 / 42.1 t/s at sclk 2 / 6 / 8; ~35% of a token's time at
 sclk 6 scales with the clock, ~65% (the CPU's experts, handoffs, host) does not.
+Step 91: the CPU layout as a copy in RAM: -7-12% per CPU expert in the same run, held-out +1.6%
+with all layers, but 269 GiB, ~45 s per start and an unexplained abort; not kept
+(`results/cpu-decode/layout-live.patch`).
+
+**Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
+~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front
+~54 ms (fp8 GEMVs ~25), the draft 8.4, the tail after the CPU's rows 6.3; outside the layers ~2-3
+ms untraced (step 89). Die 0 and the CPU still take turns.
+
+Promising, in order:
+1. Tried (step 91, not kept): +1.6% with all layers as a copy in RAM, too costly for the gain.
+   Only as a repacked expert file that is the only source (the GPU loader reading it), if ever.
+2. The draft's head over the most frequent ~32k tokens (~1.5-2%; outputs cannot change).
+3. A trace of step 70's verify halves (`results/decode-next/verify-halves.patch`): its loss was
+   never measured. Host blocking -> a separate launch thread; doubled per-call costs -> drop.
+4. The tail's 6.3 ms split (measure only): the dies' results behind their loads (~3 ms)?
+5. A simulation of ~190 more slots on die 0 (`scripts/cache_sim.py`): what a draft-expert cache
+   would buy, before building one.
+6. Commit's 0.86 ms wait: the draft's window seeded for all kept tokens at once (~1%).
+
+Big, a design first: the fp8 GEMVs at 6 tokens (~25 ms; local variants failed in 65 and 75);
+drafting ahead while the verify runs (~2-4% on code; memory and a second stream or die).
+
+Backlog (less likely): cache policy tweaks (59 lost; 63-64 2.5% simulated), an LLC prefetch (77:
+x1.2 ceiling), CPU micro-fixes around the idle gap (78, 79, 81), load pacing (85), attention over
+dies 0-1 / TP (76: +0.6%), small-op fusion (65: launches not the limit), speculation tuning and
+trees (94% of the hindsight bound), the fast path's activation (held-out runs `--canon`), PGO and
+compile-time shapes, the batched indexer (long context), die 0's staleness metric (long runs).
 
 **A. Tuning the expert cache** (the CPU experts' ~25 ms)
 - Hysteresis: a newcomer must beat its victim by a margin, so the cache settles in long runs

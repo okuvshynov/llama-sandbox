@@ -3292,3 +3292,48 @@ against 41.19 before it (step 88), the same within noise. The draft-length rule 
 cost, so tokens per step move a little with the clock (ja-email 2.01 at sclk 2, 1.72 at 6 and 8).
 Level 6 stays the measuring level (the baseline of every step since 32).
 
+## Step 91: the CPU layout in the runtime, as a copy in RAM (tried, not kept)
+
+Step 83 benchmarked a CPU layout for the experts' mxfp4 rows (each row's codes contiguous, the
+scales apart: the same bits, compute x1.8, a cold call -9%) and left it undeployed: the GGUF mmap
+was the CPU's only source and RAM cannot hold a second copy next to the page cache. Tested here
+without touching the GPU side (`results/cpu-decode/layout-live.patch`): `--cpu-layout
+even|odd|all|a,b-c` repacked those layers' experts at startup into RAM (`canon_repack64`, 16
+threads, 2 MB pages) and the canonical CPU kernels read that copy; the GPUs kept loading from the
+GGUF. `--cpu-layout-control` copied the same layers in the GGUF's own layout instead (a fresh copy
+on 2 MB pages, the layout unchanged).
+
+- **Kernels:** `canon_dot_rows64` (step 83's, moved from the bench into `canon_dot.cpp`) and a
+  new `canon_dot_rows64_multi` (`canon_dot_rows_multi`'s tile on the layout). Bit-identical to the
+  GGUF-layout kernels (`bench-fp4-decode layout`: every row of an expert's three matrices; 1-8
+  activations for the multi kernel).
+- **Within one traced run** (`results/cpu-decode/layout-live.txt`; the patch's
+  `scripts/trace_cpu_copy.py` over a "cpu copy" argument on the "CPU experts" spans), total ms
+  per CPU expert:
+
+| run | GGUF layers | copied layers | change |
+|---|---|---|---|
+| even layers in the CPU layout, cpp-matrix | 0.287 | 0.268 | -7% |
+| even, tcp-udp | 0.296 | 0.275 | -7% |
+| odd layers, cpp-matrix | 0.292 | 0.257 | -12% |
+| odd, tcp-udp | 0.300 | 0.268 | -11% |
+| control (even, the GGUF's layout copied), cpp-matrix | 0.289 | 0.291 | 0% |
+| control, tcp-udp | 0.295 | 0.296 | 0% |
+
+  The layout, not the fresh copy or its 2 MB pages, made the difference (as step 56 found for
+  2 MB pages). Down ~18% faster (0.095 -> 0.077-0.079 ms per expert); gate + up only 2-3%: it
+  follows the idle gap and already reads at ~73 GB/s.
+- **Held-out with all 40 layers** (`spec-measure-sclk6-cacheloads800cacheperiod8cpulayoutall/`):
+  mean **41.10 -> 41.76 t/s (+1.6%)** against step 90's sclk 6 run (+1.4% against step 88's
+  41.19), every output identical; a second run, stopped after 6 prompts, gave the same within
+  ~1%. The copy is 269 GiB and the repack 44-51 s per startup; free memory reached 0 and 14 GB of
+  the page cache were evicted (no disk reads during generation).
+- **One abort:** py-lru's process aborted at exit, after its results (`malloc_consolidate():
+  invalid chunk size`), once in 27 runs with a copy; none in any earlier run's log, not
+  repeated in 6 py-lru runs with `MALLOC_CHECK_=3`; no core was kept and no cause found (the new
+  code's writes stay inside their buffers). The patch also has a fatal-signal backtrace handler
+  in `ds_completion.cpp` for a next look.
+
+Not kept: +1.6% for a 269 GiB copy that fills RAM next to the page cache, ~45 s more per start,
+and an unexplained abort. A deployment would need a repacked expert file as the only source
+(step 83's list: the GPU loader's unpack reading it), not a second copy.
