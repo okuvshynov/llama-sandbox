@@ -414,6 +414,8 @@ step's tail: the host's argmax of all logits ~0.3-0.8 ms plus their copy ~0.2-0.
 Step 88: that argmax on the GPU (M ids back): held-out 40.82 -> 41.19 t/s.
 Step 89: traces at step 88; the time outside the layers split: ~2-3 ms untraced, almost all the
 head (the bf16 head kernel, as the draft's). Sections B and D below updated.
+Step 90: the GPU clock: held-out 36.8 / 41.1 / 42.1 t/s at sclk 2 / 6 / 8; ~35% of a token's time at
+sclk 6 scales with the clock, ~65% (the CPU's experts, handoffs, host) does not.
 
 **A. Tuning the expert cache** (the CPU experts' ~25 ms)
 - Hysteresis: a newcomer must beat its victim by a margin, so the cache settles in long runs

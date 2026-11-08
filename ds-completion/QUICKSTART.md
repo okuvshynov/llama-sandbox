@@ -61,7 +61,8 @@ bin-hip/ds-completion -m $M --rt ~/llms/ds-1017-fp8/dense-fp8.gguf \
 
 Without `--dspark ... --spec`: 17.7-21.7 t/s generation, and 8.5 GB more GPU 0 memory for
 experts. Without `--placement` every routed expert runs on the CPU (faster start, ~12 t/s).
-A higher GPU clock helps both (sclk 8: +9-14%); the clock is set outside the program (sudo).
+A higher GPU clock helps both: held-out with the cache 36.8 / 41.1 / 42.1 t/s at sclk 2 / 6 / 8
+(README step 90); the clock is set outside the program (sudo).
 
 After a memory-heavy job (anything that pushed the 474 GB model out of the page cache), the
 first run reads it back from disk; `cat ~/llms/UD-Q8_K_XL/*.gguf > /dev/null` first (2-4 min)

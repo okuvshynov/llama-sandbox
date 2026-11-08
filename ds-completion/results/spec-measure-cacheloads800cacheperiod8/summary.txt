@@ -1,0 +1,11 @@
+# CACHE="--cache-loads 800 --cache-period 8" scripts/spec-measure.sh, commit 2509593, sclk 2, 2026-11-07T18:25:56-05:00
+# name: generation t/s, tokens per step, drafts accepted per step, output vs results/cache-test/plain-canon-static
+tcp-udp: 32.17 t/s, 2.16 tokens per step, 1.15 accepted, output same
+py-lru: 38.69 t/s, 3.09 tokens per step, 2.08 accepted, output same
+cpp-matrix: 43.84 t/s, 4.48 tokens per step, 3.54 accepted, output same
+sql-report: 38.10 t/s, 3.80 tokens per step, 2.82 accepted, output same
+geometry: 44.15 t/s, 4.11 tokens per step, 3.12 accepted, output same
+zh-travel: 28.79 t/s, 1.68 tokens per step, 0.68 accepted, output same
+ja-email: 31.38 t/s, 2.01 tokens per step, 1.01 accepted, output same
+summary-json: 37.08 t/s, 3.50 tokens per step, 2.54 accepted, output same
+long-proof: 44.61 t/s, 3.91 tokens per step, 2.91 accepted, output n/a

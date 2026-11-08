@@ -3271,3 +3271,24 @@ CPU 25, the tail 6.3.
 PLAN's sections B (the dense part) and D (the draft) rewritten: what is done (steps 53, 61-62,
 66-68, 73-74, 86, 88), tried (65, 70, 75, 76), left, with the current per-part times.
 
+## Step 90: the GPU clock level, at step 89 (sclk 2 / 6 / 8)
+
+After a reboot (the page cache warmed by reading the model files), the held-out set
+(`CACHE="--cache-loads 800 --cache-period 8" scripts/spec-measure.sh`) at three sclk levels set by
+hand on all four cards, commit 2509593 (`results/decode-next/sclk-levels.txt`). Every output
+identical to step 32's at every level.
+
+| sclk level (MHz) | mean t/s (8 prompts) | range | ms per token |
+|---|---|---|---|
+| 2 (1204) | 36.77 | 28.8-44.2 | 27.2 |
+| 6 (1608) | 41.10 | 31.6-50.6 | 24.3 |
+| 8 (1730) | 42.10 | 32.3-51.9 | 23.8 |
+
+From 2 to 6 the clock rises 33.6% and the speed 11.8%; from 6 to 8, 7.6% and 2.4%. A token's time
+as GPU work that scales with the clock plus time that does not (fitted on levels 2 and 6): at
+sclk 6 ~8.6 of its 24.3 ms scale with the clock (35%), ~15.8 do not (the CPU's experts, the
+handoffs, the host); the fit predicts level 8 within 0.1%. Level 6 after the reboot: 41.10
+against 41.19 before it (step 88), the same within noise. The draft-length rule sees the verify
+cost, so tokens per step move a little with the clock (ja-email 2.01 at sclk 2, 1.72 at 6 and 8).
+Level 6 stays the measuring level (the baseline of every step since 32).
+

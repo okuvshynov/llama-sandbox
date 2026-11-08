@@ -573,6 +573,7 @@ Estimates were made before measuring wherever possible; this is how they fared.
 | the draft's experts pruned by usage (87, measured only) | skewed: half of them for ~3% more capacity | skewed within a prompt, not across prompts: top 64 cover 70-89% of an unseen prompt's choices | a draft for every kind of prompt needs most of its experts; the per-prompt working set is the small one |
 | the verify step's argmax on the GPU (88) | ~1% on code, ~0.8% on chat | +0.9% held-out (+1.1-1.5% on code, +0.6% on chat) | as estimated from the step's tail |
 | the time outside the layers (89, traces) | ~5-6 ms per code step, the head and overhead | ~2-3 ms untraced, almost all the head; the trace's bookkeeping 1.2-1.7 ms | a traced run's own overhead looked like the step's; the head kernel is what is left |
+| the GPU clock level (90: sclk 2 / 6 / 8) | a third or so of the time scales with the clock | 36.8 / 41.1 / 42.1 t/s: ~35% of a token's time at sclk 6 scales with it | the fit on two levels predicts the third within 0.1%; the CPU side is ~65% |
 | expert parallelism for the draft (62) | proposed by the person | ~1 ms at best | experts are 16% of the draft; the head (27%) was the item |
 | the head through LDS (62) | ~1-2% | +1.4% held-out, +2% on code | as estimated from the per-part times |
 | the draft in fp8 frees ~4 GB (60 -> 61) | ~210 slots | nothing | its dense part was already fp8 and its experts mxfp4: assumed from the file's name |

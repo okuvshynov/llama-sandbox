@@ -1,0 +1,18 @@
+# the GPU clock level against held-out speed (README step 90), after a reboot and a warm page cache
+# CACHE="--cache-loads 800 --cache-period 8" scripts/spec-measure.sh at each level (set by hand on all four cards), commit 2509593, 2026-11-07
+# sclk 2: results/spec-measure-cacheloads800cacheperiod8/ (level 2 has no suffix in the script); sclk 6: ...-sclk6-cacheloads800cacheperiod8-sclkcmp/; sclk 8: ...-sclk8-cacheloads800cacheperiod8/
+# prompt: t/s (tokens per step) at sclk 2 / 6 / 8; every output identical to results/cache-test/plain-canon-static
+
+tcp-udp        32.17 (2.16)   35.53 (2.11)   36.63 (2.14)
+py-lru         38.69 (3.09)   42.90 (3.03)   44.08 (3.03)
+cpp-matrix     43.84 (4.48)   50.62 (4.62)   51.85 (4.62)
+sql-report     38.10 (3.80)   43.39 (3.90)   44.54 (3.85)
+geometry       44.15 (4.11)   50.19 (4.06)   51.06 (4.11)
+zh-travel      28.79 (1.68)   31.59 (1.55)   32.32 (1.54)
+ja-email       31.38 (2.01)   33.65 (1.72)   34.32 (1.72)
+summary-json   37.08 (3.50)   40.94 (3.50)   42.01 (3.50)
+long-proof     44.61 (3.91)   52.02 (3.77)   53.74 (3.78)   (not in the mean)
+
+mean of the 8: sclk 2 36.77, sclk 6 41.10, sclk 8 42.10 t/s
+2 -> 6: clock +33.6%, speed +11.8%; 6 -> 8: clock +7.6%, speed +2.4%; 2 -> 8: clock +43.7%, speed +14.5%
+sclk 6 before the reboot (step 88's -gpuargmax run): 41.19
