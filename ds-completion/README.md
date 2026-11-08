@@ -3287,7 +3287,8 @@ identical to step 32's at every level.
 From 2 to 6 the clock rises 33.6% and the speed 11.8%; from 6 to 8, 7.6% and 2.4%. A token's time
 as GPU work that scales with the clock plus time that does not (fitted on levels 2 and 6): at
 sclk 6 ~8.6 of its 24.3 ms scale with the clock (35%), ~15.8 do not (the CPU's experts, the
-handoffs, the host); the fit predicts level 8 within 0.1%. Level 6 after the reboot: 41.10
+handoffs, the host, and GPU work bound by HBM bandwidth, which runs on its own clock: the fp8
+GEMVs; corrected in step 94); the fit predicts level 8 within 0.1%. Level 6 after the reboot: 41.10
 against 41.19 before it (step 88), the same within noise. The draft-length rule sees the verify
 cost, so tokens per step move a little with the clock (ja-email 2.01 at sclk 2, 1.72 at 6 and 8).
 Level 6 stays the measuring level (the baseline of every step since 32).
@@ -3405,4 +3406,34 @@ Kept for the next occurrence: a fatal-signal handler in `ds_completion.cpp` prin
 addresses resolve with `addr2line -f -C -e bin-hip/ds-completion <+offset>`), and
 `scripts/spec-measure.sh` notes a nonzero exit code on the prompt's summary line. No workaround
 (an `_exit` after the results would hide where it is).
+
+## Step 94: step 70's verify halves, traced: why they lose (closed)
+
+Step 70 let a verify step run as the prompt does in two halves (A's CPU experts while die 0 runs
+B's attention, and back) and found it 10-13% slower without measuring why; die 0 and the CPU
+still take turns (~25 ms of CPU experts per code step against die 0's ~54 ms), so it was the
+triage's largest open idea. Its patch (`results/decode-next/verify-halves.patch`,
+`DS_VERIFY_HALVES=1`) still applies; traced against step 88's traces
+(`results/decode-next/verify-halves-trace.txt`, new `scripts/trace_overlap.py`):
+
+| a 6-token code step, median ms | without halves | halves (traced) |
+|---|---|---|
+| the step | 89.4 | 128.2 |
+| die 0 busy | 54.5 | 82.6 |
+| the CPU's experts | 30.4 | 32.6 |
+| both at once | 7.6 | 4.2 |
+| the host waiting for die 0's lists | 23.5 | 0.1 |
+
+Untraced: cpp-matrix 50.62 -> 43.85 t/s (-13%), tcp-udp 35.53 -> 29.37 (-17%), outputs identical.
+The halves overlap less, not more, and the host becomes the bottleneck; but the cause is die 0's
+own work. Its dense part reads weights: ~29 ms for one token, +4-5 ms per further token (die 0
+busy by verify size without halves: 1 token 28.9 ms, 2: 34, 3: 42, 4: 50, 5: 50, 6: 54.5). Two
+halves of 3 tokens read every weight twice, ~2 x 42 = ~84 ms against 54.5: ~30 ms more on die 0,
+more than the CPU's whole 25-30 ms could hide even with a perfect launch thread. A verify step's
+tokens must share one weight read on this machine (the prompt's 512-token chunks amortize it, so
+there the halves pay, step 38). Closed for good; the patch stays as it was.
+
+Correction to step 90: the ~65% of a token's time that does not scale with the GPU clock is not
+only the CPU side: GPU kernels bound by HBM bandwidth (the fp8 GEMVs) do not scale with the shader
+clock either.
 

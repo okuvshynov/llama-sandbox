@@ -1,0 +1,32 @@
+# step 70's verify halves, traced (README step 94): DS_VERIFY_HALVES=1 with results/decode-next/verify-halves.patch on a519a9d
+# the command of results/trace/README.txt (cpp-matrix, tcp-udp), untraced and with --trace; sclk 6; 2026-11-08; against step 88's traces (results/trace/)
+
+## t/s (outputs identical): halves untraced / traced; without halves: today's held-out at sclk 6 (step 90) / step 88's traces
+halves cpp-matrix: 43.85 t/s output same
+halves tcp-udp: 29.37 t/s output same
+halvestr cpp-matrix: 33.04 t/s output same
+halvestr tcp-udp: 23.12 t/s output same
+# without halves: cpp-matrix 50.62 / 45.97, tcp-udp 35.53 / 32.46
+
+## scripts/trace_overlap.py: a 6-token verify step, without halves (step 88's trace) and with them
+# cpp-matrix.json.gz: 34 verify steps of 6 tokens, medians in ms
+  step                            89.39
+  die 0 busy                      54.52
+  CPU experts                     30.35
+  both at once                     7.62
+  host waits for die 0 lists      23.47
+  CPU calls                          38
+# halvestr-cpp-matrix.json: 31 verify steps of 6 tokens, medians in ms
+  step                           128.22
+  die 0 busy                      82.56
+  CPU experts                     32.62
+  both at once                     4.21
+  host waits for die 0 lists       0.07
+  CPU calls                          59
+
+## die 0's dense work per verify size (scripts/trace_overlap.py --by-size): without halves, then with them
+# cpp-matrix.json.gz: die 0 busy per verify size, median ms (steps): 2: 33.1 (2), 3: 41.9 (7), 4: 49.6 (10), 5: 49.4 (12), 6: 54.5 (34)
+# tcp-udp.json.gz: die 0 busy per verify size, median ms (steps): 1: 28.9 (28), 2: 34.4 (50), 3: 42.9 (38), 4: 49.6 (17), 5: 50.5 (4), 6: 54.2 (2)
+# halvestr-cpp-matrix.json: die 0 busy per verify size, median ms (steps): 2: 59.2 (3), 3: 62.6 (7), 4: 65.2 (13), 5: 74.9 (14), 6: 82.6 (31)
+# halvestr-tcp-udp.json: die 0 busy per verify size, median ms (steps): 2: 57.7 (40), 3: 63.4 (37), 4: 67.8 (31), 5: 74.7 (9), 6: 82.9 (5)
+# (with halves die 0's spans also hold its waits for a late host: an upper bound there)

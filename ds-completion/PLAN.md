@@ -415,7 +415,8 @@ Step 88: that argmax on the GPU (M ids back): held-out 40.82 -> 41.19 t/s.
 Step 89: traces at step 88; the time outside the layers split: ~2-3 ms untraced, almost all the
 head (the bf16 head kernel, as the draft's). Sections B and D below updated.
 Step 90: the GPU clock: held-out 36.8 / 41.1 / 42.1 t/s at sclk 2 / 6 / 8; ~35% of a token's time at
-sclk 6 scales with the clock, ~65% (the CPU's experts, handoffs, host) does not.
+sclk 6 scales with the clock, ~65% (the CPU's experts, handoffs, host, and HBM-bound GPU work such
+as the fp8 GEMVs; step 94's correction) does not.
 Step 91: the CPU layout as a copy in RAM: -7-12% per CPU expert in the same run, held-out +1.6%
 with all layers, but 269 GiB, ~45 s per start and an unexplained abort; not kept
 (`results/cpu-decode/layout-live.patch`).
@@ -426,6 +427,8 @@ free`, right after the expert cache's stats): a teardown bug to find.
 Step 93: that abort not repeated in 56 runs (plain, gdb, ASan: no double free on every run); a
 race at shutdown, likely; a stack handler and the exit code in the held-out summary kept for the
 next one.
+Step 94: step 70's verify halves traced: die 0 reads its weights once per half (two 3-token halves
+~84 ms against 54.5 for one 6-token step), more than the CPU's time they could hide; closed.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front
@@ -436,8 +439,8 @@ Promising, in order:
 1. Tried (step 91, not kept): +1.6% with all layers as a copy in RAM, too costly for the gain.
    Only as a repacked expert file that is the only source (the GPU loader reading it), if ever.
 2. Closed (step 92, simulated): a vocabulary subset for the draft's head loses at every size.
-3. A trace of step 70's verify halves (`results/decode-next/verify-halves.patch`): its loss was
-   never measured. Host blocking -> a separate launch thread; doubled per-call costs -> drop.
+3. Closed (step 94): verify halves double die 0's weight reads (+~30 ms per code step), more
+   than the CPU's 25-30 ms they could hide.
 4. The tail's 6.3 ms split (measure only): the dies' results behind their loads (~3 ms)?
 5. A simulation of ~190 more slots on die 0 (`scripts/cache_sim.py`): what a draft-expert cache
    would buy, before building one.
