@@ -1,0 +1,14 @@
+# DeepSeek-V4.1-Flash-1017 (UD-Q8_K_XL, Unsloth, 2026-10-19), its DSpark draft, and ds-completion's fp8 repack (bin/fp8pack, regenerable);
+# sha256sum on tomb, 2026-11-09, read through the page cache warmed from disk after a reboot. Paths relative to the model directory:
+#   cd ~/llms && grep -v '^#' <this file> | sha256sum -c   (shower: cd ~/llms/dsf1017; ds-1017-fp8/ after regenerating it there)
+31865c3ed2c5ea43079744ad170740eee3ce373be4f4353016ad7bc235e72029  ds-1017-fp8/dense-fp8.gguf
+c5dcff7c704aad1ac0ff0f57a0741902af3d06bc74aad480a82d453081936e69  dspark/dspark-DeepSeek-V4.1-Flash-1017-BF16.gguf
+cc15d470afcb030558bbc4d8e2ccd840182e2e95de1a95198138efe63a5fd99f  UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf
+9cb2047676bd20e448be2377b480080c97fb38fae117f4846e07de2c65bb8522  UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00002-of-00009.gguf
+17d398dd327e7ff1991b382677814db75d970b074661757564b6f2ac3d0c8d95  UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00003-of-00009.gguf
+7ea8da1143b9a6bf1424a361eb1b0d6f66c7ce79eac9711162f212cc4f39c319  UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00004-of-00009.gguf
+1952da19a841176b46f9681c99ea57c674f8a8861e16d76fb35cec4befe039b2  UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00005-of-00009.gguf
+d6711781d8effab79b410af9c40920bffcc0c28976e509bc1227ff0c6669c33a  UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00006-of-00009.gguf
+2ebc8d198d03a14865e8a85df637285ceb5dd79b1ffc78424bd3c3e06df57823  UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00007-of-00009.gguf
+12df293355efbd104b088a77e13ee22410fb1ec3f7ab3863947f09896e64bec7  UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00008-of-00009.gguf
+df33722d1dcf5ffe0347ed8406f7acb3b18061f4ded2c13c2b0a184b8d41c9ea  UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00009-of-00009.gguf

@@ -3437,3 +3437,21 @@ Correction to step 90: the ~65% of a token's time that does not scale with the G
 only the CPU side: GPU kernels bound by HBM bandwidth (the fp8 GEMVs) do not scale with the shader
 clock either.
 
+## Step 95: llama.cpp upstream cannot read our GGUF files; the fork stays
+
+Setting up a second machine raised whether the llama.cpp fork (branch `deepseek41`, one commit,
+`b72050d03`, on upstream `797de63b2`) could give way to upstream, which has since merged
+DeepSeek-V4.1 support. It cannot, for these files: upstream `a4d4f2fd4` loads Unsloth's 1017
+UD-Q8_K_XL without an error and generates garbage (`results/dist/llama-cpp-fork.txt`). Exactly one
+tensor is the cause: the Engram table `per_layer_token_embd.weight` has ggml type 43, which the PR
+(and so the files) defines as MXFP8 (33 bytes per 32 values: 202.76 GB) and merged ggml as plain
+`F8_E4M3` (1 byte per value: 196.61 GB, misaligned rows, scale bytes read as weights). Upstream's
+converter writes the table as BF16 instead; the MXFP8 quants (UD-Q3/Q4/Q8_K_XL) are known broken
+upstream (llama.cpp issue #31385, open). Details, the options and the evidence:
+`docs/llama-cpp-upstream.md`.
+
+Kept: the fork, until a newer DeepSeek model is quantized with the merged code. A fresh machine gets
+it pinned by hash (`git fetch origin b72050d03ae1...`, the head of PR #30817). Checked here from a
+fresh clone: `fp8pack` regenerates `dense-fp8.gguf` byte for byte, two held-out prompts give the
+reference outputs byte for byte (49.60 and 35.47 t/s), and its `llama-completion` matches the fork's.
+

@@ -1,0 +1,38 @@
+# llama.cpp: the DSV4.1 PR commit reproduced from a fresh clone, and upstream on our GGUF (README step 95, docs/llama-cpp-upstream.md); tomb, sclk 6, 2026-11-09
+# fresh: git clone https://github.com/ggml-org/llama.cpp + git fetch origin b72050d03ae14bb3cb5138ecefab3f3f65157d31, cmake static Release;
+#   ds-completion: make FORK=<clone> BIN=bin-fresh, make HIP=1 FORK=<clone> BIN=bin-fresh-hip; ds-completion at 9453836
+
+## the fresh build
+fp8pack 19.81 s
+sha256: 31865c3ed2c5ea43 (ours 31865c3ed2c5ea43)
+dense-fp8 identical
+cpp-matrix rc=0 49.60 t/s output same; prompt prompt: 25 tokens
+tcp-udp rc=0 35.47 t/s output same; prompt prompt: 20 tokens
+llama-completion: same text as the fork's
+
+## llama-completion -m <shard 1> -p "The three largest cities in Ukraine are" -n 32 --temp 0 --top-k 1 -t 16 -no-cnv
+# fork (b72050d03):
+The three largest cities in Ukraine are: Kyiv, Lviv, and Odesa. Kyiv is the capital and largest city. Lviv is in western Ukraine. Odesa is a port
+
+
+load time =  169203.30 ms
+prompt eval time =     629.15 ms /     7 tokens (   89.88 ms per token,    11.13 tokens per second)
+eval time =    8513.46 ms /    31 runs   (  274.63 ms per token,     3.64 tokens per second)
+# fresh (b72050d03):
+The three largest cities in Ukraine are: Kyiv, Lviv, and Odesa. Kyiv is the capital and largest city. Lviv is in western Ukraine. Odesa is a port
+
+
+load time =  169079.33 ms
+prompt eval time =     581.45 ms /     7 tokens (   83.06 ms per token,    12.04 tokens per second)
+eval time =    7952.13 ms /    31 runs   (  256.52 ms per token,     3.90 tokens per second)
+# upstream (a4d4f2fd4):
+The three largest cities in Ukraine areademyunkyEditing其三hots埠乘积iline代入 sund SUS BALrisonEMA dere CoronGramusa Bax Culhamelon Cormicie suppressed谈不上 Rutherfordrast/per DAN CCR
+
+
+load time =  170048.61 ms
+prompt eval time =     668.53 ms /     7 tokens (   95.50 ms per token,    10.47 tokens per second)
+eval time =    8437.19 ms /    31 runs   (  272.17 ms per token,     3.67 tokens per second)
+
+## type id 43 in the GGUF's tensors, read by each version's gguf-py
+fork     per_layer_token_embd.weight (shard 8) MXFP8    202,758,032,400 bytes
+upstream per_layer_token_embd.weight (shard 8) F8_E4M3  196,613,849,600 bytes

@@ -429,6 +429,9 @@ race at shutdown, likely; a stack handler and the exit code in the held-out summ
 next one.
 Step 94: step 70's verify halves traced: die 0 reads its weights once per half (two 3-token halves
 ~84 ms against 54.5 for one 6-token step), more than the CPU's time they could hide; closed.
+Step 95: llama.cpp upstream reads our GGUF's Engram table (the PR's MXFP8, type 43) as plain fp8
+and generates garbage; the fork stays until a newer model is quantized with the merged code
+(`docs/llama-cpp-upstream.md`).
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front

@@ -11,20 +11,45 @@ DeepSeek-V4.1-Flash-1017 text completion on the Mac Pro (4x Vega II, 755 GB RAM)
 
 ## What it needs
 
-- **Model:** `~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-0000{1..9}-of-00009.gguf`
-  (474 GB; it runs from the page cache, so the RAM must hold it).
-- **llama.cpp fork:** `~/forks/llama.cpp` with its CPU build in `build/` (static libraries;
-  used for ggml, GGUF reading and the tokenizer).
-- **ROCm 6.3.4** in `/opt/rocm-6.3.4` for the GPU runtime.
+- **System:** Ubuntu 22.04 with the T2 kernel (`6.10.5-1-t2-jammy` here), booted with
+  `pcie_ports=native intel_iommu=on iommu=pt pm_async=off pci=realloc pci-stub.ids=106b:2005`;
+  ROCm 6.3.4 in `/opt/rocm-6.3.4`; the user in the `video` and `render` groups; the Vega II Duo
+  bridges seated so the dies pair over XGMI as 0-1 and 2-3. The GPU clock level is set with sudo
+  outside the program (all four cards; the numbers below are at sclk 6).
+- **Model files** (in `~/llms/`; 488 GB, run from the page cache, so the RAM must hold them):
+  - `UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-0000{1..9}-of-00009.gguf` (474 GB; Unsloth's
+    [DeepSeek-V4.1-Flash-1017-GGUF](https://huggingface.co/unsloth/DeepSeek-V4.1-Flash-1017-GGUF));
+  - `dspark/dspark-DeepSeek-V4.1-Flash-1017-BF16.gguf` (8.5 GB): the DSpark draft for `--spec`;
+  - `ds-1017-fp8/dense-fp8.gguf` (6.4 GB): made from the model by `bin/fp8pack` (below).
+
+  Copies of files this size have come out silently corrupted on this hardware before, so check
+  them: `cd ~/llms && grep -v '^#' ~/projects/llama-sandbox/checksums/DS-V4.1-Flash-1017.sha256 | sha256sum -c`
+  (paths relative to the model directory; `dense-fp8.gguf` after making it). After a copy, check
+  again after a reboot: a check right after it may only read the page cache.
+- **llama.cpp at the DeepSeek-V4.1 PR commit**, not upstream: upstream reads these GGUF files
+  silently wrong and generates garbage (their Engram table's type 43 is the PR's MXFP8, upstream's
+  plain fp8; [docs/llama-cpp-upstream.md](docs/llama-cpp-upstream.md)). Used for ggml, GGUF
+  reading and the tokenizer, as static libraries in `~/forks/llama.cpp/build/`.
 
 ## Build and prepare (once)
 
 ```bash
+# llama.cpp, pinned by hash (the head of PR #30817, the code these GGUF files were made with)
+git clone https://github.com/ggml-org/llama.cpp ~/forks/llama.cpp
+cd ~/forks/llama.cpp
+git fetch origin b72050d03ae14bb3cb5138ecefab3f3f65157d31
+git checkout -b deepseek41 b72050d03ae14bb3cb5138ecefab3f3f65157d31
+cmake -B build -DBUILD_SHARED_LIBS=OFF -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j 32
+
 cd ~/projects/llama-sandbox/ds-completion
-make && make HIP=1                     # -> bin/ (CPU) and bin-hip/ (GPU)
+make && make HIP=1                     # -> bin/ (CPU) and bin-hip/ (GPU); FORK=<dir> for another llama.cpp
 M=~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf
 bin/fp8pack -m $M -o ~/llms/ds-1017-fp8/dense-fp8.gguf   # lossless fp8 repack, 6.4 GB, ~20 s
 ```
+
+`dense-fp8.gguf` comes out byte for byte the same on every build (its checksum is in the manifest),
+so it doubles as a check of the build and the model files.
 
 ## Run
 
@@ -136,10 +161,9 @@ Means over all 17 steps: 1.8e-2 to 2.5e-2 for every mode.
   output byte-identical to token-by-token processing; ~7.7 t/s on the CPU path. The
   runtime's mean KL varies run to run with fp8 rounding flips (README step 10); every exact mode
   scatters the same way.
-- **Where a step goes** (`--spec`, cache, sclk 6; the traces of README step 75, before steps
-  80-82 sped up the CPU's part): a 6-token code verify step ~110 ms with the draft: die 0's
-  dense part before the CPU starts ~41 ms, the CPU's experts ~42 ms, the draft ~10 ms, handoffs
-  and the head ~13 ms. The prompt: the CPU's experts and the GPU's work overlap and the slower
+- **Where a step goes** (`--spec`, cache, sclk 6; the traces of README step 89): a 6-token code
+  verify step ~89 ms with the draft: die 0's dense part before the CPU's experts ~54 ms, its wait
+  for them ~25 ms, the rest of the layers ~6 ms, the head ~2.5 ms, the draft ~8.4 ms. The prompt: the CPU's experts and the GPU's work overlap and the slower
   sets the pace (TIMING.md).
 - **GPU memory with `--rt`:** 6.37 GiB fp8 + 1.75 GiB small weights + ~1 GB of prompt-chunk
   buffers on die 0; the rest holds experts (and the 8.5 GB draft with `--dspark`).
