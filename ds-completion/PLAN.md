@@ -441,6 +441,7 @@ The exit abort recurred with step 96's fixes: after main, in the HSA runtime's s
 not worked around).
 Step 98: the compressor's projections once per chunk: 41.96 -> 42.52 t/s.
 Step 99: the review's four leftovers: none kept (patches in results/decode-next/).
+Step 100: traces regenerated at step 98; section B's spans refreshed.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front
@@ -485,21 +486,24 @@ compile-time shapes, the batched indexer (long context), die 0's staleness metri
 - Hardware (discussed, not planned): DDR5 or a multi-socket box with experts striped by rows
   across sockets (exact under the canonical numerics).
 
-**B. The dense part of a verify step** (updated after README step 88: a 6-token code step's die 0
-spans in step 86's traces, ms per step: attn.out 11.5, ffn.shared 8.9, attn.core 5.7, attn.q 5.1,
-hc 5.0, the wait for dies 1-3's experts 5.1, attn.compressor 4.0, dispatch 2.5, router 2.4, the
-head 2.2, attn.kv 1.6, engram 1.3, indexer 1.2)
+**B. The dense part of a verify step** (updated after README step 100: a 6-token code step's die 0
+spans in step 98's traces, medians, ms per step: attn.out 11.8, ffn.shared 9.9 (while the CPU
+computes), attn.core 7.0, attn.q 5.4, the wait for dies 1-3's experts 5.2, hc 5.0,
+attn.compressor 2.8, router 2.6, the head 2.5, dispatch 2.1, attn.kv 1.5, engram 1.4, indexer 1.4
+(skipped: the trace's marks); die 0 waits 25.7 for the CPU's experts)
 - Done: the router's top-k in one launch (step 53), the head through LDS (step 62), the batched
   attention core (steps 66-68: 17.7 -> ~6 ms), the engram fetch off the critical path (step 73),
   the indexer skipped while it picks every position (step 74), the head's argmax on the GPU
-  (step 88).
+  (step 88), the dies' results in smaller copies and the staged block in one (step 97), the
+  compressor's projections once per chunk (step 98).
 - Tried, not kept: verify steps in two halves (step 70), the fp8 GEMV for 2-8 inputs as local
-  variants (steps 65, 75), attention's output over the XGMI pair 0-1 (step 76).
+  variants (steps 65, 75), attention's output over the XGMI pair 0-1 (step 76), the hc kernels
+  fused, the compressor's state per chunk, a gather stream per die (step 99).
 - Left: the fp8 GEMVs at 6 tokens (attn.out, shared expert, q: ~25 ms, weights read at ~270 GB/s
   against ~580 at one token) need a restructured kernel: more rows per wave without holding M
   decoded inputs (step 75's conclusion).
 - Kernel fusion of the small ops (hc, norms, quantize; item 14): launches are not the limit
-  (step 65: the host is ahead), so only the GPU time of the fused ops would be saved.
+  (step 65: the host is ahead; step 99: the hc kernels fused took the same time).
 - Tensor parallelism (items 17, 18, 23): step 76 split attention's output over the pair 0-1 and
   lost to the exchange; not before the kernels above.
 

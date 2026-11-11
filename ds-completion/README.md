@@ -3576,3 +3576,15 @@ every variant's outputs identical to the references):
 So the review's yield is steps 97 and 98 (+3.45%); what is left in die 0's front is kernel work
 at the memory limit or the known multi-input fp8 problem.
 
+## Step 100: traces at step 98
+
+The traces in `results/trace/` were step 88's; regenerated at step 98's code (`e23d8fe`: steps 97
+and 98 changed the verify step), with `compare-step88.txt` and `critpath.txt`. Outputs identical;
+47.60 and 33.29 t/s traced (52.41 and 36.85 untraced).
+
+A 6-token code step (cpp-matrix, medians, ms): 89.4 -> 87.1. Die 0's front 53.9 -> 52.3, the tail
+(its wait for dies 1-3) 6.3 -> 4.4, its wait for the CPU 24.5 -> 26.5 (the CPU's own time, which
+neither step touched: 30.4 -> 32.5, run to run), outside the layers 5.0, the draft 8.3. Over all
+of cpp-matrix's steps: attn.compressor 4.0 -> 2.5 ms per step, the wait for the dies 5.0 -> 3.6,
+dispatch 2.5 -> 2.1. PLAN's section B has the spans.
+
