@@ -3633,3 +3633,74 @@ stays 2), so the activations' cost needs the kernel change itself. One lead from
 a block's 64 rows) but fix another order of additions; the 64-lane order could be kept on such
 a split by letting each lane carry several of the 64 partial sums.
 
+## Step 102: step 101's check on the other kernels; launches that fill the GPU's wave slots exactly
+
+Step 101's question on the matrices of the other kernels, and what turned up on the way
+(`results/decode-next/wave-slots.txt`).
+
+**Row padding** (`bin-hip/bench-kernels --stride`, new: the f32 / bf16 GEMVs with rows K apart or
+padded, outputs compared bit for bit). Only the router gains (rows 20,480 bytes apart: 20.4 -> 17.1
+us at one input, 28.7 -> 21.8 at three, 36.8 -> 32.2 at six). The head (10,240), the
+hyper-connection projection (81,920, 24 rows), the indexer's projection and the Markov head do
+not change. The compressor's projections have the router's row length, so they are padded too
+(~1 us).
+
+**A launch of 2017-2048 waves takes ~48 us whatever it computes.** The compressor's 512 x 5120
+GEMV read 51.5 us at one input and at six, while 448 and 576 rows took 19 and 23. Its grid is
+exactly 2048 waves (128 x 4 blocks of 4), the GPU's wave slots (64 CUs x 32). `bin-hip/bench-wave-slots`
+(new: a kernel whose waves read N KB each, by wave count):
+
+| waves per launch | empty kernel | 1 KB per wave | 5 KB | 20 KB |
+|---|---|---|---|---|
+| 1792 | 3.3 us | 4.5 | 14.8 | 71.4 |
+| 2016 | 3.4 | 4.8 | 16.2 | 79.7 |
+| 2020, 2032 | 8.4 | 9.6 | 19.8 | 82 |
+| 2040, 2048 | **48.2** | **48.2** | **48.4** | 93.8 |
+| 2052 | 3.5 | 5.3 | 55.2 | 110.0 |
+| 2112 | 3.5 | 5.0 | 25.6 | 90.9 |
+| 2304 | 3.6 | 5.0 | 19.1 | 114.3 |
+| 4096 | 4.8 | 6.9 | 62.5 | 139.2 |
+| 2048 as two launches (768 + 1280) | 5.7 | 7.4 | 19.2 | 78.7 |
+
+The same with 64-, 128-, 512- and 1024-thread blocks: it is the wave count, not the grid's shape.
+Later multiples of 2048 cost a light kernel ~30 us more than their neighbours (4096, 6144, 8192).
+What the dispatcher does there was not established; the effect is measured. Two launches avoid it
+for a light kernel and cost a heavy one 10-15% (4096 waves x 20 KB: 139 -> 173 us).
+
+**Which of the runtime's launches are there** (`scripts/hip_launch_waves_shim.cpp`, an LD_PRELOAD
+count of every launch by kernel and waves, and `scripts/launch_waves.py`; tcp-udp, 382 k launches):
+7,920 on the floor, about 55 per verify step. Most are fp8 GEMVs that take longer than 48 us
+anyway: attention query B (2048 waves at 2+ inputs, 4096 at one) and output A (8192 / 4096). As two
+launches those were slower in every case (query B 61.8 -> 66-67 us at one input, output A 46.1 ->
+51), so they stay. The light ones: the compressor's two projections (~7 launches per step) and
+the activation quantize of 4 tokens of the attention output (131,072 values = 512 blocks; 5.5
+per step on average, 48 us against ~19).
+
+**The change** (three small pieces, the same bits; `bench-kernels --bitwise` 28 of 28, `bench-fp8
+--bitwise` 36 of 36, every held-out output identical):
+- `stall_split()` (`hip/fp8_gemv.h`): a grid of 2017-2048 waves goes out as two launches, blocks
+  [0, 3/8) and the rest; used by `fp8_quant_act` and, up to 3 inputs, by the f32 / bf16 GEMV
+  (the compressor, with its rows padded: 51.4 -> 29.2 us at one input, 51.5 -> 39.4 at three; at
+  six the two launches took 61 us against 51.5, so from 4 inputs it stays one launch). `DS_STALL_SPLIT=0` turns it off.
+- `f32_row_stride(K)` (`hip/kernels.h`): the router's and the compressor's matrices sit with rows
+  K + 16 floats apart on the GPU (`DS_F32_PAD=0`: K); the GEMVs take a row stride.
+
+Held-out mean **43.55 -> 44.00 t/s (+1.0%)**, every prompt up (py-lru +2.1%, tcp-udp +1.6%,
+cpp-matrix +1.1%, zh-travel +1.0%, sql-report +0.9%, summary-json +0.7%, geometry and ja-email
++0.5%); long-proof 56.04 t/s. The compressor's split alone, measured first on two prompts, showed
+nothing (38.04 / 38.18 -> 38.02 / 38.30 and 36.45 / 36.40 -> 36.38 / 36.39 t/s), so the parts were
+not separated further: each is a few tenths of a percent at most by its launch counts.
+
+**Tried, not kept: the expert slots padded** (`results/decode-next/pool-pad.patch`). A slot's
+six parts (gate, up, down: codes and scales) all start a multiple of 4096 bytes from the pool's
+base, and slots are a multiple of 4096 apart. With 256 bytes after every part: py-lru 45.77 /
+45.62 -> 46.16 / 45.94 t/s, cpp-matrix 53.34 / 53.08 -> 53.15 / 53.05; 1280 bytes: 45.92 and
+52.75. About +0.25% over the two, inside the runs' spread. (An expert's rows are 2560 or 1152
+bytes: 8 and 32 offsets within a page, not one.) One of those runs ended with step 96's exit
+abort, again after main in the HSA runtime's shutdown.
+
+Step 101's check is closed with this: the padding gains where rows are long and few offsets
+repeat (the attention outputs, a little the router), nowhere else. Open: the 6-input fp8 kernel
+(step 101's lead), and whether query B's and output A's wave counts can leave the multiples
+without two launches (their rows per wave must divide 32; a 3-wave block does not change the
+count).

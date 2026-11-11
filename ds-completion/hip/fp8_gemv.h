@@ -19,6 +19,7 @@
 // activation slice g (x + g * K). rows_per_group = N for a plain GEMV.
 #pragma once
 
+#include <cstdlib>
 #include <hip/hip_runtime.h>
 #include <hip/hip_fp16.h>
 #include <cstdint>
@@ -29,6 +30,16 @@
 // 730). The kernels take the stride (w_stride; 0 = K); the bytes between rows are never read.
 // DS_FP8_PAD=0 turns it off (rows K apart, as in the file).
 int fp8_row_stride(int K);
+
+// A launch of 2017-2048 waves (the GPU's 2048 wave slots filled exactly) takes ~48 us whatever it
+// computes: an empty kernel too, against 3-5 us at 2016 or 2052 waves (README step 102). A light
+// kernel with such a grid goes out as two launches instead: blocks [0, b1) and [b1, nx) of its x.
+// Returns b1 (nx: one launch). waves_per_block = threads / 64; DS_STALL_SPLIT=0 turns it off.
+inline int stall_split(int nx, int ny, int waves_per_block) {
+  static const bool on = !getenv("DS_STALL_SPLIT") || atoi(getenv("DS_STALL_SPLIT"));
+  const int waves = nx * ny * waves_per_block;
+  return on && waves > 2016 && waves <= 2048 && nx >= 2 ? nx * 3 / 8 : nx;
+}
 
 struct Fp8Act {      // one activation matrix in the kernel's input format
   const uint8_t* q;  // [M][K_total] e4m3 codes

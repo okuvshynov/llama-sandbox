@@ -1,0 +1,24 @@
+diff --git a/ds-completion/hip/expert_pool.hip b/ds-completion/hip/expert_pool.hip
+index 69534fb..30a94d1 100644
+--- a/ds-completion/hip/expert_pool.hip
++++ b/ds-completion/hip/expert_pool.hip
+@@ -1,5 +1,6 @@
+ #include "expert_pool.h"
+ 
++#include <cstdlib>
+ #include <cstring>
+ #include <fstream>
+ #include <sstream>
+@@ -11,7 +12,11 @@
+     if (e_ != hipSuccess) throw std::runtime_error(std::string(#x) + ": " + hipGetErrorString(e_)); \
+   } while (0)
+ 
+-static size_t align256(size_t n) { return (n + 255) & ~(size_t)255; }
++// TEST (step 102): DS_T_POOLPAD bytes (a multiple of 256) after every matrix part of a slot
++static size_t align256(size_t n) {
++  static const size_t pad = getenv("DS_T_POOLPAD") ? (size_t)atoi(getenv("DS_T_POOLPAD")) : 0;
++  return ((n + 255) & ~(size_t)255) + pad;
++}
+ 
+ // one matrix of N rows x K: codes N * K / 2 bytes, scales N * K / 32 bytes
+ static size_t codes_bytes(int N, int K) { return (size_t)N * K / 2; }

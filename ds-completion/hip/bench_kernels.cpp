@@ -4,6 +4,7 @@
 #include "fp8_gemv.h"
 #include "kernels.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <functional>
@@ -89,10 +90,85 @@ static int bitwise_tests(hipStream_t s) {
   return bad;
 }
 
+// --stride: the f32 / bf16 GEMVs with the matrix's rows K elements apart against rows padded on the
+// GPU (README step 102; the fp8 kernels' finding of step 101 tried here). us per call, and the
+// outputs compared bit for bit with the unpadded matrix's.
+__global__ void pad_rows_kernel(const uint8_t* src, uint8_t* dst, int N, size_t row, size_t stride) {
+  const size_t i = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+  if (i >= (size_t)N * stride) return;
+  const size_t r = i / stride, c = i - r * stride;
+  dst[i] = c < row ? src[r * row + c] : 0;
+}
+
+static int stride_tests(hipStream_t s) {
+  struct Case { const char* name; int N, K; bool bf16; };
+  const Case cases[] = {{"router f32 384 x 5120", 384, 5120, false},     {"compressor f32 512 x 5120", 512, 5120, false},
+                        {"hc_fn f32 24 x 20480", 24, 20480, false},      {"idx_proj bf16 32 x 5120", 32, 5120, true},
+                        {"head bf16 129280 x 5120", 129280, 5120, true}, {"markov bf16 129280 x 256", 129280, 256, true},
+                        {"f32 448 x 5120", 448, 5120, false}, {"f32 508 x 5120", 508, 5120, false}, {"f32 516 x 5120", 516, 5120, false},
+                        {"f32 576 x 5120", 576, 5120, false}, {"f32 1024 x 5120", 1024, 5120, false}, {"f32 2048 x 5120", 2048, 5120, false}};
+  const int pads[] = {0, 64, 256, 1088}, Ms[] = {0, 1, 3, 6};  // pad in bytes; M = 0: the single-input kernel
+  int bad = 0;
+  hipEvent_t a0, a1;
+  CHECK(hipEventCreate(&a0));
+  CHECK(hipEventCreate(&a1));
+  printf("%-28s %-10s %10s %10s %10s %10s\n", "us per call", "row pad", "1 (single)", "M = 1", "3", "6");
+  for (const Case& c : cases) {
+    const int el = c.bf16 ? 2 : 4;
+    const size_t nw = (size_t)c.N * c.K;
+    void* w0;
+    float *x, *y, *part;
+    CHECK(hipMalloc(&w0, nw * el));
+    CHECK(hipMalloc(&x, (size_t)8 * c.K * 4));
+    CHECK(hipMalloc(&y, (size_t)8 * c.N * 4));
+    CHECK(hipMalloc(&part, (size_t)kSplitMax * c.N * 8 * 4));
+    if (c.bf16) fill_bf16_kernel<<<(unsigned)((nw + 255) / 256), 256, 0, s>>>((uint16_t*)w0, nw, 7);
+    else fill_kernel<<<(unsigned)((nw + 255) / 256), 256, 0, s>>>((float*)w0, nw, 7);
+    fill_kernel<<<(8 * c.K + 255) / 256, 256, 0, s>>>(x, (size_t)8 * c.K, 11);
+    std::vector<std::vector<float>> ref(4);
+    for (int pad : pads) {
+      const int ST = c.K + pad / el;
+      void* w;
+      CHECK(hipMalloc(&w, (size_t)c.N * ST * el));
+      pad_rows_kernel<<<(unsigned)(((size_t)c.N * ST * el + 255) / 256), 256, 0, s>>>((const uint8_t*)w0, (uint8_t*)w, c.N, (size_t)c.K * el, (size_t)ST * el);
+      printf("%-28s K + %-6d", c.name, pad);
+      for (int mi = 0; mi < 4; mi++) {
+        const int M = Ms[mi];
+        auto call = [&] {
+          if (c.bf16 && !M) k_gemv_bf16((const uint16_t*)w, c.N, c.K, x, y, part, s, ST);
+          else if (c.bf16) k_gemv_bf16_m((const uint16_t*)w, c.N, c.K, x, M, y, part, s, ST);
+          else if (!M) k_gemv_f32((const float*)w, c.N, c.K, x, y, part, s, ST);
+          else k_gemv_f32_m((const float*)w, c.N, c.K, x, M, y, part, s, ST);
+        };
+        const int reps = c.N > 100000 ? 50 : 500;
+        for (int i = 0; i < 10; i++) call();
+        CHECK(hipEventRecord(a0, s));
+        for (int i = 0; i < reps; i++) call();
+        CHECK(hipEventRecord(a1, s));
+        CHECK(hipEventSynchronize(a1));
+        float ms;
+        CHECK(hipEventElapsedTime(&ms, a0, a1));
+        std::vector<float> out((size_t)std::max(M, 1) * c.N);
+        CHECK(hipMemcpy(out.data(), y, out.size() * 4, hipMemcpyDeviceToHost));
+        if (!pad) ref[mi] = out;
+        const bool same = !memcmp(out.data(), ref[mi].data(), out.size() * 4);
+        bad += !same;
+        printf(" %9.1f%s", ms * 1000 / reps, same ? " " : "!");
+      }
+      printf("\n");
+      CHECK(hipFree(w));
+    }
+    for (void* p : {w0, (void*)x, (void*)y, (void*)part}) CHECK(hipFree(p));
+  }
+  printf("# %s\n", bad ? "DIFFERENT outputs (!)" : "every padded case bit-identical to the unpadded matrix");
+  return bad;
+}
+
 int main(int argc, char** argv) {
   hipStream_t s;
   CHECK(hipStreamCreate(&s));
   if (argc > 1 && !strcmp(argv[1], "--bitwise")) return bitwise_tests(s) ? 1 : 0;
+  if (argc > 1 && !strcmp(argv[1], "--stride")) return stride_tests(s) ? 1 : 0;
   hipEvent_t e0, e1;
   CHECK(hipEventCreate(&e0));
   CHECK(hipEventCreate(&e1));

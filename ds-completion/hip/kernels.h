@@ -18,15 +18,19 @@ void k_fq4(float* x, int n, bool e4m3_scale_16, hipStream_t s);
 
 // ---- matrix-vector (M = 1) ----
 
+// `stride`: the rows' distance on the GPU in elements (0: K). The runtime keeps the router's and the
+// compressor's matrices f32_row_stride(K) apart (K + 16 when K * 4 is a multiple of 4096).
+int f32_row_stride(int K);
+
 // y[N] = W[N][K] . x[K], W row-major f32 / bf16. `partial` needs N * kSplitMax floats.
 constexpr int kSplitMax = 64;
-void k_gemv_f32(const float* W, int N, int K, const float* x, float* y, float* partial, hipStream_t s);
-void k_gemv_bf16(const uint16_t* W, int N, int K, const float* x, float* y, float* partial, hipStream_t s);
+void k_gemv_f32(const float* W, int N, int K, const float* x, float* y, float* partial, hipStream_t s, int stride = 0);
+void k_gemv_bf16(const uint16_t* W, int N, int K, const float* x, float* y, float* partial, hipStream_t s, int stride = 0);
 // the same for M inputs at once (x [M][K] -> y [M][N]; slices of 8, each weight read once per slice); every row's
 // sum per input is the single-input kernel's, bit for bit. partial: N * kSplitMax * M floats
 // at most (N * M when the rows alone fill the GPU, as for the head).
-void k_gemv_f32_m(const float* W, int N, int K, const float* x, int M, float* y, float* partial, hipStream_t s);
-void k_gemv_bf16_m(const uint16_t* W, int N, int K, const float* x, int M, float* y, float* partial, hipStream_t s);
+void k_gemv_f32_m(const float* W, int N, int K, const float* x, int M, float* y, float* partial, hipStream_t s, int stride = 0);
+void k_gemv_bf16_m(const uint16_t* W, int N, int K, const float* x, int M, float* y, float* partial, hipStream_t s, int stride = 0);
 
 // ---- rope (apply_rotary_emb) ----
 

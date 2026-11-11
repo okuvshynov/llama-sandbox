@@ -34,7 +34,7 @@ the CPU's activation digits are written by one thread each (step 80: AVX-512, a 
 since the CPU's 32-row tasks are handed out in pairs (step 82: a cold call with 2-6 experts -12-13%); **37.6**
 since the CPU's rows go to die 0 by a kernel, not behind the cache's loads on the copy engine (step 84); **40.8**
 since the home die keeps its startup experts and the cache adapts dies 1-3 (step 86: loads into die 0 had doubled
-half the drafts and slowed its dense work); **41.2** since the verify step's argmax runs on the GPU (step 88); **42.5** with the dies' results in smaller copies and the compressor's projections once per chunk (steps 97, 98; 41.1 before them in the same session); **43.5** with the attention output matrices' rows padded on the GPU (step 101).
+half the drafts and slowed its dense work); **41.2** since the verify step's argmax runs on the GPU (step 88); **42.5** with the dies' results in smaller copies and the compressor's projections once per chunk (steps 97, 98; 41.1 before them in the same session); **43.5** with the attention output matrices' rows padded on the GPU (step 101); **44.0** with the light launches that fill the GPU's wave slots exactly sent as two (step 102).
 The tables below are from step 57's runs, before steps 66-82. For scale: step 48 measured 28.0 at the same clock before
 the cache tuning and the router and CPU-routine fixes (steps 50, 53, 57).
 

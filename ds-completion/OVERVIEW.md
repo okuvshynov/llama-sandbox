@@ -31,7 +31,7 @@ Decode speed (sclk level 2, 16 CPU threads, 128 generated tokens):
 | ours, own GPU runtime, routed experts on the CPU | ~12 t/s |
 | ours, + most-used experts placed on the 4 GPUs (`--placement`) | 17.7-21.7 t/s |
 | ours, + speculative decoding with the model's DSpark draft (`--dspark ... --spec`) | 16-24 t/s; +22% (geometric mean) on 8 held-out prompts, +7% to +33% |
-| **ours, + adaptive expert cache (`--canon --cache-loads 800 --cache-period 8`)** | **mean 43.5 t/s with `--spec` on the 8 held-out prompts at sclk 6 (README steps 50, 53, 57, 62, 68, 71, 73, 74, 80, 82, 84, 86, 88, 97, 98, 101); at 200 loads/s 25.6 at sclk 2 (+28% over the line above), 28.0 at sclk 6; 20.4 plain at 100 loads/s** |
+| **ours, + adaptive expert cache (`--canon --cache-loads 800 --cache-period 8`)** | **mean 44.0 t/s with `--spec` on the 8 held-out prompts at sclk 6 (README steps 50, 53, 57, 62, 68, 71, 73, 74, 80, 82, 84, 86, 88, 97, 98, 101, 102); at 200 loads/s 25.6 at sclk 2 (+28% over the line above), 28.0 at sclk 6; 20.4 plain at 100 loads/s** |
 | upper bound: placement from the prompt's own routing (perfect knowledge) | ~25 t/s plain; 29-41 t/s with `--spec` |
 
 (The speculative and cache numbers are 300-token runs on held-out prompts; README steps 26, 32.)

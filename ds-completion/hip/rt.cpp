@@ -164,6 +164,15 @@ Runtime::Runtime(const Model& model, RtOptions options, const std::string& fp8_p
     ggml_get_type_traits(t->type)->to_float(t->data, v.data(), v.size());
     return (const float*)upload(v.data(), v.size() * 4);
   };
+  auto f32_rows = [&](const ggml_tensor* t, int N, int K) -> const float* {  // rows f32_row_stride(K) apart
+    if (!t) return nullptr;
+    const int ST = f32_row_stride(K);
+    std::vector<float> v((size_t)N * K), p((size_t)N * ST, 0.0f);
+    if (t->type == GGML_TYPE_F32) memcpy(v.data(), t->data, v.size() * 4);
+    else ggml_get_type_traits(t->type)->to_float(t->data, v.data(), v.size());
+    for (int r = 0; r < N; r++) memcpy(&p[(size_t)r * ST], &v[(size_t)r * K], (size_t)K * 4);
+    return (const float*)upload(p.data(), p.size() * 4);
+  };
   auto bf16 = [&](const ggml_tensor* t) -> const uint16_t* {
     if (!t) return nullptr;
     if (t->type != GGML_TYPE_BF16) throw std::runtime_error(std::string("expected bf16: ") + t->name);
@@ -191,7 +200,7 @@ Runtime::Runtime(const Model& model, RtOptions options, const std::string& fp8_p
     w.kv_norm = f32(l.kv_norm);
     w.sinks = f32(l.sinks);
     w.ffn_norm = f32(l.ffn_norm);
-    w.gate_inp = f32(l.gate_inp);
+    w.gate_inp = f32_rows(l.gate_inp, hp.n_expert, hp.n_embd);
     w.gate_bias = f32(l.gate_bias);
     w.hc_attn_fn = f32(l.hc_attn_fn);
     w.hc_attn_base = f32(l.hc_attn_base);
@@ -199,8 +208,8 @@ Runtime::Runtime(const Model& model, RtOptions options, const std::string& fp8_p
     w.hc_ffn_fn = f32(l.hc_ffn_fn);
     w.hc_ffn_base = f32(l.hc_ffn_base);
     w.hc_ffn_scale = f32(l.hc_ffn_scale);
-    w.cmp_kv = f32(l.cmp_kv);  // bf16 in the file; the compressor pools in fp32
-    w.cmp_gate = f32(l.cmp_gate);
+    w.cmp_kv = f32_rows(l.cmp_kv, hp.head_dim, hp.n_embd);  // bf16 in the file; the compressor pools in fp32
+    w.cmp_gate = f32_rows(l.cmp_gate, hp.head_dim, hp.n_embd);
     w.cmp_norm = f32(l.cmp_norm);
     w.idx_k = f32(l.idx_k);
     w.idx_k_norm = f32(l.idx_k_norm);
@@ -1281,8 +1290,8 @@ void Runtime::attention(int L, const float* xin, float* out, int M) {
   const float* comp = kind.ratio ? S[kind.kv_from].comp : nullptr;
   if (kind.ratio && kind.kv_source) {  // README step 97: the compressor's projections for the whole chunk, each weight
     mark("attn.compressor");            // read once (every row the one-token kernel's, bit for bit)
-    k_gemv_f32_m(w.cmp_kv, HD, E, xin, M, cmp_kvn, partial, s);
-    if (kind.ratio > 1) k_gemv_f32_m(w.cmp_gate, HD, E, xin, M, cmp_sc, partial, s);
+    k_gemv_f32_m(w.cmp_kv, HD, E, xin, M, cmp_kvn, partial, s, f32_row_stride(E));
+    if (kind.ratio > 1) k_gemv_f32_m(w.cmp_gate, HD, E, xin, M, cmp_sc, partial, s, f32_row_stride(E));
   }
   for (int t = 0; t < M; t++) {
     pos = p0 + t;
@@ -1422,7 +1431,7 @@ void Runtime::moe_launch(int L, int M) {
   const int E = hp.n_embd, F = hp.n_ff_exp, KE = hp.n_expert_used;
   const float* xin = d_moe.x;  // [M][E]
   mark("ffn.router");
-  k_gemv_f32_m(w.gate_inp, hp.n_expert, E, xin, M, router_logits, partial, s);
+  k_gemv_f32_m(w.gate_inp, hp.n_expert, E, xin, M, router_logits, partial, s, f32_row_stride(E));
   k_router(router_logits, w.gate_bias, hp.n_expert, KE, hp.expert_weights_norm, hp.expert_weights_scale, rids, rw, s, M,
            kMoeIdStride);
   if (ra_k >= 0 && ra_logits && !in_prefill && M <= 8) {  // the lookahead study: this layer's x through later routers
@@ -1438,7 +1447,7 @@ void Runtime::moe_launch(int L, int M) {
       const int Lt = L + j;
       if (!m.layers[Lt].loaded || !W[Lt].gate_inp) continue;
       k_gemv_f32_m(W[Lt].gate_inp, hp.n_expert, E, xin, M,
-                   ra_logits + ((size_t)Lt * (ra_k + 1) + j) * 8 * hp.n_expert, partial, s);
+                   ra_logits + ((size_t)Lt * (ra_k + 1) + j) * 8 * hp.n_expert, partial, s, f32_row_stride(E));
       ra_valid[(size_t)Lt * (ra_k + 1) + j] = 1;
     }
   }

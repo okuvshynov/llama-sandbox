@@ -31,8 +31,8 @@ __device__ inline uint8_t e4m3_code(float v) {
 
 // one thread per value, 32 lanes per block of the reference's act_quant(x, 32, "ue8m0"):
 // the block's absmax by shuffles, then every lane rounds its own value
-__global__ void quant_act_kernel(const float* x, uint8_t* q, float* s, int n) {
-  const int i = blockIdx.x * blockDim.x + threadIdx.x;
+__global__ void quant_act_kernel(const float* x, uint8_t* q, float* s, int n, int b0) {
+  const int i = (blockIdx.x + b0) * blockDim.x + threadIdx.x;
   const float v = i < n ? x[i] : 0.0f;
   float amax = fabsf(v);
 #pragma unroll
@@ -46,7 +46,9 @@ __global__ void quant_act_kernel(const float* x, uint8_t* q, float* s, int n) {
 
 void fp8_quant_act(const float* x, uint8_t* q, float* s, int M, int K_total, hipStream_t stream) {
   const int n = M * K_total;
-  quant_act_kernel<<<(n + 255) / 256, 256, 0, stream>>>(x, q, s, n);
+  const int nx = (n + 255) / 256, b1 = stall_split(nx, 1, 4);  // 4 tokens of the attention output: 512 blocks
+  quant_act_kernel<<<b1, 256, 0, stream>>>(x, q, s, n, 0);
+  if (b1 < nx) quant_act_kernel<<<nx - b1, 256, 0, stream>>>(x, q, s, n, b1);
 }
 
 // ---------------------------------------------------------------- GEMV
