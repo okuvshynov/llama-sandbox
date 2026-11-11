@@ -18,7 +18,7 @@ are rerun at sclk 6 from their commits, each with the flags it had then:
 
 | status | steps | settings |
 |---|---|---|
-| measured | 48, 50, 53, 57, 62, 66, 67, 68, 71, 73, 74, 80, 82, 84, 86, 88, 97, 98, 101 | `--spec --canon` with the cache (200 loads/s at 48, 800/s every 8 tokens from 50) |
+| measured | 48, 50, 53, 57, 62, 66, 67, 68, 71, 73, 74, 80, 82, 84, 86, 88, 97, 98, 101, 102 | `--spec --canon` with the cache (200 loads/s at 48, 800/s every 8 tokens from 50) |
 | rerun (tier 1) | 6, 7 | dense on GPU 0 (`--gpu 0 --rt`), every routed expert on the CPU |
 | | 14, 18 | `--placement study30`: experts split per layer between GPUs and the CPU |
 | | 20, 21a, 21b, 22, 23, 24, 25 | `--dspark --spec`: speculative decoding as it was built up |
