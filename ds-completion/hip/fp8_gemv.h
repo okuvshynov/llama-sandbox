@@ -23,6 +23,13 @@
 #include <hip/hip_fp16.h>
 #include <cstdint>
 
+// Row stride of a weight matrix's device copy (README step 101). Rows a multiple of 4096 bytes
+// apart start at the same offset in every page and collide in the GPU's caches (the attention
+// output matrices: K = 4096 and 8192, read at 580 and 490 GB/s; 64 more bytes per row: 740 and
+// 730). The kernels take the stride (w_stride; 0 = K); the bytes between rows are never read.
+// DS_FP8_PAD=0 turns it off (rows K apart, as in the file).
+int fp8_row_stride(int K);
+
 struct Fp8Act {      // one activation matrix in the kernel's input format
   const uint8_t* q;  // [M][K_total] e4m3 codes
   const float* s;    // [M][K_total / 32] per-block scales (powers of two)
@@ -34,15 +41,15 @@ void fp8_quant_act(const float* x, uint8_t* q, float* s, int M, int K_total, hip
 // y: [M][N] f32. lpr (lanes per row: 8/16/32/64) and r (rows per wave: 1/2/4/8) pick the work
 // split explicitly; 0 = the built-in choice.
 void fp8_gemv_cfg(const uint8_t* w, const uint8_t* w_scale, int N, int K, int rows_per_group, Fp8Act x, int M,
-                  float* y, hipStream_t stream, int lpr, int r);
+                  float* y, hipStream_t stream, int lpr, int r, int w_stride = 0);
 void fp8_gemv(const uint8_t* w, const uint8_t* w_scale, int N, int K, int rows_per_group, Fp8Act x, int M,
-              float* y, hipStream_t stream);
+              float* y, hipStream_t stream, int w_stride = 0);
 // the lanes-per-row split fp8_gemv uses for a shape (it fixes every output's order of additions)
 int fp8_lpr(int N, int K);
 // Any number of inputs (prompt chunks): tiles of mt inputs, r rows per lane group; every result
 // bit-identical to fp8_gemv on that input alone (same split, same per-lane order, same tree).
 // r / mt = 0: the built-in choice; minb: blocks per CU the registers must allow (0 = 1).
 void fp8_gemm_cfg(const uint8_t* w, const uint8_t* w_scale, int N, int K, int rows_per_group, Fp8Act x, int M,
-                  float* y, hipStream_t stream, int r, int mt, int minb = 0);
+                  float* y, hipStream_t stream, int r, int mt, int minb = 0, int w_stride = 0);
 void fp8_gemm(const uint8_t* w, const uint8_t* w_scale, int N, int K, int rows_per_group, Fp8Act x, int M,
-              float* y, hipStream_t stream);
+              float* y, hipStream_t stream, int w_stride = 0);

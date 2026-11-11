@@ -55,7 +55,7 @@ class DSpark {
   DraftResult draft(int32_t anchor, int pos, bool keep_logits);
 
  private:
-  struct Fp8 { uint8_t* q = nullptr; uint8_t* s = nullptr; int N = 0, K = 0; };
+  struct Fp8 { uint8_t* q = nullptr; uint8_t* s = nullptr; int N = 0, K = 0, stride = 0; };
   struct LayerW {
     Fp8 q_a, q_b, kv, out_a, out_b, gate_sh, up_sh, down_sh;
     const float *attn_norm, *q_a_norm, *kv_norm, *sinks, *ffn_norm, *gate_inp, *gate_bias;

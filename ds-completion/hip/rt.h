@@ -145,7 +145,7 @@ class Runtime {
  private:
   friend class DSpark;
   std::unique_ptr<DSpark> dspark;
-  struct Fp8W { uint8_t* q = nullptr; uint8_t* s = nullptr; int N = 0, K = 0; };
+  struct Fp8W { uint8_t* q = nullptr; uint8_t* s = nullptr; int N = 0, K = 0, stride = 0; };  // stride: fp8_row_stride (0 = K)
   struct LayerW {
     Fp8W q_a, q_b, kv, out_a, out_b, idx_q_b, gate_sh, up_sh, down_sh, engram_kv;
     const float *attn_norm, *q_a_norm, *kv_norm, *sinks, *ffn_norm, *gate_inp, *gate_bias;
@@ -174,6 +174,7 @@ class Runtime {
   hipStream_t s;
   std::vector<LayerW> W;
   void* fp8_buf = nullptr;  // all fp8 weights + scales
+  std::vector<size_t> fp8_off;  // each tensor of the fp8 file in it (rows padded: fp8_row_stride)
   float* freqs_buf = nullptr;
   std::unique_ptr<CpuMoeKernel> cpu_moe;
   // Routed experts on GPUs: per die a pool of expert slots (placement die i = opt.moe_dies[i]).

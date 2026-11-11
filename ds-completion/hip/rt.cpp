@@ -97,11 +97,41 @@ Runtime::Runtime(const Model& model, RtOptions options, const std::string& fp8_p
     fstat(fd, &st);
     const size_t off = gguf_get_data_offset(g), n = st.st_size - off;
     void* map = mmap(nullptr, st.st_size, PROT_READ, MAP_SHARED, fd, 0);
-    CHECK(hipMalloc(&fp8_buf, n));
-    CHECK(hipMemcpy(fp8_buf, (char*)map + off, n, hipMemcpyHostToDevice));
+    // each tensor as in the file, except the weight matrices whose rows fp8_row_stride sets apart
+    // (README step 101): those row by row. fp8_off: every tensor's place in the device buffer
+    const int64_t nt = gguf_get_n_tensors(g);
+    fp8_off.resize(nt);
+    std::vector<int> stride(nt, 0);
+    size_t total = 0;
+    for (int64_t i = 0; i < nt; i++) {
+      const std::string name = gguf_get_tensor_name(g, i);
+      const bool weight = name.size() > 7 && name.compare(name.size() - 7, 7, ".weight") == 0 &&
+                          gguf_find_tensor(g, (name + ".scale").c_str()) >= 0;
+      const int K = (int)gguf_get_tensor_ne(g, i)[0], N = (int)gguf_get_tensor_ne(g, i)[1];
+      if (weight && fp8_row_stride(K) != K && gguf_get_tensor_size(g, i) == (size_t)N * K) stride[i] = fp8_row_stride(K);
+      fp8_off[i] = total;
+      total += ((stride[i] ? (size_t)N * stride[i] : gguf_get_tensor_size(g, i)) + 63) / 64 * 64;
+    }
+    CHECK(hipMalloc(&fp8_buf, total + 64));
+    std::vector<uint8_t> tmp;
+    size_t padded = 0;
+    for (int64_t i = 0; i < nt; i++) {
+      const uint8_t* src = (const uint8_t*)map + off + gguf_get_tensor_offset(g, i);
+      const size_t sz = gguf_get_tensor_size(g, i);
+      if (!stride[i]) {
+        CHECK(hipMemcpy((char*)fp8_buf + fp8_off[i], src, sz, hipMemcpyHostToDevice));
+        continue;
+      }
+      const int K = (int)gguf_get_tensor_ne(g, i)[0], N = (int)gguf_get_tensor_ne(g, i)[1];
+      tmp.assign((size_t)N * stride[i], 0);
+      for (int r = 0; r < N; r++) memcpy(tmp.data() + (size_t)r * stride[i], src + (size_t)r * K, K);
+      CHECK(hipMemcpy((char*)fp8_buf + fp8_off[i], tmp.data(), tmp.size(), hipMemcpyHostToDevice));
+      padded++;
+    }
     munmap(map, st.st_size);
     close(fd);
-    fprintf(stderr, "# runtime: %s of fp8 weights on GPU %d\n", fmt_bytes((double)n).c_str(), opt.gpu);
+    fprintf(stderr, "# runtime: %s of fp8 weights on GPU %d (%zu matrices with padded rows)\n", fmt_bytes((double)total).c_str(),
+            opt.gpu, padded);
   }
   mem_mark("dense fp8 weights");
   auto fp8w = [&](int L, const char* name) {
@@ -110,10 +140,11 @@ Runtime::Runtime(const Model& model, RtOptions options, const std::string& fp8_p
     const int64_t id = gguf_find_tensor(g, n.c_str()), ids = gguf_find_tensor(g, (n + ".scale").c_str());
     if (id < 0) return w;
     if (ids < 0) throw std::runtime_error("no scale for " + n);
-    w.q = (uint8_t*)fp8_buf + gguf_get_tensor_offset(g, id);
-    w.s = (uint8_t*)fp8_buf + gguf_get_tensor_offset(g, ids);
+    w.q = (uint8_t*)fp8_buf + fp8_off[id];
+    w.s = (uint8_t*)fp8_buf + fp8_off[ids];
     w.K = (int)gguf_get_tensor_ne(g, id)[0];
     w.N = (int)gguf_get_tensor_ne(g, id)[1];
+    w.stride = fp8_row_stride(w.K);
     return w;
   };
   // the small weights: device copies of the host tensors (as stored, or converted to f32)
@@ -955,12 +986,12 @@ void Runtime::gemv8(const Fp8W& w, Codes c, float* yout, int rows_per_group, int
   // at most 8 inputs per call; every row's result is the same at any M (fp8_gemv.h)
   const int rpg = rows_per_group ? rows_per_group : w.N, Kt = w.K * (w.N / rpg);
   if (M > 8) {  // prompt chunks: the many-input kernel (the same bits as one input at a time)
-    fp8_gemm(w.q, w.s, w.N, w.K, rpg, Fp8Act{c.q, c.s}, M, yout, s);
+    fp8_gemm(w.q, w.s, w.N, w.K, rpg, Fp8Act{c.q, c.s}, M, yout, s, w.stride);
     return;
   }
   for (int m0 = 0; m0 < M; m0 += 8)
     fp8_gemv(w.q, w.s, w.N, w.K, rpg, Fp8Act{c.q + (size_t)m0 * Kt, c.s + (size_t)m0 * Kt / 32}, std::min(8, M - m0),
-             yout + (size_t)m0 * w.N, s);
+             yout + (size_t)m0 * w.N, s, w.stride);
 }
 
 // profile: each layer's GPU wait for the CPU (its "ffn.wait_for_cpu_experts" interval) next to

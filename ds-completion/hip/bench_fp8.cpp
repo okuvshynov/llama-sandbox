@@ -96,9 +96,15 @@ int main(int argc, char** argv) {
     if (!read(name, wq, ne) || !read(name + ".scale", wsc, nullptr)) { printf("%-18s missing\n", sh.name); continue; }
     const int K = (int)ne[0], N = (int)ne[1], groups = sh.rpg_div, rpg = N / groups, Kt = K * groups;
     uint8_t *dw, *ds;
-    CHECK(hipMalloc(&dw, wq.size()));
+    // the device copy's rows fp8_row_stride apart, as the runtime's (README step 101; DS_FP8_PAD=0: K apart)
+    const int WST = fp8_row_stride(K);
+    {
+      std::vector<uint8_t> wp((size_t)N * WST + 64, 0);
+      for (int n = 0; n < N; n++) memcpy(wp.data() + (size_t)n * WST, wq.data() + (size_t)n * K, K);
+      CHECK(hipMalloc(&dw, wp.size()));
+      CHECK(hipMemcpy(dw, wp.data(), wp.size(), hipMemcpyHostToDevice));
+    }
     CHECK(hipMalloc(&ds, wsc.size()));
-    CHECK(hipMemcpy(dw, wq.data(), wq.size(), hipMemcpyHostToDevice));
     CHECK(hipMemcpy(ds, wsc.data(), wsc.size(), hipMemcpyHostToDevice));
     for (int M : ms) {
       std::vector<float> x((size_t)M * Kt);
@@ -143,7 +149,7 @@ int main(int argc, char** argv) {
         };
         auto slices = [&]() {
           for (int m0 = 0; m0 < M; m0 += 8)
-            fp8_gemv(dw, ds, N, K, rpg, Fp8Act{dxq + (size_t)m0 * Kt, dxs + (size_t)m0 * Kt / 32}, std::min(8, M - m0), dy + (size_t)m0 * N, st);
+            fp8_gemv(dw, ds, N, K, rpg, Fp8Act{dxq + (size_t)m0 * Kt, dxs + (size_t)m0 * Kt / 32}, std::min(8, M - m0), dy + (size_t)m0 * N, st, WST);
         };
         float* dy1;
         CHECK(hipMalloc(&dy1, (size_t)N * 4));
@@ -152,7 +158,7 @@ int main(int argc, char** argv) {
           CHECK(hipMemcpy(yM.data(), dy, yM.size() * 4, hipMemcpyDeviceToHost));
           long diff = 0;
           for (int m = 0; m < M; m++) {
-            fp8_gemv(dw, ds, N, K, rpg, Fp8Act{dxq + (size_t)m * Kt, dxs + (size_t)m * Kt / 32}, 1, dy1, st);
+            fp8_gemv(dw, ds, N, K, rpg, Fp8Act{dxq + (size_t)m * Kt, dxs + (size_t)m * Kt / 32}, 1, dy1, st, WST);
             CHECK(hipMemcpy(y1.data(), dy1, N * 4, hipMemcpyDeviceToHost));
             diff += memcmp(y1.data(), yM.data() + (size_t)m * N, N * 4) ? 1 : 0;
           }
@@ -165,8 +171,8 @@ int main(int argc, char** argv) {
         if (sweep) cfgs = {{2, 8, 1}, {2, 8, 2}, {2, 16, 1}, {2, 16, 3}, {4, 8, 1}, {4, 8, 2}, {4, 16, 1}, {4, 16, 2}};
         for (const auto& cfg : cfgs) {
           const int r = cfg[0], mt = cfg[1], mb = cfg[2];
-          const double us = timed([&]() { fp8_gemm_cfg(dw, ds, N, K, rpg, act, M, dy, st, r, mt, mb); });
-          fp8_gemm_cfg(dw, ds, N, K, rpg, act, M, dy, st, r, mt, mb);
+          const double us = timed([&]() { fp8_gemm_cfg(dw, ds, N, K, rpg, act, M, dy, st, r, mt, mb, WST); });
+          fp8_gemm_cfg(dw, ds, N, K, rpg, act, M, dy, st, r, mt, mb, WST);
           const long diff = check();
           printf("  gemm %d/%d/%d: %8.1f us (%.1fx) %s", r, mt, mb, us, us8 / us, diff ? "DIFFERS" : "same");
         }
@@ -179,20 +185,20 @@ int main(int argc, char** argv) {
         // every token of the M-token call against a one-token call on that token alone
         float* dy1;
         CHECK(hipMalloc(&dy1, (size_t)N * 4));
-        fp8_gemv(dw, ds, N, K, rpg, act, M, dy, st);
+        fp8_gemv(dw, ds, N, K, rpg, act, M, dy, st, WST);
         std::vector<float> yM((size_t)M * N), y1(N);
         CHECK(hipMemcpyAsync(yM.data(), dy, yM.size() * 4, hipMemcpyDeviceToHost, st));
         long diff = 0;
         for (int m = 0; m < M; m++) {
           Fp8Act a1 = {dxq + (size_t)m * Kt, dxs + (size_t)m * Kt / 32};
-          fp8_gemv(dw, ds, N, K, rpg, a1, 1, dy1, st);
+          fp8_gemv(dw, ds, N, K, rpg, a1, 1, dy1, st, WST);
           CHECK(hipMemcpyAsync(y1.data(), dy1, N * 4, hipMemcpyDeviceToHost, st));
           CHECK(hipStreamSynchronize(st));
           diff += memcmp(y1.data(), yM.data() + (size_t)m * N, N * 4) ? 1 : 0;
           if (m == 0 && M > 1) {  // control: token 1's own result must differ from token 0's
             std::vector<float> yo(N);
             Fp8Act ao = {dxq + (size_t)Kt, dxs + (size_t)Kt / 32};
-            fp8_gemv(dw, ds, N, K, rpg, ao, 1, dy1, st);
+            fp8_gemv(dw, ds, N, K, rpg, ao, 1, dy1, st, WST);
             CHECK(hipMemcpyAsync(yo.data(), dy1, N * 4, hipMemcpyDeviceToHost, st));
             CHECK(hipStreamSynchronize(st));
             if (!memcmp(yo.data(), yM.data(), N * 4)) { printf("control failed: tokens 0 and 1 give the same bits\n"); return 1; }
@@ -203,7 +209,7 @@ int main(int argc, char** argv) {
         CHECK(hipFree(dx)); CHECK(hipFree(dxq)); CHECK(hipFree(dxs)); CHECK(hipFree(dy));
         continue;
       }
-      fp8_gemv(dw, ds, N, K, rpg, act, M, dy, st);
+      fp8_gemv(dw, ds, N, K, rpg, act, M, dy, st, WST);
       std::vector<float> y((size_t)M * N);
       CHECK(hipMemcpyAsync(y.data(), dy, y.size() * 4, hipMemcpyDeviceToHost, st));
       CHECK(hipStreamSynchronize(st));
@@ -223,9 +229,9 @@ int main(int argc, char** argv) {
         }
       // timing: the built-in choice, or (--sweep) every lanes-per-row x rows-per-wave split
       auto time_cfg = [&](int lpr, int r) {
-        for (int i = 0; i < 10; i++) fp8_gemv_cfg(dw, ds, N, K, rpg, act, M, dy, st, lpr, r);
+        for (int i = 0; i < 10; i++) fp8_gemv_cfg(dw, ds, N, K, rpg, act, M, dy, st, lpr, r, WST);
         CHECK(hipEventRecord(e0, st));
-        for (int i = 0; i < reps; i++) fp8_gemv_cfg(dw, ds, N, K, rpg, act, M, dy, st, lpr, r);
+        for (int i = 0; i < reps; i++) fp8_gemv_cfg(dw, ds, N, K, rpg, act, M, dy, st, lpr, r, WST);
         CHECK(hipEventRecord(e1, st));
         CHECK(hipEventSynchronize(e1));
         float ms_total;

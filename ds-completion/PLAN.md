@@ -442,6 +442,7 @@ not worked around).
 Step 98: the compressor's projections once per chunk: 41.96 -> 42.52 t/s.
 Step 99: the review's four leftovers: none kept (patches in results/decode-next/).
 Step 100: traces regenerated at step 98; section B's spans refreshed.
+Step 101: the attention output matrices' rows padded by 64 bytes on the GPU: 42.52 -> 43.55 t/s.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front
@@ -463,7 +464,13 @@ Promising, in order:
    would buy, before building one.
 6. Commit's 0.86 ms wait: the draft's window seeded for all kept tokens at once (~1%).
 
-Big, a design first: the fp8 GEMVs at 6 tokens (~25 ms; local variants failed in 65 and 75);
+Step 101: the fp8 matrices with rows a multiple of 4096 bytes apart had read at half speed
+(cache collisions); padded by 64 bytes: +2.4%. Next: the same check on the f32 / bf16 matrices
+(router, compressor, hc projection, head) and the expert pools.
+
+Big, a design first: the fp8 GEMVs at 6 tokens (step 101's probe: the multiplies fit, the
+activations' loads per lane and step are the cost; a kernel that keeps the 64-lane order of
+additions on an 8- or 16-lane work split; local variants failed in 65 and 75);
 drafting ahead while the verify runs (~2-4% on code; memory and a second stream or die).
 
 Backlog (less likely): cache policy tweaks (59 lost; 63-64 2.5% simulated), an LLC prefetch (77:

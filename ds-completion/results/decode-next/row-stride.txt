@@ -1,0 +1,63 @@
+# rows a multiple of 4096 bytes apart read slowly (README step 101): the synthetic read test, the fp8 GEMV, the held-out
+# commit 58341df + step 101; sclk 6; tomb; 2026-11-11
+
+## bin-hip/bench-row-stride: weight loads alone (the fp8 GEMV's pattern, no arithmetic) over a random matrix
+## N = 8192, K = 4096 (33.6 MB): us per call (GB/s of weights), step-major, 4 waves per block
+row stride on the GPU             R = 1              2              4              8
+K + 0                       79.0 ( 425)    86.7 ( 387)   104.5 ( 321)   424.3 (  79)
+K + 64                      74.0 ( 453)    60.7 ( 553)    48.3 ( 695)    49.5 ( 678)
+K + 256                     80.9 ( 415)    60.4 ( 555)    48.3 ( 695)    77.2 ( 434)
+K + 1024                    81.0 ( 414)    58.8 ( 570)    57.5 ( 583)    95.1 ( 353)
+K + 1088                    78.7 ( 426)    61.4 ( 547)    48.4 ( 693)    49.9 ( 673)
+K + 4160                    73.3 ( 458)    62.3 ( 539)    49.1 ( 684)    49.7 ( 675)
+## N = 5120, K = 8192 (41.9 MB): us per call (GB/s of weights), step-major, 4 waves per block
+row stride on the GPU             R = 1              2              4              8
+K + 0                      148.8 ( 282)   127.4 ( 329)   235.5 ( 178)   342.7 ( 122)
+K + 64                      61.8 ( 679)    64.0 ( 655)    60.0 ( 699)    59.8 ( 701)
+K + 256                     52.1 ( 805)    60.3 ( 696)    58.2 ( 720)    71.2 ( 589)
+K + 1024                    58.8 ( 714)    61.3 ( 684)    74.3 ( 564)    78.4 ( 535)
+K + 1088                    60.0 ( 699)    62.0 ( 676)    60.0 ( 699)    61.2 ( 685)
+K + 4160                    60.2 ( 697)    64.5 ( 651)    59.7 ( 702)    61.2 ( 685)
+## N = 1280, K = 5120 (6.6 MB): us per call (GB/s of weights), step-major, 4 waves per block
+row stride on the GPU             R = 1              2              4              8
+K + 0                       10.3 ( 636)    10.9 ( 601)    13.7 ( 479)    25.5 ( 257)
+K + 64                      10.4 ( 628)    10.7 ( 612)    11.6 ( 563)    20.9 ( 313)
+K + 256                     10.2 ( 639)    10.6 ( 619)    11.5 ( 572)    21.4 ( 306)
+K + 1024                    12.4 ( 529)    12.1 ( 543)    17.3 ( 380)    26.1 ( 251)
+K + 1088                    10.6 ( 619)    10.7 ( 610)    11.7 ( 561)    20.8 ( 315)
+K + 4160                    10.8 ( 604)    11.1 ( 590)    11.8 ( 554)    20.8 ( 316)
+## N = 32768, K = 1280 (41.9 MB): us per call (GB/s of weights), step-major, 4 waves per block
+row stride on the GPU             R = 1              2              4              8
+K + 0                       53.1 ( 790)    51.7 ( 811)    70.7 ( 593)   103.8 ( 404)
+K + 64                      54.3 ( 772)    52.6 ( 798)    73.2 ( 573)    86.3 ( 486)
+K + 256                     58.9 ( 712)    62.5 ( 671)    87.5 ( 479)   120.8 ( 347)
+K + 1024                    52.2 ( 804)    54.3 ( 772)    73.1 ( 574)   111.4 ( 377)
+K + 1088                    54.1 ( 775)    56.5 ( 743)    74.2 ( 565)    86.4 ( 485)
+K + 4160                    53.1 ( 791)    59.5 ( 704)    74.4 ( 564)    85.1 ( 493)
+
+## bin-hip/bench-fp8 ~/llms/ds-1017-fp8/dense-fp8.gguf --ms 1,2,3,4,6: us per call, rows K apart (DS_FP8_PAD=0) -> K + 64 (the default)
+tensor                 K                M = 1               M = 2               M = 3               M = 4               M = 6
+attn_q_a            5120      11.8 ->   11.7     16.1 ->   16.1     25.7 ->   25.7     27.0 ->   26.9     30.0 ->   30.0
+attn_q_b            1280      64.5 ->   60.4     67.3 ->   63.6     71.3 ->   66.9     72.8 ->   70.0     80.7 ->   78.2
+attn_kv             5120       6.9 ->    6.9     10.6 ->   10.5     15.5 ->   15.5     15.8 ->   16.0     16.2 ->   16.2
+attn_output_a       4096      58.0 ->   45.4     65.4 ->   51.0    100.8 ->   77.2    116.6 ->   97.3    123.2 ->  113.3
+attn_output_b       8192      86.1 ->   57.3    101.5 ->   62.3    148.3 ->   93.3    151.8 ->  113.1    158.4 ->  131.8
+indexer.attn_q_b    1280      10.0 ->    9.9     12.6 ->   12.6     14.6 ->   14.4     16.0 ->   15.9     17.8 ->   17.8
+ffn_gate_shexp      5120      19.8 ->   19.9     23.9 ->   24.0     36.4 ->   36.0     41.8 ->   41.7     45.2 ->   45.2
+ffn_down_shexp      2304      18.2 ->   18.2     23.3 ->   23.3     25.6 ->   25.7     28.5 ->   28.4     31.7 ->   31.7
+engram_kv           6144     208.1 ->  205.4    221.9 ->  219.0    314.4 ->  313.7    395.5 ->  395.0    468.3 ->  467.7
+# --bitwise with the padded rows: 36 of 36 tensor x M cases bit-identical to the one-input call; --gemm --ms 13,64: every case the same
+
+## held-out, generation t/s (results/spec-measure-sclk6-cacheloads800cacheperiod8-rowpad against -compressor, step 98); every output identical
+tcp-udp        36.85  37.99 +3.1%
+py-lru         44.46  44.91 +1.0%
+cpp-matrix     52.41  52.66 +0.5%
+sql-report     45.05  45.77 +1.6%
+geometry       51.92  53.56 +3.2%
+zh-travel      32.63  33.58 +2.9%
+ja-email       34.47  36.41 +5.6%
+summary-json   42.37  43.53 +2.7%
+mean          42.52 43.55 +2.43%
+# A/B in one session (DS_FP8_PAD=0 -> default): cpp-matrix 52.01 -> 52.70, tcp-udp 36.60 -> 38.05, ja-email 34.34 -> 36.33
+# the 1,989-token prompt (--canon, chunks of 512): 66.24 t/s both ways (the CPU bounds it); the 32 tokens after it 20.48 -> 21.10 t/s; output identical
+# GPU memory: 80 matrices padded (+37 MB on die 0: 805 -> 802 startup experts there)

@@ -3588,3 +3588,48 @@ neither step touched: 30.4 -> 32.5, run to run), outside the layers 5.0, the dra
 of cpp-matrix's steps: attn.compressor 4.0 -> 2.5 ms per step, the wait for the dies 5.0 -> 3.6,
 dispatch 2.5 -> 2.1. PLAN's section B has the spans.
 
+## Step 101: weight rows a multiple of 4096 bytes apart read slowly; the fp8 matrices' rows padded
+
+Started as the question behind PLAN's "big" item: what limits the fp8 GEMV at several inputs?
+
+**The ceiling** (`results/decode-next/fp8-probe.txt`, bench-only variants of the kernel, not
+exact; `fp8-probe.patch`): with the activations loaded once and nothing decoded, all 6 inputs' dot
+products cost about what one input costs today (attention output A 66 us against 57.8 at one input
+and 121.6 at six; B 79.5 / 85.3 / 155.4; engram 238 / 203 / 461). So the multiplies are not the
+limit; bringing each lane its activations every step is. And more rows per wave, which would
+spread that cost, slowed even the bare weight loads (output A's shape: 64 us at 1 row per wave,
+250 at 4).
+
+**Why** (`bin-hip/bench-row-stride`, new: the kernel's load pattern alone over a random matrix;
+`results/decode-next/row-stride.txt`): it depends on the row length. 5120 rows of 8192 bytes read
+at 279 GB/s, and worse with more rows per wave (122 at 8); the same bytes with the rows 64 bytes
+further apart read at 715 GB/s at any rows per wave. Likewise 8192 x 4096: 79 GB/s at 8 rows per
+wave, 679 padded. Rows a multiple of 4096 bytes apart put every wave's loads at the same offset
+within a page, and those collide in the GPU's caches (which cache and how was not established;
+the effect is measured). Rows of 1280 or 5120 bytes show little or none of it.
+
+**The change:** `fp8_row_stride(K)` (`hip/fp8_gemv.h`): a matrix whose K is a multiple of 4096
+gets its rows K + 64 bytes apart in its device copy (the runtime uploads the fp8 file tensor by
+tensor, those row by row; the draft's likewise), and the three fp8 kernels take the stride. That
+is the two attention output matrices of every layer (80 matrices with the draft's, +37 MB on die
+0: 3 startup experts fewer there). The bytes and every sum's order are unchanged: `bench-fp8
+--bitwise` 36 of 36, every held-out output identical. `DS_FP8_PAD=0` gives the old layout.
+
+| us per call (`bench-fp8`) | 1 input | 2 | 3 | 4 | 6 |
+|---|---|---|---|---|---|
+| attention output A (8192 x 4096) | 58.0 -> 45.4 | 65.4 -> 51.0 | 100.8 -> 77.2 | 116.6 -> 97.3 | 123.2 -> 113.3 |
+| attention output B (5120 x 8192) | 86.1 -> 57.3 | 101.5 -> 62.3 | 148.3 -> 93.3 | 151.8 -> 113.1 | 158.4 -> 131.8 |
+
+Held-out mean **42.52 -> 43.55 t/s (+2.4%)**: the prompts with short steps gain most (ja-email
++5.6%, tcp-udp +3.1%, zh-travel +2.9%; cpp-matrix +0.5%), as the table says: at one or two inputs
+the kernel was bound by these reads, at six by the activations. Prompt speed is unchanged (the CPU
+bounds it).
+
+Open after this: the same check on the other kernels' matrices (the router's and the compressor's
+rows are 20,480 bytes apart, the hyper-connection projection's 81,920, the head's 10,240); and the
+six-input case, where more rows per wave is still not faster with padded rows (the sweep's best
+stays 2), so the activations' cost needs the kernel change itself. One lead from the sweep: the
+8- and 16-lane splits read at 450-520 GB/s at six inputs (they share decoded activations across
+a block's 64 rows) but fix another order of additions; the 64-lane order could be kept on such
+a split by letting each lane carry several of the 64 partial sums.
+

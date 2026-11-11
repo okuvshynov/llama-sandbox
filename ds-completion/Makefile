@@ -35,7 +35,7 @@ endif
 
 all: $(BIN)/ds-completion $(BIN)/ds-inspect $(BIN)/ds-test $(BIN)/test-fakequant $(BIN)/llama-logits $(BIN)/fp8pack $(BIN)/bench-cpu-moe $(BIN)/bench-fp4-decode
 ifeq ($(HIP),1)
-all: $(BIN)/bench-fp8 $(BIN)/bench-kernels $(BIN)/bench-fp4-moe $(BIN)/bench-expert-pool $(BIN)/bench-expert-load $(BIN)/test-topk $(BIN)/bench-register $(BIN)/bench-launch $(BIN)/bench-loader-exit
+all: $(BIN)/bench-fp8 $(BIN)/bench-kernels $(BIN)/bench-fp4-moe $(BIN)/bench-expert-pool $(BIN)/bench-expert-load $(BIN)/test-topk $(BIN)/bench-register $(BIN)/bench-launch $(BIN)/bench-loader-exit $(BIN)/bench-row-stride
 endif
 
 # our own HIP kernels (PLAN.md B1 onwards)
@@ -59,6 +59,10 @@ $(BIN)/ds-test: src/ds_test.cpp $(CORE) $(CORE_H) $(RT_OBJ)
 $(BIN)/bench-kernels: hip/bench_kernels.cpp hip/kernels.hip hip/fp8_gemv.hip hip/kernels.h hip/fp8_gemv.h
 	@mkdir -p $(BIN)
 	$(HIPCC) $(HIPFLAGS) -o $@ hip/bench_kernels.cpp hip/kernels.hip hip/fp8_gemv.hip
+
+$(BIN)/bench-row-stride: hip/bench_row_stride.hip
+	@mkdir -p $(BIN)
+	$(HIPCC) $(HIPFLAGS) -o $@ hip/bench_row_stride.hip
 
 $(BIN)/bench-loader-exit: hip/bench_loader_exit.cpp
 	@mkdir -p $(BIN)

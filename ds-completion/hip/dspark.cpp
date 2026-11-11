@@ -1,5 +1,7 @@
 #include "dspark.h"
 
+#include "fp8_gemv.h"
+
 #include "fakequant.h"
 #include "kernels.h"
 #include "rt.h"
@@ -47,6 +49,12 @@ DSpark::Fp8 DSpark::fp8(const void* bf16, int N, int K, const std::string& name)
   Fp8 w;
   w.N = N;
   w.K = K;
+  w.stride = fp8_row_stride(K);  // README step 101
+  if (w.stride != K) {
+    std::vector<uint8_t> qp((size_t)N * w.stride + 64, 0);
+    for (int r = 0; r < N; r++) memcpy(qp.data() + (size_t)r * w.stride, q.data() + (size_t)r * K, K);
+    q.swap(qp);
+  }
   w.q = (uint8_t*)upload(q.data(), q.size());
   w.s = (uint8_t*)upload(sc.data(), sc.size());
   return w;
@@ -254,7 +262,7 @@ void DSpark::seed(int pos, const float* hidden) {
   const Hparams& hp = rt.hp;
   const int E = hp.n_embd, HD = hp.head_dim, RD = hp.rope_dim;
   hipStream_t s = rt.s;
-  auto g8 = [&](const Fp8& w, Runtime::Codes c, float* out) { rt.gemv8(Runtime::Fp8W{w.q, w.s, w.N, w.K}, c, out); };
+  auto g8 = [&](const Fp8& w, Runtime::Codes c, float* out) { rt.gemv8(Runtime::Fp8W{w.q, w.s, w.N, w.K, w.stride}, c, out); };
   if (hidden_log) {
     std::vector<float> v(target_layers.size() * E);
     CHECK(hipMemcpyAsync(v.data(), hidden, v.size() * 4, hipMemcpyDeviceToHost, s));
@@ -286,7 +294,7 @@ DraftResult DSpark::draft(int32_t anchor, int pos, bool keep_logits) {
   hipStream_t s = rt.s;
   const float* freqs = rt.freqs_buf;  // window-only layers: rope_base, no YaRN
   auto g8 = [&](const Fp8& w, Runtime::Codes c, float* out, int rpg, int M) {
-    rt.gemv8(Runtime::Fp8W{w.q, w.s, w.N, w.K}, c, out, rpg, M);
+    rt.gemv8(Runtime::Fp8W{w.q, w.s, w.N, w.K, w.stride}, c, out, rpg, M);
   };
   // DS_DRAFT_PROFILE=1: GPU time per part of the draft, summed over the run, printed at exit
   static const bool prof = getenv("DS_DRAFT_PROFILE") != nullptr;

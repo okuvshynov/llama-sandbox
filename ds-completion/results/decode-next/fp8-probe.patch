@@ -1,0 +1,115 @@
+diff --git a/ds-completion/hip/fp8_gemv.hip b/ds-completion/hip/fp8_gemv.hip
+index 6b5aecd..d05b9f4 100644
+--- a/ds-completion/hip/fp8_gemv.hip
++++ b/ds-completion/hip/fp8_gemv.hip
+@@ -1,4 +1,5 @@
+ #include "fp8_gemv.h"
++#include <cstdlib>
+ 
+ #include <algorithm>
+ 
+@@ -129,6 +130,81 @@ __global__ void __launch_bounds__(256) fp8_gemv_kernel(const uint8_t* __restrict
+     }
+ }
+ 
++// THE CEILING PROBE (bench only, not exact). A wave covers 64 / LPR row sets of R consecutive rows; LPR lanes split K for each set, each
++// lane stepping 16 codes at a time. R divides 32, so the R rows share one weight scale row.
++template <int LPR, int R, int M, int MODE>
++__global__ void __launch_bounds__(256) fp8_probe_kernel(const uint8_t* __restrict__ w, const uint8_t* __restrict__ ws,
++                                                       int N, int K, int rpg, const uint8_t* __restrict__ xq,
++                                                       const float* __restrict__ xs, float* __restrict__ y) {
++  const int lane = threadIdx.x & 63;
++  const int set = (blockIdx.x * (blockDim.x >> 6) + (threadIdx.x >> 6)) * (64 / LPR) + lane / LPR;
++  const int row0 = set * R;
++  const int l = lane % LPR;
++  const bool live = row0 < N;
++  const int r0 = live ? row0 : N - R;  // dead lanes still take part in the shuffles
++  const int g = r0 / rpg;              // R rows never straddle a group (rpg is a multiple of 32)
++  const int K_total = K * (N / rpg);
++  const uint8_t* wr = w + (size_t)r0 * K;
++  const uint8_t* sr = ws + (size_t)(r0 / 32) * (K / 32);
++  const uint8_t* xr = xq + (size_t)g * K;
++  const float* xsr = xs + (size_t)g * (K / 32);
++  float acc[R][M];
++#pragma unroll
++  for (int i = 0; i < R; i++)
++#pragma unroll
++    for (int m = 0; m < M; m++) acc[i][m] = 0.0f;
++
++  // bench only (the ceiling probe): MODE 1 no activation decode; 2 nor weight decode; 3 and the
++  // activations loaded once, before the loop; 5 weight loads only
++  auto raw8 = [](const uint4 v, uint32_t* h) { h[0] = v.x; h[1] = v.y; h[2] = v.z; h[3] = v.w; h[4] = v.x; h[5] = v.y; h[6] = v.z; h[7] = v.w; };
++  uint32_t hx[M][8];
++  float sx[M];
++  if (MODE >= 3) {
++#pragma unroll
++    for (int m = 0; m < M; m++) {
++      raw8(*(const uint4*)(xr + (size_t)m * K_total + l * 16), hx[m]);
++      sx[m] = xsr[(size_t)m * (K_total / 32) + l / 2];
++    }
++  }
++  for (int k = l * 16; k < K; k += LPR * 16) {
++    if (MODE < 3) {
++#pragma unroll
++      for (int m = 0; m < M; m++) {
++        if (MODE == 0) decode16(*(const uint4*)(xr + (size_t)m * K_total + k), hx[m]);
++        else raw8(*(const uint4*)(xr + (size_t)m * K_total + k), hx[m]);
++        sx[m] = xsr[(size_t)m * (K_total / 32) + k / 32];
++      }
++    }
++    const float wscale = __uint_as_float((uint32_t)sr[k / 32] << 23) * 65536.0f;  // 2^(e-127), times the 2^16 undone
++#pragma unroll
++    for (int i = 0; i < R; i++) {
++      uint32_t hw[8];
++      if (MODE < 2) decode16(*(const uint4*)(wr + (size_t)i * K + k), hw);
++      else raw8(*(const uint4*)(wr + (size_t)i * K + k), hw);
++      if (MODE == 5) {
++        acc[i][0] += __uint_as_float((hw[0] ^ hw[1] ^ hw[2] ^ hw[3]) & 0x3fffffffu) * wscale;
++        continue;
++      }
++#pragma unroll
++      for (int m = 0; m < M; m++) {
++        float p = 0.0f;
++#pragma unroll
++        for (int j = 0; j < 8; j++) p = dot2(hw[j], hx[m][j], p);
++        acc[i][m] += p * (wscale * sx[m]);
++      }
++    }
++  }
++#pragma unroll
++  for (int i = 0; i < R; i++)
++#pragma unroll
++    for (int m = 0; m < M; m++) {
++      float v = acc[i][m];
++#pragma unroll
++      for (int o = LPR / 2; o > 0; o >>= 1) v += __shfl_xor(v, o, 64);
++      if (live && l == 0) y[(size_t)m * N + row0 + i] = v;
++    }
++}
++
+ // Several inputs (M >= 2). A one-input call is bound by memory; with M inputs the old loop
+ // was bound by arithmetic, and mostly by decoding: every row set decoded all M inputs again
+ // (~240 of ~350 instructions per step at M = 6). Here the block decodes each tile of the inputs
+@@ -306,6 +382,14 @@ static void launch_r(const uint8_t* w, const uint8_t* ws, int N, int K, int rpg,
+     }
+     return;
+   }
++  static const int probe = getenv("DS_FP8_PROBE") ? atoi(getenv("DS_FP8_PROBE")) : -1;
++  if (probe >= 0 && LPR == 64 && (M == 1 || M == 3 || M == 6)) {
++#define P(m, mode) if (M == m && probe == mode) { fp8_probe_kernel<LPR, R, m, mode><<<grid, block, 0, stream>>>(w, ws, N, K, rpg, x.q, x.s, y); return; }
++#define PM(mode) P(1, mode) P(3, mode) P(6, mode)
++    PM(0) PM(1) PM(2) PM(3) PM(5)
++#undef PM
++#undef P
++  }
+   switch (M) {
+ #define CASE(m) case m: fp8_gemv_kernel<LPR, R, m><<<grid, block, 0, stream>>>(w, ws, N, K, rpg, x.q, x.s, y); break;
+     CASE(1) CASE(2) CASE(3) CASE(4) CASE(5) CASE(6) CASE(7) CASE(8)
+@@ -389,6 +473,7 @@ void fp8_gemv_cfg(const uint8_t* w, const uint8_t* w_scale, int N, int K, int ro
+   if (lpr == 0) lpr = fp8_lpr(N, K);
+   // several inputs: two rows per lane group; four for 8 inputs over 64-lane rows (sweeps at M = 6, 8)
+   if (r == 0) r = M == 1 ? 1 : (M >= 8 && lpr == 64 && N >= 2048) ? 4 : 2;
++  if (const char* e = getenv("DS_FP8_PROBE_R")) r = atoi(e);
+   switch (lpr) {
+     case 64: launch_lpr<64>(w, w_scale, N, K, rows_per_group, x, M, y, stream, r); break;
+     case 32: launch_lpr<32>(w, w_scale, N, K, rows_per_group, x, M, y, stream, r); break;
