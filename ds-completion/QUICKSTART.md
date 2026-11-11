@@ -57,7 +57,7 @@ Run from this directory (the placement path is relative). Which setting is faste
 the job (sclk 6; README steps 32, 37-82):
 
 **Long generation** (reasoning, long answers): speculative decoding + the adaptive expert cache.
-~41.2 t/s mean on the held-out prompts at sclk 6 (32-51; README step 88); a long reasoning run
+~42.5 t/s mean on the held-out prompts at sclk 6 (33-52; README step 98); a long reasoning run
 gains most (52.1 t/s on the held-out long proof). The cache first registers the experts' memory with the GPUs (~95-135 s in the
 background; generation runs at the static placement's speed meanwhile), so it pays off for runs
 of a few minutes or more:

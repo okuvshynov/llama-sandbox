@@ -275,7 +275,7 @@ class Runtime {
   void gemv8(const Fp8W& w, Codes c, float* yout, int rows_per_group = 0, int M = 1);
   // the chunk's M tokens are at positions pos .. pos + M - 1; per-token buffers are [M][...]
   void attention(int L, const float* xin, float* out, int M = 1);
-  void attn_prep(int L, int t, const float* x_t, Codes qr_t, int& K, const int*& topk);
+  void attn_prep(int L, int t, const float* x_t, Codes qr_t, int& K, const int*& topk, const float* cmp_kvn, const float* cmp_sc);
   std::vector<int> att_K;            // per token of the chunk: its compressed keys (README step 67)
   std::vector<const int*> att_topk;  // and their top-k list
   bool attn_check = false;           // DS_ATTN_CHECK: the batched attention against one-token launches

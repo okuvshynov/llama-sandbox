@@ -581,6 +581,7 @@ Estimates were made before measuring wherever possible; this is how they fared.
 | llama.cpp upstream instead of the fork (95) | upstream merged DSV4.1, so the fork can go | upstream reads our GGUF silently wrong: garbage | the files' type 43 is the PR's MXFP8, upstream's plain fp8; fork kept, pinned by hash for new machines |
 | the exit abort revisited (96) | step 93 missed something in the teardown | its window was too narrow (the stats line comes before the loader stops); concurrent loader frees alone: 7,800 clean | three teardown fixes (stop under the mutex, serial frees, unregister); the handler prints phase, thread and loads |
 | the dies' results in smaller copies (97) | a review of the traces span by span: the tail's copies took the worst-case size | 3 rows per token first, a second copy for the rest (3.5%); the staged block in one copy: +2.1% | kept; the exit abort seen again: after main, in the HSA runtime's shutdown |
+| the compressor's projections per chunk (98) | the same review: the one span still growing per token | both weights read once per chunk, the state token by token: +1.3% | kept |
 | expert parallelism for the draft (62) | proposed by the person | ~1 ms at best | experts are 16% of the draft; the head (27%) was the item |
 | the head through LDS (62) | ~1-2% | +1.4% held-out, +2% on code | as estimated from the per-part times |
 | the draft in fp8 frees ~4 GB (60 -> 61) | ~210 slots | nothing | its dense part was already fp8 and its experts mxfp4: assumed from the file's name |

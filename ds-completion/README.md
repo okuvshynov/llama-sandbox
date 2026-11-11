@@ -3525,3 +3525,26 @@ either the HSA runtime's own shutdown or a heap damage from earlier that is noti
 ASan runs were clean, step 93). Both libraries are stripped. Outputs and timings are unaffected
 (they are complete before it). Ending the process with `_exit` after our teardown would avoid it
 and would also hide an earlier corruption; not done, documented only.
+
+## Step 98: the compressor's projections once per chunk
+
+The second find of step 97's review: `attn_prep` ran the compressor's two projections (`cmp_kv`,
+`cmp_gate`: 512 x 5120 f32, 10 MB each) once per token, on the four layers that build compressed
+keys (2, 8, 14, 20): ~139 us per token and layer, 4.5 ms of a 6-token step, growing 0.74 ms per
+token while everything around it was batched (steps 24, 66-68). PLAN listed its time but had an
+item only for the indexer.
+
+Now `attention()` computes both for the whole chunk with `k_gemv_f32_m` (each weight read once
+per 8 tokens; every row is the one-token kernel's, bit for bit), and `attn_prep` takes its
+token's rows: the group state, the pooling and the latent stay token by token, in position order.
+Prompt chunks take the same path.
+
+Every output identical. Held-out mean **41.96 -> 42.52 t/s (+1.3%)**: code and structured prompts
++1.4% to +2.2%, the chat prompts with short steps flat (-0.1% to +0.6%). With step 97: **+3.45%**
+since step 90.
+
+Left from the review (PLAN): the compressor's per-token copies in one kernel; the hc projection
+and split in one kernel (~1 ms per step, the reduction order must stay); the draft's head as a
+lossy fp8 copy (~1 ms per step, 0.66 GB of die 0, acceptance to simulate); the dies' three copies
+into die 0 as one.
+

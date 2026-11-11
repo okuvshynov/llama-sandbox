@@ -216,8 +216,8 @@ Runtime::Runtime(const Model& model, RtOptions options, const std::string& fp8_p
   partial = dalloc<float>((size_t)kSplitMax * std::max(hp.n_vocab, 32768));
   A = {dalloc<uint8_t>((size_t)C * NH * HD), dalloc<float>((size_t)C * NH * HD / 32)};
   B = {dalloc<uint8_t>((size_t)C * NH * HD), dalloc<float>((size_t)C * NH * HD / 32)};
-  cmp_kvn = dalloc<float>(HD);
-  cmp_sc = dalloc<float>(HD);
+  cmp_kvn = dalloc<float>((size_t)C * HD);  // a chunk's rows (README step 97)
+  cmp_sc = dalloc<float>((size_t)C * HD);
   lat = dalloc<float>(HD);
   ik = dalloc<float>(hp.idx_dim);
   iq = dalloc<float>(hp.idx_heads * hp.idx_dim);
@@ -1248,10 +1248,15 @@ void Runtime::attention(int L, const float* xin, float* out, int M) {
   att_K.assign(M, 0);
   att_topk.assign(M, nullptr);
   const float* comp = kind.ratio ? S[kind.kv_from].comp : nullptr;
+  if (kind.ratio && kind.kv_source) {  // README step 97: the compressor's projections for the whole chunk, each weight
+    mark("attn.compressor");            // read once (every row the one-token kernel's, bit for bit)
+    k_gemv_f32_m(w.cmp_kv, HD, E, xin, M, cmp_kvn, partial, s);
+    if (kind.ratio > 1) k_gemv_f32_m(w.cmp_gate, HD, E, xin, M, cmp_sc, partial, s);
+  }
   for (int t = 0; t < M; t++) {
     pos = p0 + t;
     attn_prep(L, tok_base + t, xin + (size_t)t * E, Codes{B.q + (size_t)t * hp.q_lora, B.s + (size_t)t * hp.q_lora / 32},
-              att_K[t], att_topk[t]);
+              att_K[t], att_topk[t], cmp_kvn + (size_t)t * HD, cmp_sc + (size_t)t * HD);
   }
   mark("attn.core");
   const float scale = 1.0f / sqrtf((float)HD);
@@ -1285,7 +1290,8 @@ void Runtime::attention(int L, const float* xin, float* out, int M) {
 // one token (chunk index t, at position pos): the compressor and the indexer; K and topk: the
 // compressed keys its attention takes (README step 67: the rope, the ring and the attention run
 // for the whole chunk in attention())
-void Runtime::attn_prep(int L, int t, const float* xin, Codes qr_t, int& K, const int*& topk) {
+void Runtime::attn_prep(int L, int t, const float* xin, Codes qr_t, int& K, const int*& topk, const float* cmp_kvn,
+                        const float* cmp_sc) {
   const LayerW& w = W[L];
   const LayerKind& k = m.layers[L].kind;
   const int HD = hp.head_dim, RD = hp.rope_dim, E = hp.n_embd;
@@ -1297,10 +1303,9 @@ void Runtime::attn_prep(int L, int t, const float* xin, Codes qr_t, int& K, cons
     const int r = k.ratio;
     mark("attn.compressor");
     if (k.kv_source) {  // Compressor.forward at decode: one token into the group; pool when complete
-      k_gemv_f32(w.cmp_kv, HD, E, xin, cmp_kvn, partial, s);
+      // (its projections of xin: cmp_kvn, cmp_sc, computed for the chunk in attention())
       const float* latent = nullptr;
       if (r > 1) {
-        k_gemv_f32(w.cmp_gate, HD, E, xin, cmp_sc, partial, s);
         float* kv_state = S[L].cmp_kv;
         float* sc_state = S[L].cmp_score;
         CHECK(hipMemcpyAsync(kv_state + (size_t)(pos % r) * HD, cmp_kvn, HD * 4, hipMemcpyDeviceToDevice, s));
