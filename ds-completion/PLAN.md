@@ -445,6 +445,8 @@ Step 100: traces regenerated at step 98; section B's spans refreshed.
 Step 101: the attention output matrices' rows padded by 64 bytes on the GPU: 42.52 -> 43.55 t/s.
 Step 102: light launches of exactly 2048 waves sent as two, the router's and compressor's rows
 padded: 43.55 -> 44.00 t/s. Expert slots padded, fp8 GEMVs as two launches: not kept.
+Step 103: query B and output A do not pay for their multiples of 2048 waves (closed); the
+several-input fp8 kernels run in rounds of ~512 waves (measured, nothing changed).
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front
@@ -470,12 +472,14 @@ Step 101: the fp8 matrices with rows a multiple of 4096 bytes apart had read at 
 (cache collisions); padded by 64 bytes: +2.4%. Step 102 closed the same check elsewhere: only the
 router gains (padded), the head, hc projection and expert slots do not. It also found that a
 launch of 2017-2048 waves takes ~48 us whatever it does (`bin-hip/bench-wave-slots`): the light
-ones (compressor, a 4-token quantize) go out as two launches, +1.0% together. Still on multiples
-of 2048 waves: attention query B and output A (heavy; two launches were slower).
+ones (compressor, a 4-token quantize) go out as two launches, +1.0% together. Query B and output A,
+on multiples of 2048 waves, do not pay for it (step 103).
 
 Big, a design first: the fp8 GEMVs at 6 tokens (step 101's probe: the multiplies fit, the
 activations' loads per lane and step are the cost; a kernel that keeps the 64-lane order of
-additions on an 8- or 16-lane work split; local variants failed in 65 and 75);
+additions on an 8- or 16-lane work split; local variants failed in 65 and 75; step 103: at
+several inputs a launch just over a multiple of ~512 waves pays a whole extra round, query A
+640 waves, the shared expert's gate / up 1152, down 640: ~1-1.5% of a step in those tails);
 drafting ahead while the verify runs (~2-4% on code; memory and a second stream or die).
 
 Backlog (less likely): cache policy tweaks (59 lost; 63-64 2.5% simulated), an LLC prefetch (77:

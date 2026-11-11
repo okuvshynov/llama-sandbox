@@ -1,6 +1,6 @@
 // bench-fp8: the fp8 GEMV (fp8_gemv.hip) on real weights from dense-fp8.gguf (fp8pack output).
 //
-//   bench-fp8 <dense-fp8.gguf> [--dev D] [--layer L] [--ms 1,2,4,8] [--reps 200]
+//   bench-fp8 <dense-fp8.gguf> [--dev D] [--layer L] [--ms 1,2,4,8] [--reps 200] [--bitwise | --gemm [--sweep] | --sweep | --waves]
 //
 // Per tensor and batch size M:
 //   - the device activation quantizer must equal the host one (src/fakequant.cpp rules) bit for bit;
@@ -12,6 +12,8 @@
 // --gemm: the many-input kernel (fp8_gemm, prompt chunks) for each M of --ms: every token's
 // result against a one-token fp8_gemv call, bit for bit; time against fp8_gemv in slices of 8;
 // with --sweep every (rows per lane group, inputs per tile) instance.
+// --waves: time only, the built-in split over fewer rows (the launch 0, 4, 32, ... 512 waves
+// smaller): us per call (us per 1000 waves). README step 103.
 
 #include "fp8_gemv.h"
 #include "fakequant.h"
@@ -47,7 +49,7 @@ int main(int argc, char** argv) {
   setvbuf(stdout, nullptr, _IOLBF, 0);
   if (argc < 2) { fprintf(stderr, "usage: bench-fp8 <dense-fp8.gguf> [--dev D] [--layer L] [--ms 1,2,4,8] [--reps N]\n"); return 2; }
   int dev = 0, layer = 2, reps = 200;
-  bool sweep = false, bitwise = false, gemm = false;
+  bool sweep = false, bitwise = false, gemm = false, waves = false;
   std::vector<int> ms = {1, 2, 4, 8};
   for (int i = 2; i < argc; i++) {
     std::string a = argv[i];
@@ -57,6 +59,7 @@ int main(int argc, char** argv) {
     else if (a == "--sweep") sweep = true;
     else if (a == "--bitwise") bitwise = true;
     else if (a == "--gemm") gemm = true;
+    else if (a == "--waves") waves = true;
     else if (a == "--ms") { ms.clear(); for (char* p = argv[++i]; *p;) { ms.push_back((int)strtol(p, &p, 10)); if (*p == ',') p++; } }
   }
   CHECK(hipSetDevice(dev));
@@ -239,6 +242,25 @@ int main(int argc, char** argv) {
         return ms_total * 1000.0 / reps;
       };
       const double bytes = wq.size() + wsc.size();
+      if (waves) {  // README step 103: the same kernel over fewer rows, so that the launch has fewer waves
+        const int lpr = fp8_lpr(N, K), r = M == 1 ? 1 : (M >= 8 && lpr == 64 && N >= 2048) ? 4 : 2, rpw = 64 / lpr * r;
+        printf("%-18s M=%d %6d waves:", sh.name, M, N / rpw);
+        for (int dw_ : {0, 4, 32, 64, 128, 256, 512}) {
+          const int n2 = N - dw_ * rpw;
+          if (n2 <= 0) continue;
+          for (int i = 0; i < 10; i++) fp8_gemv_cfg(dw, ds, n2, K, rpg, act, M, dy, st, lpr, r, WST);
+          CHECK(hipEventRecord(e0, st));
+          for (int i = 0; i < reps; i++) fp8_gemv_cfg(dw, ds, n2, K, rpg, act, M, dy, st, lpr, r, WST);
+          CHECK(hipEventRecord(e1, st));
+          CHECK(hipEventSynchronize(e1));
+          float ms_total;
+          CHECK(hipEventElapsedTime(&ms_total, e0, e1));
+          const double us = ms_total * 1000.0 / reps;
+          printf("  -%d: %.1f (%.2f)", dw_, us, us / (N / rpw - dw_) * 1000);
+        }
+        printf("\n");
+        continue;
+      }
       if (!sweep) {
         const double us = time_cfg(0, 0), gbs = bytes / (us * 1e-6) / 1e9;
         printf("%-18s %6d %6d %3d %10s %10.2e %8.1f %8.1f %10.2f\n", sh.name, K, N, M, qbad ? "MISMATCH" : "exact",

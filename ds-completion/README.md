@@ -3704,3 +3704,46 @@ repeat (the attention outputs, a little the router), nowhere else. Open: the 6-i
 (step 101's lead), and whether query B's and output A's wave counts can leave the multiples
 without two launches (their rows per wave must divide 32; a 3-wave block does not change the
 count).
+
+## Step 103: the fp8 GEMVs by wave count: no penalty on multiples of 2048; rounds of ~512 waves at several inputs
+
+Step 102 left one question: attention query B and output A launch on multiples of 2048 waves
+(~50 launches per verify step); as two launches they were slower, which does not say whether
+they pay for the multiple. The test: the same kernel and split over a matrix cut by a few waves'
+rows (, new; ).
+
+**They do not pay.** On the multiple they are a little faster than just below it:
+
+| us per call, one input | on the multiple | 4 waves fewer | 64 fewer | 512 fewer |
+|---|---|---|---|---|
+| attention query B (4096 waves) | 60.5 | 64.7 | 64.7 | 58.1 |
+| attention output A (8192 waves) | 45.3 | 48.7 | 50.4 | 48.0 |
+
+and the same at 2, 3 and 6 inputs (query B at 2048 waves: 63.6 / 67.5, 67.7 / 70.9, 78.4 / 82.0;
+output A at 4096: 50.9 / 54.0, 77.2 / 76.9, 113.6 / 115.5). So step 102's floor concerns light
+launches only, and those are handled. Closed.
+
+**What the sweep shows instead:** the several-input kernels take time in steps of about 512
+waves, and a launch a little over a multiple of 512 pays for a whole further round:
+
+| us per call | waves today | today | 128 waves fewer | 256 fewer |
+|---|---|---|---|---|
+| attention query A, 3 inputs | 640 | 25.7 | 20.8 (512) | 19.5 |
+| attention query A, 6 inputs | 640 | 30.0 | 21.6 (512) | 21.2 |
+| shared expert gate (and up), 3 inputs | 1152 | 36.1 | 27.4 (1024) | 27.1 |
+| shared expert gate (and up), 6 inputs | 1152 | 45.3 | 37.4 (1024) | 36.9 |
+| shared expert down, 3 inputs | 640 | 25.6 | 22.0 (512) | 21.0 |
+| shared expert down, 6 inputs | 640 | 31.7 | 26.4 (512) | 25.6 |
+
+The last 128 waves (10-20% of the rows) cost 4-9 us, the next 128 removed almost nothing. The
+one-input kernels fall smoothly (query A, 1280 waves: 11.7, 11.3, 9.9). The likely reason, not
+verified: with one accumulator per input and row the kernel needs more registers, so fewer of its
+waves fit on the GPU at once (the compiler's occupancy warnings for the larger instances point
+the same way), and the waves beyond a full set run as a short extra round.
+
+**Worth, if the extra round went away for free:** per layer at 3 inputs ~5 + 2 x 9 + 4 = 27 us, at
+6 inputs ~8 + 2 x 8 + 5 = 29 us; over the layers about 1.2 ms of a 65-97 ms step, 1-1.5%.
+Nothing is changed here: the wave count is rows / rows per wave, the rows per wave must divide 32
+(1, 2, 4, 8: the sweeps chose 2), so removing the tail means some waves taking a third row, or
+fewer registers per wave. Both belong to the several-input kernel's design (PLAN's "big" item),
+where this is now one of its measurements.
