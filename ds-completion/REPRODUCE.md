@@ -122,6 +122,7 @@ Unless stated: sclk 2, 16 CPU threads (32 before README step 18), the study30 pl
 | 30 | `bench-expert-load.txt`, `load-test/` | `bin-hip/bench-expert-load -m $M`, `scripts/load-test.sh` |
 | 31-32 | `canon-gate.txt`, `canon-gate/` | `scripts/canon-gate.sh` (rerun for steps 32 and 45) |
 | 34 | `check-topk.txt` | `~/venvs/ds-ref/bin/python ref/check_topk.py` (runs `bin-hip/test-topk`) |
+| 99 | `decode-next/review-leftovers.txt`, `decode-next/{hc-mix,compressor-chunk,gather-streams}.patch`, `spec-measure-sclk6-cacheloads800cacheperiod8-cmpchunk/` | each patch on 5f21709 (`git apply`): `bin-hip/bench-kernels` (hc lines); `scripts/spec-measure.sh` with the tuned cache; the prompt gate's `--canon` runs against `results/prefill/gate/p*-base-canon.out`; the held-out command for cpp-matrix, tcp-udp, ja-email |
 | 98 | `decode-next/local-review.txt`, `spec-measure-sclk6-cacheloads800cacheperiod8-compressor/` | `CACHE="--cache-loads 800 --cache-period 8" scripts/spec-measure.sh` |
 | 97 | `decode-next/local-review.txt`, `spec-measure-sclk6-cacheloads800cacheperiod8-gather/` | the same at step 97's commit; the second-copy path: `DS_EARLY_ROWS=1` with the held-out command (the `# short forwards:` line); the tables: step 88's traces (`results/trace/`) |
 | 96 | `decode-next/exit-abort-step96.txt` | `bin-hip/bench-loader-exit 1500` and `bin-hip/bench-loader-exit 1500 serial`; the held-out command for ja-email and py-lru (the `# expert loader: ... unregistered` line); the handler: the same command with `-n 2000`, `kill -ABRT <pid>` during generation |

@@ -440,6 +440,7 @@ Step 97: the dies' results in smaller copies and the staged block in one: 41.10 
 The exit abort recurred with step 96's fixes: after main, in the HSA runtime's shutdown (documented,
 not worked around).
 Step 98: the compressor's projections once per chunk: 41.96 -> 42.52 t/s.
+Step 99: the review's four leftovers: none kept (patches in results/decode-next/).
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front
@@ -454,9 +455,9 @@ Promising, in order:
    than the CPU's 25-30 ms they could hide.
 4. Done (step 97): the tail was the dies' worst-case copies, not their loads: 3 rows per token
    first, the staged block in one copy, +2.1%. With it the compressor batched (step 98, +1.3%).
-   Left from that review: the compressor's per-token copies in one kernel; the hc projection and
-   split in one kernel (~1 ms per step); the draft's head as a lossy fp8 copy (~1 ms per step,
-   0.66 GB of die 0, acceptance to simulate); the dies' three copies into die 0 as one.
+   The review's leftovers (step 99): hc kernels fused, the compressor's state per chunk (prompt
+   +1.1%, decode 0), a gather stream per die: tried, not kept; the draft's head in fp8 waits for
+   the multi-input fp8 kernel.
 5. A simulation of ~190 more slots on die 0 (`scripts/cache_sim.py`): what a draft-expert cache
    would buy, before building one.
 6. Commit's 0.86 ms wait: the draft's window seeded for all kept tokens at once (~1%).

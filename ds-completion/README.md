@@ -3548,3 +3548,31 @@ and split in one kernel (~1 ms per step, the reduction order must stay); the dra
 lossy fp8 copy (~1 ms per step, 0.66 GB of die 0, acceptance to simulate); the dies' three copies
 into die 0 as one.
 
+## Step 99: the review's leftovers (three tried and not kept, one estimated)
+
+The four smaller items left by step 97's review (`results/decode-next/review-leftovers.txt`;
+every variant's outputs identical to the references):
+
+- **The hyper-connection kernels fused** (`hc-mix.patch`): the hc_fn GEMV's split sum, `hc_split`
+  and `hc_pre_norm` in one kernel, statement for statement (2 launches per sublayer instead of 4).
+  35.2 us against 35.7 for the separate calls, and no change in a run. The time is the kernels'
+  work (one block per token: its reads of 20,480 values, two block sums, 20 Sinkhorn iterations
+  ~5 us), not their launches: step 65's conclusion again, now with the kernel written.
+- **The compressor's group state, pooling and latents per chunk** (`compressor-chunk.patch`): one
+  kernel walks the chunk's tokens per element (slot writes, a pooled latent per completed group,
+  the commit rows), then the latent chain runs once for all groups. Held-out mean 42.52 -> 42.52
+  t/s; the prompt gate passes (chunks 1, 8, 13, 512) and a 1,989-token prompt gains 1.1% (67.0 ->
+  67.8 t/s). Under the bar for decode; step 98 had taken the part that mattered (the two 10 MB
+  reads per token).
+- **One gather stream per die** (`gather-streams.patch`), so a die's copy into die 0 waits for its
+  own die only instead of queueing behind the others in die order: ~0.5% slower on three prompts
+  (52.04 / 36.54 / 34.29 t/s against 52.2-52.4 / 36.7-36.9 / 34.4-34.5). The copies share one
+  engine; more streams add waits and no overlap.
+- **The draft's head as a lossy fp8 copy** (not built): the bf16 head through LDS already reads at
+  ~600 GB/s (1.32 GB in 2.2 ms at 5 tokens); the fp8 GEMV at 5 inputs reads at ~240 GB/s (step
+  75), so half the bytes would take ~2.7 ms. Only with the restructured multi-input fp8 kernel
+  (PLAN, "big"), and it would cost 0.66 GB of die 0.
+
+So the review's yield is steps 97 and 98 (+3.45%); what is left in die 0's front is kernel work
+at the memory limit or the known multi-input fp8 problem.
+

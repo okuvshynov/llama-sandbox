@@ -1,0 +1,156 @@
+diff --git a/ds-completion/hip/bench_kernels.cpp b/ds-completion/hip/bench_kernels.cpp
+index e1407da..f8eabea 100644
+--- a/ds-completion/hip/bench_kernels.cpp
++++ b/ds-completion/hip/bench_kernels.cpp
+@@ -142,6 +142,16 @@ int main(int argc, char** argv) {
+   time("kv_finish 512", R, [&] { k_kv_finish(x, small, 512, 64, freqs, 100, 1e-20f, ring, s); });
+   time("gemv_f32 hc_fn 24 x 20480", R, [&] { k_gemv_f32(hcfn, 24, 4 * E, h, small, part, s); });
+   time("hc_split", R, [&] { k_hc_split(h, 4 * E, small, small, small, 1e-20f, 1e-6f, 20, small, small + 4, small + 8, s); });
++  time("hc_split, 1 iteration (bench only)", R, [&] { k_hc_split(h, 4 * E, small, small, small, 1e-20f, 1e-6f, 1, small, small + 4, small + 8, s); });
++  time("hc_split, 4 x 1280 values (bench only)", R, [&] { k_hc_split(h, E, small, small, small, 1e-20f, 1e-6f, 20, small, small + 4, small + 8, s); });
++  time("hc: gemv + split + pre_norm (3 calls)", R, [&] {
++    k_gemv_f32(hcfn, 24, 4 * E, h, small + 64, part, s);
++    k_hc_split(h, 4 * E, small + 64, small, small, 1e-20f, 1e-6f, 20, small + 128, small + 132, small + 136, s);
++    k_hc_pre_norm(h, small, small, E, 1e-20f, x, s);
++  });
++  time("hc: k_hc_mix (step 99)", R, [&] {
++    k_hc_mix(hcfn, h, E, small, small, 1e-20f, 1e-6f, 20, small, small, small + 128, small + 132, small + 136, x, part, s);
++  });
+   time("hc_pre_norm 5120", R, [&] { k_hc_pre_norm(h, small, small, E, 1e-20f, x, s); });
+   time("hc_post 5120", R, [&] { k_hc_post(x, h, small, small, E, h2, s); });
+   time("gemv_f32 router 384 x 5120", R, [&] { k_gemv_f32(wf, 384, E, x, small, part, s); });
+diff --git a/ds-completion/hip/kernels.h b/ds-completion/hip/kernels.h
+index ce85feb..319d9eb 100644
+--- a/ds-completion/hip/kernels.h
++++ b/ds-completion/hip/kernels.h
+@@ -50,6 +50,11 @@ void k_hc_split(const float* h, int n_flat, const float* mixes, const float* sca
+                 float hc_eps, int iters, float* pre, float* post, float* comb, hipStream_t s, int M = 1);
+ // x = rms(sum_j pre[j] h[j]) * w   (h: [hc][n])
+ void k_hc_pre_norm(const float* h, const float* pre, const float* w, int n, float eps, float* x, hipStream_t s, int M = 1);
++// README step 99: k_gemv_f32_m(fn (24 x 4n), h) + k_hc_split + k_hc_pre_norm(h, pre_in, w) in two launches
++// instead of four, the same bits (pre_in: the previous sublayer's pre; partial as for k_gemv_f32_m)
++void k_hc_mix(const float* fn, const float* h, int n, const float* scale, const float* base, float norm_eps, float hc_eps,
++              int iters, const float* pre_in, const float* w, float* pre, float* post, float* comb, float* x, float* partial,
++              hipStream_t s, int M = 1);
+ // x = sum_j pre[j] h[j] without the norm (the final head collapse uses k_rms_norm after);
+ // pre_stride 0: every token uses the same pre
+ void k_hc_pre(const float* h, const float* pre, int n, float* x, hipStream_t s, int M = 1, int pre_stride = 4);
+diff --git a/ds-completion/hip/kernels.hip b/ds-completion/hip/kernels.hip
+index 390bba1..c9f69bb 100644
+--- a/ds-completion/hip/kernels.hip
++++ b/ds-completion/hip/kernels.hip
+@@ -427,6 +427,87 @@ void k_hc_pre(const float* h, const float* pre, int n, float* x, hipStream_t s,
+   hc_pre_kernel<<<M, 1024, 0, s>>>(h, pre, pre_stride, nullptr, n, 0.0f, x, false);
+ }
+ 
++// README step 99: one sublayer's mixing in one kernel instead of three (the split sum of the
++// hc_fn GEMV's partials, hc_split_kernel, hc_pre_kernel with the norm). Each part's arithmetic is
++// the kernel's it replaces, statement for statement, so the bits are the same. One block per
++// token; partial: gemv_partial_m_kernel's (token, split, row) sums of fn . h_flat.
++__global__ void hc_mix_kernel(const float* h, int n, const float* partial, int splits, const float* scale, const float* base,
++                              float norm_eps, float hc_eps, int iters, const float* pre_in, const float* w, float* pre,
++                              float* post, float* comb, float* x) {
++  constexpr int HC = 4, MIX = (2 + HC) * HC;
++  __shared__ float buf[8192];
++  const int n_flat = HC * n;
++  h += (size_t)blockIdx.x * n_flat;  // token blockIdx.x
++  partial += (size_t)blockIdx.x * splits * MIX;
++  pre_in += blockIdx.x * HC;
++  pre += blockIdx.x * HC;
++  post += blockIdx.x * HC;
++  comb += blockIdx.x * HC * HC;
++  x += (size_t)blockIdx.x * n;
++  {  // hc_pre_kernel, norm: x = rms(sum_j pre_in[j] h[j]) * w
++    float ss = 0;
++    for (int i = threadIdx.x; i < n; i += blockDim.x) {
++      float v = 0;
++      for (int j = 0; j < 4; j++) v += pre_in[j] * h[(size_t)j * n + i];
++      buf[i] = v;
++      ss += v * v;
++    }
++    const float r = rsqrtf(block_sum(ss) / n + norm_eps);
++    for (int i = threadIdx.x; i < n; i += blockDim.x) x[i] = buf[i] * r * w[i];
++  }
++  // hc_split_kernel
++  float ss = 0;
++  for (int i = threadIdx.x; i < n_flat; i += blockDim.x) ss += h[i] * h[i];
++  const float r = rsqrtf(block_sum(ss) / n_flat + norm_eps);
++  const int t = threadIdx.x;
++  if (t >= 64) return;
++  auto mix = [&](int row) {  // split_sum_m_kernel
++    float v = 0;
++    for (int sp = 0; sp < splits; sp++) v += partial[(size_t)sp * MIX + row];
++    return v;
++  };
++  if (t < HC) pre[t] = sigmoidf(mix(t) * r * scale[0] + base[t]) + hc_eps;
++  else if (t < 2 * HC) post[t - HC] = 2.0f * sigmoidf(mix(t) * r * scale[1] + base[t]);
++  const int e = t & 15;
++  float c = mix(2 * HC + e) * r * scale[2] + base[2 * HC + e];
++  auto row_sum = [&](float v) { v += __shfl_xor(v, 1, 64); v += __shfl_xor(v, 2, 64); return v; };
++  auto col_sum = [&](float v) { v += __shfl_xor(v, 4, 64); v += __shfl_xor(v, 8, 64); return v; };
++  float mx = fmaxf(c, __shfl_xor(c, 1, 64));
++  mx = fmaxf(mx, __shfl_xor(mx, 2, 64));
++  c = expf(c - mx);
++  c = c / row_sum(c) + hc_eps;
++  c = c / (col_sum(c) + hc_eps);
++  for (int it = 1; it < iters; it++) {
++    c = c / (row_sum(c) + hc_eps);
++    c = c / (col_sum(c) + hc_eps);
++  }
++  if (t < 16) comb[e] = c;
++}
++
++void k_hc_mix(const float* fn, const float* h, int n, const float* scale, const float* base, float norm_eps, float hc_eps,
++              int iters, const float* pre_in, const float* w, float* pre, float* post, float* comb, float* x, float* partial,
++              hipStream_t s, int M) {
++  constexpr int HC = 4, MIX = (2 + HC) * HC, VEC = 4;
++  const int K = HC * n;
++  if (n > 8192) throw std::runtime_error("k_hc_mix: n");
++  int splits = 1;  // exactly as gemv()
++  while (splits < kSplitMax && (int64_t)MIX * splits < 2048 && K / (splits * 2) >= 64 * VEC * 2) splits *= 2;
++  const int step = 64 * VEC, chunk = cdiv(cdiv(K, splits), step) * step;
++  splits = cdiv(K, chunk);
++  for (int m0 = 0; m0 < M; m0 += 8) {
++    const int mm = std::min(8, M - m0);
++    const float* hm = h + (size_t)m0 * K;
++    const dim3 grid(cdiv(MIX, 4), splits);
++    switch (mm) {
++#define CASE(q) case q: gemv_partial_m_kernel<float, VEC, q, 1><<<grid, 256, 0, s>>>(fn, MIX, K, chunk, hm, partial); break;
++      CASE(1) CASE(2) CASE(3) CASE(4) CASE(5) CASE(6) CASE(7) CASE(8)
++#undef CASE
++    }
++    hc_mix_kernel<<<mm, 1024, 0, s>>>(hm, n, partial, splits, scale, base, norm_eps, hc_eps, iters, pre_in + m0 * HC, w,
++                                      pre + m0 * HC, post + m0 * HC, comb + m0 * HC * HC, x + (size_t)m0 * n);
++  }
++}
++
+ __global__ void hc_post_kernel(const float* x, const float* h, const float* post, const float* comb, int n, float* out) {
+   const int i = blockIdx.x * blockDim.x + threadIdx.x, t = blockIdx.y;  // element, token
+   if (i >= n) return;
+diff --git a/ds-completion/hip/rt.cpp b/ds-completion/hip/rt.cpp
+index 3c41a16..3a0246b 100644
+--- a/ds-completion/hip/rt.cpp
++++ b/ds-completion/hip/rt.cpp
+@@ -1766,18 +1766,16 @@ void Runtime::block_pre(int L, Taps* taps, int M) {
+   }
+   mark("hc");
+   // each sublayer's mixes give the next sublayer's input mix (see Engine::block)
+-  k_gemv_f32_m(w.hc_attn_fn, MIX, E * HC, h, M, mixes, partial, s);
+-  k_hc_split(h, E * HC, mixes, w.hc_attn_scale, w.hc_attn_base, eps, hp.hc_eps, hp.hc_iters, a_pre, a_post, a_comb, s, M);
+-  k_hc_pre_norm(h, pre, w.attn_norm, E, eps, x, s, M);
++  k_hc_mix(w.hc_attn_fn, h, E, w.hc_attn_scale, w.hc_attn_base, eps, hp.hc_eps, hp.hc_iters, pre, w.attn_norm, a_pre, a_post,
++           a_comb, x, partial, s, M);
+   tap(taps, "attn_in", x, {E, 1});
+   attention(L, x, y, M);
+   tap(taps, "attn_out", y, {E, 1});
+   mark("hc");
+   k_hc_post(y, h, a_post, a_comb, E, h2, s, M);
+   std::swap(h, h2);
+-  k_gemv_f32_m(w.hc_ffn_fn, MIX, E * HC, h, M, mixes, partial, s);
+-  k_hc_split(h, E * HC, mixes, w.hc_ffn_scale, w.hc_ffn_base, eps, hp.hc_eps, hp.hc_iters, f_pre, f_post, f_comb, s, M);
+-  k_hc_pre_norm(h, a_pre, w.ffn_norm, E, eps, d_moe.x, s, M);
++  k_hc_mix(w.hc_ffn_fn, h, E, w.hc_ffn_scale, w.hc_ffn_base, eps, hp.hc_eps, hp.hc_iters, a_pre, w.ffn_norm, f_pre, f_post,
++           f_comb, d_moe.x, partial, s, M);
+   tap(taps, "ffn_in", d_moe.x, {E, 1});
+   moe_launch(L, M);
+ }

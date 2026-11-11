@@ -1,0 +1,90 @@
+diff --git a/ds-completion/hip/rt.cpp b/ds-completion/hip/rt.cpp
+index 3c41a16..9ed883f 100644
+--- a/ds-completion/hip/rt.cpp
++++ b/ds-completion/hip/rt.cpp
+@@ -738,14 +738,16 @@ void Runtime::setup_experts() {
+       CHECK(hipHostMalloc(&d.h_y, y_rows * E * 4, 0));
+     }
+     CHECK(hipSetDevice(home));
++    if (d.dev != home) {
++      CHECK(hipStreamCreateWithFlags(&d.s_gather, hipStreamNonBlocking));
++      CHECK(hipEventCreateWithFlags(&d.gathered, hipEventDisableTiming));
++    }
+     d.y_home = dalloc<float>((size_t)kChunk * E);
+   }
+   CHECK(hipStreamCreateWithFlags(&s_local, hipStreamNonBlocking));
+   CHECK(hipEventCreateWithFlags(&ev_dispatched, hipEventDisableTiming));
+   CHECK(hipEventCreateWithFlags(&ev_local, hipEventDisableTiming));
+   if (const char* e = getenv("DS_EARLY_ROWS")) early_rows_per_tok = std::max(1, atoi(e));  // tests: 1 forces second copies
+-  CHECK(hipStreamCreateWithFlags(&s_gather, hipStreamNonBlocking));
+-  CHECK(hipEventCreateWithFlags(&ev_gathered, hipEventDisableTiming));
+   mem_mark("expert path buffers (per die: scratch, staging)");
+   std::vector<int> cap;
+   const int spare = opt.load_test >= 0 ? kLoadTestSlots : 0;
+@@ -915,11 +917,12 @@ Runtime::~Runtime() {
+     (void)hipEventDestroy(ev_dispatched);
+     (void)hipEventDestroy(ev_local);
+   }
+-  if (s_gather) {
+-    (void)hipStreamSynchronize(s_gather);
+-    (void)hipStreamDestroy(s_gather);
+-    (void)hipEventDestroy(ev_gathered);
+-  }
++  for (Die& d : dies)
++    if (d.s_gather) {
++      (void)hipStreamSynchronize(d.s_gather);
++      (void)hipStreamDestroy(d.s_gather);
++      (void)hipEventDestroy(d.gathered);
++    }
+   (void)hipEventDestroy(ev_staged);
+   for (auto& [L, p] : cmp_rows) (void)hipFree(p);
+   for (auto& [L, p] : cmp_backup) (void)hipFree(p);
+@@ -1502,12 +1505,12 @@ void Runtime::moe_launch(int L, int M) {
+     }
+     CHECK(hipSetDevice(opt.gpu));
+     if (early_gather) {
+-      CHECK(hipStreamWaitEvent(s_gather, d.done, 0));
++      CHECK(hipStreamWaitEvent(d.s_gather, d.done, 0));
+       // on the copy engine: these run during the CPU's experts (README step 84 tried kernels here)
+-      CHECK(hipMemcpyAsync(opt.canon ? place_rows(i) : d.y_home, d.h_y, early_rows * E * 4, hipMemcpyHostToDevice, s_gather));
++      CHECK(hipMemcpyAsync(opt.canon ? place_rows(i) : d.y_home, d.h_y, early_rows * E * 4, hipMemcpyHostToDevice, d.s_gather));
++      CHECK(hipEventRecord(d.gathered, d.s_gather));
+     }
+   }
+-  if (early_gather) CHECK(hipEventRecord(ev_gathered, s_gather));
+   mark("ffn.shared");
+   quant(xin, E, A, M);
+   gemv8(w.gate_sh, A, gate, 0, M);
+@@ -1700,7 +1703,9 @@ void Runtime::moe_finish(int L, float* out, int M, Taps* taps) {
+   // the dies' results, waited for in the stream
+   if (n_dies) mark("ffn.wait_for_gpu_experts");
+   if (local) CHECK(hipStreamWaitEvent(s, ev_local, 0));
+-  if (early_gather) CHECK(hipStreamWaitEvent(s, ev_gathered, 0));  // copied in by moe_launch
++  if (early_gather)  // copied in by moe_launch
++    for (const Die& d : dies)
++      if (d.st) CHECK(hipStreamWaitEvent(s, d.gathered, 0));
+   for (int i = 0; i < n_dies; i++)
+     if (more[i]) {
+       CHECK(hipStreamWaitEvent(s, dies[i].done_more, 0));
+diff --git a/ds-completion/hip/rt.h b/ds-completion/hip/rt.h
+index b9854ff..40fc60f 100644
+--- a/ds-completion/hip/rt.h
++++ b/ds-completion/hip/rt.h
+@@ -193,6 +193,8 @@ class Runtime {
+     hipEvent_t done = nullptr;
+     char* d_in = nullptr;        // the staged block on dev
+     float *d_y = nullptr, *h_y = nullptr;
++    hipStream_t s_gather = nullptr;  // on the home die: this die's rows in (README step 99: one stream per die,
++    hipEvent_t gathered = nullptr;   // so a copy waits for its own die only)
+     hipEvent_t done_more = nullptr;  // a short forward's rows past the early copy are in h_y (step 97)
+   };
+   std::vector<Die> dies;
+@@ -206,8 +208,6 @@ class Runtime {
+   hipStream_t s_local = nullptr;  // home die: its own expert list, next to the shared expert
+   hipEvent_t ev_dispatched = nullptr, ev_local = nullptr;
+   // a short forward: the other dies' results copied into the home die as each finishes (moe_launch)
+-  hipStream_t s_gather = nullptr;
+-  hipEvent_t ev_gathered = nullptr;
+   bool early_gather = false;  // this layer's copies were all issued by moe_launch (a short forward)
+   static constexpr int kEarlyGatherMaxM = 8;
+   // README step 97: a short forward's early copies take this many rows per token and die (of up to

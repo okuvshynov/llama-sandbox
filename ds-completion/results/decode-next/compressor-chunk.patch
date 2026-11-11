@@ -1,0 +1,230 @@
+diff --git a/ds-completion/hip/kernels.h b/ds-completion/hip/kernels.h
+index ce85feb..e2708f4 100644
+--- a/ds-completion/hip/kernels.h
++++ b/ds-completion/hip/kernels.h
+@@ -36,7 +36,7 @@ void k_gemv_bf16_m(const uint16_t* W, int N, int K, const float* x, int M, float
+ void k_rope(float* x, int n_heads, int head_dim, int rope_dim, const float* freqs, int pos, bool inverse, hipStream_t s);
+ // M tokens [M][n_heads][head_dim] at positions pos0 .. pos0 + M - 1, each as k_rope alone (README step 67)
+ void k_rope_m(float* x, int M, int n_heads, int head_dim, int rope_dim, const float* freqs, int pos0, bool inverse,
+-              hipStream_t s);
++              hipStream_t s, int pos_step = 1);
+ 
+ // ---- hyper-connections (Block.hc_mixes / hc_pre / hc_post, hc_split_sinkhorn) ----
+ 
+@@ -105,6 +105,11 @@ void k_mask_candidates(float* score, int n, int block, const uint8_t* keep, hipS
+ 
+ // pooled[d] = sum_i kv_state[i][d] * softmax_i(score_state[i][d]), i < ratio
+ void k_compress_pool(const float* kv_state, const float* score_state, int ratio, int dim, float* pooled, hipStream_t s);
++// a chunk (README step 99): M tokens' rows kvn / scn [M][dim] at positions p0 .. into the group state; pooled
++// [groups completed in the chunk][dim] in order; rows (or null) [M][2 * dim] = each token's [kv | score].
++// The bits of M one-token steps (copy into slot pos % ratio, k_compress_pool when a group completes).
++void k_compress_chunk(const float* kvn, const float* scn, float* kv_state, float* score_state, int ratio, int dim, int p0, int M,
++                      float* pooled, float* rows, hipStream_t s);
+ 
+ // ---- MoE (Gate, Expert) ----
+ 
+diff --git a/ds-completion/hip/kernels.hip b/ds-completion/hip/kernels.hip
+index 390bba1..9639b54 100644
+--- a/ds-completion/hip/kernels.hip
++++ b/ds-completion/hip/kernels.hip
+@@ -338,9 +338,9 @@ void k_gemv_bf16(const uint16_t* W, int N, int K, const float* x, float* y, floa
+ 
+ // token blockIdx.y of a chunk: x + y * x_stride at position pos + y (one token: y = 0)
+ __global__ void rope_kernel(float* x, int n_heads, int head_dim, int rope_dim, const float* freqs, int pos, bool inverse,
+-                            int x_stride) {
++                            int x_stride, int pos_step) {
+   x += (size_t)blockIdx.y * x_stride;
+-  pos += blockIdx.y;
++  pos += blockIdx.y * pos_step;
+   const int half = rope_dim / 2;
+   const int t = blockIdx.x * blockDim.x + threadIdx.x;
+   if (t >= n_heads * half) return;
+@@ -355,12 +355,13 @@ __global__ void rope_kernel(float* x, int n_heads, int head_dim, int rope_dim, c
+ 
+ void k_rope(float* x, int n_heads, int head_dim, int rope_dim, const float* freqs, int pos, bool inverse, hipStream_t s) {
+   const int n = n_heads * rope_dim / 2;
+-  rope_kernel<<<cdiv(n, 256), 256, 0, s>>>(x, n_heads, head_dim, rope_dim, freqs, pos, inverse, 0);
++  rope_kernel<<<cdiv(n, 256), 256, 0, s>>>(x, n_heads, head_dim, rope_dim, freqs, pos, inverse, 0, 1);
+ }
+ void k_rope_m(float* x, int M, int n_heads, int head_dim, int rope_dim, const float* freqs, int pos0, bool inverse,
+-              hipStream_t s) {
++              hipStream_t s, int pos_step) {
+   const int n = n_heads * rope_dim / 2;
+-  rope_kernel<<<dim3(cdiv(n, 256), M), 256, 0, s>>>(x, n_heads, head_dim, rope_dim, freqs, pos0, inverse, n_heads * head_dim);
++  rope_kernel<<<dim3(cdiv(n, 256), M), 256, 0, s>>>(x, n_heads, head_dim, rope_dim, freqs, pos0, inverse, n_heads * head_dim,
++                                                    pos_step);
+ }
+ 
+ // ================================================================== hyper-connections
+@@ -830,6 +831,53 @@ void k_compress_pool(const float* kv_state, const float* score_state, int ratio,
+   compress_pool_kernel<<<cdiv(dim, 256), 256, 0, s>>>(kv_state, score_state, ratio, dim, pooled);
+ }
+ 
++// A chunk of M tokens at positions p0 .. through the compressor's group state (README step 99):
++// per element what the one-token path did token by token: each token's rows into its slot
++// (pos % ratio), a pooled latent for every group a token completes (compress_pool_kernel's
++// arithmetic over the slots as they are then), the state left as after the last token.
++// rows (or null): each token's [kv | score] row, for a verify step's commit.
++__global__ void compress_chunk_kernel(const float* kvn, const float* scn, float* kv_state, float* sc_state, int ratio, int dim,
++                                      int p0, int M, float* out, float* rows) {
++  constexpr int kMaxRatio = 8;
++  const int d = blockIdx.x * blockDim.x + threadIdx.x;
++  if (d >= dim) return;
++  float kv[kMaxRatio], sc[kMaxRatio];
++  for (int i = 0; i < ratio; i++) {
++    kv[i] = kv_state[(size_t)i * dim + d];
++    sc[i] = sc_state[(size_t)i * dim + d];
++  }
++  int g = 0;
++  for (int t = 0; t < M; t++) {
++    const int q = (p0 + t) % ratio;
++    kv[q] = kvn[(size_t)t * dim + d];
++    sc[q] = scn[(size_t)t * dim + d];
++    if (rows) {
++      rows[(size_t)t * 2 * dim + d] = kv[q];
++      rows[(size_t)t * 2 * dim + dim + d] = sc[q];
++    }
++    if (q != ratio - 1) continue;
++    float mx = -INFINITY;
++    for (int i = 0; i < ratio; i++) mx = fmaxf(mx, sc[i]);
++    float num = 0, den = 0;
++    for (int i = 0; i < ratio; i++) {
++      const float p = expf(sc[i] - mx);
++      num += kv[i] * p;
++      den += p;
++    }
++    out[(size_t)g++ * dim + d] = num / den;
++  }
++  for (int i = 0; i < ratio; i++) {
++    kv_state[(size_t)i * dim + d] = kv[i];
++    sc_state[(size_t)i * dim + d] = sc[i];
++  }
++}
++
++void k_compress_chunk(const float* kvn, const float* scn, float* kv_state, float* score_state, int ratio, int dim, int p0, int M,
++                      float* pooled, float* rows, hipStream_t s) {
++  if (ratio > 8) throw std::runtime_error("k_compress_chunk: ratio");
++  compress_chunk_kernel<<<cdiv(dim, 256), 256, 0, s>>>(kvn, scn, kv_state, score_state, ratio, dim, p0, M, pooled, rows);
++}
++
+ // ================================================================== MoE
+ 
+ // one wave: every lane holds n/64 experts; K rounds of wave argmax (ties to the lower index).
+diff --git a/ds-completion/hip/rt.cpp b/ds-completion/hip/rt.cpp
+index 3c41a16..ad65544 100644
+--- a/ds-completion/hip/rt.cpp
++++ b/ds-completion/hip/rt.cpp
+@@ -218,8 +218,8 @@ Runtime::Runtime(const Model& model, RtOptions options, const std::string& fp8_p
+   B = {dalloc<uint8_t>((size_t)C * NH * HD), dalloc<float>((size_t)C * NH * HD / 32)};
+   cmp_kvn = dalloc<float>((size_t)C * HD);  // a chunk's rows (README step 97)
+   cmp_sc = dalloc<float>((size_t)C * HD);
+-  lat = dalloc<float>(HD);
+-  ik = dalloc<float>(hp.idx_dim);
++  lat = dalloc<float>((size_t)C * HD);  // a chunk's latents and index keys (README step 99)
++  ik = dalloc<float>((size_t)C * hp.idx_dim);
+   iq = dalloc<float>(hp.idx_heads * hp.idx_dim);
+   iw = dalloc<float>(hp.idx_heads);
+   iscore = dalloc<float>(opt.max_ctx);  // one indexer's scores: up to max_ctx compressed positions (ratio 1)
+@@ -1252,11 +1252,33 @@ void Runtime::attention(int L, const float* xin, float* out, int M) {
+     mark("attn.compressor");            // read once (every row the one-token kernel's, bit for bit)
+     k_gemv_f32_m(w.cmp_kv, HD, E, xin, M, cmp_kvn, partial, s);
+     if (kind.ratio > 1) k_gemv_f32_m(w.cmp_gate, HD, E, xin, M, cmp_sc, partial, s);
++    // README step 99: the group state, the pooling and the latents for the chunk too. A latent stands
++    // for its group's first token; every token below takes only the keys up to its own position
++    // (att_K, the indexer's count), so the later groups' being there already changes nothing.
++    const int r = kind.ratio, n_g = (p0 + M) / r - p0 / r, g0 = p0 / r;
++    const float* latent = cmp_kvn;  // ratio 1: every token is a group
++    if (r > 1) {
++      float* rows = verifying ? cmp_rows.at(L) + (size_t)(p0 - verify_p0) * 2 * HD : nullptr;  // for commit
++      k_compress_chunk(cmp_kvn, cmp_sc, S[L].cmp_kv, S[L].cmp_score, r, HD, p0, M, lat, rows, s);
++      latent = lat;
++    }
++    if (n_g) {
++      k_rms_norm(latent, w.cmp_norm, lat, HD, n_g, eps, s);
++      // index keys from the RoPE-free latents first
++      k_gemv_f32_m(w.idx_k, hp.idx_dim, HD, lat, n_g, ik, partial, s);
++      k_rms_norm(ik, w.idx_k_norm, ik, hp.idx_dim, n_g, eps, s);
++      k_rope_m(ik, n_g, 1, hp.idx_dim, RD, w.freqs, g0 * r, false, s, r);
++      k_fq4(ik, n_g * hp.idx_dim, false, s);
++      CHECK(hipMemcpyAsync(S[L].idx_k + (size_t)g0 * hp.idx_dim, ik, (size_t)n_g * hp.idx_dim * 4, hipMemcpyDeviceToDevice, s));
++      k_rope_m(lat, n_g, 1, HD, RD, w.freqs, g0 * r, false, s, r);
++      k_fq4(lat, n_g * HD, true, s);
++      CHECK(hipMemcpyAsync(S[L].comp + (size_t)g0 * HD, lat, (size_t)n_g * HD * 4, hipMemcpyDeviceToDevice, s));
++    }
+   }
+   for (int t = 0; t < M; t++) {
+     pos = p0 + t;
+     attn_prep(L, tok_base + t, xin + (size_t)t * E, Codes{B.q + (size_t)t * hp.q_lora, B.s + (size_t)t * hp.q_lora / 32},
+-              att_K[t], att_topk[t], cmp_kvn + (size_t)t * HD, cmp_sc + (size_t)t * HD);
++              att_K[t], att_topk[t]);
+   }
+   mark("attn.core");
+   const float scale = 1.0f / sqrtf((float)HD);
+@@ -1290,8 +1312,7 @@ void Runtime::attention(int L, const float* xin, float* out, int M) {
+ // one token (chunk index t, at position pos): the compressor and the indexer; K and topk: the
+ // compressed keys its attention takes (README step 67: the rope, the ring and the attention run
+ // for the whole chunk in attention())
+-void Runtime::attn_prep(int L, int t, const float* xin, Codes qr_t, int& K, const int*& topk, const float* cmp_kvn,
+-                        const float* cmp_sc) {
++void Runtime::attn_prep(int L, int t, const float* xin, Codes qr_t, int& K, const int*& topk) {
+   const LayerW& w = W[L];
+   const LayerKind& k = m.layers[L].kind;
+   const int HD = hp.head_dim, RD = hp.rope_dim, E = hp.n_embd;
+@@ -1302,43 +1323,7 @@ void Runtime::attn_prep(int L, int t, const float* xin, Codes qr_t, int& K, cons
+   if (k.ratio) {
+     const int r = k.ratio;
+     mark("attn.compressor");
+-    if (k.kv_source) {  // Compressor.forward at decode: one token into the group; pool when complete
+-      // (its projections of xin: cmp_kvn, cmp_sc, computed for the chunk in attention())
+-      const float* latent = nullptr;
+-      if (r > 1) {
+-        float* kv_state = S[L].cmp_kv;
+-        float* sc_state = S[L].cmp_score;
+-        CHECK(hipMemcpyAsync(kv_state + (size_t)(pos % r) * HD, cmp_kvn, HD * 4, hipMemcpyDeviceToDevice, s));
+-        CHECK(hipMemcpyAsync(sc_state + (size_t)(pos % r) * HD, cmp_sc, HD * 4, hipMemcpyDeviceToDevice, s));
+-        if (verifying) {  // this chunk position's row, for commit
+-          float* row = cmp_rows.at(L) + (size_t)(pos - verify_p0) * 2 * HD;
+-          CHECK(hipMemcpyAsync(row, cmp_kvn, HD * 4, hipMemcpyDeviceToDevice, s));
+-          CHECK(hipMemcpyAsync(row + HD, cmp_sc, HD * 4, hipMemcpyDeviceToDevice, s));
+-        }
+-        if ((pos + 1) % r == 0) {
+-          k_compress_pool(kv_state, sc_state, r, HD, lat, s);
+-          latent = lat;
+-        }
+-      } else {
+-        CHECK(hipMemcpyAsync(lat, cmp_kvn, HD * 4, hipMemcpyDeviceToDevice, s));
+-        latent = lat;
+-      }
+-      if (latent) {
+-        const int gi = pos / r, lpos = gi * r;  // a latent stands for its group's first token
+-        k_rms_norm(lat, w.cmp_norm, lat, HD, 1, eps, s);
+-        // index keys from the RoPE-free latent first
+-        k_gemv_f32(w.idx_k, hp.idx_dim, HD, lat, ik, partial, s);
+-        k_rms_norm(ik, w.idx_k_norm, ik, hp.idx_dim, 1, eps, s);
+-        k_rope(ik, 1, hp.idx_dim, RD, w.freqs, lpos, false, s);
+-        k_fq4(ik, hp.idx_dim, false, s);
+-        float* idx_cache = S[L].idx_k;
+-        CHECK(hipMemcpyAsync(idx_cache + (size_t)gi * hp.idx_dim, ik, hp.idx_dim * 4, hipMemcpyDeviceToDevice, s));
+-        k_rope(lat, 1, HD, RD, w.freqs, lpos, false, s);
+-        k_fq4(lat, HD, true, s);
+-        float* comp_cache = S[L].comp;
+-        CHECK(hipMemcpyAsync(comp_cache + (size_t)gi * HD, lat, HD * 4, hipMemcpyDeviceToDevice, s));
+-      }
+-    }
++    // (the compressor itself runs for the whole chunk in attention(): README steps 98, 99)
+     const int n_comp = (pos + 1) / r;
+     K = std::min(hp.idx_topk, n_comp);
+     mark("attn.indexer");
+diff --git a/ds-completion/hip/rt.h b/ds-completion/hip/rt.h
+index b9854ff..c84aba9 100644
+--- a/ds-completion/hip/rt.h
++++ b/ds-completion/hip/rt.h
+@@ -275,7 +275,7 @@ class Runtime {
+   void gemv8(const Fp8W& w, Codes c, float* yout, int rows_per_group = 0, int M = 1);
+   // the chunk's M tokens are at positions pos .. pos + M - 1; per-token buffers are [M][...]
+   void attention(int L, const float* xin, float* out, int M = 1);
+-  void attn_prep(int L, int t, const float* x_t, Codes qr_t, int& K, const int*& topk, const float* cmp_kvn, const float* cmp_sc);
++  void attn_prep(int L, int t, const float* x_t, Codes qr_t, int& K, const int*& topk);
+   std::vector<int> att_K;            // per token of the chunk: its compressed keys (README step 67)
+   std::vector<const int*> att_topk;  // and their top-k list
+   bool attn_check = false;           // DS_ATTN_CHECK: the batched attention against one-token launches
