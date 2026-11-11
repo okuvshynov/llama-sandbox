@@ -436,6 +436,9 @@ Step 96: the exit abort revisited: its window includes the loader's shutdown (st
 three teardown fixes (stop under the mutex, the loader threads' frees one at a time, the expert
 tensors unregistered before the unmap); the handler prints the shutdown phase, the thread and the
 loads per die. Still open until it either recurs with that output or stays away.
+Step 97: the dies' results in smaller copies and the staged block in one: 41.10 -> 41.96 t/s.
+The exit abort recurred with step 96's fixes: after main, in the HSA runtime's shutdown (documented,
+not worked around).
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front
@@ -448,7 +451,11 @@ Promising, in order:
 2. Closed (step 92, simulated): a vocabulary subset for the draft's head loses at every size.
 3. Closed (step 94): verify halves double die 0's weight reads (+~30 ms per code step), more
    than the CPU's 25-30 ms they could hide.
-4. The tail's 6.3 ms split (measure only): the dies' results behind their loads (~3 ms)?
+4. Done (step 97): the tail was the dies' worst-case copies, not their loads: 3 rows per token
+   first, the staged block in one copy, +2.1%. Left from that
+   review: the compressor, one token at a time (next); the hc projection and
+   split in one kernel (~1 ms per step); the draft's head as a lossy fp8 copy (~1 ms per step,
+   0.66 GB of die 0, acceptance to simulate); the dies' three copies into die 0 as one.
 5. A simulation of ~190 more slots on die 0 (`scripts/cache_sim.py`): what a draft-expert cache
    would buy, before building one.
 6. Commit's 0.86 ms wait: the draft's window seeded for all kept tokens at once (~1%).

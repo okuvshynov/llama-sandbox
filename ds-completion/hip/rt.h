@@ -193,6 +193,7 @@ class Runtime {
     hipEvent_t done = nullptr;
     char* d_in = nullptr;        // the staged block on dev
     float *d_y = nullptr, *h_y = nullptr;
+    hipEvent_t done_more = nullptr;  // a short forward's rows past the early copy are in h_y (step 97)
   };
   std::vector<Die> dies;
   static constexpr int kLoadTestSlots = 8;
@@ -209,6 +210,12 @@ class Runtime {
   hipEvent_t ev_gathered = nullptr;
   bool early_gather = false;  // this layer's copies were all issued by moe_launch (a short forward)
   static constexpr int kEarlyGatherMaxM = 8;
+  // README step 97: a short forward's early copies take this many rows per token and die (of up to
+  // n_expert_used: a die holds ~1.5 of a token's experts); a die with more gets a second copy
+  int early_rows_per_tok = 3;
+  long n_gather_dies = 0, n_gather_more = 0;  // (die, layer) of short forwards; those with a second copy
+  // a short forward's lists sit in the last kEarlyGatherMaxM tokens' list slots, next to x: one copy
+  size_t short_lists_off() const { return moe_lists_bytes - (size_t)kEarlyGatherMaxM * kMoeListStride * sizeof(MoeList); }
   void setup_experts();
 
   // device scratch (one token)

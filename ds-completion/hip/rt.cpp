@@ -732,6 +732,7 @@ void Runtime::setup_experts() {
     if (d.dev != home) {
       CHECK(hipStreamCreateWithFlags(&d.st, hipStreamNonBlocking));
       CHECK(hipEventCreateWithFlags(&d.done, hipEventDisableTiming));
+      CHECK(hipEventCreateWithFlags(&d.done_more, hipEventDisableTiming));
       CHECK(hipMalloc(&d.d_in, moe_block_bytes(kChunk)));
       CHECK(hipMalloc(&d.d_y, y_rows * E * 4));
       CHECK(hipHostMalloc(&d.h_y, y_rows * E * 4, 0));
@@ -742,6 +743,7 @@ void Runtime::setup_experts() {
   CHECK(hipStreamCreateWithFlags(&s_local, hipStreamNonBlocking));
   CHECK(hipEventCreateWithFlags(&ev_dispatched, hipEventDisableTiming));
   CHECK(hipEventCreateWithFlags(&ev_local, hipEventDisableTiming));
+  if (const char* e = getenv("DS_EARLY_ROWS")) early_rows_per_tok = std::max(1, atoi(e));  // tests: 1 forces second copies
   CHECK(hipStreamCreateWithFlags(&s_gather, hipStreamNonBlocking));
   CHECK(hipEventCreateWithFlags(&ev_gathered, hipEventDisableTiming));
   mem_mark("expert path buffers (per die: scratch, staging)");
@@ -831,6 +833,9 @@ Runtime::~Runtime() {
     fprintf(stderr, "# load test: %ld loads\n", loader->loads());
     loader.reset();
   }
+  if (n_gather_dies)
+    fprintf(stderr, "# short forwards: %ld of %ld (die, layer) results needed a second copy (%d rows per token in the first)\n",
+            n_gather_more, n_gather_dies, early_rows_per_tok);
   if (cache) {
     const ExpertCache::Stats cs = cache->stats();
     fprintf(stderr, "# expert cache: %ld rebalances, %ld swaps planned, %ld loads started, %ld published\n", cs.rebalances,
@@ -891,6 +896,7 @@ Runtime::~Runtime() {
     (void)hipSetDevice(d.dev);
     (void)hipFree(d.scratch);
     if (d.st) {
+      (void)hipEventDestroy(d.done_more);
       (void)hipFree(d.d_in);
       (void)hipFree(d.d_y);
       (void)hipHostFree(d.h_y);
@@ -1410,11 +1416,24 @@ void Runtime::moe_launch(int L, int M) {
   // copy (the CPU and the other dies read it there)
   const int n_dies = (int)dies.size();
   mark("ffn.dispatch");
+  // a short forward (decode, verify): see below. Its lists go next to x (README step 97), so one
+  // copy stages both; moe_finish moves the pointers back
+  early_gather = cur_half < 0 && M <= kEarlyGatherMaxM;
+  if (early_gather) {
+    d_moe.lists = (MoeList*)((char*)d_moe.lists + short_lists_off());
+    h_moe.lists = (MoeList*)((char*)h_moe.lists + short_lists_off());
+  }
   k_moe_dispatch(rids, rw, KE, d_table ? d_table + (size_t)L * hp.n_expert : nullptr, n_dies, d_moe.lists, M, s, canon_where);
   if (n_dies) CHECK(hipEventRecord(ev_dispatched, s));
   const size_t lists_bytes = (size_t)M * kMoeListStride * sizeof(MoeList);  // this forward's tokens only
-  CHECK(hipMemcpyAsync(h_moe.lists, d_moe.lists, lists_bytes, hipMemcpyDeviceToHost, s));
-  CHECK(hipMemcpyAsync(h_moe.x, d_moe.x, (size_t)M * E * 4, hipMemcpyDeviceToHost, s));
+  // the staged block of a short forward: the lists' kEarlyGatherMaxM slots and x, contiguous
+  const size_t short_bytes = moe_lists_bytes - short_lists_off() + (size_t)M * E * 4;
+  if (early_gather) {
+    CHECK(hipMemcpyAsync(h_moe.lists, d_moe.lists, short_bytes, hipMemcpyDeviceToHost, s));
+  } else {
+    CHECK(hipMemcpyAsync(h_moe.lists, d_moe.lists, lists_bytes, hipMemcpyDeviceToHost, s));
+    CHECK(hipMemcpyAsync(h_moe.x, d_moe.x, (size_t)M * E * 4, hipMemcpyDeviceToHost, s));
+  }
   CHECK(hipEventRecord(ev_staged, s));
   if (!trace_path.empty() && !in_prefill) CHECK(hipEventRecord(tr_staged, s));
   constexpr int LS = kMoeListStride * (int)(sizeof(MoeList) / 4);  // a token's lists, in ints
@@ -1425,9 +1444,9 @@ void Runtime::moe_launch(int L, int M) {
   bool local = false;
   // a short forward (decode, verify): the copies back to the home die are issued here, while the
   // host is ahead of the GPU, a bound of rows each (canon: every pair could be on one die) instead
-  // of the counts the host learns after staging; HIP calls there would delay the CPU's experts
-  early_gather = cur_half < 0 && M <= kEarlyGatherMaxM;
-  const size_t early_rows = (size_t)M * (opt.canon ? KE : 1);
+  // of the counts the host learns after staging; HIP calls there would delay the CPU's experts.
+  // canon: early_rows_per_tok rows per token (step 97); moe_finish copies a die's rows past them
+  const size_t early_rows = (size_t)M * (opt.canon ? std::min(KE, early_rows_per_tok) : 1);
   for (int i = 0; i < n_dies; i++) {
     Die& d = dies[i];
     if (!d.st) {  // the home die: its lists on the second stream, next to the shared expert
@@ -1452,17 +1471,22 @@ void Runtime::moe_launch(int L, int M) {
     CHECK(hipStreamWaitEvent(d.st, ev_staged, 0));
     hipEvent_t tr_a = nullptr;
     if (!trace_path.empty()) CHECK(hipEventRecord(tr_a = trace_ev(i), d.st));
-    CHECK(hipMemcpyAsync(d.d_in, h_moe.lists, lists_bytes, hipMemcpyHostToDevice, d.st));
-    CHECK(hipMemcpyAsync(d.d_in + moe_lists_bytes, h_moe.x, (size_t)M * E * 4, hipMemcpyHostToDevice, d.st));
+    const MoeList* dl = (const MoeList*)(d.d_in + (early_gather ? short_lists_off() : 0));  // as on the home die
+    if (early_gather) {
+      CHECK(hipMemcpyAsync((void*)dl, h_moe.lists, short_bytes, hipMemcpyHostToDevice, d.st));
+    } else {
+      CHECK(hipMemcpyAsync(d.d_in, h_moe.lists, lists_bytes, hipMemcpyHostToDevice, d.st));
+      CHECK(hipMemcpyAsync(d.d_in + moe_lists_bytes, h_moe.x, (size_t)M * E * 4, hipMemcpyHostToDevice, d.st));
+    }
     const float* dx = (const float*)(d.d_in + moe_lists_bytes);
     if (opt.canon) {  // the copy back waits for the counts (moe_finish), unless early
-      fp4_moe_canon_rows(d.pool.view, dx, sel((const MoeList*)d.d_in, i), KE, M, hp.swiglu_clamp[L], d.d_y, d.scratch, d.st);
+      fp4_moe_canon_rows(d.pool.view, dx, sel(dl, i), KE, M, hp.swiglu_clamp[L], d.d_y, d.scratch, d.st);
       if (early_gather) {
         CHECK(hipMemcpyAsync(d.h_y, d.d_y, early_rows * E * 4, hipMemcpyDeviceToHost, d.st));
         CHECK(hipEventRecord(d.done, d.st));
       }
     } else {
-      fp4_moe_chunk(d.pool.view, dx, sel((const MoeList*)d.d_in, i), KE, M, hp.swiglu_clamp[L], d.d_y, d.scratch, d.st);
+      fp4_moe_chunk(d.pool.view, dx, sel(dl, i), KE, M, hp.swiglu_clamp[L], d.d_y, d.scratch, d.st);
       CHECK(hipMemcpyAsync(d.h_y, d.d_y, (size_t)M * E * 4, hipMemcpyDeviceToHost, d.st));
       CHECK(hipEventRecord(d.done, d.st));
     }
@@ -1535,6 +1559,23 @@ void Runtime::moe_finish(int L, float* out, int M, Taps* taps) {
     total_cpu_experts += lt[n_dies].count;
   }
   if (cache) cache->observe(L, h_moe.lists, M, n_dies);
+  // a short forward's dies with more rows than the early copies took (step 97): the rest now
+  const int early_rows = M * std::min(KE, early_rows_per_tok);
+  std::vector<char> more(n_dies, 0);
+  if (opt.canon && early_gather)
+    for (int i = 0; i < n_dies; i++) {
+      Die& d = dies[i];
+      if (!d.st || n_rows[i] <= early_rows) continue;
+      more[i] = 1;
+      n_gather_more++;
+      CHECK(hipSetDevice(d.dev));
+      CHECK(hipMemcpyAsync(d.h_y + (size_t)early_rows * E, d.d_y + (size_t)early_rows * E, (size_t)(n_rows[i] - early_rows) * E * 4,
+                           hipMemcpyDeviceToHost, d.st));
+      CHECK(hipEventRecord(d.done_more, d.st));
+      CHECK(hipSetDevice(opt.gpu));
+    }
+  if (early_gather)
+    for (const Die& d : dies) n_gather_dies += d.st != nullptr;
   if (opt.canon && !early_gather)
     for (int i = 0; i < n_dies; i++) {
       Die& d = dies[i];
@@ -1655,6 +1696,12 @@ void Runtime::moe_finish(int L, float* out, int M, Taps* taps) {
   if (n_dies) mark("ffn.wait_for_gpu_experts");
   if (local) CHECK(hipStreamWaitEvent(s, ev_local, 0));
   if (early_gather) CHECK(hipStreamWaitEvent(s, ev_gathered, 0));  // copied in by moe_launch
+  for (int i = 0; i < n_dies; i++)
+    if (more[i]) {
+      CHECK(hipStreamWaitEvent(s, dies[i].done_more, 0));
+      CHECK(hipMemcpyAsync(place_rows(i) + (size_t)early_rows * E, dies[i].h_y + (size_t)early_rows * E,
+                           (size_t)(n_rows[i] - early_rows) * E * 4, hipMemcpyHostToDevice, s));
+    }
   for (int i = 0; i < n_dies && !early_gather; i++)
     if (dies[i].st) {
       CHECK(hipStreamWaitEvent(s, dies[i].done, 0));
@@ -1682,6 +1729,10 @@ void Runtime::moe_finish(int L, float* out, int M, Taps* taps) {
     ti.i.resize(KE);
     CHECK(hipMemcpy(ti.i.data(), rids, KE * 4, hipMemcpyDeviceToHost));
     (*taps)["router_i"] = ti;
+  }
+  if (early_gather) {  // the lists' pointers back (moe_launch)
+    d_moe.lists = (MoeList*)((char*)d_moe.lists - short_lists_off());
+    h_moe.lists = (MoeList*)((char*)h_moe.lists - short_lists_off());
   }
 }
 
@@ -1908,3 +1959,4 @@ std::vector<float> Runtime::decode(int32_t tok, bool want_logits) {
   trace_host("decode", t0, Clock::now(), 3);
   return logits;
 }
+

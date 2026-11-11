@@ -1,0 +1,52 @@
+# mapped 289 GB of CPU experts in 1.0 s
+# runtime: 6.37 GiB of fp8 weights on GPU 0
+# runtime: 1.75 GiB of small weights on GPU 0
+# dspark: 3 layers, block 5, 128 experts top-3, targets 37 38 39; 7.7 GB on GPU 0
+# runtime: 6100 experts (39.7% of the loaded layers' pairs) on GPUs (0: 805, 1: 1765, 2: 1765, 3: 1765), loaded in 5.0 s
+# expert loader: 288.8 GB of expert tensors registered in 37.1 s (direct loads from now)
+# expert cache: up to 800 loads/s, rebalance every 8 tokens over the last 256
+# GPU memory (GB; the driver's used memory after each startup phase; expert slot = 18.8 MB):
+#   phase                                                           GPU 0  GPU 1  GPU 2  GPU 3
+#   context, other processes                                         0.22   0.07   0.08   0.07
+#   dense fp8 weights                                                6.85   0.00   0.00   0.00
+#   small weights (rotary, embeddings, head, norms, ...)             1.90   0.00   0.00   0.00
+#   activations and scratch (sized for 512-token chunks)             0.82   0.00   0.00   0.00
+#   sequence state: window, compressed KV, indexer keys (--max-ctx)   0.50   0.00   0.00   0.00
+#   draft (DSpark)                                                   8.01   0.00   0.00   0.00
+#   expert path buffers (per die: scratch, staging)                  0.13   0.32   0.32   0.32
+#   expert slots                                                    15.14  33.20  33.20  33.20
+#   cache and loader staging, the rest                               0.00   0.00   0.00   0.00
+#   free                                                             0.75   0.76   0.75   0.76
+#   total                                                           34.34  34.34  34.34  34.34
+# loaded in 49.4 s; prompt 31 tokens; fake-quant on; 16 threads
+
+# drafts verified per step: 0: 76 1: 63 2: 21 3: 7 4: 2 5: 4 (of the 0s, 43 plain steps without a draft); verify cost fit 30.5 + 17.0 n ms
+# speculative: 173 verify steps, 0.73 drafts accepted per step, 1.73 tokens per step; draft 6.0 ms per step
+# routed experts: 87.0% on GPUs (74769 of 85920)
+# prompt: 31 tokens in 0.84 s = 36.82 t/s; generation: 300 tokens in 8.69 s = 34.51 t/s
+# short forwards: 1082 of 20880 (die, layer) results needed a second copy (3 rows per token in the first)
+# expert cache: 37 rebalances, 3357 swaps planned, 2950 loads started, 2950 published
+# expert loader: 4308 pieces unregistered in 0.0 s
+malloc_consolidate(): invalid chunk size
+# fatal signal 6; phase: after main: static destructors and the libraries' exit; thread: ds-completion (the main thread); loads started / finished per die: 0/0 982/982 983/983 985/985
+# backtrace:
+./bin-hip/ds-completion(+0x7c33f)[0x5f760d9a133f]
+/lib/x86_64-linux-gnu/libc.so.6(+0x42520)[0x77bb76a42520]
+/lib/x86_64-linux-gnu/libc.so.6(pthread_kill+0x12c)[0x77bb76a969bc]
+/lib/x86_64-linux-gnu/libc.so.6(raise+0x16)[0x77bb76a42476]
+/lib/x86_64-linux-gnu/libc.so.6(abort+0xd3)[0x77bb76a287f3]
+/lib/x86_64-linux-gnu/libc.so.6(+0x89637)[0x77bb76a89637]
+/lib/x86_64-linux-gnu/libc.so.6(+0xa0cbc)[0x77bb76aa0cbc]
+/lib/x86_64-linux-gnu/libc.so.6(+0xa1968)[0x77bb76aa1968]
+/lib/x86_64-linux-gnu/libc.so.6(+0xa2e60)[0x77bb76aa2e60]
+/lib/x86_64-linux-gnu/libc.so.6(free+0x73)[0x77bb76aa5413]
+/opt/rocm-6.3.4/lib/libhsa-runtime64.so.1(+0x3aa5d)[0x77bb6d83aa5d]
+/opt/rocm-6.3.4/lib/libhsa-runtime64.so.1(+0x4699f)[0x77bb6d84699f]
+/opt/rocm-6.3.4/lib/libhsa-runtime64.so.1(+0x46c4d)[0x77bb6d846c4d]
+/opt/rocm-6.3.4/lib/libhsa-runtime64.so.1(+0x85e1e)[0x77bb6d885e1e]
+/opt/rocm-6.3.4/lib/libhsa-runtime64.so.1(+0x8619c)[0x77bb6d88619c]
+/opt/rocm-6.3.4/lib/libhsa-runtime64.so.1(+0x61c37)[0x77bb6d861c37]
+/opt/rocm-6.3.4/lib/libamdhip64.so.6(+0x3634aa)[0x77bb775634aa]
+/opt/rocm-6.3.4/lib/libamdhip64.so.6(+0x3635ce)[0x77bb775635ce]
+/lib/x86_64-linux-gnu/libc.so.6(__cxa_finalize+0xb6)[0x77bb76a45a56]
+/opt/rocm-6.3.4/lib/libamdhip64.so.6(+0x84b87)[0x77bb77284b87]

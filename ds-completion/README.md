@@ -3492,3 +3492,36 @@ started / finished per die. Checked with `kill -ABRT` during a run:
 `main` now destroys the runtime explicitly before its other locals, so the phases around it are
 exact. Not done (needs sudo): `kernel.core_pattern` to a file instead of apport, for a core.
 
+## Step 97: the dies' results in smaller copies, the staged block in one
+
+A review of step 88's traces for local misses (`results/decode-next/local-review.txt`): each of
+die 0's spans by verify-step size, against the kernel bench and the code. Two things stood out;
+this step is the first, step 98 the second.
+
+**The tail** (the triage's item 4, "measure only"): after the CPU's rows, die 0 waits for dies 1-3
+in about a third of a 6-token step's layers and 60% of a 1-token step's (the CPU often has
+nothing there). Their path is all copies through the host: the lists and x out (2 copies), into
+each die (2), the kernel, the rows back to the host and into die 0. A short forward issues the
+copies back before the host knows the counts (step 71), so each took the bound: 6 rows per token,
+720 KB per die and direction at 6 tokens, while a die holds 1.5 rows per token on average. From
+the last die's end to die 0 having the rows: 53 us at 1 token, 142 at 6.
+
+Changed (short forwards only, `hip/rt.cpp`):
+- **The first copy takes 3 rows per token** (`early_rows_per_tok`); a die with more (3.5% of the
+  (die, layer) results) gets a second copy for the rest, issued by `moe_finish` once the counts
+  are known. `DS_EARLY_ROWS=1` forces second copies everywhere: the same output.
+- **The staged block is one copy:** a short forward's lists sit in the last 8 tokens' list slots,
+  next to x, so the lists and x leave die 0 in one copy and enter each die in one.
+
+Pure data movement: every output identical. Held-out mean **41.10 -> 41.96 t/s (+2.1%)**, every
+prompt +1.6% to +3.6% (the prompts with short steps most).
+
+**The exit abort, a third time** (ja-email in this step's run, `malloc_consolidate(): invalid
+chunk size`; `results/decode-next/exit-abort-step96.txt`), now with step 96's handler: phase
+"after main", the main thread, no load in flight. The stack is libamdhip64's exit handler
+(`__cxa_finalize`) into libhsa-runtime64's shutdown, which calls `free` and fails glibc's heap
+check. So all of our teardown had finished, step 96's three fixes did not remove it, and it is
+either the HSA runtime's own shutdown or a heap damage from earlier that is noticed there (10
+ASan runs were clean, step 93). Both libraries are stripped. Outputs and timings are unaffected
+(they are complete before it). Ending the process with `_exit` after our teardown would avoid it
+and would also hide an earlier corruption; not done, documented only.

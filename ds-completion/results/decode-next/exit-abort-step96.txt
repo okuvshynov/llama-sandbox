@@ -19,3 +19,30 @@ fix py-lru: rc=0 42.80 t/s output same; expert loader: 4308 pieces unregistered 
 /opt/rocm-6.3.4/lib/libhsa-runtime64.so.1(+0x70bfe)[0x78d170470bfe]
 /opt/rocm-6.3.4/lib/libhsa-runtime64.so.1(+0x64fa9)[0x78d170464fa9]
 /opt/rocm-6.3.4/lib/libamdhip64.so.6(+0x36c99b)[0x78d17a16c99b]
+
+## 2026-11-11, the third abort: ja-email in step 97's held-out run (results/spec-measure-sclk6-cacheloads800cacheperiod8-gather/ja-email.err; output identical, 34.51 t/s, exit code 134)
+# with step 96's fixes in. Phase: after main; the main thread; no load in flight. The stack: libamdhip64's exit handler (__cxa_finalize)
+# -> libhsa-runtime64's shutdown -> free -> glibc's heap check. Both libraries are stripped (no function names).
+malloc_consolidate(): invalid chunk size
+# fatal signal 6; phase: after main: static destructors and the libraries' exit; thread: ds-completion (the main thread); loads started / finished per die: 0/0 982/982 983/983 985/985
+# backtrace:
+./bin-hip/ds-completion(+0x7c33f)[0x5f760d9a133f]
+/lib/x86_64-linux-gnu/libc.so.6(+0x42520)[0x77bb76a42520]
+/lib/x86_64-linux-gnu/libc.so.6(pthread_kill+0x12c)[0x77bb76a969bc]
+/lib/x86_64-linux-gnu/libc.so.6(raise+0x16)[0x77bb76a42476]
+/lib/x86_64-linux-gnu/libc.so.6(abort+0xd3)[0x77bb76a287f3]
+/lib/x86_64-linux-gnu/libc.so.6(+0x89637)[0x77bb76a89637]
+/lib/x86_64-linux-gnu/libc.so.6(+0xa0cbc)[0x77bb76aa0cbc]
+/lib/x86_64-linux-gnu/libc.so.6(+0xa1968)[0x77bb76aa1968]
+/lib/x86_64-linux-gnu/libc.so.6(+0xa2e60)[0x77bb76aa2e60]
+/lib/x86_64-linux-gnu/libc.so.6(free+0x73)[0x77bb76aa5413]
+/opt/rocm-6.3.4/lib/libhsa-runtime64.so.1(+0x3aa5d)[0x77bb6d83aa5d]
+/opt/rocm-6.3.4/lib/libhsa-runtime64.so.1(+0x4699f)[0x77bb6d84699f]
+/opt/rocm-6.3.4/lib/libhsa-runtime64.so.1(+0x46c4d)[0x77bb6d846c4d]
+/opt/rocm-6.3.4/lib/libhsa-runtime64.so.1(+0x85e1e)[0x77bb6d885e1e]
+/opt/rocm-6.3.4/lib/libhsa-runtime64.so.1(+0x8619c)[0x77bb6d88619c]
+/opt/rocm-6.3.4/lib/libhsa-runtime64.so.1(+0x61c37)[0x77bb6d861c37]
+/opt/rocm-6.3.4/lib/libamdhip64.so.6(+0x3634aa)[0x77bb775634aa]
+/opt/rocm-6.3.4/lib/libamdhip64.so.6(+0x3635ce)[0x77bb775635ce]
+/lib/x86_64-linux-gnu/libc.so.6(__cxa_finalize+0xb6)[0x77bb76a45a56]
+/opt/rocm-6.3.4/lib/libamdhip64.so.6(+0x84b87)[0x77bb77284b87]
