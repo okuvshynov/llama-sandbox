@@ -32,3 +32,5 @@ step	commit	mean	tcp-udp	py-lru	cpp-matrix	sql-report	geometry	zh-travel	ja-emai
 84	ecb5af9	37.57	33.41	39.55	45.60	38.69	45.45	29.96	32.81	35.12	results/spec-measure-sclk6-cacheloads800cacheperiod8-kcopy
 86	035e23e	40.82	35.28	42.62	50.08	43.14	49.73	31.52	33.34	40.87	results/spec-measure-sclk6-cacheloads800cacheperiod8-homefixed
 88	f0a6fa1	41.19	35.74	43.07	50.80	43.78	49.73	31.71	33.53	41.12	results/spec-measure-sclk6-cacheloads800cacheperiod8-gpuargmax
+97	a199faf	41.96	36.80	43.70	51.41	44.08	50.98	32.42	34.51	41.80	results/spec-measure-sclk6-cacheloads800cacheperiod8-gather
+98	6287dc2	42.52	36.85	44.46	52.41	45.05	51.92	32.63	34.47	42.37	results/spec-measure-sclk6-cacheloads800cacheperiod8-compressor
