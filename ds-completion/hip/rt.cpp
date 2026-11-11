@@ -1,6 +1,7 @@
 #include "rt.h"
 
 #include "cpu_moe.h"
+#include "fatal.h"
 #include "fakequant.h"
 #include "fp8_gemv.h"
 #include "kernels.h"
@@ -817,6 +818,7 @@ void Runtime::setup_experts() {
 }
 
 Runtime::~Runtime() {
+  fatal_phase("runtime: the last synchronize, trace and reports");
   (void)hipStreamSynchronize(s);
   trace_write();
   ra_report();
@@ -824,6 +826,7 @@ Runtime::~Runtime() {
     fprintf(stderr, "# attention check (README step 68): %ld launches, %ld tokens, %ld differ from one-token launches\n",
             attn_check_calls, attn_check_tokens, attn_check_bad);
   if (ra_log) fclose(ra_log);
+  fatal_phase("runtime: the load test's loader");
   if (loader) {
     fprintf(stderr, "# load test: %ld loads\n", loader->loads());
     loader.reset();
@@ -832,6 +835,7 @@ Runtime::~Runtime() {
     const ExpertCache::Stats cs = cache->stats();
     fprintf(stderr, "# expert cache: %ld rebalances, %ld swaps planned, %ld loads started, %ld published\n", cs.rebalances,
             cs.swaps_planned, cs.loads_started, cs.loads_published);
+    fatal_phase("runtime: the expert cache and its loader");
     cache.reset();
   }
   if (profile) {
@@ -875,8 +879,11 @@ Runtime::~Runtime() {
             b.calls, b.pairs, b.experts, b.by_tokens[0], b.by_tokens[1], b.by_tokens[2], b.by_tokens[3], b.by_tokens[4], b.prep,
             b.inputs, b.gate_up, b.act, b.down, b.sum, (b.prep + b.inputs + b.gate_up + b.act + b.down + b.sum) / b.pairs);
   }
+  fatal_phase("runtime: the draft");
   dspark.reset();
+  fatal_phase("runtime: the CPU expert kernel");
   cpu_moe.reset();
+  fatal_phase("runtime: the dies' pools, buffers and streams");
   for (Die& d : dies) {
     (void)hipSetDevice(d.dev);
     if (d.st) (void)hipStreamSynchronize(d.st);
@@ -893,6 +900,7 @@ Runtime::~Runtime() {
     (void)hipSetDevice(opt.gpu);
     (void)hipFree(d.y_home);
   }
+  fatal_phase("runtime: the home die's streams, events and buffers");
   (void)hipSetDevice(opt.gpu);
   if (d_table) (void)hipFree(d_table);
   if (s_local) {
@@ -928,6 +936,7 @@ Runtime::~Runtime() {
   (void)hipStreamSynchronize(s_engram);
   (void)hipStreamDestroy(s_engram);
   (void)hipEventDestroy(ev_engram);
+  fatal_phase("runtime: destroyed its GPU objects (members left)");
 }
 
 // ------------------------------------------------------------------ pieces

@@ -1,5 +1,9 @@
 #include "expert_loader.h"
 
+#include "fatal.h"
+
+#include <pthread.h>
+
 #include <algorithm>
 #include <chrono>
 #include <cstring>
@@ -18,6 +22,8 @@
 // the end address of every registered piece, sorted (register_expert_tensors; read-only once
 // the loader's direct path is on)
 static std::vector<uintptr_t> g_piece_ends;
+// every registered piece's start, for unregister_expert_tensors
+static std::vector<uintptr_t> g_piece_starts;
 
 LoadStage load_stage_create(int dev, size_t bytes, int priority) {
   LoadStage st;
@@ -110,9 +116,19 @@ size_t register_expert_tensors(const Model& m) {
       std::this_thread::sleep_for(std::chrono::microseconds(500));
     }
   std::vector<uintptr_t> ends;
-  for (auto& [p, e] : done) ends.push_back(e);
+  for (auto& [p, e] : done) ends.push_back(e), g_piece_starts.push_back(p);
   std::sort(ends.begin(), ends.end());
   g_piece_ends = std::move(ends);  // before the caller turns direct loads on
+  return n;
+}
+
+size_t unregister_expert_tensors() {
+  size_t n = 0;
+  for (uintptr_t p : g_piece_starts)
+    if (hipHostUnregister((void*)p) == hipSuccess) n++;
+    else (void)hipGetLastError();
+  g_piece_starts.clear();
+  g_piece_ends.clear();
   return n;
 }
 
@@ -122,6 +138,7 @@ ExpertLoader::ExpertLoader(const Model& m_, std::vector<ExpertPool*> pools_, boo
   queues.resize(pools.size());
   if (direct)
     reg_thread = std::thread([this] {
+      pthread_setname_np(pthread_self(), "load-register");
       const auto t0 = std::chrono::steady_clock::now();
       const size_t n = register_expert_tensors(m);
       const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
@@ -156,6 +173,11 @@ void ExpertLoader::submit(const Request& r) {
 }
 
 void ExpertLoader::work(int d) {
+  {
+    char name[16];
+    snprintf(name, sizeof name, "load-die%d", d);  // a fatal-signal handler prints the thread's name
+    pthread_setname_np(pthread_self(), name);
+  }
   ExpertPool& p = *pools[d];
   int lo, hi;
   CHECK(hipSetDevice(p.dev));
@@ -184,17 +206,22 @@ void ExpertLoader::work(int d) {
       queues[d].pop_front();
     }
     const auto ta = std::chrono::steady_clock::now();
+    if (d < kFatalDies) g_fatal_loads_started[d]++;
     load_expert(st, p, r.slot, m.layers[r.layer], r.expert, registered);
     n++;
     n_loads++;
     if (test_rate == 0) {
       CHECK(hipEventRecord(fin, st.s));
       CHECK(hipEventSynchronize(fin));
+      if (d < kFatalDies) g_fatal_loads_done[d]++;
       std::lock_guard<std::mutex> lk(mu);
       done.push_back(r);
       if (trace_on) spans.push_back({d, r.layer, r.expert, ta, std::chrono::steady_clock::now()});
     }
   }
+  // one thread at a time (README step 96): on stop every die's thread gets here at once
+  std::lock_guard<std::mutex> lk(free_mu);
+  (void)hipStreamSynchronize(st.s);
   (void)hipEventDestroy(fin);
   load_stage_free(st);
 }
@@ -214,8 +241,22 @@ std::vector<ExpertLoader::Request> ExpertLoader::take_done() {
 }
 
 ExpertLoader::~ExpertLoader() {
-  stop = true;
+  fatal_phase("loader: stopping its threads");
+  {
+    std::lock_guard<std::mutex> lk(mu);  // with the workers' wait: a stop set outside it can be missed (a hang)
+    stop = true;
+  }
   cv.notify_all();
   for (auto& t : workers) t.join();
   if (reg_thread.joinable()) reg_thread.join();
+  if (registered) {
+    // before the model's mapping goes (README step 96): it stayed registered through the exit
+    fatal_phase("loader: unregistering the expert tensors");
+    const auto t0 = std::chrono::steady_clock::now();
+    const size_t n = unregister_expert_tensors();
+    fprintf(stderr, "# expert loader: %zu pieces unregistered in %.1f s\n", n,
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+    registered = false;
+  }
+  fatal_phase("loader: stopped");
 }

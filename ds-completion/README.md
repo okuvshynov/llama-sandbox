@@ -3380,9 +3380,10 @@ corruption (fasttop)`): step 91's abort, without step 91's code.
 Steps 91 and 92 each saw one process abort at exit, after all its results: py-lru with
 `malloc_consolidate(): invalid chunk size` (step 91, with its copy) and ja-email with `double
 free or corruption (fasttop)` (step 92, without it). Both came right after the expert cache's
-stats, which the `Runtime` destructor prints once the cache's loader threads are joined; so the
-error was detected in the rest of the teardown (the draft, the CPU kernel, the GPU buffers and
-streams), `main`'s locals, static destructors or the HIP / HSA runtime's exit. Both are glibc's
+stats, which the `Runtime` destructor prints just before it stops the cache's loader threads
+(corrected in step 96: not after they are joined); so the error was detected in the loader's
+shutdown, the rest of the teardown (the draft, the CPU kernel, the GPU buffers and streams),
+`main`'s locals, static destructors or the HIP / HSA runtime's exit. Both are glibc's
 checks on small freed blocks (<= 128 bytes): one freed twice, or its header written after the
 free. `results/decode-next/exit-abort.txt`:
 
@@ -3454,4 +3455,40 @@ Kept: the fork, until a newer DeepSeek model is quantized with the merged code. 
 it pinned by hash (`git fetch origin b72050d03ae1...`, the head of PR #30817). Checked here from a
 fresh clone: `fp8pack` regenerates `dense-fp8.gguf` byte for byte, two held-out prompts give the
 reference outputs byte for byte (49.60 and 35.47 t/s), and its `llama-completion` matches the fork's.
+
+## Step 96: the exit abort revisited: a wider window, three teardown fixes, more in the handler
+
+A second reading of the teardown against step 93 (`results/decode-next/exit-abort-step96.txt`):
+
+- **Step 93 placed the abort too late.** The last line before both aborts (`# expert cache: ...`)
+  is printed before the cache's loader is stopped, not after. So the loader's shutdown is inside
+  the window: on stop the four loader threads woke together and each freed its stream, its 2 pinned
+  and 2 device buffers and its 3 events at the same moment.
+- **The expert tensors stayed registered at exit:** ~269 GB of the model's mapping registered with
+  HIP for direct loads (step 43), never unregistered; the mapping was then removed and HIP's own
+  exit ran after it. On every run, so not by itself the rare abort.
+- **A possible hang:** `~ExpertLoader` set `stop` without the mutex its threads wait under, so a
+  wakeup could be lost and the join never return (not seen).
+
+The first tested alone: `bin-hip/bench-loader-exit` (new) does only that shutdown, one thread per
+die, ~37 ms per iteration: 7,800 concurrent shutdowns in all, no abort. So concurrent HIP frees
+alone do not show it (threads that had served thousands of loads from registered memory are not
+covered).
+
+Changed, each right on its own: `stop` set under the mutex; the loader threads free their GPU
+objects one at a time; the expert tensors unregistered once the threads are joined, before the
+model's mapping goes (4,308 pieces, no measurable time). ja-email and py-lru after it: outputs
+identical, 33.76 and 42.80 t/s, clean exits. If the abort never returns we will not know which
+change it was; if it does, the handler now says more.
+
+**The handler** (`ds_completion.cpp`, state in `src/fatal.h`) prints, besides the stack: the
+shutdown phase (set at each step: the loader's stop and unregistering, the draft, the CPU kernel,
+the dies' buffers, the home die's, `main`'s locals, after `main`), the thread's name and whether
+it is the main thread (the loader's are named `load-die<N>`, `load-register`), and the loads
+started / finished per die. Checked with `kill -ABRT` during a run:
+
+    # fatal signal 6; phase: run; thread: ds-completion (the main thread); loads started / finished per die: 0/0 658/658 664/664 660/660
+
+`main` now destroys the runtime explicitly before its other locals, so the phases around it are
+exact. Not done (needs sudo): `kernel.core_pattern` to a file instead of apport, for a core.
 

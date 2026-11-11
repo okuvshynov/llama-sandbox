@@ -432,6 +432,10 @@ Step 94: step 70's verify halves traced: die 0 reads its weights once per half (
 Step 95: llama.cpp upstream reads our GGUF's Engram table (the PR's MXFP8, type 43) as plain fp8
 and generates garbage; the fork stays until a newer model is quantized with the merged code
 (`docs/llama-cpp-upstream.md`).
+Step 96: the exit abort revisited: its window includes the loader's shutdown (step 93 had it after);
+three teardown fixes (stop under the mutex, the loader threads' frees one at a time, the expert
+tensors unregistered before the unmap); the handler prints the shutdown phase, the thread and the
+loads per die. Still open until it either recurs with that output or stays away.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front

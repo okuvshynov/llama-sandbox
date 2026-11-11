@@ -15,6 +15,7 @@
 // GPUs), the
 // prompt one token at a time.
 
+#include "fatal.h"
 #include "forward.h"
 #include "llama.h"
 #ifdef DS_RUNTIME
@@ -24,6 +25,8 @@
 #include <algorithm>
 #include <csignal>
 #include <execinfo.h>
+#include <sys/prctl.h>
+#include <sys/syscall.h>
 #include <unistd.h>
 #include <cmath>
 #include <chrono>
@@ -54,20 +57,57 @@ static std::string piece(const llama_vocab* v, int32_t tok) {
   return n > 0 ? std::string(buf, n) : std::string();
 }
 
-// A fatal signal (an abort from glibc's heap checks, a crash) prints the stack before the default
-// action (README step 93: a rare abort at exit; no core is kept on this machine). Addresses
-// resolve with addr2line -f -C -e bin-hip/ds-completion <+offset>.
-static void on_fatal(int sig) {
-  static const char msg[] = "# fatal signal; backtrace:\n";
-  ssize_t w = write(2, msg, sizeof msg - 1);
+// A fatal signal (an abort from glibc's heap checks, a crash) prints, before the default action,
+// where the process was (fatal.h's phase), the thread (its name: the loader's are load-die<N>),
+// the expert loader's loads per die and the stack (README steps 93, 96: a rare abort at exit; no
+// core is kept on this machine). Only write(), no allocation. Addresses resolve with
+// addr2line -f -C -e bin-hip/ds-completion <+offset>.
+static void fatal_put(const char* s) {
+  ssize_t w = write(2, s, strlen(s));
   (void)w;
+}
+static void fatal_put_long(long v) {
+  char b[24];
+  int n = sizeof b;
+  b[--n] = 0;
+  const bool neg = v < 0;
+  unsigned long u = neg ? -(unsigned long)v : (unsigned long)v;
+  do b[--n] = (char)('0' + u % 10); while (u /= 10);
+  if (neg) b[--n] = '-';
+  fatal_put(b + n);
+}
+static void on_fatal(int sig) {
+  char name[32] = "?";
+  (void)prctl(PR_GET_NAME, name);
+  const long tid = syscall(SYS_gettid);
+  fatal_put("# fatal signal ");
+  fatal_put_long(sig);
+  fatal_put("; phase: ");
+  fatal_put(g_fatal_phase.load(std::memory_order_relaxed));
+  fatal_put("; thread: ");
+  fatal_put(name);
+  fatal_put(tid == (long)getpid() ? " (the main thread)" : " (not the main thread)");
+  fatal_put("; loads started / finished per die:");
+  for (int d = 0; d < kFatalDies; d++) {
+    fatal_put(" ");
+    fatal_put_long(g_fatal_loads_started[d].load(std::memory_order_relaxed));
+    fatal_put("/");
+    fatal_put_long(g_fatal_loads_done[d].load(std::memory_order_relaxed));
+  }
+  fatal_put("\n# backtrace:\n");
   void* bt[64];
   backtrace_symbols_fd(bt, backtrace(bt, 64), 2);
   signal(sig, SIG_DFL);
   raise(sig);
 }
 
+// main's first local: its destructor runs after every other local's (the model's unmap among them)
+struct AfterMain {
+  ~AfterMain() { fatal_phase("after main: static destructors and the libraries' exit"); }
+};
+
 int main(int argc, char** argv) {
+  AfterMain after_main;
   {
     void* bt[1];
     (void)backtrace(bt, 1);  // its first call loads libgcc (it allocates): not inside the handler, after a corruption
@@ -459,7 +499,12 @@ int main(int argc, char** argv) {
 #endif
   fprintf(stderr, "# prompt: %zu tokens in %.2f s = %.2f t/s; generation: %d tokens in %.2f s = %.2f t/s\n",
           toks.size(), t_pp, toks.size() / t_pp, n_gen, t_tg, n_gen > 0 ? n_gen / t_tg : 0.0);
+  fatal_phase("main: freeing the tokenizer");
   llama_model_free(tok_model);
   llama_backend_free();
+#ifdef DS_RUNTIME
+  rt.reset();  // here, not among main's locals, so the phases around it are exact
+#endif
+  fatal_phase("main: its locals (the model's unmap)");
   return 0;
 }

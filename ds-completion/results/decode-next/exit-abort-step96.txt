@@ -1,0 +1,21 @@
+# the exit abort revisited (README step 96): the loader's shutdown stressed alone, the teardown fixes checked, the handler's output
+# commit 2415973 + step 96's changes; sclk 6; tomb; 2026-11-11 (after a reboot, the page cache warmed)
+
+## bin-hip/bench-loader-exit N [serial]: one thread per die frees a loader thread's GPU objects, all at once (or one at a time)
+# before the fixes (a scratch build of the same program): 300 + 6 x 1000 iterations with concurrent frees, every run rc=0
+concurrent: done: 1500 iterations, 4 dies, concurrent frees (rc=0)
+serial:     done: 1500 iterations, 4 dies, serialized frees (rc=0)
+
+## the held-out command with the fixes (stop under the mutex, the frees one thread at a time, the expert tensors unregistered)
+fix ja-email: rc=0 33.76 t/s output same; expert loader: 4308 pieces unregistered in 0.0 s
+fix py-lru: rc=0 42.80 t/s output same; expert loader: 4308 pieces unregistered in 0.0 s
+
+## the handler: kill -ABRT during ja-email's generation (-n 2000)
+# fatal signal 6; phase: run; thread: ds-completion (the main thread); loads started / finished per die: 0/0 658/658 664/664 660/660
+# backtrace:
+./bin-hip/ds-completion(+0x7c33f)[0x56b402adb33f]
+/lib/x86_64-linux-gnu/libc.so.6(+0x42520)[0x78d179642520]
+/opt/rocm-6.3.4/lib/libhsa-runtime64.so.1(+0x713a2)[0x78d1704713a2]
+/opt/rocm-6.3.4/lib/libhsa-runtime64.so.1(+0x70bfe)[0x78d170470bfe]
+/opt/rocm-6.3.4/lib/libhsa-runtime64.so.1(+0x64fa9)[0x78d170464fa9]
+/opt/rocm-6.3.4/lib/libamdhip64.so.6(+0x36c99b)[0x78d17a16c99b]

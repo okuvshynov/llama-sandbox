@@ -49,6 +49,8 @@ void load_expert(LoadStage& st, ExpertPool& pool, int slot, const Layer& l, int 
 // copy from the registered memory must not span two pieces (load_expert splits it). Returns the
 // bytes registered, 0 on failure.
 size_t register_expert_tensors(const Model& m);
+// undoes it (every piece); the number of pieces unregistered
+size_t unregister_expert_tensors();
 
 // One loader thread per die, each with its own LoadStage, fed by a queue.
 class ExpertLoader {
@@ -84,6 +86,7 @@ class ExpertLoader {
   std::vector<std::thread> workers;
   std::thread reg_thread;
   std::mutex mu;
+  std::mutex free_mu;  // the threads free their GPU objects one at a time
   std::condition_variable cv;
   std::vector<std::deque<Request>> queues;
   std::vector<Request> done;  // finished, not yet taken (guarded by mu)
