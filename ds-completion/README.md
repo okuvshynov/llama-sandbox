@@ -3710,7 +3710,7 @@ count).
 Step 102 left one question: attention query B and output A launch on multiples of 2048 waves
 (~50 launches per verify step); as two launches they were slower, which does not say whether
 they pay for the multiple. The test: the same kernel and split over a matrix cut by a few waves'
-rows (, new; ).
+rows (`bench-fp8 --waves`, new; `results/decode-next/wave-rounds.txt`).
 
 **They do not pay.** On the multiple they are a little faster than just below it:
 
