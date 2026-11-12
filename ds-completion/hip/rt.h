@@ -61,6 +61,13 @@ struct RtOptions {
   bool load_pinned = false;  // the load test's path: pinned staging instead of direct (expert_loader.h)
 };
 
+// The residual stream between two layers, for n tokens: what a layer hands to the next one and
+// nothing else (README step 110). h [n][n_embd * hc], pre [n][hc] (the next sublayer's input mix).
+struct Stream {
+  std::vector<float> h, pre;
+  void clear() { h.clear(); pre.clear(); }
+};
+
 class Runtime {
  public:
   // fp8_path is fp8pack's output for the same model
@@ -81,6 +88,21 @@ class Runtime {
   Taps run_layer(int L, const std::vector<float>& h_in, const std::vector<float>& pre_in);
   void end_step();
   int n_past() const { return n_past_; }
+
+  // A range of layers (README step 110): the runtime runs the model's loaded layers, a contiguous
+  // range [layer0, layer1) (Model::load's `layers`). A range that does not start at layer 0 takes
+  // each token's stream from stream_in instead of the embedding (set it and stream_in_tok = 0
+  // before prefill / decode / verify; every token run takes the next row); one that does not end
+  // at the last layer has no head and appends each token's stream after its last layer to
+  // stream_out (clear it before the call). Tokens are still passed (the engram's history, the
+  // bookkeeping). Two ranges that meet, run one after the other with the stream handed over,
+  // compute exactly what one runtime with all layers computes.
+  int layer0() const { return L0; }
+  int layer1() const { return L1; }
+  bool has_head() const { return L1 == hp.n_layer; }
+  const Stream* stream_in = nullptr;
+  size_t stream_in_tok = 0;
+  Stream stream_out;
 
   // DSpark draft (RtOptions::dspark): after a decode step produced `anchor` (the next token),
   // the draft's block_size guesses for the tokens after it. Does not change the sequence state.
@@ -180,6 +202,10 @@ class Runtime {
   };
   std::vector<LayerState> S;
   int n_past_ = 0;
+  int L0 = 0, L1 = 0;  // the loaded layers
+  bool range_engram = false;  // an engram layer among them (else no rows are fetched)
+  void stream_from_host(int M);  // stream_in's next M rows into h, pre
+  void stream_to_host(int M);    // h, pre of M tokens appended to stream_out (after a synchronize)
   int mark_past = -1;  // mark()'s position
   std::vector<int32_t> tokens_;  // all tokens so far
   hipStream_t s;

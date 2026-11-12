@@ -1,0 +1,19 @@
+# a layer range against the whole model, teacher-forced (README step 110)
+# commit 5e8bbee + step 110; sclk 6; tomb; 2026-11-12
+# T = "<｜User｜>" + the held-out prompt + "<｜Assistant｜></think>" (or <think>) + its reference output (results/cache-test/plain-canon-static)
+# RUN = bin-hip/ds-completion -m $M --rt $F8 --placement placements/study30.txt --canon [--cache-loads 800 --cache-period 8 --cache-wait] -f T --teacher
+#   whole:  RUN > ids.full
+#   front:  RUN --layers 0-19 --stream-out stream.bin
+#   back:   RUN --layers 20-39 --stream-in stream.bin > ids.back        cmp ids.full ids.back
+# prompt      cache  positions  ids         whole s  front s  back s
+cpp-matrix    no     325        identical   7.82     1.83     1.87
+geometry      yes    375        identical   (not kept)
+zh-travel     yes    317        identical   4.91     1.88     1.97
+# (times: all positions in verify chunks of 5, no draft, no network, the halves one after the other on this machine)
+#
+# what a range holds (static placement, no draft):   whole     0-19      20-39
+# dense fp8 weights on GPU 0, GiB                     6.41      3.34      3.06
+# small weights on GPU 0, GiB                         1.75      0.29      1.47
+# expert slots                                        6523      6794      6747
+# share of its expert pairs on GPUs                   42.5%     88.5%     87.9%
+# also unchanged: cpp-matrix, tcp-udp, summary-json single-shot; results/chat/session.out

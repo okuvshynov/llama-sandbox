@@ -106,6 +106,9 @@ Options:
   `high` / `max` (50 / 75 / 100), as the official encoding; the model card's benchmarks use 100.
 - neither: the prompt is raw text after BOS.
 - `-n`: max new tokens.
+- `--layers a-b` (with `--rt`): only that range of layers (README step 110: the model in two halves
+  on two machines, in progress). `--teacher` with `--stream-out file` / `--stream-in file` checks
+  a range against the whole model.
 - `--prefill-chunk N`: prompt tokens per forward (default and most 512, the fastest for
   long prompts in the fast numerics). The output does not depend on it.
 - `--no-overlap`: prompt chunks without the CPU/GPU overlap (slower; for comparisons).

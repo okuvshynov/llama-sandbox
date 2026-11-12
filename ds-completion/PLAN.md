@@ -457,6 +457,9 @@ Step 108: an interactive chat session (`--chat -i`, `scripts/chat.sh`), replies 
 runs.
 Step 109: thinking mode across turns (`Runtime::mark` / `rewind`), replies identical to fresh runs
 on the reference's prompts; next towards a server: tool calls, a system prompt, the HTTP side.
+Step 110: the second machine reproduces every output at the same speed; the runtime runs a range
+of layers (`--layers`, the stream in and out), halves identical to the whole model. Next: the two
+halves as two processes over TCP, then on the two machines.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front

@@ -135,6 +135,9 @@ int main(int argc, char** argv) {
   [[maybe_unused]] std::string dspark_path;
   bool spec = false;
   bool interactive = false;
+  std::vector<int> layers;  // --layers a-b: a range of the model (README step 110)
+  [[maybe_unused]] bool teacher = false;
+  [[maybe_unused]] std::string stream_in_path, stream_out_path;
   [[maybe_unused]] int spec_n = 0;
   [[maybe_unused]] std::string spec_log_path;
   for (int i = 1; i < argc; i++) {
@@ -160,6 +163,17 @@ int main(int argc, char** argv) {
     else if (a == "--think") mode = "think";
     else if (a == "-i" || a == "--interactive") interactive = true;  // runtime, --chat or --think: a session of turns on one context
     else if (a == "-n") n_predict = atoi(next());
+    else if (a == "--layers") {  // runtime: only layers a-b (a range hands its stream to the next: --teacher)
+      int la = 0, lb = 0;
+      if (sscanf(next(), "%d-%d", &la, &lb) != 2 || la < 0 || lb < la) { fprintf(stderr, "--layers a-b\n"); return 2; }
+      for (int L = la; L <= lb; L++) layers.push_back(L);
+    }
+    // --teacher: the prompt's tokens through verify + commit in chunks of 5, the greedy next id after
+    // each printed (one per line; a range without the head prints none). --stream-out file: each
+    // token's stream after the range's last layer; --stream-in file: the stream a range starts from
+    else if (a == "--teacher") teacher = true;
+    else if (a == "--stream-in") stream_in_path = next();
+    else if (a == "--stream-out") stream_out_path = next();
     else if (a == "-t") opt.n_threads = atoi(next());
     else if (a == "--gpu") gpu = atoi(next());
     else if (a == "--dspark") dspark_path = next();
@@ -235,7 +249,7 @@ int main(int argc, char** argv) {
   Model m;
   auto t0 = Clock::now();
   try {
-    m.load(model_path);
+    m.load(model_path, layers);
   } catch (const std::exception& e) {
     fprintf(stderr, "load failed: %s\n", e.what());
     return 1;
@@ -282,6 +296,47 @@ int main(int argc, char** argv) {
   fprintf(stderr, "# loaded in %.1f s; prompt %zu tokens; fake-quant %s; %d threads\n", t_load, toks.size(),
           opt.exact_quant ? "on" : "off", opt.n_threads);
 
+#ifdef DS_RUNTIME
+  if (teacher) {  // README step 110: a layer range checked against the whole model, token for token
+    if (!rt) { fprintf(stderr, "--teacher needs --rt\n"); return 2; }
+    const size_t nh = (size_t)m.hp.n_embd * m.hp.hc_mult, np = m.hp.hc_mult;
+    Stream in;
+    if (!stream_in_path.empty()) {
+      FILE* f = fopen(stream_in_path.c_str(), "rb");
+      if (!f) { fprintf(stderr, "cannot read %s\n", stream_in_path.c_str()); return 1; }
+      in.h.resize(toks.size() * nh);
+      in.pre.resize(toks.size() * np);
+      for (size_t t = 0; t < toks.size(); t++)  // per token: h, then pre
+        if (fread(&in.h[t * nh], 4, nh, f) != nh || fread(&in.pre[t * np], 4, np, f) != np) {
+          fprintf(stderr, "%s holds fewer than %zu tokens\n", stream_in_path.c_str(), toks.size());
+          return 1;
+        }
+      fclose(f);
+      rt->stream_in = &in;
+    }
+    FILE* so = stream_out_path.empty() ? nullptr : fopen(stream_out_path.c_str(), "wb");
+    const auto tt = Clock::now();
+    for (size_t i = 0; i < toks.size(); i += 5) {
+      const std::vector<int32_t> chunk(toks.begin() + i, toks.begin() + std::min(i + 5, toks.size()));
+      rt->stream_out.clear();
+      const std::vector<int32_t> next = rt->verify(chunk, true);
+      rt->commit((int)chunk.size());
+      for (int32_t id : next) printf("%d\n", id);
+      if (so && !rt->has_head())
+        for (size_t t = 0; t < chunk.size(); t++) {
+          fwrite(&rt->stream_out.h[t * nh], 4, nh, so);
+          fwrite(&rt->stream_out.pre[t * np], 4, np, so);
+        }
+    }
+    if (so) fclose(so);
+    fprintf(stderr, "# teacher: %zu tokens through layers %d-%d in %.2f s\n", toks.size(), rt->layer0(), rt->layer1() - 1,
+            std::chrono::duration<double>(Clock::now() - tt).count());
+    llama_model_free(tok_model);
+    llama_backend_free();
+    rt.reset();
+    return 0;
+  }
+#endif
   // One turn, or with -i a session: every turn's tokens are appended to the same context, as
   // encoding.py renders a chat: the reply's end of sequence, then <｜User｜>line<｜Assistant｜></think>.
   // So a turn's reply is what a fresh run on the whole conversation would print.

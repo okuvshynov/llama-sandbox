@@ -76,6 +76,14 @@ Runtime::Runtime(const Model& model, RtOptions options, const std::string& fp8_p
   }
   CHECK(hipSetDevice(opt.gpu));
   mem_mark("context, other processes");
+  L0 = hp.n_layer, L1 = 0;
+  for (int L = 0; L < hp.n_layer; L++)
+    if (m.layers[L].loaded) L0 = std::min(L0, L), L1 = L + 1;
+  for (int L = L0; L < L1; L++)
+    if (!m.layers[L].loaded) throw std::runtime_error("runtime: the loaded layers must be one range");
+  if (L0 >= L1) throw std::runtime_error("runtime: no layer loaded");
+  for (int L = L0; L < L1; L++) range_engram |= m.layers[L].kind.engram >= 0;
+  if (L0 > 0 || L1 < hp.n_layer) fprintf(stderr, "# runtime: layers %d-%d of %d%s\n", L0, L1 - 1, hp.n_layer, has_head() ? " and the head" : "");
 
   // rotary frequencies: window-only layers at rope_base, compressed layers at
   // compress_rope_base with YaRN (as Engine::rope)
@@ -102,20 +110,27 @@ Runtime::Runtime(const Model& model, RtOptions options, const std::string& fp8_p
     const int64_t nt = gguf_get_n_tensors(g);
     fp8_off.resize(nt);
     std::vector<int> stride(nt, 0);
+    std::vector<char> skip(nt, 0);  // another range's layer: not uploaded
     size_t total = 0;
     for (int64_t i = 0; i < nt; i++) {
       const std::string name = gguf_get_tensor_name(g, i);
+      if (name.compare(0, 4, "blk.") == 0) {
+        const int L = atoi(name.c_str() + 4);
+        skip[i] = L < L0 || L >= L1;
+      }
+      fp8_off[i] = total;
+      if (skip[i]) continue;
       const bool weight = name.size() > 7 && name.compare(name.size() - 7, 7, ".weight") == 0 &&
                           gguf_find_tensor(g, (name + ".scale").c_str()) >= 0;
       const int K = (int)gguf_get_tensor_ne(g, i)[0], N = (int)gguf_get_tensor_ne(g, i)[1];
       if (weight && fp8_row_stride(K) != K && gguf_get_tensor_size(g, i) == (size_t)N * K) stride[i] = fp8_row_stride(K);
-      fp8_off[i] = total;
       total += ((stride[i] ? (size_t)N * stride[i] : gguf_get_tensor_size(g, i)) + 63) / 64 * 64;
     }
     CHECK(hipMalloc(&fp8_buf, total + 64));
     std::vector<uint8_t> tmp;
     size_t padded = 0;
     for (int64_t i = 0; i < nt; i++) {
+      if (skip[i]) continue;
       const uint8_t* src = (const uint8_t*)map + off + gguf_get_tensor_offset(g, i);
       const size_t sz = gguf_get_tensor_size(g, i);
       if (!stride[i]) {
@@ -218,8 +233,10 @@ Runtime::Runtime(const Model& model, RtOptions options, const std::string& fp8_p
     w.freqs = freqs_buf + (l.kind.ratio ? RD2 : 0);
   }
   gguf_free(g);
-  out_w = bf16(m.output);
-  out_norm = f32(m.output_norm);
+  if (has_head()) {  // a range without the last layer has no use for the 1.3 GB head
+    out_w = bf16(m.output);
+    out_norm = f32(m.output_norm);
+  }
   fprintf(stderr, "# runtime: %s of small weights on GPU %d\n", fmt_bytes((double)small_bytes).c_str(), opt.gpu);
   mem_mark("small weights (rotary, embeddings, head, norms, ...)");
   cpu_moe.reset(new CpuMoeKernel(hp.n_embd, hp.n_ff_exp, hp.n_expert_used, opt.n_threads));
@@ -346,6 +363,7 @@ Runtime::Runtime(const Model& model, RtOptions options, const std::string& fp8_p
   CHECK(hipEventCreateWithFlags(&ev_staged, hipEventDisableTiming));
 
   mem_mark("sequence state: window, compressed KV, indexer keys (--max-ctx)");
+  if (!opt.dspark.empty() && !has_head()) throw std::runtime_error("runtime: the draft needs the last layers and the head");
   if (!opt.dspark.empty()) dspark.reset(new DSpark(*this, opt.dspark));  // before the pools take the rest
   mem_mark("draft (DSpark)");
   setup_experts();
@@ -591,6 +609,25 @@ void Runtime::set_half(int i, int t0) {
   cur_half = i;
 }
 
+void Runtime::stream_from_host(int M) {
+  const size_t nh = (size_t)hp.n_embd * hp.hc_mult, np = hp.hc_mult;
+  if (!stream_in || stream_in->h.size() < (stream_in_tok + M) * nh || stream_in->pre.size() < (stream_in_tok + M) * np)
+    throw std::runtime_error("runtime: layers from " + std::to_string(L0) + " need the stream of every token (stream_in)");
+  CHECK(hipMemcpyAsync(h, stream_in->h.data() + stream_in_tok * nh, (size_t)M * nh * 4, hipMemcpyHostToDevice, s));
+  CHECK(hipMemcpyAsync(pre, stream_in->pre.data() + stream_in_tok * np, (size_t)M * np * 4, hipMemcpyHostToDevice, s));
+  stream_in_tok += M;
+}
+
+void Runtime::stream_to_host(int M) {
+  const size_t nh = (size_t)hp.n_embd * hp.hc_mult, np = hp.hc_mult;
+  const size_t h0 = stream_out.h.size(), p0 = stream_out.pre.size();
+  stream_out.h.resize(h0 + (size_t)M * nh);
+  stream_out.pre.resize(p0 + (size_t)M * np);
+  CHECK(hipMemcpyAsync(stream_out.h.data() + h0, h, (size_t)M * nh * 4, hipMemcpyDeviceToHost, s));
+  CHECK(hipMemcpyAsync(stream_out.pre.data() + p0, pre, (size_t)M * np * 4, hipMemcpyDeviceToHost, s));
+  CHECK(hipStreamSynchronize(s));
+}
+
 std::vector<int32_t> Runtime::verify(const std::vector<int32_t>& chunk, bool head) {
   const int M = (int)chunk.size(), HD = hp.head_dim;
   if (M < 1 || M > DSpark::kMaxChunk) throw std::runtime_error("verify: chunk of " + std::to_string(M));
@@ -623,6 +660,7 @@ std::vector<int32_t> Runtime::forward_chunk(const std::vector<int32_t>& toks, bo
   const int M = (int)toks.size(), E = hp.n_embd, HC = hp.hc_mult;
   const int64_t V = hp.n_vocab;
   if (M < 1 || M > kChunk || (head && M > DSpark::kMaxChunk)) throw std::runtime_error("forward_chunk: " + std::to_string(M) + " tokens");
+  head = head && has_head();
   if (n_past_ + M > opt.max_ctx) throw std::runtime_error("runtime: chunk past --max-ctx");
   auto t0 = Clock::now();
   pos = n_past_;
@@ -633,18 +671,24 @@ std::vector<int32_t> Runtime::forward_chunk(const std::vector<int32_t>& toks, bo
   cur_layer = -1;
   trace_step_begin();
   engram_pending = toks;  // fetched once layer 0 is queued (block_post), before layer 1 reads them
+  if (!range_engram) engram_pending.clear();
   engram_p0 = n_past_;
   std::vector<float> emb((size_t)M * E), one_hot((size_t)M * HC, 0.0f);
-  for (int t = 0; t < M; t++) {
-    const ggml_bf16_t* row = (const ggml_bf16_t*)((const char*)m.tok_embd->data + (size_t)toks[t] * m.tok_embd->nb[1]);
-    for (int i = 0; i < E; i++) emb[(size_t)t * E + i] = ggml_bf16_to_fp32(row[i]);
-    one_hot[(size_t)t * HC] = 1.0f;
+  if (L0 > 0) {
+    stream_from_host(M);
+  } else {
+    for (int t = 0; t < M; t++) {
+      const ggml_bf16_t* row = (const ggml_bf16_t*)((const char*)m.tok_embd->data + (size_t)toks[t] * m.tok_embd->nb[1]);
+      for (int i = 0; i < E; i++) emb[(size_t)t * E + i] = ggml_bf16_to_fp32(row[i]);
+      one_hot[(size_t)t * HC] = 1.0f;
+    }
+    CHECK(hipMemcpyAsync(x, emb.data(), emb.size() * 4, hipMemcpyHostToDevice, s));
+    CHECK(hipMemcpyAsync(pre, one_hot.data(), one_hot.size() * 4, hipMemcpyHostToDevice, s));
+    for (int t = 0; t < M; t++) k_repeat(x + (size_t)t * E, E, HC, h + (size_t)t * E * HC, s);
   }
-  CHECK(hipMemcpyAsync(x, emb.data(), emb.size() * 4, hipMemcpyHostToDevice, s));
-  CHECK(hipMemcpyAsync(pre, one_hot.data(), one_hot.size() * 4, hipMemcpyHostToDevice, s));
-  for (int t = 0; t < M; t++) k_repeat(x + (size_t)t * E, E, HC, h + (size_t)t * E * HC, s);
   chunked = true;
-  if (!head && opt.prefill_overlap && M >= 2) {
+  // (a verify chunk without the head is a range's: one pass, as with the head)
+  if (!head && !verifying && opt.prefill_overlap && M >= 2) {
     // two halves A, B: pre(L, A) pre(L, B) post(L, A) pre(L + 1, A) post(L, B) pre(L + 1, B) ...
     // The host computes A's CPU experts while the GPU runs B's attention, and B's while the GPU
     // runs A's next layer. Causal order holds: B's attention at L follows A's at L.
@@ -653,18 +697,18 @@ std::vector<int32_t> Runtime::forward_chunk(const std::vector<int32_t>& toks, bo
     half_h2[0] = half_h2[1] = h2;
     auto pre_h = [&](int L, int i) { set_half(i, t0[i]); pos = n_past_ + t0[i]; block_pre(L, nullptr, n[i]); };
     auto post_h = [&](int L, int i) { set_half(i, t0[i]); pos = n_past_ + t0[i]; block_post(L, nullptr, n[i]); };
-    pre_h(0, 0);
-    pre_h(0, 1);
-    for (int L = 0; L < hp.n_layer; L++) {
+    pre_h(L0, 0);
+    pre_h(L0, 1);
+    for (int L = L0; L < L1; L++) {
       post_h(L, 0);
-      if (L + 1 < hp.n_layer) pre_h(L + 1, 0);
+      if (L + 1 < L1) pre_h(L + 1, 0);
       post_h(L, 1);
-      if (L + 1 < hp.n_layer) pre_h(L + 1, 1);
+      if (L + 1 < L1) pre_h(L + 1, 1);
     }
     set_half(-1, 0);
     pos = n_past_;
   } else {
-    for (int L = 0; L < hp.n_layer; L++) block(L, nullptr, M);
+    for (int L = L0; L < L1; L++) block(L, nullptr, M);
   }
   cur_layer = -1;
   chunked = false;
@@ -685,7 +729,8 @@ std::vector<int32_t> Runtime::forward_chunk(const std::vector<int32_t>& toks, bo
     trace_host("tail: the head's wait and the ids to host", t_h0, Clock::now(), 3);
   } else {
     mark("end");
-    CHECK(hipStreamSynchronize(s));
+    if (!has_head()) stream_to_host(M);
+    else CHECK(hipStreamSynchronize(s));
   }
   if (route_log) write_route_records(toks.data(), M);
   const auto t_c0 = Clock::now();
@@ -1901,6 +1946,7 @@ void Runtime::begin_step(int32_t tok) {
   cur_layer = -1;
   trace_step_begin();
   engram_pending = {tok};
+  if (!range_engram) engram_pending.clear();
   engram_p0 = n_past_;
 }
 
@@ -2007,13 +2053,18 @@ std::vector<float> Runtime::decode(int32_t tok, bool want_logits) {
   const ggml_bf16_t* row = (const ggml_bf16_t*)((const char*)m.tok_embd->data + (size_t)tok * m.tok_embd->nb[1]);
   for (int i = 0; i < E; i++) emb[i] = ggml_bf16_to_fp32(row[i]);
   one_hot[0] = 1.0f;
-  CHECK(hipMemcpyAsync(x, emb.data(), E * 4, hipMemcpyHostToDevice, s));
-  CHECK(hipMemcpyAsync(pre, one_hot.data(), HC * 4, hipMemcpyHostToDevice, s));
-  k_repeat(x, E, HC, h, s);
-  for (int L = 0; L < hp.n_layer; L++) block(L, nullptr);
+  if (L0 > 0) {
+    stream_from_host(1);
+  } else {
+    CHECK(hipMemcpyAsync(x, emb.data(), E * 4, hipMemcpyHostToDevice, s));
+    CHECK(hipMemcpyAsync(pre, one_hot.data(), HC * 4, hipMemcpyHostToDevice, s));
+    k_repeat(x, E, HC, h, s);
+  }
+  for (int L = L0; L < L1; L++) block(L, nullptr);
   cur_layer = -1;
   if (dspark) dspark->seed(pos);  // this position's K/V into the draft's window rings
-  if (!want_logits) {
+  if (!has_head()) stream_to_host(1);
+  if (!want_logits || !has_head()) {
     end_step();
     last.total_ms = ms_since(t0);
     trace_host("decode (no logits)", t0, Clock::now(), 3);

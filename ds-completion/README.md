@@ -3983,3 +3983,53 @@ only when the ring was among the copies. The cause: `hipMemset` (the zero fill o
 buffer) is not ordered with the stream's copies, so it could land after the first save into the
 buffer. `hipDeviceSynchronize()` after allocating fixes it. Every other buffer of the runtime is
 allocated at startup, long before its first use; not audited.
+
+## Step 110: the second machine, and the runtime on a range of layers
+
+**The second machine** (`shower`, the same Mac Pro: W-3245, 755 GB, four Vega II dies, the same
+kernel, ROCm 6.3.4 and compiler; 10 GbE to this one, ping 0.20 ms; its Duo cards have no XGMI
+links, which the runtime never uses: every hand-off between dies goes through pinned host memory).
+Set up: the branch, the llama.cpp fork's CPU build, the fp8 file copied, the model paths linked.
+Every model file has the same sha256 on both (`results/split/sha256.txt`). The held-out set run
+on both at the same time: every output identical to the references, long-proof identical between
+them; **44.60 t/s here, 44.33 there** (-0.6%; `results/spec-measure-sclk6-cacheloads800cacheperiod8-shower/`,
+`-tomb-baseline/`).
+
+**How to use it: capacity before parallelism** (the person's suggestion). The simplest split is
+the model in two halves, one per machine: each machine's GPUs then hold experts for 20 layers
+instead of 40. One hand-off per step each way instead of one per layer (40 x 0.2 ms would be 8 ms
+of latency alone).
+
+**Layer 20 is a clean cut.** From the layer table (`ds-inspect`): layers 0-19 read compressed
+caches and index picks from layers 2, 8 and 14; layers 20-39 from layer 20 (index picks from 20,
+24, 28, 32, 36; the candidate blocks from 20). The engram layers are 1 and 14; the draft reads
+layers 37-39 and uses the head. So the only thing that crosses is the residual stream after
+layer 19: per token `h` (4 x 4096 floats) and the next sublayer's mix `pre` (4 floats), 64 KB.
+
+**The runtime on a range** (this step; no network yet): `--layers a-b` loads a contiguous range
+(the loader and the expert placement already took a layer list). A range that does not start at
+layer 0 takes each token's stream from the host instead of the embedding (`Runtime::stream_in`);
+one that does not end at the last layer has no head and copies the stream out (`stream_out`). A
+range uploads only its own dense weights, the head only with the last layer, and fetches engram
+rows only if it has an engram layer. The draft is refused without the last layers.
+
+**Checked** (`results/split/teacher.txt`): `--teacher` runs a token sequence (a held-out prompt
+and its reference output) through verify + commit in chunks of 5 and prints the greedy next id
+after every position. The whole model; then layers 0-19 writing the stream to a file
+(`--stream-out`); then layers 20-39 reading it (`--stream-in`): the ids are identical at every
+position, on cpp-matrix (325), geometry (375) and zh-travel (317), with and without the expert
+cache. Single-shot outputs and step 108's chat session are unchanged.
+
+| | whole | layers 0-19 | layers 20-39 |
+|---|---|---|---|
+| dense fp8 weights on GPU 0 | 6.41 GiB | 3.34 | 3.06 |
+| small weights (head, norms, ...) | 1.75 GiB | 0.29 | 1.47 |
+| expert slots (no draft) | 6,523 | 6,794 | 6,747 |
+| share of its expert pairs on GPUs | 42.5% | 88.5% | 87.9% |
+
+**A first signal, not a measurement:** the same test's time for all positions, whole against
+front + back: cpp-matrix with the static placement 7.82 s against 1.83 + 1.87; zh-travel with
+the cache 4.91 s against 1.88 + 1.97 (-22%). Teacher-forced, fixed chunks, no draft, no network.
+
+Next: two processes over TCP (first both here, front on dies 0-1 and back on dies 2-3), the
+speculative loop driving the front, the back holding the head and the draft.
