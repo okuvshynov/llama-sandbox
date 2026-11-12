@@ -106,7 +106,7 @@ struct AfterMain {
   ~AfterMain() { fatal_phase("after main: static destructors and the libraries' exit"); }
 };
 
-int main(int argc, char** argv) {
+static int run(int argc, char** argv) {
   AfterMain after_main;
   {
     void* bt[1];
@@ -291,12 +291,15 @@ int main(int argc, char** argv) {
     if (spec && dspark_path.empty() && remote.empty()) { fprintf(stderr, "--spec needs --dspark\n"); return 2; }
     rt.reset(new Runtime(m, ro, rt_path));
     rt->profile = profile;
-    if (!trace_path.empty()) rt->set_trace(trace_path);
+    if (!trace_path.empty()) rt->set_trace(trace_path);  // before connect_peer: its exchanges are the trace's first clock samples
     if (!route_log.empty()) rt->log_routing(route_log);
     if (!remote.empty()) {
       rt->connect_peer(remote);
       if (spec && !rt->has_draft()) { fprintf(stderr, "--spec: the back has no draft (--dspark there)\n"); return 2; }
     }
+    // a range alone computes no token: it needs its other half, or the test that stands in for it
+    if (!rt->has_head() && remote.empty() && !teacher) { fprintf(stderr, "--layers without the last layer needs --remote (or --teacher)\n"); return 2; }
+    if (rt->layer0() > 0 && !serve_port && !teacher) { fprintf(stderr, "--layers not from layer 0 needs --serve (or --teacher --stream-in)\n"); return 2; }
   }
 #else
   if (!rt_path.empty()) { fprintf(stderr, "--rt needs the bin-hip build\n"); return 2; }
@@ -336,7 +339,6 @@ int main(int argc, char** argv) {
     const auto tt = Clock::now();
     for (size_t i = 0; i < toks.size(); i += 5) {
       const std::vector<int32_t> chunk(toks.begin() + i, toks.begin() + std::min(i + 5, toks.size()));
-      rt->stream_out.clear();
       const std::vector<int32_t> next = rt->verify(chunk, true);
       rt->commit((int)chunk.size());
       for (int32_t id : next) printf("%d\n", id);
@@ -362,7 +364,9 @@ int main(int argc, char** argv) {
   // <｜Assistant｜></think>answer. So each turn marks the context after its <｜Assistant｜>, and the
   // next one rewinds there and runs </think>, the answer's tokens, then its own (the answer runs
   // again: its states depended on the reasoning).
-  const int32_t think_end = tokenize(vocab, "</think>").at(0);
+  const std::vector<int32_t> think_end_toks = tokenize(vocab, "</think>");
+  if (think_end_toks.size() != 1) { fprintf(stderr, "</think> is not one token in this vocabulary\n"); return 1; }
+  const int32_t think_end = think_end_toks[0];
   std::vector<int32_t> answer;  // --think: the last reply after its </think>
   const int eos = llama_vocab_eos(vocab);
   const int n_predict_turn = n_predict;
@@ -435,16 +439,17 @@ int main(int argc, char** argv) {
         n_gen++;
         return n_gen < n_predict;
       };
-      FILE* spec_log = spec_log_path.empty() ? nullptr : fopen(spec_log_path.c_str(), "w");
+      const char* log_mode = first ? "w" : "a";  // a session's later turns add to the logs
+      FILE* spec_log = spec_log_path.empty() ? nullptr : fopen(spec_log_path.c_str(), log_mode);
       // README step 92: per verify step the draft's token ids and the ids it emitted (a study of the
       // draft's head over part of the vocabulary: scripts/draft_vocab_sim.py)
-      FILE* tok_log = getenv("DS_DRAFT_TOKEN_LOG") ? fopen(getenv("DS_DRAFT_TOKEN_LOG"), "w") : nullptr;
+      FILE* tok_log = getenv("DS_DRAFT_TOKEN_LOG") ? fopen(getenv("DS_DRAFT_TOKEN_LOG"), log_mode) : nullptr;
       if (tok_log) fprintf(tok_log, "# n_verified accepted verify_ms draft_ms | drafted ids (all of the block; none on a plain step) | emitted ids\n");
       // README step 107: a second draft block in shadow (nothing uses it): from the first block's last
       // token, at its true positions with the window 5 positions behind (gap), and as if it followed
       // the window directly (shift). Per drafted step: the anchor's index in the generated tokens,
       // the block, the two second blocks with their confidences; at the end every generated id.
-      FILE* d2_log = getenv("DS_DRAFT2_LOG") ? fopen(getenv("DS_DRAFT2_LOG"), "w") : nullptr;
+      FILE* d2_log = getenv("DS_DRAFT2_LOG") ? fopen(getenv("DS_DRAFT2_LOG"), log_mode) : nullptr;
       if (d2_log) fprintf(d2_log, "# anchor index, drafts the rule verified | block 1: ids ; conf | gap: ids ; conf | shift: ids ; conf  (last line: G, every generated id)\n");
       if (spec_log) fprintf(spec_log, "# n_verified accepted verify_ms draft_ms conf[0..block)\n");
       // Draft length per step (unless --spec-n): the confidence head's sigmoid is the chance a draft
@@ -675,4 +680,15 @@ int main(int argc, char** argv) {
 #endif
   fatal_phase("main: its locals (the model's unmap)");
   return 0;
+}
+
+// Errors after startup (a peer that left, a message of the wrong size, a chunk past --max-ctx)
+// end the run with their message; unwinding closes the runtime, so a --trace is still written.
+int main(int argc, char** argv) {
+  try {
+    return run(argc, argv);
+  } catch (const std::exception& e) {
+    fprintf(stderr, "\nerror: %s\n", e.what());
+    return 1;
+  }
 }

@@ -3,7 +3,7 @@
 A one-page feel for the numbers: what a millisecond is worth, and what changes if a part gets
 faster or slower. Details and measurements: [README.md](README.md) (steps cited), plans:
 [PLAN.md](PLAN.md). Generation and prompt numbers are at sclk 6 (the GPU clock level). The clock:
-held-out 36.8 / 41.1 / 42.1 t/s at sclk 2 / 6 / 8; at sclk 6 ~35% of a token's time scales with
+held-out 36.8 / 41.1 / 42.1 t/s at sclk 2 / 6 / 8 when swept (sclk 6 is 44.6 since); at sclk 6 ~35% of a token's time scales with
 it (README step 90); the rest is the CPU side and HBM-bound GPU work (step 94).
 
 ## Generation (one sequence, speculative decoding with the adaptive cache)
@@ -23,18 +23,9 @@ typical steps, from the held-out run (README step 57):
 | code (cpp-matrix), mostly 6 tokens verified | 4.48 | 12 ms | ~109 ms | 121 ms | 36.9 |
 | chat (tcp-udp), mostly 2-3 verified | 2.16 | 10 ms | ~65 ms | 75 ms | 28.9 |
 
-Held-out mean: 32.0 t/s (26.7-38.6); 32.5 since the output head reads its inputs through LDS
-(README step 62: -1.1 ms per draft call, -1.6 ms per 6-token verify step); **34.3** since the
-attention core runs a chunk in one launch (steps 66-68: 17.7 -> 7.8 ms per 6-token step, a code
-verify step 108 -> 96 ms; cpp-matrix now 41.4 t/s); **35.0** since a verify step's copies back from
-the dies are issued before the host waits (step 71: the CPU's experts start ~80 us sooner per
-layer, ~4 ms per code step); **35.1** since the engram rows are read while layer 0 runs (step 73); **35.9** since the indexer
-is skipped while it keeps every compressed position (step 74, <= 512 keys: every held-out prompt); **36.3** since
-the CPU's activation digits are written by one thread each (step 80: AVX-512, a CPU call -5-14% after the gap); **37.2**
-since the CPU's 32-row tasks are handed out in pairs (step 82: a cold call with 2-6 experts -12-13%); **37.6**
-since the CPU's rows go to die 0 by a kernel, not behind the cache's loads on the copy engine (step 84); **40.8**
-since the home die keeps its startup experts and the cache adapts dies 1-3 (step 86: loads into die 0 had doubled
-half the drafts and slowed its dense work); **41.2** since the verify step's argmax runs on the GPU (step 88); **42.5** with the dies' results in smaller copies and the compressor's projections once per chunk (steps 97, 98; 41.1 before them in the same session); **43.5** with the attention output matrices' rows padded on the GPU (step 101); **44.0** with the light launches that fill the GPU's wave slots exactly sent as two (step 102); **44.6** with the several-token fp8 kernel (step 104).
+Held-out mean today: **44.6 t/s** (34-55; README step 104), **50.9** on two machines (below).
+Every change on the way from step 57's 32.0, on one ruler: `results/heldout-history/` (README
+step 72).
 The tables below are from step 57's runs, before steps 66-82. For scale: step 48 measured 28.0 at the same clock before
 the cache tuning and the router and CPU-routine fixes (steps 50, 53, 57).
 
@@ -104,7 +95,7 @@ alone gains nothing:
 
 | if | wall per token | t/s |
 |---|---|---|
-| today (fast) | 12.0 ms | 83 |
+| step 58's profile (fast; 93 t/s since step 68) | 12.0 ms | 83 |
 | CPU experts 2x faster | ~11.2 (now the GPU sets the pace) | ~89 |
 | GPU work 2x faster | ~12.0 (the CPU sets the pace) | ~83 |
 | both 2x faster | ~6.8 | ~147 |
@@ -113,7 +104,8 @@ With `--canon` the CPU is the limit (15.0 vs ~10.3 ms): its exact integer kernel
 fast one per (token, expert) pair, so only the CPU side helps there.
 
 **Scale:** a 30,000-token document takes ~5.4 min at ~93 t/s (it took ~30 min token by token).
-10,000 tokens of reasoning take ~4.5 min at ~37 t/s.
+10,000 tokens of reasoning take ~3 min at ~57 t/s (the held-out long proof's speed; ~3.7 min
+at the 44.6 mean).
 
 ## Two machines (the model in two halves)
 
@@ -125,11 +117,12 @@ the stream of the verified tokens goes over once (64 KB per token) and a few ids
   0.4, the back's layers and head 36.1, the ids back 0.14, the draft 9.35: **82.7 ms** against
   92.9 on one machine. A 2-token chat step: 21.4 + 22.4 + 8.8 = 53.7.
 - **What it removed:** die 0's wait for the CPU's experts (26.7 ms of a 6-token step on one
-  machine, 0 on both halves here): each machine holds ~85% of its half's experts on GPUs (~40% on
+  machine, 0 on both halves here): each machine holds ~88% of its half's experts on GPUs (~42% on
   one machine) and 97-99% of the expert uses.
 - **What it did not change:** the dense work (48 ms of a step on one machine, ~36 + ~36 here,
   as each half's layers now include what used to hide under the CPU's time). So the gain follows
-  the CPU's share: +23-27% where a third of the experts ran on the CPU, +2.5% on 1-2-token steps,
+  the CPU's share: +23-27% where a third of the experts ran on the CPU, +8% on chat, +2.5% on Chinese and
+  Japanese (1-2 tokens per step),
   0 on a 3,000-token reasoning run whose cache had 97% on GPUs already.
 - **The network** is ~0.5 ms per step. A millisecond of the back's work is a millisecond of the
   step: the front waits for exactly what the back takes (answers arrive ~155 us after it is done).
@@ -184,7 +177,7 @@ overwritten, so outputs never depend on load timing.
 **What the cache asks for:** every 8 tokens it swaps the most-used experts not on a GPU for the
 least-used ones that are, at up to 800 loads/s. In 300-token runs it starts 310-465 loads/s,
 **~11-12 per generated token**, about a quarter of what the links could carry (README step 62's
-runs). A token takes ~27 ms (at ~37 t/s); a missed expert costs the CPU ~0.25-0.3 ms on the critical path, a load
+runs). A token takes ~22 ms (at ~45 t/s); a missed expert costs the CPU ~0.25-0.3 ms on the critical path, a load
 ~2 ms of one GPU's copy engine in the background.
 
 **What loads cost generation:** not nothing. Loading at 100 / 200 loads/s cost a decode 1-2% / 5%
@@ -214,6 +207,7 @@ so it has 831 slots against 1,765 on each other GPU; 64k context costs only 0.4 
 ## Fixed costs
 
 Model load ~9-20 s (from the page cache; minutes if it must come back from disk), expert upload
-for a placement 5-30 s, the cache's expert registration ~100 s in the background (its loads
+for a placement 5-30 s, the cache's expert registration ~100 s in the background (~30 s per half on
+two machines) (its loads
 start only after it). For short runs these dominate: a 20-token prompt and 100 tokens of answer
 take ~5 s of work after ~20-30 s of startup.

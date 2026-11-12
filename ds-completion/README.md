@@ -4164,3 +4164,47 @@ The documents now describe both setups: this file's status, QUICKSTART (what the
 needs, the two commands, what to expect, limits), OVERVIEW (results, what is next, the code
 map), TIMING (a two-machine section), PLAN (today's numbers; "Two machines": what the split is
 and is not, the ideas after it), REPRODUCE (the second machine).
+
+## Step 113: review round 1 (the code of steps 108-112, the documents for both setups)
+
+No performance work: two independent reads, one of the code added in steps 108-112, one of the
+documents by a newcomer setting up two machines. Neither found a wrong output; outputs are
+unchanged (checks below).
+
+**Code:**
+- A range of layers alone is refused: `--layers 0-19` without `--remote` ran, got no logits and
+  printed token 0 `-n` times; `--layers 20-39` without `--serve` aborted.
+- Errors after startup end the run with `error: ...` and status 1 (`main` is a try around the
+  old body): a peer that left or a refused connection aborted the process, and its trace was lost.
+- The halves check each other: HELLO carries a version of `hip/peer.h`; every request must have
+  its type's size (token messages at most 512 tokens, the others no payload) and every answer the
+  size asked for. Two different builds now give an error, not a read past a vector.
+- The back takes the front's `in_prefill` with CHUNK and DECODE. It had prompt chunks as
+  generation and plain decode steps as prompt: its profile, trace spans and routing log only.
+- `stream_out` holds the last forward's tokens (it appended, with four clears before forwards).
+- `scripts/split-measure.sh`: the back's PID is kept: a back that does not start is reported
+  and stopped, the script waits for the back's process to end (it waited for a log line, so the
+  next back could start while the last still held GPU memory); an unknown prompt name no longer
+  starts a back that nobody connects to; a failed merge keeps the two traces.
+- Smaller: a session's `--spec-log` kept only the last turn; `draft_shadow` on a front; socket
+  errors say why, EINTR is retried, keepalive is on; `trace_merge.py` takes `-o` anywhere and
+  does not divide by zero when the least delay is ~0 (one machine).
+
+**Documents:** QUICKSTART has a "Two machines" section a newcomer can follow (commands with their
+`cd` and `$M`, what must agree between the halves and what is checked, the port, what failures
+look like, sessions), the commands to set and read the GPU clock, a short glossary, and no XGMI
+requirement; the headline numbers say they were measured with `--cache-wait`; rows at sclk 2 are
+marked. REPRODUCE's open items about the llama.cpp fork are settled (the PR head; the `hip.h`
+line is not needed: the second machine was built without it). TIMING, OVERVIEW and PLAN: stale
+"today" numbers, the experts' share on GPUs as measured (88% / 42%), the gain per kind of prompt
+with chat in it (+8%).
+
+**Checks:** a 3-turn thinking session (`results/chat/think/th45`) on one machine and on two:
+the saved bytes; cpp-matrix and tcp-udp on one machine 54.31 and 39.13 t/s, sql-report on two
+57.44, outputs the same. The merged traces of step 112 were collected again with the back's
+flag right (`results/trace/two-machines/`: 60.3 and 38.1 t/s traced; the clock fit 14 samples,
+residuals 0.7 and 1.4 us, drift 16 and 14 ppm this time against under 1 in step 112's runs).
+
+Left open by the review: one order for the rows of REPRODUCE section 6 and PROCESS's log; one
+owning document per number; the plain and the speculative loop in `main` keep their end-of-reply
+state differently; step 107's shadow log sits in the speculative loop.

@@ -163,7 +163,7 @@ Each rule is followed by where it mattered most.
   no. **Why:** CPU misses (~70 ms of a 170 ms verify step) do not scale with the GPU clock.
   This pointed straight at the cache.
 
-### Phase F: the adaptive expert cache, and the decode work after it (steps 28-83)
+### Phase F: the adaptive expert cache, the decode work after it, sessions and two machines (steps 28-112)
 
 - **Q:** What could go wrong with a cache that changes what runs where while decoding?
   **Found:** an expert's bits depend on where it runs (GPU and CPU kernels sum in different
@@ -544,6 +544,7 @@ Estimates were made before measuring wherever possible; this is how they fared.
 | whole layers on GPUs (8) | all 40 layers -> ~20 t/s | 13 layers 11.4 t/s, consistent | |
 | per-layer split, study30 (14) | ~18 t/s | 17.7-21.7 t/s (after fix 3) | |
 | oracle placement (15) | ~24 t/s | 16 t/s, then ~25 after three fixes | the expert path was serialized; 32 threads starved the host |
+| a second machine (PLAN's cost model -> 111) | ~1-2 ms per token once the cache adapts | +14% on 300-token runs, nothing on a 3,000-token run | right where it said (an adapted cache); the 300-token runs we measure end before the cache has adapted that far |
 | speculation with study30 (19) | chat ~22 vs ~20 t/s | +7% to +33%, gmean +22% | draft length chosen per step (phase 4) |
 | higher clock helps speculation more (27) | yes (the person's hypothesis) | no: +8% plain, +9% spec | CPU misses do not scale with the GPU clock |
 | canonical numerics cost (28) | within 15% | CPU +5%, GPU +13% (+2% after batching) | |
@@ -596,6 +597,7 @@ Estimates were made before measuring wherever possible; this is how they fared.
 | the second machine; a range of layers (110) | how to use a second identical machine? (the person: first for capacity, the model in two halves, not for parallelism) | the machine reproduces every output at the same speed; layer 20 is a clean cut (nothing but the residual stream crosses: 64 KB per token); the runtime runs a layer range with the stream handed in and out, ids identical to the whole model; each half holds ~88% of its expert pairs on GPUs against 42% | kept; next the two processes over TCP |
 | two processes, two machines (111) | what does the second machine's GPU capacity give with the model in two halves? | held-out mean 44.60 -> 50.85 t/s (+14.0%), every output identical; the gain is the CPU's experts (expert uses on GPUs 75-88% -> 97-99%): +23-27% where many ran on the CPU, +2.5% on 1-2-token steps, 0 on the long proof; the network costs nothing visible; a wrong-device bug with the cache and a home die other than 0 found on the way | kept; the machines take turns: parallelism is next |
 | one trace of both machines (112) | two traces on two clocks do not show a step: how well can the clocks be aligned over the link the halves already use? | to ~1 us: NTP-style samples on the small exchanges, but only those with near-least delay (a draft request queued behind the back's commit biases its sample: the first fit had 90 us residuals). A 6-token code step: front 36.4 ms, back 36.1, draft 9.35, network 0.5; no wait for the CPU on either half | kept; the documents now cover both setups |
+| review round 1 (113) | the person: pause performance, review code and documents | two independent reads (the recent code; the documents as a newcomer with two machines): no wrong output; a lone half ran and printed garbage, errors aborted, the halves did not check each other, the launcher could strand a back; QUICKSTART could not be followed for two machines | fixed; outputs unchanged |
 | expert parallelism for the draft (62) | proposed by the person | ~1 ms at best | experts are 16% of the draft; the head (27%) was the item |
 | the head through LDS (62) | ~1-2% | +1.4% held-out, +2% on code | as estimated from the per-part times |
 | the draft in fp8 frees ~4 GB (60 -> 61) | ~210 slots | nothing | its dense part was already fp8 and its experts mxfp4: assumed from the file's name |

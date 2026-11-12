@@ -21,8 +21,8 @@
 # since step 98 the compressor's two projections run once per chunk: a first 'attn.compressor' group before the per-token ones
 # since step 104 the fp8 matrices at 3-8 tokens run on the several-input kernel (attn.out, ffn.shared, engram, attn.q); DS_FP8_VIRT=0 gives the 64-lane kernel (results/decode-next/virt-onoff.txt)
 # two-machines/ (README step 112): one trace of the model in two halves on two machines, the back's events on the front's clock
-#   TRACE=1 PROMPTS="cpp-matrix tcp-udp" scripts/split-measure.sh (front tomb, back shower; commit 4824823 + step 112; sclk 6 on both; 2026-11-12);
-#   59.02 and 38.23 t/s traced (62.89 and 42.10 untraced in step 111), outputs identical; <name>.clock.txt: the clock fit (15 samples, ~1 us residuals)
+#   TRACE=1 PROMPTS="cpp-matrix tcp-udp" scripts/split-measure.sh (front tomb, back shower; commit bf44341 + step 113; sclk 6 on both; 2026-11-12; step 112's were replaced: the back had prompt chunks traced as generation);
+#   60.33 and 38.11 t/s traced (62.89 and 42.10 untraced in step 111), outputs identical; <name>.clock.txt: the clock fit (14 samples, ~1 us residuals)
 #   process 1 = the front (layers 0-19): the tracks above, with 'send to the back: ...' and 'waiting for the back' on steps (host);
 #   process 2 = the back (layers 20-39, the head, the draft): the same tracks, 'receive the stream: ...' on steps (host), and
 #   'messages from the front': one 'serve <MESSAGE>' span per message from its header's arrival to the end of its work

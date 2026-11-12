@@ -50,6 +50,7 @@ Speed
 | 24 | fp8 output head | idea | halves the 2.3 ms head, but is no longer exact vs the reference |
 | 25 | Clock level by phase | idea | sclk 4-6 for decode with CPU experts, 8 once GPU experts dominate |
 | 30 | Further optimization ideas (2026-10-29) | ideas | cache tuning, the dense part of a verify step and TP, speculation tuning, a faster draft: see the section below |
+| 31 | Two machines, the model in two halves | done (steps 110-112) | layers 0-19 / 20-39 on two Mac Pros over TCP: held-out 44.60 -> 50.85 t/s, outputs identical; ideas after it in "Two machines" below |
 
 Features and limits
 
@@ -316,8 +317,8 @@ each half; the engram is in the front, the draft and the head in the back); the 
 processes over TCP (`hip/peer.h`), the front driving; one merged trace. Held-out mean 44.60 ->
 50.85 t/s, outputs identical.
 
-**What the split is and is not.** It is GPU room: each machine holds ~85% of its half's expert
-pairs (40% before), so the CPU's experts (26.7 ms of a 6-token code step) are gone from both
+**What the split is and is not.** It is GPU room: each machine holds ~88% of its half's expert
+pairs (42% before), so the CPU's experts (26.7 ms of a 6-token code step) are gone from both
 halves. It is not parallelism: a 6-token code step is front 36.4 ms, then back 36.1 ms, then the
 draft 9.35 ms, and one machine idles throughout. A long reasoning run, whose cache already had
 97% of the uses on GPUs, runs at the same 57.0 t/s.
@@ -491,6 +492,7 @@ mean 44.60 -> 50.85 t/s (+14.0%), outputs identical; the gain is the CPU's exper
 long proof or on 1-2-token steps. Next there: the machines take turns (no parallelism), the dense
 part of each is one die; the chat launcher and a server on two machines.
 Step 112: one trace of both machines (clocks aligned to ~1 us); the documents cover both setups.
+Step 113: review round 1 (error paths, checks between the halves, the launcher; the documents).
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front

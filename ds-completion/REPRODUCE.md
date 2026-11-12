@@ -33,17 +33,18 @@ it; it reproduces them to the byte at the same speed (44.33 against 44.60 t/s he
 | OS | Ubuntu 22.04 LTS, kernel `6.10.5-1-t2-jammy` (t2linux, for the Mac's T2 chip) |
 | ROCm | 6.3.4 in `/opt/rocm-6.3.4` (HIP 6.3.42134; gfx906 is past its support window but works) |
 | compiler | g++ 11.4.0; hipcc (AMD clang 18, from ROCm 6.3.4) |
-| llama.cpp fork | `~/forks/llama.cpp`, branch `deepseek41`: commit `b72050d03` "model : add DeepSeek-V4.1-Flash (deepseek41)" (Unsloth) on top of upstream `797de63b2`, plus one uncommitted line in `ggml/src/ggml-cuda/vendors/hip.h` (`#define __ballot_sync(mask, var) __ballot(var)`, for the HIP build). CPU build in `build/` (static libraries). Used for ggml, GGUF reading, the tokenizer and the CPU baseline. **(to confirm: where the branch is published)** |
+| llama.cpp fork | `~/forks/llama.cpp`, branch `deepseek41`: commit `b72050d03` "model : add DeepSeek-V4.1-Flash (deepseek41)" (Unsloth) on top of upstream `797de63b2`, plus one uncommitted line in `ggml/src/ggml-cuda/vendors/hip.h` (`#define __ballot_sync(mask, var) __ballot(var)`, for the fork's own HIP build, which nothing here uses since step 11: the second machine's fork was built without it). CPU build in `build/` (static libraries). Used for ggml, GGUF reading, the tokenizer and the CPU baseline. (the head of llama.cpp PR #30817; QUICKSTART.md) |
 | Python (reference) | venv `~/venvs/ds-ref`, Python 3.10.12: `pip install -r ref/requirements.txt` (a `pip freeze`: torch 2.14.1+cpu, numpy 2.2.6, safetensors 0.8.0, sympy 1.14.0, tokenizers 0.23.3, huggingface_hub 2.3.0, ...) |
 | perf (counters, step 79) | Ubuntu's `linux-tools-generic` (perf 5.15) run as `/usr/lib/linux-tools/5.15.0-202-generic/perf` (the `/usr/bin/perf` wrapper refuses the 6.10 kernel); user-space core events with `perf_event_paranoid` 2 |
 
-GPU clock: experiments state their sclk level (default here: level 2, 1204 MHz). It is set by
+GPU clock: experiments state their sclk level (6 for every measurement since step 48; 2, 1204
+MHz, before it). It is set by
 hand, as root, per card:
 
 ```bash
 for c in /sys/class/drm/card[0-3]/device; do
   echo manual | sudo tee $c/power_dpm_force_performance_level
-  echo 2 | sudo tee $c/pp_dpm_sclk          # level 0..8 (999..1730 MHz)
+  echo 6 | sudo tee $c/pp_dpm_sclk          # level 0..8 (999..1730 MHz)
 done
 ```
 
@@ -55,15 +56,19 @@ one full run.
 
 | file | source | size |
 |---|---|---|
-| `~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-0000{1..9}-of-00009.gguf` | Unsloth's GGUF of deepseek-ai/DeepSeek-V4.1-Flash-1017 (GGUF metadata: `quantized_by Unsloth`, `repo_url https://huggingface.co/unsloth`, base model `https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017`) **(to confirm: exact repo and revision)** | 474 GB |
-| `~/llms/dspark/dspark-DeepSeek-V4.1-Flash-1017-BF16.gguf` | Unsloth's DSpark draft head GGUF (arch `dflash`, metadata as above) **(to confirm: exact repo and revision)** | 8.5 GB |
+| `~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-0000{1..9}-of-00009.gguf` | [unsloth/DeepSeek-V4.1-Flash-1017-GGUF](https://huggingface.co/unsloth/DeepSeek-V4.1-Flash-1017-GGUF) of deepseek-ai/DeepSeek-V4.1-Flash-1017 (GGUF metadata: `quantized_by Unsloth`, `repo_url https://huggingface.co/unsloth`, base model `https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017`) (revision not recorded; the checksum manifest below pins the bytes) | 474 GB |
+| `~/llms/dspark/dspark-DeepSeek-V4.1-Flash-1017-BF16.gguf` | Unsloth's DSpark draft head GGUF (arch `dflash`, metadata as above) (revision not recorded; the checksum manifest below pins the bytes) | 8.5 GB |
 | `~/llms/ds-flash/` | the base DeepSeek-V4.1-Flash safetensors (HF commit `314113f8`); only for weight provenance checks. The GGUF matches the 1017 release (HF commit `1bae0e10`) instead, which `ref/check_weights.py --hf remote` reads by HTTP range requests (README "Which checkpoint") | 510 GB |
 | `~/llms/ds-1017-fp8/dense-fp8.gguf` | made here: `bin/fp8pack -m $M -o ~/llms/ds-1017-fp8/dense-fp8.gguf` (lossless fp8 repack of the dense weights, ~20 s; README step 5) | 6.8 GB |
+
+Checksums of all eleven files: `../checksums/DS-V4.1-Flash-1017.sha256` (QUICKSTART.md's
+`sha256sum -c` line). Run it on every machine, and again after a reboot following a copy: a check
+right after a copy may only read the page cache.
 
 ## 4. Build
 
 ```bash
-# the fork: a CPU build with static libraries in build/ **(to confirm: its exact CMake options)**
+# the fork: a CPU build with static libraries in build/, at the commit and with the cmake lines of QUICKSTART.md "Build and prepare"
 cd ~/projects/llama-sandbox/ds-completion
 make            # bin/: CPU programs (links the fork's static CPU libraries)
 make HIP=1      # bin-hip/: the same plus the own GPU runtime and the GPU benchmarks
@@ -141,6 +146,7 @@ Unless stated: sclk 2, 16 CPU threads (32 before README step 18), the study30 pl
 | 110 | `split/sha256.txt`, `split/teacher.txt`, `spec-measure-sclk6-cacheloads800cacheperiod8-shower/`, `-tomb-baseline/` | on each machine the `sha256sum` line in `split/sha256.txt` and `CACHE="--cache-loads 800 --cache-period 8" scripts/spec-measure.sh` (the second machine: the repo, `~/forks/llama.cpp` built with `-DBUILD_SHARED_LIBS=OFF`, the fp8 file, the same `~/llms` paths); the three `--teacher` commands in `split/teacher.txt` |
 | 111 | `split/two-machines/` | `BACK=oleksandr@192.168.2.2 scripts/split-measure.sh` (the back machine prepared as in step 110, the same commit built there, ssh without a prompt); the one-machine side: `spec-measure-sclk6-cacheloads800cacheperiod8-tomb-baseline/` of step 110. On one machine: the back with `--layers 20-39 --gpu 2 --moe-dies 2,3 --dspark $D --serve 7001`, the front with `--layers 0-19 --gpu 0 --moe-dies 0,1 --remote 127.0.0.1:7001 --spec` |
 | 112 | `trace/two-machines/` | `TRACE=1 PROMPTS="cpp-matrix tcp-udp" scripts/split-measure.sh` (both halves with `--trace`, then `scripts/trace_merge.py FRONT BACK -o MERGED`; the per-step table: the spans named in README step 112, medians over the 6-token and 2-token verify steps) |
+| 113 | `trace/two-machines/` (collected again) | the command of step 112; the session check: `scripts/chat.sh --think --effort 75 --cache-wait -n 45 < results/chat/think/th45.q`, and the same questions to a front (`--layers 0-19 --remote HOST:7001 --spec --think --effort 75 -i -n 45`) |
 | 100 | `trace/` (`cpp-matrix.json.gz`, `tcp-udp.json.gz`, `compare-step88.txt`, `critpath.txt`) | the command in `trace/README.txt` for both prompts; `scripts/trace_compare.py <step 88's trace> <new>` (step 88's: `git show 2509593:ds-completion/results/trace/<name>.json.gz`); `scripts/trace_critpath.py <trace>` |
 | 99 | `decode-next/review-leftovers.txt`, `decode-next/{hc-mix,compressor-chunk,gather-streams}.patch`, `spec-measure-sclk6-cacheloads800cacheperiod8-cmpchunk/` | each patch on 5f21709 (`git apply`): `bin-hip/bench-kernels` (hc lines); `scripts/spec-measure.sh` with the tuned cache; the prompt gate's `--canon` runs against `results/prefill/gate/p*-base-canon.out`; the held-out command for cpp-matrix, tcp-udp, ja-email |
 | 98 | `decode-next/local-review.txt`, `spec-measure-sclk6-cacheloads800cacheperiod8-compressor/` | `CACHE="--cache-loads 800 --cache-period 8" scripts/spec-measure.sh` |
@@ -222,9 +228,8 @@ Unless stated: sclk 2, 16 CPU threads (32 before README step 18), the study30 pl
 
 ## 7. Open items (to confirm)
 
-- The fork branch `deepseek41` exists only locally: publish it (or record the upstream PR it
-  came from) and commit the `hip.h` line, or the CPU baseline and tokenizer cannot be rebuilt.
-- The exact Hugging Face repos and revisions of the two Unsloth GGUFs.
-- The fork's CMake options for its CPU build.
+- The Hugging Face revisions of the two Unsloth GGUFs and the draft's repository (the sha256
+  manifest pins the bytes meanwhile). Settled since: the fork is the head of llama.cpp PR #30817
+  (`b72050d03ae14bb3cb5138ecefab3f3f65157d31`, QUICKSTART.md), built for the CPU only.
 - Turn the hand-typed runs a write-up relies on (steps 4-26) into scripts.
 - An archive of `data/routing/` next to any publication.

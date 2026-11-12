@@ -24,7 +24,7 @@ on two of them, the model cut in two halves, with the same outputs.
 
 ## 2. Results
 
-Decode speed (sclk level 2, 16 CPU threads, 128 generated tokens):
+Decode speed (16 CPU threads; sclk level 2 and 128 generated tokens unless a row says otherwise):
 
 | mode | decode |
 |---|---|
@@ -34,16 +34,16 @@ Decode speed (sclk level 2, 16 CPU threads, 128 generated tokens):
 | ours, + most-used experts placed on the 4 GPUs (`--placement`) | 17.7-21.7 t/s |
 | ours, + speculative decoding with the model's DSpark draft (`--dspark ... --spec`) | 16-24 t/s; +22% (geometric mean) on 8 held-out prompts, +7% to +33% |
 | **ours, + adaptive expert cache (`--canon --cache-loads 800 --cache-period 8`)** | **mean 44.6 t/s with `--spec` on the 8 held-out prompts at sclk 6 (README steps 50, 53, 57, 62, 68, 71, 73, 74, 80, 82, 84, 86, 88, 97, 98, 101, 102, 104); at 200 loads/s 25.6 at sclk 2 (+28% over the line above), 28.0 at sclk 6; 20.4 plain at 100 loads/s** |
-| upper bound: placement from the prompt's own routing (perfect knowledge) | ~25 t/s plain; 29-41 t/s with `--spec` |
+| for scale, at sclk 2 and before steps 50-104: placement from the prompt's own routing (perfect knowledge) | ~25 t/s plain; 29-41 t/s with `--spec` |
 
 (The speculative and cache numbers are 300-token runs on held-out prompts; README steps 26, 32.)
 
 Two machines (README steps 110-112; sclk 6, the same prompts): **mean 50.9 t/s** against 44.6
-(+14%; +12% to +27% on code, math, SQL and JSON, +2.5% on 1-2-token steps, nothing on a long reasoning
-run whose cache had adapted), every output byte-identical. Layers 0-19 run on the first machine,
+(+14%; +12% to +27% on code, math, SQL and JSON, +8% on chat, +2.5% on Chinese and Japanese,
+nothing on a long reasoning run whose cache had adapted), every output byte-identical. Layers 0-19 run on the first machine,
 layers 20-39 with the head and the draft on the second; once per step the residual stream (64 KB
-per token) crosses 10 GbE. Each machine then holds ~85% of its half's experts on GPUs instead of
-~40%: the gain is the CPU's experts, and the network costs ~0.5 ms of an ~83 ms step.
+per token) crosses 10 GbE. Each machine then holds ~88% of its half's experts on GPUs instead of
+~42%: the gain is the CPU's experts, and the network costs ~0.5 ms of an ~83 ms step.
 
 Prompt processing (chunks of 512, README steps 37-45, 68): 93 t/s, 63 with `--canon` (1,989 tokens, sclk 6),
 output byte-identical to token by token (which ran at ~17 t/s). Startup: ~15 s, plus 10-30 s to upload
@@ -95,7 +95,7 @@ token -> embedding (host) -> 40 x [ engram (layers 1, 14) -> attention block -> 
   token inside the chunk. Every result bit-identical to token by token.
 - **Speculative decoding** (`hip/dspark.cpp`, `Runtime::verify/commit`): the release's DSpark
   draft (3 small layers reading the main model's layers 37-39, 8.5 GB on GPU 0) guesses the
-  next 5 tokens in ~12 ms. The main model then runs [last token, guesses] as one chunk:
+  next 5 tokens in ~8 ms. The main model then runs [last token, guesses] as one chunk:
   projections, the head and the expert block read their weights once for all tokens; attention
   runs per token in position order. The longest correct prefix plus the model's own next token
   is kept, the rest rolled back (window slots, compressor state). How many guesses to verify is
@@ -166,7 +166,7 @@ token -> embedding (host) -> 40 x [ engram (layers 1, 14) -> attention block -> 
 | **step** | **86.6** | **50.6** | **~43** |
 
 A floor of ~35 ms (~28 t/s) remains whatever the caching: the dense part, the shared expert, the
-router and the per-layer dispatch.
+router and the per-layer dispatch. (At sclk 2, before the decode work of steps 50-104.)
 
 With speculative decoding, a verify step of 6 tokens (`results/spec-profiles.txt`):
 
@@ -207,13 +207,13 @@ experts ~3% visible.
 
 ## 7. What is next
 
-1. **The CPU's experts** (~40% of a code verify step before steps 80-82): steps 77-82 took a
+1. **The CPU's experts** (27 of a code verify step's 85 ms on one machine; ~40% before steps 80-82): steps 77-82 took a
    CPU call apart (activations written by many threads read slowly: one writer each, step 80;
-   tasks handed out in pairs, step 82; +3.4% together). Next: a CPU weight layout (step 83,
-   benchmarked: the same bits, compute x1.8, a cold call -9%, est. +1.5-2.5%), which needs a
-   repacked ~269 GB expert file as the only source of expert weights; the ~0.03-0.04 ms a call
+   tasks handed out in pairs, step 82; +3.4% together). A CPU weight layout (step 83,
+   benchmarked: the same bits, compute x1.8, a cold call -9%) was tried in the runtime as a copy
+   in RAM and not kept (step 91). On two machines these experts are nearly gone (item 5); the ~0.03-0.04 ms a call
    loses after the runtime's idle gap (step 81) stays.
-2. **Die 0's dense part** (~41 ms of a code step): attention over the XGMI pair 0-1 with the core
+2. **Die 0's dense part** (~48 ms of a code step): attention over the XGMI pair 0-1 with the core
    split by heads (step 76 split only the output projections: +0.6%, not kept; the core needs the
    KV state on die 1); the fp8 GEMV at 2-8 inputs needs a new work split (steps 65, 75).
 3. **Long context** (PLAN.md "Long context", steps 34-35): runs to 1M with `--max-ctx`, gated
@@ -224,12 +224,12 @@ experts ~3% visible.
 5. **Two machines** (built, steps 110-112: +14%): the halves take turns, so one machine is
    always idle and each half's dense part runs on one die. Next there: overlap between the
    halves (the front starting the next step while the back finishes), to be estimated first.
+   (The first estimate of a second machine, ~1-2 ms once the cache adapts, was right for long
+   runs and too low for 300-token ones: step 111.) The list of ideas: PLAN.md "Two machines".
 6. **More hardware** (studied, not built): many more
    experts on GPUs; the CPU stays on the critical path for larger models.
 
-Explored, not planned (the second machine's first estimate, a pipeline split worth ~1-2 ms once
-the cache adapts, was right for long runs and too low for 300-token ones: step 111):
-RDMA between machines, an MI210 for the dense part (~33 t/s estimated), and a hypothetical
+Explored, not planned: RDMA between machines, an MI210 for the dense part (~33 t/s estimated), and a hypothetical
 V4.1-Pro (engram on SSD is easy; experts barely fit in two machines' RAM).
 
 ## 8. Open questions for review

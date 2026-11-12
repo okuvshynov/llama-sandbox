@@ -19,6 +19,7 @@ ui.perfetto.dev. Prints the fit: samples, offset, drift, the residuals and the d
 
     python3 scripts/trace_merge.py FRONT.json BACK.json -o MERGED.json[.gz]
 """
+import argparse
 import gzip
 import json
 import statistics
@@ -31,11 +32,12 @@ def load(path):
 
 
 def main():
-    args = [a for a in sys.argv[1:] if a != '-o']
-    if len(args) != 3 or '-o' not in sys.argv:
-        sys.exit(__doc__)
-    front_path, back_path = args[0], args[1]
-    out_path = sys.argv[sys.argv.index('-o') + 1]
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument('front')
+    ap.add_argument('back')
+    ap.add_argument('-o', dest='out', required=True)
+    a_ = ap.parse_args()
+    front_path, back_path, out_path = a_.front, a_.back, a_.out
     front, back = load(front_path), load(back_path)
     if front['layers'][0] != 0:
         front, back = back, front
@@ -45,7 +47,8 @@ def main():
     off = [((t2 - t1) + (t3 - t4)) / 2 for t1, t2, t3, t4 in sync]
     delay = [(t4 - t1) - (t3 - t2) for t1, t2, t3, t4 in sync]
     med = statistics.median(delay)
-    keep = [i for i in range(len(sync)) if delay[i] <= 1.5 * min(delay)]
+    # (max(.., 5 us): on one machine the least delay is a few us, or 0 at the clock's resolution)
+    keep = [i for i in range(len(sync)) if delay[i] <= 1.5 * max(min(delay), 5.0)]
     # least squares offset = a + b (t - t0), t = the front's clock at the sample's middle
     t0 = sync[0][0]
     xs = [(sync[i][0] + sync[i][3]) / 2 - t0 for i in keep]

@@ -19,39 +19,30 @@
 #   cache and loader staging, the rest                               0.00   0.00   0.00   0.00
 #   free                                                             0.75   0.76   0.76   0.76
 #   total                                                           34.34  34.34  34.34  34.34
-# loaded in 42.1 s; prompt 0 tokens; fake-quant on; 16 threads
+# loaded in 42.2 s; prompt 0 tokens; fake-quant on; 16 threads
 # peer: layers 20-39 waiting for the front on port 7001
-# peer: the front left after 412 messages; 30.2 MB received, 0.5 MB sent; 4.66 s in this range's work
-# trace: 76630 events in /tmp/split/back.json (open in ui.perfetto.dev)
-# GPU 0 issue-to-start lag per group (generation): <0 2, 0-30 us 2970, 30-100 2519, 100-300 13813, 300-1000 31372, >1 ms 908
-# host-bound estimate: 312.1 of 3404.9 ms on GPU 0's stream (9.2%) in groups whose next group started within 30 us of being issued; by that group: ffn.cpu_rows_copy 196.4 ffn.shared 73.5 ffn.wait_for_gpu_experts 15.9 hc 8.9 attn.q 8.3 engram 5.3 ffn.add 3.5 ffn.wait_for_cpu_experts 0.2 ms
-# short forwards: 222 of 8220 (die, layer) results needed a second copy (3 rows per token in the first)
-# expert cache: 39 rebalances, 161 swaps planned, 161 loads started, 161 published
+# peer: the front left after 420 messages; 29.8 MB received, 0.5 MB sent; 4.64 s in this range's work
+# trace: 77694 events in /tmp/split/back.json (open in ui.perfetto.dev)
+# GPU 0 issue-to-start lag per group (generation): <0 3, 0-30 us 2756, 30-100 2395, 100-300 14310, 300-1000 30874, >1 ms 728
+# host-bound estimate: 256.4 of 3248.2 ms on GPU 0's stream (7.9%) in groups whose next group started within 30 us of being issued; by that group: ffn.cpu_rows_copy 152.2 ffn.shared 69.2 ffn.wait_for_gpu_experts 13.0 hc 7.9 attn.q 5.4 engram 5.1 ffn.add 3.2 ffn.wait_for_cpu_experts 0.2 ms
+# short forwards: 228 of 8460 (die, layer) results needed a second copy (3 rows per token in the first)
+# expert cache: 38 rebalances, 157 swaps planned, 157 loads started, 157 published
 # expert loader: 2154 pieces unregistered in 0.0 s
 # CPU experts per layer (generation): tokens in the forward, distinct CPU experts: layers, mean pairs, CPU ms, the GPU's wait ms (mean per layer)
-#     1 tokens,   0 experts:    467 layers (16.9%),  0.00 pairs, CPU  0.000 ms, GPU waits  0.000 ms
-#     1 tokens,   1 experts:     31 layers ( 1.1%),  1.00 pairs, CPU  0.609 ms, GPU waits  0.563 ms
-#     1 tokens,   2 experts:      2 layers ( 0.1%),  2.00 pairs, CPU  0.978 ms, GPU waits  0.941 ms
-#   2-3 tokens,   0 experts:   1498 layers (54.3%),  0.00 pairs, CPU  0.000 ms, GPU waits  0.000 ms
-#   2-3 tokens,   1 experts:    143 layers ( 5.2%),  1.13 pairs, CPU  0.630 ms, GPU waits  0.474 ms
-#   2-3 tokens,   2 experts:     17 layers ( 0.6%),  2.53 pairs, CPU  1.048 ms, GPU waits  0.909 ms
-#   2-3 tokens,   3 experts:      1 layers ( 0.0%),  5.00 pairs, CPU  1.328 ms, GPU waits  1.244 ms
-#   2-3 tokens,   4 experts:      1 layers ( 0.0%),  4.00 pairs, CPU  1.889 ms, GPU waits  1.768 ms
-#   4-6 tokens,   0 experts:    437 layers (15.8%),  0.00 pairs, CPU  0.000 ms, GPU waits  0.000 ms
-#   4-6 tokens,   1 experts:     97 layers ( 3.5%),  1.24 pairs, CPU  0.589 ms, GPU waits  0.377 ms
-#   4-6 tokens,   2 experts:     16 layers ( 0.6%),  2.62 pairs, CPU  0.955 ms, GPU waits  0.738 ms
-#   4-6 tokens,   3 experts:      8 layers ( 0.3%),  3.50 pairs, CPU  1.170 ms, GPU waits  0.976 ms
-#   4-6 tokens,   4 experts:      1 layers ( 0.0%),  4.00 pairs, CPU  1.188 ms, GPU waits  0.953 ms
-#   4-6 tokens, 5-7 experts:      1 layers ( 0.0%),  5.00 pairs, CPU  1.326 ms, GPU waits  1.108 ms
-#    7+ tokens,   0 experts:      3 layers ( 0.1%),  0.00 pairs, CPU  0.000 ms, GPU waits  0.000 ms
-#    7+ tokens,   1 experts:      6 layers ( 0.2%),  2.17 pairs, CPU  0.458 ms, GPU waits  0.111 ms
-#    7+ tokens,   2 experts:     10 layers ( 0.4%),  5.60 pairs, CPU  1.087 ms, GPU waits  0.717 ms
-#    7+ tokens,   3 experts:      4 layers ( 0.1%),  7.00 pairs, CPU  1.255 ms, GPU waits  0.804 ms
-#    7+ tokens,   4 experts:      9 layers ( 0.3%),  6.33 pairs, CPU  1.465 ms, GPU waits  0.974 ms
-#    7+ tokens, 5-7 experts:      8 layers ( 0.3%), 10.00 pairs, CPU  2.463 ms, GPU waits  2.002 ms
+#     1 tokens,   0 experts:    569 layers (20.3%),  0.00 pairs, CPU  0.000 ms, GPU waits  0.000 ms
+#     1 tokens,   1 experts:     29 layers ( 1.0%),  1.00 pairs, CPU  0.594 ms, GPU waits  0.546 ms
+#     1 tokens,   2 experts:      2 layers ( 0.1%),  2.00 pairs, CPU  0.816 ms, GPU waits  0.754 ms
+#   2-3 tokens,   0 experts:   1515 layers (54.1%),  0.00 pairs, CPU  0.000 ms, GPU waits  0.000 ms
+#   2-3 tokens,   1 experts:    146 layers ( 5.2%),  1.14 pairs, CPU  0.625 ms, GPU waits  0.466 ms
+#   2-3 tokens,   2 experts:     18 layers ( 0.6%),  2.61 pairs, CPU  1.011 ms, GPU waits  0.873 ms
+#   2-3 tokens,   4 experts:      1 layers ( 0.0%),  4.00 pairs, CPU  1.688 ms, GPU waits  1.567 ms
+#   4-6 tokens,   0 experts:    403 layers (14.4%),  0.00 pairs, CPU  0.000 ms, GPU waits  0.000 ms
+#   4-6 tokens,   1 experts:     93 layers ( 3.3%),  1.24 pairs, CPU  0.561 ms, GPU waits  0.352 ms
+#   4-6 tokens,   2 experts:     15 layers ( 0.5%),  2.60 pairs, CPU  0.910 ms, GPU waits  0.702 ms
+#   4-6 tokens,   3 experts:      8 layers ( 0.3%),  3.50 pairs, CPU  1.160 ms, GPU waits  0.970 ms
+#   4-6 tokens, 5-7 experts:      1 layers ( 0.0%),  5.00 pairs, CPU  1.272 ms, GPU waits  1.047 ms
 # prefetch prediction (generation): tokens in the forward: layers, with CPU experts; the guess among them: cache's top-1 non-resident, any of its top 3, previous forward's top CPU expert; guesses on layers without any
-#     1 tokens:    500 layers,     33 with CPU experts ( 6.6%); top-1 30.3%, top-3 48.5%, previous 27.3%; wasted on 93.4% of layers
-#   2-3 tokens:   1660 layers,    162 with CPU experts ( 9.8%); top-1 26.5%, top-3 37.0%, previous 15.4%; wasted on 90.2% of layers
-#   4-6 tokens:    560 layers,    123 with CPU experts (22.0%); top-1 38.2%, top-3 46.3%, previous 25.2%; wasted on 78.0% of layers
-#    7+ tokens:     40 layers,     37 with CPU experts (92.5%); top-1  0.0%, top-3  0.0%, previous 18.9%; wasted on  7.5% of layers
-# CPU experts, batched: 322 calls, 646 pairs over 469 experts (by tokens: 1 369, 2-3 83, 4-7 14, 8-15 3, 16+ 0); ms: prep 4 inputs 22 gate_up 139 act 7 down 71 sum 1 (0.379 ms per pair)
+#     1 tokens:    600 layers,     31 with CPU experts ( 5.2%); top-1 29.0%, top-3 48.4%, previous 22.6%; wasted on 94.8% of layers
+#   2-3 tokens:   1680 layers,    165 with CPU experts ( 9.8%); top-1 28.5%, top-3 38.8%, previous 14.5%; wasted on 90.2% of layers
+#   4-6 tokens:    520 layers,    117 with CPU experts (22.5%); top-1 36.8%, top-3 44.4%, previous 24.8%; wasted on 77.5% of layers
+# CPU experts, batched: 319 calls, 638 pairs over 461 experts (by tokens: 1 361, 2-3 83, 4-7 14, 8-15 3, 16+ 0); ms: prep 4 inputs 21 gate_up 136 act 7 down 70 sum 1 (0.374 ms per pair)

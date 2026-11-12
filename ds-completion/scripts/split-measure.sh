@@ -27,25 +27,39 @@ mkdir -p "$OUT"
   echo "# name: generation t/s, tokens per step, front's expert uses on GPUs, output vs results/cache-test/plain-canon-static"
 } | tee "$OUT/summary.txt"
 for name in ${PROMPTS:-tcp-udp py-lru cpp-matrix sql-report geometry zh-travel ja-email summary-json long-proof}; do
+  n="" m="" nt="" P=""
   IFS='|' read -r n m nt P < <(grep "^$name|" results/spec-heldout/prompts.txt)
   extra=""
   if [ "$name" = long-proof ]; then  # scripts/spec-measure.sh's long reasoning prompt
     IFS='|' read -r n m nt P < <(grep -o 'long-proof|think|3000|[^"]*' scripts/spec-measure.sh | head -1)
     extra="--effort max"
   fi
+  if [ -z "$P" ]; then echo "$name: no such prompt" | tee -a "$OUT/summary.txt"; continue; fi
   $R "mkdir -p /tmp/split && : > /tmp/split/back.err"
   tb="" tf=""
   [ -n "${TRACE:-}" ] && tb="--trace /tmp/split/back.json" tf="--trace $OUT/$name.front.json"
-  # -f: ssh goes to the background once the back is started; the back leaves when its front does
-  $R -f "cd ~/projects/llama-sandbox/ds-completion && exec ./bin-hip/ds-completion $COMMON --layers 20-39 --dspark ~/llms/dspark/dspark-DeepSeek-V4.1-Flash-1017-BF16.gguf $tb --serve $PORT > /tmp/split/back.out 2> /tmp/split/back.err < /dev/null"
-  $R "for i in \$(seq 1 600); do grep -q 'waiting for the front\|what()' /tmp/split/back.err 2>/dev/null && break; sleep 0.5; done"
+  # the back: started for this prompt, its PID kept so it can be waited for and never left behind
+  # (-f: ssh goes to the background once the command runs; the back leaves when its front does)
+  $R -f "cd ~/projects/llama-sandbox/ds-completion && echo \$\$ > /tmp/split/back.pid && exec ./bin-hip/ds-completion $COMMON --layers 20-39 --dspark ~/llms/dspark/dspark-DeepSeek-V4.1-Flash-1017-BF16.gguf $tb --serve $PORT > /tmp/split/back.out 2> /tmp/split/back.err < /dev/null"
+  if ! $R "for i in \$(seq 1 600); do grep -q 'waiting for the front' /tmp/split/back.err && exit 0; kill -0 \$(cat /tmp/split/back.pid) 2>/dev/null || exit 1; sleep 0.5; done; exit 1"; then
+    $R "kill \$(cat /tmp/split/back.pid) 2>/dev/null; cat /tmp/split/back.err" > "$OUT/$name.back.err"
+    echo "$name: the back did not start (see $OUT/$name.back.err)" | tee -a "$OUT/summary.txt"; continue
+  fi
   eval ./bin-hip/ds-completion $COMMON --layers 0-19 --remote $HOST:$PORT --spec $tf --spec-log "$OUT/$name.log" -p '"$P"' --$m $extra -n "$nt" > "$OUT/$name.out" 2> "$OUT/$name.err" < /dev/null
-  $R "for i in \$(seq 1 120); do grep -q '# trace:\|what()' /tmp/split/back.err && break; ${TRACE:+false &&} grep -q 'the front left' /tmp/split/back.err && break; sleep 0.5; done; cat /tmp/split/back.err" > "$OUT/$name.back.err"
+  rc=$?
+  # the back is done when its process is gone (its report and trace written, its GPU memory free)
+  $R "for i in \$(seq 1 240); do kill -0 \$(cat /tmp/split/back.pid) 2>/dev/null || break; sleep 0.5; done; kill \$(cat /tmp/split/back.pid) 2>/dev/null; cat /tmp/split/back.err" > "$OUT/$name.back.err"
   if [ -n "${TRACE:-}" ]; then
     scp -q -o BatchMode=yes "$BACK:/tmp/split/back.json" "$OUT/$name.back.json"
-    python3 scripts/trace_merge.py "$OUT/$name.front.json" "$OUT/$name.back.json" -o "$OUT/$name.json.gz" | tee "$OUT/$name.clock.txt"
-    python3 -c 'import os, sys; [os.remove(p) for p in sys.argv[1:]]' "$OUT/$name.front.json" "$OUT/$name.back.json"
+    # the two partial traces are removed only once the merged one exists
+    if python3 scripts/trace_merge.py "$OUT/$name.front.json" "$OUT/$name.back.json" -o "$OUT/$name.json.gz" > "$OUT/$name.clock.txt"; then
+      python3 -c 'import os, sys; [os.remove(p) for p in sys.argv[1:]]' "$OUT/$name.front.json" "$OUT/$name.back.json"
+    else
+      echo "$name: the merge failed; the two traces are kept"
+    fi
+    cat "$OUT/$name.clock.txt"
   fi
+  [ $rc -ne 0 ] && [ $rc -ne 134 ] && echo "$name: the front ended with status $rc (see $OUT/$name.err)" | tee -a "$OUT/summary.txt"
   if [ ! -f results/cache-test/plain-canon-static/$name.out ]; then same="n/a"
   elif cmp -s "$OUT/$name.out" results/cache-test/plain-canon-static/$name.out; then same=same; else same=DIFFERENT; fi
   echo "$name: $(grep -o 'generation: .* = [0-9.]* t/s' "$OUT/$name.err" | grep -o '[0-9.]* t/s$'), $(grep -o '[0-9.]* tokens per step' "$OUT/$name.err"), $(grep -o '[0-9.]*% on GPUs' "$OUT/$name.err"), output $same" | tee -a "$OUT/summary.txt"

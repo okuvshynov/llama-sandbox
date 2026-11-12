@@ -94,8 +94,8 @@ class Runtime {
   // range [layer0, layer1) (Model::load's `layers`). A range that does not start at layer 0 takes
   // each token's stream from stream_in instead of the embedding (set it and stream_in_tok = 0
   // before prefill / decode / verify; every token run takes the next row); one that does not end
-  // at the last layer has no head and appends each token's stream after its last layer to
-  // stream_out (clear it before the call). Tokens are still passed (the engram's history, the
+  // at the last layer has no head and leaves the stream after its last layer, of the tokens of
+  // the last prefill chunk / decode / verify, in stream_out. Tokens are still passed (the engram's history, the
   // bookkeeping). Two ranges that meet, run one after the other with the stream handed over,
   // compute exactly what one runtime with all layers computes.
   int layer0() const { return L0; }
@@ -133,12 +133,16 @@ class Runtime {
   // the context). mark() saves the state at n_past(); rewind() returns to it, however far the
   // sequence went since. Saved: each layer's window ring and compressor partial group, the
   // draft's rings. The compressed caches need nothing: they are keyed by position and read only
-  // up to the current one, and the positions run again rewrite them.
+  // up to the current one, and the positions run again rewrite them. Not saved: the draft's copy
+  // of the last position's hidden states, so run a token after rewind() before draft().
   void mark();
   void rewind();
   DraftResult draft(int32_t anchor, bool keep_logits = false);
   // a study (README step 107): a block from `anchor` as if it sat `gap` positions after the last main position
-  DraftResult draft_shadow(int32_t anchor, int gap) { return dspark->draft(anchor, n_past_ - 1, false, gap); }
+  DraftResult draft_shadow(int32_t anchor, int gap) {
+    if (!dspark) throw std::runtime_error("draft_shadow: this runtime holds no draft (it is the back's)");
+    return dspark->draft(anchor, n_past_ - 1, false, gap);
+  }
   void draft_log_hidden(const std::string& path) {
     if (!dspark) return;
     dspark->hidden_log = fopen(path.c_str(), "wb");
@@ -214,11 +218,11 @@ class Runtime {
   int peer_block = 0;          // the back's draft block (0: it has no draft)
   void prefill_chunk(const std::vector<int32_t>& chunk);  // prompt tokens, no head (and the back's part)
   void peer_send_tokens(Peer::Type type, const std::vector<int32_t>& toks, int32_t arg);  // with stream_out
-  Peer::Header peer_answer(Peer::Type type);  // waits for the back's answer header
+  void peer_answer(Peer::Type type, size_t bytes);  // waits for the back's answer header; throws unless it is `type` with `bytes` of payload
   void peer_sync(int n);
   bool range_engram = false;  // an engram layer among them (else no rows are fetched)
   void stream_from_host(int M);  // stream_in's next M rows into h, pre
-  void stream_to_host(int M);    // h, pre of M tokens appended to stream_out (after a synchronize)
+  void stream_to_host(int M);    // h, pre of M tokens into stream_out (after a synchronize)
   int mark_past = -1;  // mark()'s position
   std::vector<int32_t> tokens_;  // all tokens so far
   hipStream_t s;

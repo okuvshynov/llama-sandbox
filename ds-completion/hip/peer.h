@@ -6,15 +6,19 @@
 // sides run the code a single process runs, in the same order:
 //
 //   message   payload to the back                     answer
-//   HELLO     -                                       n_layer, the back's first layer, draft block
-//   CHUNK     n tokens, their stream                  -            (prompt tokens: no head)
-//   DECODE    1 token, its stream, arg = want logits  the logits, if wanted
-//   VERIFY    n tokens, their stream                  n next ids
+//   HELLO     arg = kVersion                          n_layer, the back's first layer, its end, draft block
+//   CHUNK     n tokens, their stream, arg = flags     -            (prompt tokens: no head)
+//   DECODE    1 token, its stream, arg = flags        the logits, if wanted
+//   VERIFY    n tokens, their stream, arg = want ids  n next ids
 //   COMMIT    arg = tokens kept                       -
 //   DRAFT     arg = the anchor token                  block + 1 ids, block confidences
 //   MARK, REWIND                                      -
-//   SYNC      -                                       -            (a clock sample only)
+//   SYNC      -                                       an empty SYNC (a clock sample only)
 //   BYE                                               -
+//
+// flags: kWantLogits, kInPrefill (the front's in_prefill, so the back's profile, trace and routing
+// log treat a token as the front's do). Sizes are checked on both ends: an answer of another size
+// than the one asked for, or a request of another size than its type's, is an error, not a guess.
 //
 // Messages without an answer are not waited for: the front goes on with its next chunk while
 // the back works (TCP orders them). Plain blocking TCP with TCP_NODELAY; floats and ints as
@@ -36,6 +40,7 @@
 #include <unistd.h>
 
 #include <array>
+#include <cerrno>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
@@ -45,6 +50,8 @@
 
 struct Peer {
   enum Type : uint32_t { HELLO = 1, CHUNK, DECODE, VERIFY, COMMIT, DRAFT, MARK, REWIND, BYE, SYNC };
+  enum : int32_t { kVersion = 2 };                    // HELLO's arg: both ends must be the same build of this file
+  enum : int32_t { kWantLogits = 1, kInPrefill = 2 };  // CHUNK and DECODE's arg
   static const char* name(uint32_t t) {
     static const char* n[] = {"?", "HELLO", "CHUNK", "DECODE", "VERIFY", "COMMIT", "DRAFT", "MARK", "REWIND", "BYE", "SYNC"};
     return t <= SYNC ? n[t] : n[0];
@@ -60,10 +67,10 @@ struct Peer {
   };
   int fd = -1;
   long sent_bytes = 0, recv_bytes = 0, round_trips = 0;
-  double wait_ms = 0;  // the front's time between a request's last byte and its answer's last
+  double wait_ms = 0;  // the front's time waiting for answers' headers (the back's work; not the answers' payloads)
   double last_sent_us = 0;   // the front: its clock when its last message was handed to the socket
   double reply_t_recv = 0;   // the back: its clock when the request being answered had arrived
-  std::vector<std::array<double, 4>> sync;  // the front: {sent, the back's arrival, the back's answer, received} per sample
+  std::vector<std::array<double, 4>> clock_samples;  // the front: {sent, the back's arrival, the back's answer, received} per sample
 
   ~Peer() { if (fd >= 0) close(fd); }
 
@@ -86,6 +93,7 @@ struct Peer {
   // the back: wait for one front on `port`
   void accept_on(int port) {
     const int ls = socket(AF_INET, SOCK_STREAM, 0);
+    if (ls < 0) throw std::runtime_error(std::string("peer: no socket: ") + strerror(errno));
     const int one = 1;
     setsockopt(ls, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
     sockaddr_in a{};
@@ -103,6 +111,7 @@ struct Peer {
   void tune() {
     const int one = 1, buf = 8 << 20;
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
+    setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &one, sizeof one);  // a machine that vanished ends the wait (after the system's keepalive time)
     setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &buf, sizeof buf);
     setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &buf, sizeof buf);
   }
@@ -110,7 +119,8 @@ struct Peer {
   void put(const void* p, size_t n) {
     for (const char* c = (const char*)p; n > 0;) {
       const ssize_t w = ::send(fd, c, n, MSG_NOSIGNAL);
-      if (w <= 0) throw std::runtime_error("peer: the connection closed while sending");
+      if (w < 0 && errno == EINTR) continue;
+      if (w <= 0) throw std::runtime_error(std::string("peer: the connection closed while sending") + (w < 0 ? std::string(": ") + strerror(errno) : ""));
       c += w, n -= (size_t)w, sent_bytes += w;
     }
   }
@@ -118,7 +128,8 @@ struct Peer {
     for (char* c = (char*)p; n > 0;) {
       const ssize_t r = ::recv(fd, c, n, 0);
       if (r == 0 && eof_ok && c == (char*)p) return false;
-      if (r <= 0) throw std::runtime_error("peer: the connection closed while receiving");
+      if (r < 0 && errno == EINTR) continue;
+      if (r <= 0) throw std::runtime_error(std::string("peer: the connection closed while receiving") + (r < 0 ? std::string(": ") + strerror(errno) : ""));
       c += r, n -= (size_t)r, recv_bytes += r;
     }
     return true;
@@ -129,7 +140,10 @@ struct Peer {
   void send_msg(Type type, uint32_t n, int32_t arg, std::initializer_list<Part> parts = {}) {
     Header hd;
     hd.type = type, hd.n = n, hd.arg = arg;
-    for (const Part& x : parts) hd.bytes += (uint32_t)x.bytes;
+    size_t bytes = 0;
+    for (const Part& x : parts) bytes += x.bytes;
+    if (bytes > UINT32_MAX) throw std::runtime_error("peer: a message over 4 GB");
+    hd.bytes = (uint32_t)bytes;
     hd.t_recv = reply_t_recv, hd.t_send = now_us();
     put(&hd, sizeof hd);
     for (const Part& x : parts)

@@ -9,16 +9,31 @@ machine, or split over two of them for more speed. Both setups print the same by
   AVX-512 kernel); with the adaptive cache the GPUs follow the experts in use.
 - The prompt goes through in chunks of up to 512 tokens; generation one token at a time, or a
   few at once with speculative decoding. Greedy, one sequence, text only.
-- With two machines the model is cut in the middle: layers 0-19 on the first, layers 20-39 with
-  the head and the draft on the second, each with its own four GPUs for its half's experts.
+- With two machines the model is cut in the middle: layers 0-19 on the first (the **front**),
+  layers 20-39 with the head and the draft on the second (the **back**), each with its own four
+  GPUs for its half's experts.
+
+Words used below: a **die** is one of the four GPU chips (two per Vega II Duo card). **sclk** is
+the GPU clock level, 0-8. A **placement** is a file ranking the routed experts by use; the top
+ones that fit are put on the GPUs at startup (`placements/study30.txt`, from a 30-prompt study).
+The **held-out prompts** are the 8 prompts `scripts/spec-measure.sh` runs, none of them used for
+the placement. `--canon` makes the output independent of where an expert runs.
 
 ## What it needs
 
 - **System:** Ubuntu 22.04 with the T2 kernel (`6.10.5-1-t2-jammy` here), booted with
   `pcie_ports=native intel_iommu=on iommu=pt pm_async=off pci=realloc pci-stub.ids=106b:2005`;
-  ROCm 6.3.4 in `/opt/rocm-6.3.4`; the user in the `video` and `render` groups; the Vega II Duo
-  bridges seated so the dies pair over XGMI as 0-1 and 2-3. The GPU clock level is set with sudo
-  outside the program (all four cards; the numbers below are at sclk 6).
+  ROCm 6.3.4 in `/opt/rocm-6.3.4`; the user in the `video` and `render` groups. (The cards' XGMI
+  bridges are not needed: the runtime never copies between dies directly.)
+- **The GPU clock level** is set outside the program, as root, and again after a reboot; it
+  changes the speed only, never the output. The numbers below are at sclk 6 unless marked:
+  ```bash
+  for c in /sys/class/drm/card[0-3]/device; do
+    echo manual | sudo tee $c/power_dpm_force_performance_level
+    echo 6 | sudo tee $c/pp_dpm_sclk          # level 0..8
+  done
+  cat /sys/class/drm/card0/device/pp_dpm_sclk   # the line with * is the level in use
+  ```
 - **Model files** (in `~/llms/`; 488 GB, run from the page cache, so the RAM must hold them):
   - `UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-0000{1..9}-of-00009.gguf` (474 GB; Unsloth's
     [DeepSeek-V4.1-Flash-1017-GGUF](https://huggingface.co/unsloth/DeepSeek-V4.1-Flash-1017-GGUF));
@@ -35,9 +50,8 @@ machine, or split over two of them for more speed. Both setups print the same by
   reading and the tokenizer, as static libraries in `~/forks/llama.cpp/build/`.
 - **For two machines:** a second Mac Pro set up the same way (the same system, the same three
   model files at the same `~/llms/` paths with the same checksums, this repository at the same
-  commit, built), the same GPU clock level on both, and a network between them (10 GbE here; a
-  step moves 64 KB per token). It needs no XGMI bridges. `ssh` to it without a password prompt is
-  only needed by `scripts/split-measure.sh`.
+  commit, built; run the checksum line on both), the same GPU clock level on both, and a network
+  between them (10 GbE here; a step moves 64 KB per token). See "Two machines" below.
 
 ## Build and prepare (once)
 
@@ -66,7 +80,7 @@ the job (sclk 6; README steps 32, 37-102):
 
 **Long generation** (reasoning, long answers): speculative decoding + the adaptive expert cache.
 ~44.6 t/s mean on the held-out prompts at sclk 6 (34-55; README step 104); a long reasoning run
-gains most (57.1 t/s on the held-out long proof). The cache first registers the experts' memory with the GPUs (~95-135 s in the
+gains most (57.0 t/s on the held-out long proof). The cache first registers the experts' memory with the GPUs (~95-135 s in the
 background; generation runs at the static placement's speed meanwhile), so it pays off for runs
 of a few minutes or more:
 
@@ -92,31 +106,7 @@ bin-hip/ds-completion -m $M --rt ~/llms/ds-1017-fp8/dense-fp8.gguf \
     -p "Write a haiku about memory bandwidth." --chat -n 64
 ```
 
-**Two machines** (README steps 110-111): ~50.9 t/s mean on the held-out prompts (35-63)
-against 44.6 on one. Start the back on the second machine first; it loads, prints `waiting for
-the front`, serves one front and leaves when that front is done:
-
-```bash
-# on the second machine (the back: layers 20-39, the head, the draft)
-bin-hip/ds-completion -m $M --rt ~/llms/ds-1017-fp8/dense-fp8.gguf \
-    --placement placements/study30.txt --canon --cache-loads 800 --cache-period 8 \
-    --layers 20-39 --dspark ~/llms/dspark/dspark-DeepSeek-V4.1-Flash-1017-BF16.gguf --serve 7001
-
-# on the first (the front: layers 0-19); everything else as on one machine, without --dspark
-bin-hip/ds-completion -m $M --rt ~/llms/ds-1017-fp8/dense-fp8.gguf \
-    --placement placements/study30.txt --canon --cache-loads 800 --cache-period 8 \
-    --layers 0-19 --remote <second machine>:7001 --spec \
-    -f prompt.txt --think --effort max -n 60000
-```
-
-The front is used exactly as the whole model: `-p` / `-f`, `--chat` / `--think`, `-i` sessions,
-`--spec`. What to expect: the gain is the routed experts that ran on the CPU (each machine holds
-~85% of its half's experts on GPUs instead of ~40%), so prompts with long speculative steps gain
-most (+12% to +27% on code, math, SQL, JSON), 1-2-token steps little (+2.5%), and a long reasoning run
-whose cache had already adapted nothing (57.0 t/s either way). `scripts/split-measure.sh` runs
-the held-out set this way (it starts the back over ssh).
-
-Without `--dspark ... --spec`: 17.7-21.7 t/s generation, and 8.5 GB more GPU 0 memory for
+Without `--dspark ... --spec`: 17.7-21.7 t/s generation (at sclk 2), and 8.5 GB more GPU 0 memory for
 experts. Without `--placement` every routed expert runs on the CPU (faster start, ~12 t/s).
 A higher GPU clock helps both: held-out with the cache 36.8 / 41.1 / 42.1 t/s at sclk 2 / 6 / 8
 when last swept (README step 90; sclk 6 is 44.6 since); the clock is set outside the program (sudo).
@@ -138,11 +128,13 @@ Options:
   `high` / `max` (50 / 75 / 100), as the official encoding; the model card's benchmarks use 100.
 - neither: the prompt is raw text after BOS.
 - `-n`: max new tokens.
-- `--layers a-b` (with `--rt`): only that range of layers (two machines, above; the cut must be
-  at layer 20, which the runtime checks: README step 110). `--serve PORT`: the back, a range up to the last layer; waits
-  for one front. `--remote HOST:PORT`: the front, a range from layer 0; connects to the back.
-  `--teacher` with `--stream-out file` / `--stream-in file` checks a range against the whole
-  model on one machine.
+- `--layers a-b` (with `--rt`): only that range of layers ("Two machines" below). A range must
+  hold the layers its own layers read from, which leaves layer 20 as the only cut (checked;
+  README step 110).
+- `--serve PORT`: the back: a range up to the last layer; waits for one front, then exits.
+- `--remote HOST:PORT`: the front: a range from layer 0; connects to the back.
+- `--teacher` with `--stream-out FILE` / `--stream-in FILE`: a test of a range against the whole
+  model on one machine (the values between two layers written to and read from a file).
 - `--prefill-chunk N`: prompt tokens per forward (default and most 512, the fastest for
   long prompts in the fast numerics). The output does not depend on it.
 - `--no-overlap`: prompt chunks without the CPU/GPU overlap (slower; for comparisons).
@@ -158,7 +150,7 @@ Options:
 - `--moe-dies 0,1,2,3`: the dies that hold experts (default all four).
 - `--dspark FILE`: the DSpark draft GGUF (8.5 GB on GPU 0). Alone: shadow mode, drafts are
   measured but not used.
-- `--spec`: speculative decoding (needs `--dspark`); the number of guesses verified per step
+- `--spec`: speculative decoding (needs `--dspark`, or `--remote` to a back that has it); the number of guesses verified per step
   is chosen from the draft's confidence. `--spec-n N` fixes it; `--spec-log FILE` writes
   per-step data.
 - `--canon`: placement-invariant expert numerics: the output no longer depends on where the
@@ -178,18 +170,68 @@ Options:
 
 Without `--rt` (or with `bin/ds-completion`) everything runs on the CPU.
 
-With `--placement placements/study30.txt` the four GPUs hold the routed experts used most in
-the 30-prompt routing study (43% of all, 10-30 s upload); 17.7-21.7 t/s on the test prompts (README step 18).
+## Two machines
+
+The model in two halves (README steps 110-112): **~50.9 t/s** mean on the held-out prompts
+(35-63) against 44.6 on one machine, the same bytes. The second machine is set up as the first
+("What it needs", "Build and prepare"). Start the back there first:
+
+```bash
+# on the second machine: the back (layers 20-39, the head, the draft)
+cd ~/projects/llama-sandbox/ds-completion
+M=~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf
+bin-hip/ds-completion -m $M --rt ~/llms/ds-1017-fp8/dense-fp8.gguf \
+    --placement placements/study30.txt --canon --cache-loads 800 --cache-period 8 \
+    --layers 20-39 --dspark ~/llms/dspark/dspark-DeepSeek-V4.1-Flash-1017-BF16.gguf --serve 7001
+```
+
+It loads (~1 min), prints `waiting for the front`, serves one front and exits when that front
+is done. Then, on the first machine:
+
+```bash
+# the front (layers 0-19): the one-machine command without --dspark, plus --layers and --remote
+cd ~/projects/llama-sandbox/ds-completion
+M=~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf
+bin-hip/ds-completion -m $M --rt ~/llms/ds-1017-fp8/dense-fp8.gguf \
+    --placement placements/study30.txt --canon --cache-loads 800 --cache-period 8 \
+    --layers 0-19 --remote <second machine>:7001 --spec \
+    -f prompt.txt --think --effort max -n 60000        # prompt.txt: your own file
+```
+
+- **The front is used as the whole model is:** `-p` / `-f`, `--chat` / `--think`, `--spec`. An
+  interactive session: the front's command with `--chat -i` (or `--think -i`) in place of `-f ...`
+  (`scripts/chat.sh` runs one machine only).
+- **What must agree:** the layer cut (checked when the front connects: nothing else is), the
+  model files and the build (not checked: the checksum line and the same commit on both), and
+  `--canon` on both halves. The placement and cache options may differ; with `--canon` they do
+  not change the output.
+- **What to expect:** the gain is the routed experts that ran on the CPU: each machine holds
+  ~88% of its half's experts on GPUs instead of ~42%. Per held-out prompt: +12% to +27% on code,
+  math, SQL and JSON, +8% on chat, +2.5% on Chinese and Japanese (1-2 tokens per step), and
+  nothing on a long reasoning run whose cache had already adapted (57.0 t/s either way). The
+  cache's registration takes ~30 s per half (half the experts each).
+- **The network:** the back listens on every interface at the port given (7001 is only this
+  page's choice; open it in a firewall between the two); plain TCP, no authentication, no
+  encryption: a private network only.
+- **If something goes wrong:** a front that finds no back ends with `peer: cannot connect to
+  ...`; if one side dies the other ends with `peer: the connection closed ...`; a back still
+  waiting for a front stops with Ctrl-C. In every case start the back again before the next run.
+- `scripts/split-measure.sh` runs the held-out set this way (it starts the back over ssh, so it
+  needs `ssh` to the second machine without a password prompt); `TRACE=1` gives one merged trace
+  of both machines (README step 112).
 
 ## Current results (2026-11-12)
 
+The two top rows were measured with `--cache-wait` (the run starts after the cache's
+registration); without it a short run starts at the static placement's speed.
+
 | mode | command | decode | KL vs reference*: median / mean without the near-tie step |
 |---|---|---|---|
-| **two machines, the model in two halves** | the two commands above (`--layers 0-19 --remote ...` / `--layers 20-39 --serve ...`) | **35.0-62.9 t/s, mean 50.9** at sclk 6 (300 tokens, held-out prompts; README step 111) | output byte-identical to every row down to "own runtime" with `--canon` |
+| **two machines, the model in two halves** | the two commands of "Two machines" above | **35.0-62.9 t/s, mean 50.9** at sclk 6 (300 tokens, held-out prompts; README step 111) | output byte-identical to every row down to "own runtime" with `--canon` |
 | **+ adaptive expert cache** | `... --placement placements/study30.txt --dspark ... --spec --canon --cache-loads 800 --cache-period 8` | **33.9-55.0 t/s, mean 44.6** at sclk 6 (300 tokens, held-out prompts; README steps 50, 53, 57, 62, 68, 71, 73, 74, 80, 82, 84, 86, 88, 97, 98, 101, 102, 104; `--cache-loads 200`: 25.6 at sclk 2, 28.0 at sclk 6) | output byte-identical to the plain `--canon` run |
-| + speculative decoding | `... --placement placements/study30.txt --dspark ... --spec` | 16-24 t/s (300 tokens, held-out prompts; +22% geometric mean) | output byte-identical to the row below |
-| own runtime + experts placed on GPUs | `bin-hip/ds-completion --rt ... --placement placements/study30.txt` | 17.7-21.7 t/s (128 tokens) | same numerics: per-layer gate identical to below |
-| own runtime, dense on GPU 0 | `bin-hip/ds-completion --rt ...` | 12.0-12.5 t/s | 5.9e-6 / 4.8e-3 (earlier run 1.7e-5 / 6.3e-4) |
+| + speculative decoding | `... --placement placements/study30.txt --dspark ... --spec` | 16-24 t/s (sclk 2; 300 tokens, held-out prompts; +22% geometric mean) | output byte-identical to the row below |
+| own runtime + experts placed on GPUs | `bin-hip/ds-completion --rt ... --placement placements/study30.txt` | 17.7-21.7 t/s (sclk 2; 128 tokens) | same numerics: per-layer gate identical to below |
+| own runtime, dense on GPU 0 | `bin-hip/ds-completion --rt ...` | 12.0-12.5 t/s (sclk 2) | 5.9e-6 / 4.8e-3 (earlier run 1.7e-5 / 6.3e-4) |
 | CPU only | `bin/ds-completion` | 3.5 t/s | 1.3e-5 / 3.9e-3 |
 | llama.cpp fork (llama-cli, CPU) | - | 3.5 t/s | 2.1e-5 / 1.3e-3 |
 
@@ -207,8 +249,8 @@ Means over all 17 steps: 1.8e-2 to 2.5e-2 for every mode.
   runtime's mean KL varies run to run with fp8 rounding flips (README step 10); every exact mode
   scatters the same way.
 - **Where a step goes on two machines** (README step 112's merged trace): a 6-token code step
-  ~83 ms: the front's layers ~36 ms, the back's ~36 ms, the draft ~9 ms, the network ~0.5 ms;
-  neither half waits for the CPU's experts.
+  with its draft ~83 ms (~93 on one machine, below): the front's layers ~36 ms, the back's ~36
+  ms, the draft ~9 ms, the network ~0.5 ms; neither half waits for the CPU's experts.
 - **Where a step goes** (`--spec`, cache, sclk 6; the traces of README step 105): a 6-token
   code verify step ~85 ms (medians): die 0's dense part ~48 ms, its wait for the CPU's experts
   ~27 ms, its wait for the other dies ~5 ms, outside the layers ~5 ms; the draft before it ~8 ms
@@ -220,8 +262,8 @@ Means over all 17 steps: 1.8e-2 to 2.5e-2 for every mode.
 ## Limits
 
 - `-i` sessions: one line per turn, no system prompt, no tool calls.
-- Two machines: the back serves one front and exits (start it again for the next run); the
-  connection is plain TCP without authentication or encryption (a private network); the two
+- Two machines: the back serves one front and exits; the connection is plain TCP without
+  authentication or encryption; only the layer cut is checked between the halves; the two
   machines take turns, so the gain is bounded by what the CPU's experts cost on one.
 - Context with `--rt`: 65,536 tokens by default (prompt + generation), up to the model's
   1,048,576 with `--max-ctx N` (~6.4 KB of GPU 0 memory per position). A 30k-token prompt takes
