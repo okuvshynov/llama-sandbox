@@ -1,0 +1,11 @@
+# BACK=oleksandr@192.168.2.2 scripts/split-measure.sh (as the scratch launcher it was made from), commit 4c49c6a+changes (step 111's code), sclk 6 on both, 2026-11-12; front tomb, back shower
+# name: generation t/s, tokens per step, front's expert uses on GPUs, output vs results/cache-test/plain-canon-static
+tcp-udp: 42.10 t/s, 2.04 tokens per step, 99.0% on GPUs, output same
+py-lru: 53.67 t/s, 2.94 tokens per step, 98.9% on GPUs, output same
+cpp-matrix: 62.89 t/s, 3.95 tokens per step, 98.8% on GPUs, output same
+sql-report: 57.67 t/s, 3.70 tokens per step, 97.9% on GPUs, output same
+geometry: 61.01 t/s, 4.06 tokens per step, 98.3% on GPUs, output same
+zh-travel: 35.00 t/s, 1.50 tokens per step, 98.5% on GPUs, output same
+ja-email: 38.01 t/s, 1.78 tokens per step, 98.2% on GPUs, output same
+summary-json: 56.43 t/s, 3.92 tokens per step, 96.9% on GPUs, output same
+long-proof: 57.00 t/s, 3.73 tokens per step, 99.7% on GPUs, output n/a (identical to the one-machine run of step 110)

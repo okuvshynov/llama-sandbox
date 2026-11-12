@@ -111,11 +111,11 @@ $(BIN)/obj/expert_cache.o: hip/expert_cache.cpp hip/expert_cache.h hip/expert_lo
 	@mkdir -p $(BIN)/obj
 	$(HIPCC) $(HIPFLAGS) -c -o $@ $<
 
-$(BIN)/obj/rt.o: hip/rt.cpp hip/rt.h hip/expert_cache.h hip/expert_loader.h hip/dspark.h hip/kernels.h hip/fp8_gemv.h hip/fp4_moe.h hip/expert_pool.h $(CORE_H)
+$(BIN)/obj/rt.o: hip/rt.cpp hip/rt.h hip/peer.h hip/expert_cache.h hip/expert_loader.h hip/dspark.h hip/kernels.h hip/fp8_gemv.h hip/fp4_moe.h hip/expert_pool.h $(CORE_H)
 	@mkdir -p $(BIN)/obj
 	$(HIPCC) $(HIPFLAGS) -c -o $@ $<
 
-$(BIN)/obj/dspark.o: hip/dspark.cpp hip/rt.h hip/dspark.h hip/kernels.h hip/fp8_gemv.h hip/fp4_moe.h hip/expert_pool.h $(CORE_H)
+$(BIN)/obj/dspark.o: hip/dspark.cpp hip/rt.h hip/peer.h hip/dspark.h hip/kernels.h hip/fp8_gemv.h hip/fp4_moe.h hip/expert_pool.h $(CORE_H)
 	@mkdir -p $(BIN)/obj
 	$(HIPCC) $(HIPFLAGS) -c -o $@ $<
 

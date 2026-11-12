@@ -14,6 +14,7 @@
 #pragma once
 
 #include "forward.h"  // Taps, engram_rows
+#include "peer.h"
 #include "dspark.h"
 #include "expert_cache.h"
 #include "expert_loader.h"
@@ -103,11 +104,17 @@ class Runtime {
   const Stream* stream_in = nullptr;
   size_t stream_in_tok = 0;
   Stream stream_out;
+  // Two ranges in two processes (README step 111, peer.h). The front connects to the back and
+  // from then on prefill / decode / verify / commit / draft / mark / rewind do their part here
+  // and hand the rest to the back, so a caller sees one runtime. The back serves one front until
+  // it leaves.
+  void connect_peer(const std::string& host_port);
+  void serve(int port);
 
   // DSpark draft (RtOptions::dspark): after a decode step produced `anchor` (the next token),
   // the draft's block_size guesses for the tokens after it. Does not change the sequence state.
-  bool has_draft() const { return dspark != nullptr; }
-  int draft_block() const { return dspark ? dspark->block_size : 0; }
+  bool has_draft() const { return dspark != nullptr || peer_block > 0; }
+  int draft_block() const { return dspark ? dspark->block_size : peer_block; }
 
   // Speculative verification (PLAN.md "batched verification"; phase 1: token by token through
   // decode()). verify(chunk) runs the chunk at positions n_past()..; returns the greedy next
@@ -203,6 +210,11 @@ class Runtime {
   std::vector<LayerState> S;
   int n_past_ = 0;
   int L0 = 0, L1 = 0;  // the loaded layers
+  std::unique_ptr<Peer> peer;  // the front's link to the back
+  int peer_block = 0;          // the back's draft block (0: it has no draft)
+  void prefill_chunk(const std::vector<int32_t>& chunk);  // prompt tokens, no head (and the back's part)
+  void peer_send_tokens(Peer::Type type, const std::vector<int32_t>& toks, int32_t arg);  // with stream_out
+  Peer::Header peer_answer(Peer::Type type);  // waits for the back's answer header
   bool range_engram = false;  // an engram layer among them (else no rows are fetched)
   void stream_from_host(int M);  // stream_in's next M rows into h, pre
   void stream_to_host(int M);    // h, pre of M tokens appended to stream_out (after a synchronize)

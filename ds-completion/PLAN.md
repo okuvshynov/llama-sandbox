@@ -458,8 +458,11 @@ runs.
 Step 109: thinking mode across turns (`Runtime::mark` / `rewind`), replies identical to fresh runs
 on the reference's prompts; next towards a server: tool calls, a system prompt, the HTTP side.
 Step 110: the second machine reproduces every output at the same speed; the runtime runs a range
-of layers (`--layers`, the stream in and out), halves identical to the whole model. Next: the two
-halves as two processes over TCP, then on the two machines.
+of layers (`--layers`, the stream in and out), halves identical to the whole model.
+Step 111: the halves as two processes over TCP (`hip/peer.h`), then on the two machines: held-out
+mean 44.60 -> 50.85 t/s (+14.0%), outputs identical; the gain is the CPU's experts, nothing on the
+long proof or on 1-2-token steps. Next there: the machines take turns (no parallelism), the dense
+part of each is one die; the chat launcher and a server on two machines.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front

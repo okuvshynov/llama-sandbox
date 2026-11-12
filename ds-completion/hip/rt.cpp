@@ -609,6 +609,95 @@ void Runtime::set_half(int i, int t0) {
   cur_half = i;
 }
 
+void Runtime::peer_send_tokens(Peer::Type type, const std::vector<int32_t>& toks, int32_t arg) {
+  const size_t n = toks.size(), nh = (size_t)hp.n_embd * hp.hc_mult, np = hp.hc_mult;
+  if (stream_out.h.size() != n * nh || stream_out.pre.size() != n * np) throw std::runtime_error("peer: the stream does not match the tokens");
+  peer->send_msg(type, (uint32_t)n, arg, {{toks.data(), n * 4}, {stream_out.h.data(), n * nh * 4}, {stream_out.pre.data(), n * np * 4}});
+}
+
+Peer::Header Runtime::peer_answer(Peer::Type type) {
+  const auto t0 = Clock::now();
+  Peer::Header hd;
+  peer->get(&hd, sizeof hd);
+  if (hd.type != type) throw std::runtime_error("peer: unexpected answer " + std::to_string(hd.type));
+  peer->wait_ms += ms_since(t0);
+  peer->round_trips++;
+  trace_host("waiting for the back", t0, Clock::now(), 3);
+  return hd;
+}
+
+void Runtime::connect_peer(const std::string& host_port) {
+  if (L0 != 0 || has_head()) throw std::runtime_error("peer: the front is a range from layer 0 without the last layer (--layers 0-k)");
+  peer.reset(new Peer);
+  peer->connect_to(host_port);
+  peer->send_msg(Peer::HELLO, 0, 0);
+  peer_answer(Peer::HELLO);
+  const std::vector<int32_t> v = peer->get_vec<int32_t>(4);
+  if (v[0] != hp.n_layer || v[1] != L1 || v[2] != hp.n_layer)
+    throw std::runtime_error("peer: the back runs layers " + std::to_string(v[1]) + "-" + std::to_string(v[2] - 1) + ", this front ends at " + std::to_string(L1 - 1));
+  peer_block = v[3];
+  fprintf(stderr, "# peer: layers %d-%d and the head at %s, draft block %d\n", v[1], v[2] - 1, host_port.c_str(), peer_block);
+}
+
+// The back: every message is one call of this runtime with the front's stream as its input
+void Runtime::serve(int port) {
+  if (L0 == 0 || !has_head()) throw std::runtime_error("peer: the back is a range up to the last layer (--layers k-39)");
+  Peer p;
+  fprintf(stderr, "# peer: layers %d-%d waiting for the front on port %d\n", L0, L1 - 1, port);
+  p.accept_on(port);
+  const size_t nh = (size_t)hp.n_embd * hp.hc_mult, np = hp.hc_mult;
+  Stream in;
+  stream_in = &in;
+  long msgs = 0;
+  double work_ms = 0;
+  for (Peer::Header hd; p.get(&hd, sizeof hd, true) && hd.type != Peer::BYE; msgs++) {
+    std::vector<int32_t> toks;
+    if (hd.type == Peer::CHUNK || hd.type == Peer::DECODE || hd.type == Peer::VERIFY) {
+      if (hd.bytes != hd.n * (4 + (nh + np) * 4)) throw std::runtime_error("peer: a message of the wrong size");
+      toks = p.get_vec<int32_t>(hd.n);
+      in.h.resize(hd.n * nh);
+      in.pre.resize(hd.n * np);
+      p.get(in.h.data(), in.h.size() * 4);
+      p.get(in.pre.data(), in.pre.size() * 4);
+      stream_in_tok = 0;
+    }
+    const auto t0 = Clock::now();
+    switch (hd.type) {
+      case Peer::HELLO: {
+        const int32_t v[4] = {hp.n_layer, L0, L1, dspark ? dspark->block_size : 0};
+        p.send_msg(Peer::HELLO, 0, 0, {{v, sizeof v}});
+        break;
+      }
+      case Peer::CHUNK: prefill_chunk(toks); break;
+      case Peer::DECODE: {
+        in_prefill = true;  // as prefill()'s last token (the routing log's flag)
+        const std::vector<float> logits = decode(toks.at(0), hd.arg != 0);
+        in_prefill = false;
+        if (hd.arg) p.send_msg(Peer::DECODE, 0, 0, {{logits.data(), logits.size() * 4}});
+        break;
+      }
+      case Peer::VERIFY: {
+        const std::vector<int32_t> next = verify(toks, hd.arg != 0);
+        p.send_msg(Peer::VERIFY, hd.n, 0, {{next.data(), next.size() * 4}});
+        break;
+      }
+      case Peer::COMMIT: commit(hd.arg); break;
+      case Peer::MARK: mark(); break;
+      case Peer::REWIND: rewind(); break;
+      case Peer::DRAFT: {
+        const DraftResult r = draft(hd.arg);
+        p.send_msg(Peer::DRAFT, 0, 0, {{r.ids.data(), r.ids.size() * 4}, {r.conf.data(), r.conf.size() * 4}});
+        break;
+      }
+      default: throw std::runtime_error("peer: unknown message " + std::to_string(hd.type));
+    }
+    work_ms += ms_since(t0);
+  }
+  stream_in = nullptr;
+  fprintf(stderr, "# peer: the front left after %ld messages; %.1f MB received, %.1f MB sent; %.2f s in this range's work\n", msgs,
+          p.recv_bytes / 1e6, p.sent_bytes / 1e6, work_ms / 1e3);
+}
+
 void Runtime::stream_from_host(int M) {
   const size_t nh = (size_t)hp.n_embd * hp.hc_mult, np = hp.hc_mult;
   if (!stream_in || stream_in->h.size() < (stream_in_tok + M) * nh || stream_in->pre.size() < (stream_in_tok + M) * np)
@@ -647,7 +736,12 @@ std::vector<int32_t> Runtime::verify(const std::vector<int32_t>& chunk, bool hea
   }
   verifying = true;
   const auto t_v = Clock::now();
+  if (peer) stream_out.clear();
   std::vector<int32_t> next = forward_chunk(chunk, head);
+  if (peer) {  // the back's layers and head
+    peer_send_tokens(Peer::VERIFY, chunk, head);
+    next = peer->get_vec<int32_t>(peer_answer(Peer::VERIFY).bytes / 4);
+  }
   trace_host(("verify " + std::to_string(M) + " tokens").c_str(), t_v, Clock::now(), 3);
   verifying = false;
   return next;
@@ -763,6 +857,7 @@ void Runtime::rewind() {
 
 void Runtime::mark_state(bool restore) {
   const int HD = hp.head_dim;
+  if (peer) peer->send_msg(restore ? Peer::REWIND : Peer::MARK, 0, 0);
   auto copy = [&](float* live, float* saved, size_t n) {
     CHECK(hipMemcpyAsync(restore ? live : saved, restore ? saved : live, n * 4, hipMemcpyDeviceToDevice, s));
   };
@@ -798,6 +893,7 @@ void Runtime::commit(int n_keep) {
   const auto t_c0 = Clock::now();  // README step 86: commit's parts on the steps track
   const int HD = hp.head_dim, M = verify_m;
   if (n_keep < 1 || n_keep > M || n_past_ != verify_p0 + M) throw std::runtime_error("commit without a matching verify");
+  if (peer) peer->send_msg(Peer::COMMIT, 0, n_keep);
   // compressor partial groups: each slot from the last kept position writing it, else as before
   for (auto& [L, rows] : cmp_rows) {
     const int r = m.layers[L].kind.ratio;
@@ -832,6 +928,16 @@ void Runtime::commit(int n_keep) {
 }
 
 DraftResult Runtime::draft(int32_t anchor, bool keep_logits) {
+  if (peer && peer_block > 0) {  // the back's draft
+    const auto t0 = Clock::now();
+    peer->send_msg(Peer::DRAFT, 0, anchor);
+    peer_answer(Peer::DRAFT);
+    DraftResult r;
+    r.ids = peer->get_vec<int32_t>(peer_block + 1);
+    r.conf = peer->get_vec<float>(peer_block);
+    trace_host("draft (the back's)", t0, Clock::now(), 3);
+    return r;
+  }
   if (!dspark) throw std::runtime_error("no DSpark draft loaded");
   const auto t0 = Clock::now();
   DraftResult r = dspark->draft(anchor, n_past_ - 1, keep_logits);
@@ -922,14 +1028,14 @@ void Runtime::setup_experts() {
     if (opt.load_test >= 0) throw std::runtime_error("--load-test and the expert cache are exclusive");
     std::vector<ExpertPool*> pools;
     for (Die& d : dies) pools.push_back(&d.pool);
-    int home = -1;  // the home die keeps its startup experts (README step 86)
+    int home_die = -1;  // the home die (its index in dies) keeps its startup experts (README step 86)
     for (size_t i = 0; i < dies.size(); i++)
-      if (dies[i].dev == opt.gpu) home = (int)i;
+      if (dies[i].dev == opt.gpu) home_die = (int)i;
     cache.reset(new ExpertCache(m, pools, h_table, d_table, X,
-                                {opt.cache_loads, opt.cache_period, opt.cache_window, opt.cache_wait, opt.cache_min, home}));
+                                {opt.cache_loads, opt.cache_period, opt.cache_window, opt.cache_wait, opt.cache_min, home_die}));
     fprintf(stderr, "# expert cache: up to %.0f loads/s, rebalance every %d tokens over the last %d%s\n", opt.cache_loads,
             opt.cache_period, opt.cache_window, opt.canon ? "" : " (without --canon the output depends on load timing)");
-    CHECK(hipSetDevice(home));
+    CHECK(hipSetDevice(opt.gpu));  // (a local `home`, the die's index, once shadowed the device here: wrong unless --gpu 0)
   }
   if (opt.load_test >= 0) {
     std::vector<ExpertPool*> pools;
@@ -945,6 +1051,11 @@ void Runtime::setup_experts() {
 
 Runtime::~Runtime() {
   fatal_phase("runtime: the last synchronize, trace and reports");
+  if (peer) {
+    try { peer->send_msg(Peer::BYE, 0, 0); } catch (...) {}
+    fprintf(stderr, "# peer: %ld answers waited for, %.2f s in all (%.2f ms each); %.1f MB sent, %.1f MB received\n", peer->round_trips,
+            peer->wait_ms / 1e3, peer->round_trips ? peer->wait_ms / peer->round_trips : 0.0, peer->sent_bytes / 1e6, peer->recv_bytes / 1e6);
+  }
   (void)hipStreamSynchronize(s);
   trace_write();
   ra_report();
@@ -2007,6 +2118,19 @@ Taps Runtime::run_layer(int L, const std::vector<float>& h_in, const std::vector
   return taps;
 }
 
+void Runtime::prefill_chunk(const std::vector<int32_t>& chunk) {
+  const int p0 = n_past_;
+  const size_t n = chunk.size();
+  if (peer) stream_out.clear();
+  forward_chunk(chunk, false);
+  if (dspark) {  // every position of the chunk into the draft's rings, as decode() does per token
+    const size_t nh = dspark->target_layers.size() * hp.n_embd;
+    for (size_t j = 0; j < n; j++) dspark->seed(p0 + (int)j, dspark->hid_chunk + j * nh);
+    CHECK(hipMemcpyAsync(dspark->main_hidden, dspark->hid_chunk + (n - 1) * nh, nh * 4, hipMemcpyDeviceToDevice, s));
+  }
+  if (peer) peer_send_tokens(Peer::CHUNK, chunk, 0);  // no answer: the back works while the next chunk runs here
+}
+
 std::vector<float> Runtime::prefill(const std::vector<int32_t>& tokens) {
   if (tokens.empty()) return {};
   in_prefill = true;
@@ -2018,13 +2142,7 @@ std::vector<float> Runtime::prefill(const std::vector<int32_t>& tokens) {
   int chunks = 0;
   for (size_t i = 0; i + 1 < tokens.size();) {
     const size_t n = std::min<size_t>(std::clamp(opt.prefill_chunk, 1, kChunk), tokens.size() - 1 - i);
-    const int p0 = n_past_;
-    forward_chunk(std::vector<int32_t>(tokens.begin() + i, tokens.begin() + i + n), false);
-    if (dspark) {  // every position of the chunk into the draft's rings, as decode() does per token
-      const size_t nh = dspark->target_layers.size() * hp.n_embd;
-      for (size_t j = 0; j < n; j++) dspark->seed(p0 + (int)j, dspark->hid_chunk + j * nh);
-      CHECK(hipMemcpyAsync(dspark->main_hidden, dspark->hid_chunk + (n - 1) * nh, nh * 4, hipMemcpyDeviceToDevice, s));
-    }
+    prefill_chunk(std::vector<int32_t>(tokens.begin() + i, tokens.begin() + i + n));
     i += n;
     if (profile) {  // the prompt's chunks summed: where prompt processing goes
       sum.total_ms += last.total_ms, sum.cpu_moe_ms += last.cpu_moe_ms, sum.wait_ms += last.wait_ms;
@@ -2047,6 +2165,7 @@ std::vector<float> Runtime::prefill(const std::vector<int32_t>& tokens) {
 std::vector<float> Runtime::decode(int32_t tok, bool want_logits) {
   auto t0 = Clock::now();
   begin_step(tok);
+  if (peer) stream_out.clear();
   const int E = hp.n_embd, HC = hp.hc_mult;
   // embedding (bf16 row of the host table) into hc copies; the first block's pre-mix is copy 0
   std::vector<float> emb(E), one_hot(HC, 0.0f);
@@ -2066,9 +2185,14 @@ std::vector<float> Runtime::decode(int32_t tok, bool want_logits) {
   if (!has_head()) stream_to_host(1);
   if (!want_logits || !has_head()) {
     end_step();
+    std::vector<float> logits;
+    if (peer) {  // the back's layers and head
+      peer_send_tokens(Peer::DECODE, {tok}, want_logits);
+      if (want_logits) logits = peer->get_vec<float>(peer_answer(Peer::DECODE).bytes / 4);
+    }
     last.total_ms = ms_since(t0);
     trace_host("decode (no logits)", t0, Clock::now(), 3);
-    return {};
+    return logits;
   }
   // head: collapse with the last pre-mix, norm, logits
   mark("head");

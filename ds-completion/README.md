@@ -4033,3 +4033,62 @@ the cache 4.91 s against 1.88 + 1.97 (-22%). Teacher-forced, fixed chunks, no dr
 
 Next: two processes over TCP (first both here, front on dies 0-1 and back on dies 2-3), the
 speculative loop driving the front, the back holding the head and the draft.
+
+## Step 111: the two halves as two processes, then on two machines: 44.6 -> 50.9 t/s
+
+**The link** (`hip/peer.h`): the front (layers 0-19) drives and is used as the whole model would
+be: `--layers 0-19 --remote host:port`. The back (`--layers 20-39 --dspark .. --serve port`)
+holds the head and the draft and serves one front. Every message mirrors one `Runtime` call, so
+both sides run the code one process runs, in the same order, and the floats cross as they are in
+memory:
+
+| message | to the back | answer |
+|---|---|---|
+| CHUNK | prompt tokens and their stream | none: the front goes on with its next chunk |
+| DECODE | one token, its stream | the logits, if wanted |
+| VERIFY | a chunk and its stream | the next ids |
+| COMMIT, MARK, REWIND | a number | none |
+| DRAFT | the anchor | the draft's ids and confidences |
+
+Plain blocking TCP with `TCP_NODELAY`. In `Runtime`, prefill / decode / verify / commit / draft /
+mark / rewind do their part and hand the rest to the back (`peer`), so `ds_completion.cpp`'s
+loops (speculation, `-i` sessions) are unchanged. A speculative step is two round trips: the
+draft, then the verify (64 KB per token up, a few ids down).
+
+**First on one machine** (front on dies 0-1, back on dies 2-3, localhost): cpp-matrix
+byte-identical at 48.7 t/s (no capacity gained there, by construction). It found an old bug: with
+the expert cache, the runtime reset the current device to the home die's *index* instead of its
+device (a local `home` shadowing the outer one): right only with `--gpu 0`, which is all that had
+ever run.
+
+**Then on two** (`scripts/split-measure.sh`, `results/split/two-machines/`; front here, back on
+`shower`, sclk 6 on both, against the one-machine run of the same day):
+
+| prompt | one machine | two | | front's expert uses on GPUs: one -> two |
+|---|---|---|---|---|
+| tcp-udp | 39.04 | 42.10 | +7.8% | 87.4% -> 99.0% |
+| py-lru | 46.45 | 53.67 | +15.5% | 85.3% -> 98.9% |
+| cpp-matrix | 54.30 | 62.89 | +15.8% | 85.7% -> 98.8% |
+| sql-report | 46.81 | 57.67 | +23.2% | 81.9% -> 97.9% |
+| geometry | 54.55 | 61.01 | +11.8% | 86.1% -> 98.3% |
+| zh-travel | 34.17 | 35.00 | +2.4% | 87.8% -> 98.5% |
+| ja-email | 37.05 | 38.01 | +2.6% | 87.0% -> 98.2% |
+| summary-json | 44.43 | 56.43 | +27.0% | 75.4% -> 96.9% |
+| **mean** | **44.60** | **50.85** | **+14.0%** | |
+| long-proof | 56.99 | 57.00 | 0% | 96.9% -> 99.7% |
+
+Every output is byte-identical to the references (long-proof to the one-machine run).
+
+**What it shows:**
+- The gain is what the CPU's experts cost. Where a third of them ran on the CPU and the steps
+  are long (summary-json, sql-report), +23-27%; the long proof, whose cache already had 97% on
+  GPUs after 3,000 tokens, gains nothing.
+- Steps of 1-2 tokens gain little (zh-travel, ja-email +2.5%): their fitted verify cost is the
+  same on one machine and two (28 + 19 n ms), so they were not waiting for the CPU; the dense
+  work, now on two machines in turn, is what they take.
+- The network is not visible: the front's waits add up to the back's own work (cpp-matrix: 152
+  answers, 2.85 s waited, 2.85 s worked there; 29 MB sent in the whole run).
+- No parallelism yet: the two machines take turns, and each one's dense part runs on one die.
+
+A session leaves the back when it ends (one front per back process); `scripts/chat.sh` is still
+one machine.

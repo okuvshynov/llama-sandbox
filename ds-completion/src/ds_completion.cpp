@@ -137,6 +137,8 @@ int main(int argc, char** argv) {
   bool interactive = false;
   std::vector<int> layers;  // --layers a-b: a range of the model (README step 110)
   [[maybe_unused]] bool teacher = false;
+  [[maybe_unused]] int serve_port = 0;  // --serve: the back of two processes (README step 111)
+  [[maybe_unused]] std::string remote;  // --remote host:port: the front's back
   [[maybe_unused]] std::string stream_in_path, stream_out_path;
   [[maybe_unused]] int spec_n = 0;
   [[maybe_unused]] std::string spec_log_path;
@@ -172,6 +174,10 @@ int main(int argc, char** argv) {
     // each printed (one per line; a range without the head prints none). --stream-out file: each
     // token's stream after the range's last layer; --stream-in file: the stream a range starts from
     else if (a == "--teacher") teacher = true;
+    // two processes: the back, `--layers k-39 [--dspark ..] --serve port`, waits for one front,
+    // `--layers 0-(k-1) --remote host:port`, which is used as the whole model would be
+    else if (a == "--serve") serve_port = atoi(next());
+    else if (a == "--remote") remote = next();
     else if (a == "--stream-in") stream_in_path = next();
     else if (a == "--stream-out") stream_out_path = next();
     else if (a == "-t") opt.n_threads = atoi(next());
@@ -207,7 +213,7 @@ int main(int argc, char** argv) {
     fprintf(stderr, "-i needs --chat or --think, and --rt\n");
     return 2;
   }
-  if (model_path.empty() || (prompt.empty() && !interactive)) {
+  if (model_path.empty() || (prompt.empty() && !interactive && !serve_port)) {
     fprintf(stderr, "usage: ds-completion -m <model.gguf> (-p \"prompt\" | -f prompt.txt | -i) [--chat|--think [--effort 1-100|low|high|max]] [-n N] [-t N] [--no-quant] [--max-ctx N] [--rt dense-fp8.gguf [--gpu D] [--placement file [--moe-dies 0,1,2,3] [--load-test R [--load-pinned]] [--cache-loads R [--cache-period N] [--cache-window N] [--cache-min N] [--cache-wait]]] [--canon] [--profile]]\n");
     return 2;
   }
@@ -282,11 +288,15 @@ int main(int argc, char** argv) {
     ro.cache_min = cache_min;
     ro.cache_wait = cache_wait;
     ro.dspark = dspark_path;
-    if (spec && dspark_path.empty()) { fprintf(stderr, "--spec needs --dspark\n"); return 2; }
+    if (spec && dspark_path.empty() && remote.empty()) { fprintf(stderr, "--spec needs --dspark\n"); return 2; }
     rt.reset(new Runtime(m, ro, rt_path));
     rt->profile = profile;
     if (!trace_path.empty()) rt->set_trace(trace_path);
     if (!route_log.empty()) rt->log_routing(route_log);
+    if (!remote.empty()) {
+      rt->connect_peer(remote);
+      if (spec && !rt->has_draft()) { fprintf(stderr, "--spec: the back has no draft (--dspark there)\n"); return 2; }
+    }
   }
 #else
   if (!rt_path.empty()) { fprintf(stderr, "--rt needs the bin-hip build\n"); return 2; }
@@ -297,6 +307,14 @@ int main(int argc, char** argv) {
           opt.exact_quant ? "on" : "off", opt.n_threads);
 
 #ifdef DS_RUNTIME
+  if (serve_port) {  // the back: serves one front, then leaves
+    if (!rt) { fprintf(stderr, "--serve needs --rt\n"); return 2; }
+    rt->serve(serve_port);
+    llama_model_free(tok_model);
+    llama_backend_free();
+    rt.reset();
+    return 0;
+  }
   if (teacher) {  // README step 110: a layer range checked against the whole model, token for token
     if (!rt) { fprintf(stderr, "--teacher needs --rt\n"); return 2; }
     const size_t nh = (size_t)m.hp.n_embd * m.hp.hc_mult, np = m.hp.hc_mult;

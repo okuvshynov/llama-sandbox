@@ -106,9 +106,12 @@ Options:
   `high` / `max` (50 / 75 / 100), as the official encoding; the model card's benchmarks use 100.
 - neither: the prompt is raw text after BOS.
 - `-n`: max new tokens.
-- `--layers a-b` (with `--rt`): only that range of layers (README step 110: the model in two halves
-  on two machines, in progress). `--teacher` with `--stream-out file` / `--stream-in file` checks
-  a range against the whole model.
+- `--layers a-b` (with `--rt`): only that range of layers. Two machines (README steps 110-111,
+  ~50.9 t/s on the held-out prompts against 44.6 on one): on the second machine the back,
+  `--layers 20-39 --dspark $D --serve 7001` (with the usual `--rt`, `--placement`, `--canon` and
+  cache options); on the first the front, `--layers 0-19 --remote <host>:7001 --spec ...`, used as
+  the whole model is. Same outputs. `scripts/split-measure.sh` runs the held-out set that way.
+  `--teacher` with `--stream-out file` / `--stream-in file` checks a range against the whole model.
 - `--prefill-chunk N`: prompt tokens per forward (default and most 512, the fastest for
   long prompts in the fast numerics). The output does not depend on it.
 - `--no-overlap`: prompt chunks without the CPU/GPU overlap (slower; for comparisons).

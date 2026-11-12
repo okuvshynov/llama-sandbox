@@ -1,0 +1,31 @@
+# mapped 144 GB of CPU experts in 0.7 s
+# runtime: layers 0-19 of 40
+# runtime: 3.34 GiB of fp8 weights on GPU 0 (40 matrices with padded rows)
+# runtime: 288.5 MiB of small weights on GPU 0
+# runtime: 6794 experts (88.5% of the loaded layers' pairs) on GPUs (0: 1499, 1: 1765, 2: 1765, 3: 1765), loaded in 5.0 s
+# expert loader: 144.4 GB of expert tensors registered in 30.3 s (direct loads from now)
+# expert cache: up to 800 loads/s, rebalance every 8 tokens over the last 256
+# GPU memory (GB; the driver's used memory after each startup phase; expert slot = 18.8 MB):
+#   phase                                                           GPU 0  GPU 1  GPU 2  GPU 3
+#   context, other processes                                         0.22   0.07   0.08   0.07
+#   dense fp8 weights                                                3.60   0.00   0.00   0.00
+#   small weights (rotary, embeddings, head, norms, ...)             0.33   0.00   0.00   0.00
+#   activations and scratch (sized for 512-token chunks)             0.82   0.00   0.00   0.00
+#   sequence state: window, compressed KV, indexer keys (--max-ctx)   0.29   0.00   0.00   0.00
+#   draft (DSpark)                                                   0.00   0.00   0.00   0.00
+#   expert path buffers (per die: scratch, staging)                  0.13   0.32   0.32   0.32
+#   expert slots                                                    28.19  33.20  33.20  33.20
+#   cache and loader staging, the rest                               0.00   0.00   0.00   0.00
+#   free                                                             0.75   0.76   0.75   0.76
+#   total                                                           34.34  34.34  34.34  34.34
+# peer: layers 20-39 and the head at 192.168.2.2:7001, draft block 5
+# loaded in 38.5 s; prompt 49 tokens; fake-quant on; 16 threads
+
+# drafts verified per step: 0: 9 1: 6 2: 6 3: 12 4: 13 5: 35 (of the 0s, 5 plain steps without a draft); verify cost fit 45.1 + 5.2 n ms
+# speculative: 81 verify steps, 2.73 drafts accepted per step, 3.70 tokens per step; draft 8.1 ms per step
+# routed experts: 97.9% on GPUs (48281 of 49320)
+# prompt: 49 tokens in 0.55 s = 88.33 t/s; generation: 300 tokens in 5.20 s = 57.67 t/s
+# peer: 159 answers waited for, 3.24 s in all (20.35 ms each); 33.7 MB sent, 0.5 MB received
+# short forwards: 102 of 4920 (die, layer) results needed a second copy (3 rows per token in the first)
+# expert cache: 36 rebalances, 171 swaps planned, 171 loads started, 170 published
+# expert loader: 2154 pieces unregistered in 0.0 s
