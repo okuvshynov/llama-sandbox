@@ -161,10 +161,10 @@ Means over all 17 steps: 1.8e-2 to 2.5e-2 for every mode.
   output byte-identical to token-by-token processing; ~7.7 t/s on the CPU path. The
   runtime's mean KL varies run to run with fp8 rounding flips (README step 10); every exact mode
   scatters the same way.
-- **Where a step goes** (`--spec`, cache, sclk 6; the traces of README step 100, before steps
-  101-102 took ~3% more off the dense part): a 6-token code verify step ~87 ms (medians):
-  die 0's dense part before the CPU's experts ~52 ms, its wait for them ~26 ms, its wait for the
-  other dies ~4 ms, outside the layers ~5 ms; the draft before it ~8.3 ms more. The prompt: the CPU's experts and the GPU's work overlap and the slower
+- **Where a step goes** (`--spec`, cache, sclk 6; the traces of README step 105): a 6-token
+  code verify step ~85 ms (medians): die 0's dense part ~48 ms, its wait for the CPU's experts
+  ~27 ms, its wait for the other dies ~5 ms, outside the layers ~5 ms; the draft before it ~8 ms
+  more. The prompt: the CPU's experts and the GPU's work overlap and the slower
   sets the pace (TIMING.md).
 - **GPU memory with `--rt`:** 6.41 GiB fp8 + 1.75 GiB small weights + ~1 GB of prompt-chunk
   buffers on die 0; the rest holds experts (and the 8.5 GB draft with `--dspark`).

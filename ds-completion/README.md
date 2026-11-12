@@ -3794,3 +3794,42 @@ explained here; the next traces will show what the dense front takes now.
 Open: the prompt's many-input kernel is now slower than slices of 8 through this one on the large
 matrices (output A at 64 inputs 1008 us against 720, B 1118 / 801, engram 4282 / 2878; same
 bits), though the CPU bounds prompt speed; 2-input calls; fewer registers per lane.
+
+## Step 105: traces at step 104, and why its gain was under the bench's
+
+Step 104's bench table added up to ~3% of a 3-6-token step; the held-out mean rose 1.3%. The
+traces in `results/trace/` were step 98's, so: new ones at step 104 (`compare-step98.txt`,
+`critpath.txt`), and the same build traced with the new kernel off (`DS_FP8_VIRT=0`) and on
+(`results/decode-next/virt-onoff.txt`).
+
+**The kernel delivers in the runtime what the bench measured.** cpp-matrix, ms per verify step
+over all its steps, off -> on: attn.out 9.49 -> 7.65 (-1.84), ffn.shared 9.20 -> 8.30 (-0.90),
+engram 1.28 -> 1.08, the draft 8.23 -> 7.98: 3.2 ms of GPU work, 3.6% of the ~88 ms cycle. (The
+bench predicts ~2.3 ms for attn.out at this prompt's mix of step sizes: 80% arrives.)
+
+**Three reasons the mean shows 1.3%:**
+1. The shared expert's 0.9 ms is not on the critical path: it runs while the CPU computes its
+   experts, so die 0 only waits longer (ffn.wait_for_cpu_experts 29.53 -> 30.66). What is on the
+   path is attn.out, the engram and the draft: 2.3 ms, 2.6% on a code prompt.
+2. The CPU's experts were 0.4 ms slower in the "on" trace (36.07 -> 36.45, cpu.gate_up and
+   cpu.down both ~1%), which is their run-to-run spread (step 100 saw 30.4 -> 32.5 at 6 tokens).
+   The layers' total fell 1.50 ms, the cycle 1.75.
+3. Untraced and back to back, the kernel is worth **+2.0% on cpp-matrix** (53.56, 53.56 -> 54.64,
+   54.67 t/s) and **+2.1% on geometry** (54.21, 54.16 -> 55.37, 55.25), which matches 1.75 of 88 ms.
+   The held-out mean is lower because three of its eight prompts take mostly 1-2-token steps
+   (tcp-udp 2.1 tokens per step, ja-email 1.8, zh-travel 1.5), which do not use the kernel:
+   +0.7%, +0.9%, -0.1%.
+
+So the +1.3% is the kernel's whole effect on this prompt set, and nothing is lost in between;
+the ~3% was my arithmetic counting the shared expert as critical and every prompt as code.
+
+**Where a step goes now** (cpp-matrix, 6-token steps, medians): 84.8 ms, plus the draft's 8.1
+before it. Die 0's dense front 48.2 (52.3 at step 98), its wait for the CPU's experts 26.7, its
+wait for dies 1-3 4.7, outside the layers 5.0. Since step 98 over all steps: attn.out 11.52 ->
+7.65 ms (steps 101 and 104), the layers 82.8 -> 78.6; tcp-udp: attn.out 8.74 -> 5.83, the layers
+53.3 -> 50.1. Traced 49.26 and 34.88 t/s (54.03 and 38.89 untraced).
+
+What this says about the next step: on code, die 0's wait for the CPU (~27-31 ms per step) is
+now the largest single piece, and any saving in the shared expert stays invisible until that
+wait shrinks. The dense front's largest spans: ffn.shared 8.3 (hidden), attn.out 7.7, attn.core
+5.7, attn.q 5.1, hc 5.0.

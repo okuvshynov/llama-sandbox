@@ -1,0 +1,183 @@
+# the several-input fp8 kernel off and on in one build (README step 105): traces and an untraced A/B
+# DS_FP8_VIRT=0 against the default, the held-out command (trace/README.txt) with --trace; commit 195bef1; sclk 6; tomb; 2026-11-11T19:26:12-05:00
+# traced: cpp-matrix 47.62 -> 49.26 t/s, tcp-udp 34.61 -> 34.88; every output identical
+
+## cpp-matrix: scripts/trace_compare.py, ms per verify step in generation, DS_FP8_VIRT=0 -> default
+span                                     old       new    change
+layer                                  80.09     78.59     -1.50
+experts                                53.76     53.99     +0.23
+verify 6 tokens                        44.56     44.43     -0.13
+CPU experts                            36.07     36.45     +0.38
+ffn.wait_for_cpu_experts               29.53     30.66     +1.14
+cpu.gate_up                            21.60     21.87     +0.27
+verify 5 tokens                        17.21     15.96     -1.25
+wait for the staged block              15.59     13.79     -1.80
+verify 4 tokens                        13.61     13.47     -0.14
+cpu.down                               11.83     11.98     +0.15
+attn.out                                9.49      7.65     -1.84
+ffn.shared                              9.20      8.30     -0.90
+draft                                   8.23      7.98     -0.25
+draft (GPU)                             8.15      7.90     -0.25
+verify 3 tokens                         6.81      6.82     +0.02
+attn.core                               5.68      5.65     -0.03
+attn.q                                  5.07      5.05     -0.02
+hc                                      4.91      4.98     +0.07
+ffn.wait_for_gpu_experts                3.83      3.84     +0.02
+verify 2 tokens                         2.53      2.53     +0.00
+attn.compressor                         2.48      2.49     +0.01
+tail: the head's wait and the ids       2.40      2.39     -0.01
+ffn.router                              2.26      2.39     +0.12
+head                                    2.20      2.21     +0.02
+draft.head                              2.13      2.15     +0.02
+ffn.dispatch                            2.11      2.08     -0.03
+tail: profile and trace bookkeepin      1.79      1.79     +0.00
+draft.ffn.routed                        1.62      1.62     -0.00
+attn.kv                                 1.56      1.71     +0.15
+draft layer 0                           1.50      1.45     -0.05
+draft layer 1                           1.49      1.43     -0.05
+draft layer 2                           1.48      1.44     -0.05
+engram                                  1.28      1.08     -0.20
+attn.indexer                            1.20      1.21     +0.00
+engram fetch                            1.20      1.18     -0.02
+draft.markov                            0.98      0.98     -0.01
+cpu.inputs                              0.90      0.86     -0.04
+ffn.cpu_rows_copy                       0.88      0.90     +0.03
+commit: synchronize                     0.78      0.78     +0.00
+draft.attn.core                         0.73      0.74     +0.00
+cpu.act                                 0.72      0.72     -0.00
+draft.attn.out                          0.70      0.58     -0.12
+draft: issue                            0.63      0.63     +0.00
+ffn.add                                 0.61      0.60     -0.01
+
+## cpp-matrix: scripts/trace_critpath.py, verify steps by size, median ms per step: DS_FP8_VIRT=0
+part                           2 tok (3)     3 tok (7)    4 tok (11)    5 tok (13)    6 tok (33)
+front                              30.26         37.81         42.45         44.87         50.64
+handoff in                          0.97          0.65          1.10          1.27          1.33
+CPU                                24.51         19.94         36.36         34.15         30.42
+handoff out                         1.27          1.11          1.42          1.53          1.40
+  issue the copy (host)             0.40          0.35          0.45          0.43          0.40
+  lag to the copy                   0.15          0.19          0.22          0.23          0.23
+  the copy (die 0)                  0.66          0.61          0.79          0.84          0.78
+die 0 waits for CPU                21.64         15.79         30.62         27.65         23.60
+tail                                1.28          1.87          2.29          2.92          4.69
+outside layers                      3.64          3.59          4.16          4.82          4.97
+  before layer 0                    0.24          0.22          0.26          0.26          0.27
+  head (die 0)                      1.69          1.76          1.85          2.24          2.44
+  ids to host                       0.07          0.05          0.05          0.07          0.10
+  cache step                        0.09          0.08          0.47          0.09          0.46
+  bookkeeping (traced)              1.38          1.35          1.74          1.73          1.81
+  rest                              0.00          0.00          0.00          0.00          0.00
+draft                               8.12          8.21          8.18          8.21          8.14
+step                               56.39         61.78         79.43         83.59         85.54
+## the default
+part                           2 tok (3)     3 tok (7)    4 tok (11)    5 tok (12)    6 tok (33)
+front                              29.11         36.40         38.80         41.88         48.17
+handoff in                          0.68          0.73          0.98          1.09          1.42
+CPU                                24.05         19.72         36.41         36.83         31.17
+handoff out                         1.16          1.16          1.52          1.54          1.42
+  issue the copy (host)             0.35          0.35          0.52          0.45          0.42
+  lag to the copy                   0.18          0.18          0.20          0.23          0.21
+  the copy (die 0)                  0.63          0.65          0.88          0.87          0.77
+die 0 waits for CPU                21.08         16.25         31.84         30.77         26.74
+tail                                1.25          1.89          2.24          3.03          4.69
+outside layers                      3.62          3.58          4.06          4.57          5.04
+  before layer 0                    0.22          0.21          0.24          0.25          0.27
+  head (die 0)                      1.69          1.76          1.85          2.27          2.46
+  ids to host                       0.10          0.05          0.04          0.10          0.10
+  cache step                        0.09          0.09          0.47          0.11          0.46
+  bookkeeping (traced)              1.45          1.32          1.62          1.71          1.84
+  rest                              0.00          0.00          0.00          0.00          0.00
+draft                               7.95          8.09          7.86          7.98          8.07
+step                               55.13         60.09         77.12         81.48         84.80
+
+## tcp-udp: scripts/trace_compare.py, ms per verify step in generation, DS_FP8_VIRT=0 -> default
+span                                     old       new    change
+layer                                  50.24     50.05     -0.19
+experts                                32.26     32.60     +0.34
+verify 2 tokens                        17.53     18.18     +0.65
+CPU experts                            16.07     16.27     +0.20
+verify 3 tokens                        15.59     15.47     -0.12
+ffn.wait_for_cpu_experts               12.29     12.84     +0.55
+cpu.gate_up                             9.51      9.52     +0.01
+wait for the staged block               9.24      8.72     -0.52
+verify 4 tokens                         9.14      8.34     -0.80
+verify 1 tokens                         8.15      7.69     -0.46
+draft                                   7.12      7.15     +0.03
+draft (GPU)                             7.04      7.07     +0.03
+ffn.shared                              6.87      6.45     -0.42
+attn.out                                6.41      5.83     -0.58
+cpu.down                                5.14      5.28     +0.14
+hc                                      4.54      4.55     +0.01
+attn.q                                  4.48      4.47     -0.01
+attn.core                               3.59      3.60     +0.01
+ffn.wait_for_gpu_experts                2.99      3.10     +0.11
+tail: the head's wait and the ids       2.05      2.06     +0.02
+ffn.router                              1.96      2.00     +0.05
+draft.head                              1.92      1.90     -0.02
+ffn.dispatch                            1.91      1.97     +0.06
+verify 5 tokens                         1.89      2.54     +0.65
+head                                    1.84      1.84     +0.00
+verify 6 tokens                         1.48      1.49     +0.01
+draft.ffn.routed                        1.45      1.47     +0.01
+attn.kv                                 1.39      1.46     +0.07
+draft layer 0                           1.32      1.29     -0.03
+draft layer 1                           1.32      1.28     -0.03
+draft layer 2                           1.31      1.28     -0.03
+attn.compressor                         1.28      1.29     +0.01
+tail: profile and trace bookkeepin      1.25      1.34     +0.09
+engram                                  0.89      0.83     -0.06
+draft.markov                            0.87      0.87     +0.01
+draft.attn.core                         0.64      0.65     +0.01
+draft.attn.out                          0.62      0.52     -0.10
+engram fetch                            0.61      0.61     +0.00
+cpu.inputs                              0.58      0.61     +0.02
+ffn.add                                 0.58      0.58     +0.00
+attn.indexer                            0.56      0.57     +0.01
+draft: issue                            0.55      0.56     +0.01
+draft.attn.proj                         0.53      0.54     +0.01
+ffn.cpu_rows_copy                       0.51      0.51     +0.01
+
+## tcp-udp: scripts/trace_critpath.py, verify steps by size, median ms per step: DS_FP8_VIRT=0
+part                          1 tok (30)    2 tok (51)    3 tok (37)    4 tok (18)     5 tok (3)     6 tok (2)
+front                              29.42         33.28         40.38         44.77         46.69         49.13
+handoff in                          0.20          0.52          0.57          0.82          1.30          1.19
+CPU                                 5.54         12.27         16.23         20.38         21.57         54.89
+handoff out                         0.42          0.82          0.99          1.19          1.37          1.96
+  issue the copy (host)             0.12          0.26          0.30          0.34          0.34          0.58
+  lag to the copy                   0.07          0.12          0.15          0.24          0.51          0.31
+  the copy (die 0)                  0.22          0.43          0.54          0.61          0.62          1.09
+die 0 waits for CPU                 4.49          9.55         10.92         13.68         15.31         46.82
+tail                                0.51          0.93          1.47          2.17          4.19          3.24
+outside layers                      2.99          3.33          3.70          3.92          4.48          5.25
+  before layer 0                    0.18          0.21          0.22          0.25          0.27          0.27
+  head (die 0)                      1.83          1.81          1.85          1.93          2.24          2.43
+  ids to host                       0.07          0.06          0.06          0.04          0.12          0.08
+  cache step                        0.01          0.07          0.08          0.10          0.08          0.53
+  bookkeeping (traced)              0.88          1.13          1.29          1.53          1.72          1.94
+  rest                              0.00          0.00          0.00          0.00          0.00          0.00
+draft                               8.12          8.10          8.10          8.20          8.19          7.97
+step                               37.90         46.96         56.54         66.74         71.33        104.44
+## the default
+part                          1 tok (28)    2 tok (52)    3 tok (37)    4 tok (17)     5 tok (4)     6 tok (2)
+front                              29.47         33.18         39.11         41.75         42.69         46.23
+handoff in                          0.21          0.52          0.60          0.89          1.04          1.60
+CPU                                 5.22         12.94         15.86         19.90         36.81         55.90
+handoff out                         0.43          0.85          0.94          1.18          1.51          1.96
+  issue the copy (host)             0.12          0.27          0.30          0.35          0.44          0.62
+  lag to the copy                   0.07          0.10          0.13          0.15          0.23          0.31
+  the copy (die 0)                  0.24          0.47          0.51          0.65          0.88          1.04
+die 0 waits for CPU                 4.38          9.69         11.66         14.74         31.10         49.01
+tail                                0.51          0.92          1.47          2.51          3.40          3.38
+outside layers                      3.04          3.45          3.78          3.99          4.41          5.44
+  before layer 0                    0.18          0.21          0.22          0.24          0.24          0.27
+  head (die 0)                      1.82          1.81          1.85          1.93          2.23          2.44
+  ids to host                       0.07          0.10          0.10          0.05          0.10          0.07
+  cache step                        0.01          0.07          0.08          0.09          0.13          0.52
+  bookkeeping (traced)              0.89          1.22          1.39          1.46          1.72          2.14
+  rest                              0.00          0.00          0.00          0.00          0.00          0.00
+draft                               8.01          7.93          7.91          8.12          8.19          7.84
+step                               37.82         47.42         55.78         64.72         81.88        104.07
+
+## untraced, generation t/s, two runs each (DS_FP8_VIRT=0 / default)
+cpp-matrix  53.56 53.56 / 54.64 54.67  +2.0%
+geometry    54.21 54.16 / 55.37 55.25  +2.1%

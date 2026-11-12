@@ -11,10 +11,10 @@ it (README step 90); the rest is the CPU side and HBM-bound GPU work (step 94).
 All at sclk 6 with today's settings (`--spec --canon --cache-loads 800 --cache-period 8`; README
 steps 57-58). A step drafts up to 5 tokens, then verifies the anchor and n drafts in one forward:
 
-    step  ~=  draft (~9-14 ms)  +  verify: ~40 ms for one token, ~+14 ms per token after it
+    step  ~=  draft (~8 ms)  +  verify: ~38 ms for one token, ~+9 ms per token after it
 
-(verify steps of a chat prompt, `--profile`, medians: 1 token 40 ms, 2: 56, 3: 70, 4: 85, 5: 94;
-a code prompt's 6-token step 108). A step yields the accepted drafts plus one token of its own:
+(verify steps of a chat prompt, the traces of README step 105, medians: 1 token 38 ms, 2: 47,
+3: 56, 4: 65; a code prompt's 6-token step 85; at step 58 these were 40, 56, 70, 85 and 108). A step yields the accepted drafts plus one token of its own:
 **~2 tokens per step on chat and Chinese/Japanese, 3.3-4.5 on code and structured text**. Two
 typical steps, from the held-out run (README step 57):
 
@@ -50,8 +50,11 @@ the cache tuning and the router and CPU-routine fixes (steps 50, 53, 57).
 (A cheaper draft also gets used more: the rule would draft on more steps and verify more, so the
 gain at 1 ms would be somewhat larger.)
 
-**Where a verify step goes** (`--profile`, sclk 6, medians of the run's second half; profiling
-adds ~5%, README step 58):
+**Where a verify step goes.** Today (README step 105's traces, a code prompt's 6-token step, 85 ms
+plus the draft's 8): die 0's dense part 48 ms (the shared expert 8, attention's output 8, its core
+6, its query 5, hyper-connections 5), its wait for the CPU's experts 27, for the other dies 5,
+outside the layers 5. The table below is the same breakdown at step 58 (`--profile`, sclk 6,
+medians of the run's second half; profiling adds ~5%), kept for the proportions it started from:
 
 | part | code, 6 tokens | | chat, 2 tokens | |
 |---|---|---|---|---|

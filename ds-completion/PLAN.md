@@ -448,6 +448,8 @@ padded: 43.55 -> 44.00 t/s. Expert slots padded, fp8 GEMVs as two launches: not 
 Step 103: query B and output A do not pay for their multiples of 2048 waves (closed); the
 several-input fp8 kernels run in rounds of ~512 waves (measured, nothing changed).
 Step 104: the several-input fp8 kernel (64-lane order on 16 / 32 physical lanes): 44.00 -> 44.57 t/s.
+Step 105: traces at step 104; the kernel gives what the bench said (+2.0% on code back to back),
+the shared expert's part hides behind the CPU's experts; section B's spans refreshed.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front
@@ -477,8 +479,8 @@ ones (compressor, a 4-token quantize) go out as two launches, +1.0% together. Qu
 on multiples of 2048 waves, do not pay for it (step 103).
 
 Done (step 104, +1.3%): the fp8 GEMVs at 3-8 tokens on 16 / 32 physical lanes carrying the 64
-partial sums; attention output A 113 -> 79 us at 6 tokens. Left there: the gain in the runtime is
-under the bench's (new traces), the prompt kernel on the large matrices, 2-token calls.
+partial sums; attention output A 113 -> 79 us at 6 tokens. The runtime gets what the bench
+measured (step 105). Left there: the prompt kernel on the large matrices, 2-token calls.
 Was: the fp8 GEMVs at 6 tokens (step 101's probe: the multiplies fit, the
 activations' loads per lane and step are the cost; a kernel that keeps the 64-lane order of
 additions on an 8- or 16-lane work split; local variants failed in 65 and 75; step 103: at
@@ -506,11 +508,12 @@ compile-time shapes, the batched indexer (long context), die 0's staleness metri
 - Hardware (discussed, not planned): DDR5 or a multi-socket box with experts striped by rows
   across sockets (exact under the canonical numerics).
 
-**B. The dense part of a verify step** (updated after README step 100: a 6-token code step's die 0
-spans in step 98's traces, medians, ms per step: attn.out 11.8, ffn.shared 9.9 (while the CPU
-computes), attn.core 7.0, attn.q 5.4, the wait for dies 1-3's experts 5.2, hc 5.0,
-attn.compressor 2.8, router 2.6, the head 2.5, dispatch 2.1, attn.kv 1.5, engram 1.4, indexer 1.4
-(skipped: the trace's marks); die 0 waits 25.7 for the CPU's experts)
+**B. The dense part of a verify step** (updated after README step 105: cpp-matrix's die 0 spans
+in step 104's traces, means over all its verify steps, ms per step: ffn.shared 8.3 (while the CPU
+computes: hidden), attn.out 7.7 (11.5 at step 98), attn.core 5.7, attn.q 5.1, hc 5.0, the wait for
+dies 1-3's experts 3.8, attn.compressor 2.5, router 2.4, the head 2.2, dispatch 2.1, attn.kv 1.7,
+indexer 1.2, engram 1.1; die 0 waits 30.7 for the CPU's experts. A 6-token step, medians: 84.8 ms,
+front 48.2, the wait for the CPU 26.7, the tail 4.7, outside the layers 5.0; the draft 8.1 more)
 - Done: the router's top-k in one launch (step 53), the head through LDS (step 62), the batched
   attention core (steps 66-68: 17.7 -> ~6 ms), the engram fetch off the critical path (step 73),
   the indexer skipped while it picks every position (step 74), the head's argmax on the GPU
