@@ -143,33 +143,6 @@ inline void dot_range_multi(const uint8_t* base, size_t row_bytes, int nb, const
   }
 }
 
-inline void dot_row_multi(const uint8_t* row, int nb, const float* const* x, int nx, float* const* y, int r) {
-  const __m512 lut = _mm512_setr_ps(0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f, -0.0f, -0.5f, -1.0f, -1.5f, -2.0f,
-                                    -3.0f, -4.0f, -6.0f);
-  const __m512i sh_lo = _mm512_setr_epi32(0, 0, 0, 0, 8, 8, 8, 8, 16, 16, 16, 16, 24, 24, 24, 24);
-  const __m512i sh_hi = _mm512_add_epi32(sh_lo, _mm512_set1_epi32(4));
-  constexpr int NXM = 8;
-  for (int x0 = 0; x0 < nx; x0 += NXM) {
-    const int n = std::min(NXM, nx - x0);
-    __m512 acc[NXM];
-    for (int j = 0; j < n; j++) acc[j] = _mm512_setzero_ps();
-    for (int b = 0; b < nb; b++) {
-      const uint8_t* blk = row + (size_t)b * BLK;
-      if ((b & 3) == 0 && x0 == 0) _mm_prefetch((const char*)(blk + kPrefetch), _MM_HINT_T1);
-      const __m512i q = _mm512_broadcast_i32x4(_mm_loadu_si128((const __m128i*)(blk + 1)));
-      const __m512 wl = _mm512_permutexvar_ps(_mm512_srlv_epi32(q, sh_lo), lut);
-      const __m512 wh = _mm512_permutexvar_ps(_mm512_srlv_epi32(q, sh_hi), lut);
-      const __m512 sc = _mm512_set1_ps(kScale.v[blk[0]]);
-      for (int j = 0; j < n; j++) {
-        const float* xj = x[x0 + j] + b * QB;
-        const __m512 t = _mm512_fmadd_ps(wh, _mm512_loadu_ps(xj + 16), _mm512_mul_ps(wl, _mm512_loadu_ps(xj)));
-        acc[j] = _mm512_fmadd_ps(t, sc, acc[j]);
-      }
-    }
-    for (int j = 0; j < n; j++) y[x0 + j][r] = _mm512_reduce_add_ps(acc[j]);
-  }
-}
-
 }  // namespace
 
 CpuMoeKernel::CpuMoeKernel(int n_embd, int n_ff, int k_max, int nt) : E(n_embd), F(n_ff), n_threads(nt) {

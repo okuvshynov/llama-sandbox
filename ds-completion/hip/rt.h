@@ -1,4 +1,4 @@
-// The own decode runtime (PLAN.md section 3, option 2): one token per step through our HIP
+// The own decode runtime (PLAN.md section 3, option 2): a token, or a chunk of them (a prompt chunk, a verify step), per step through our HIP
 // kernels (kernels.h, fp8_gemv.h, fp4_moe.h). The dense part runs on one die (opt.gpu); the
 // routed experts run where they live: on any die that holds them in an expert pool
 // (expert_pool.h, --placement) or on the CPU (cpu_moe.h, AVX-512, weights read in place from
@@ -116,13 +116,14 @@ class Runtime {
   bool has_draft() const { return dspark != nullptr || peer_block > 0; }
   int draft_block() const { return dspark ? dspark->block_size : peer_block; }
 
-  // Speculative verification (PLAN.md "batched verification"; phase 1: token by token through
-  // decode()). verify(chunk) runs the chunk at positions n_past()..; returns the greedy next
-  // token after each. commit(n_keep) then keeps the first n_keep and discards the rest: the
-  // window ring slots the discarded positions overwrote are restored, the sequence is truncated,
-  // and the draft is seeded with the kept positions only. The compressor state needs nothing:
-  // it is keyed by position and only read after the token completing it, which the real tokens
-  // rewrite.
+  // Speculative verification (PLAN.md "batched verification"). verify(chunk) runs the chunk at
+  // positions n_past().. in one forward and returns the greedy next token after each.
+  // commit(n_keep) then keeps the first n_keep and discards the rest: the sequence is truncated,
+  // each compressor's partial group is put back as plain decoding would have left it (from the
+  // backup verify() took and the chunk's rows), and the draft is seeded with the kept positions
+  // only. The window ring needs nothing: a discarded slot is written again, by the token that
+  // takes its position, before any window reads it. Nor do the compressed caches: they are keyed
+  // by position and read only up to the current one.
   // head = false: no logits (prompt chunks), returns an empty vector
   std::vector<int32_t> verify(const std::vector<int32_t>& chunk, bool head = true);
   // most tokens one forward runs at once: a prompt chunk (prefill); a verify chunk is at most
@@ -161,6 +162,7 @@ class Runtime {
   struct MissRec { int M, distinct, pairs; double cpu_ms; int mark; };
   std::vector<MissRec> miss_recs;
   struct MissCell { long n = 0, pairs = 0; double cpu_ms = 0, wait_ms = 0; } miss_hist[4][7];
+  void step_stats();
   void fold_misses();
   // profile, generation (README step 52): could the next layer's CPU expert be guessed early
   // (to prefetch it into the CPU's caches)? Per token-count bucket: layers, layers with CPU
@@ -256,7 +258,7 @@ class Runtime {
   std::vector<int> h_table;              // host copy of d_table (the cache edits it)
   std::unique_ptr<ExpertCache> cache;
   Placement placement;
-  int* d_table = nullptr;       // [n_layer][n_expert]: die << 16 | slot, or -1 (home die)
+  int* d_table = nullptr;       // [n_layer][n_expert]: die << 16 | slot, or -1 (the CPU)
   hipEvent_t ev_staged;         // the block (x, router outputs, lists) is in host memory
   hipStream_t s_local = nullptr;  // home die: its own expert list, next to the shared expert
   hipEvent_t ev_dispatched = nullptr, ev_local = nullptr;
@@ -324,7 +326,6 @@ class Runtime {
 
   int pos = 0;  // position of the current step
   int32_t token = 0;
-  std::vector<int32_t> hist;  // tokens including the current one (engram)
 
   // M rows at once (a chunk of tokens): every row as a single-row call would give, bit for bit
   void quant(const float* xin, int n, Codes c, int M = 1);
@@ -338,7 +339,6 @@ class Runtime {
   float* attn_check_buf = nullptr;
   long attn_check_calls = 0, attn_check_tokens = 0, attn_check_bad = 0;
   // the routed + shared experts of the chunk's M tokens (x [M][E] staged in d_moe.x)
-  void moe(int L, float* out, int M, Taps* taps);
   void moe_launch(int L, int M);                           // GPU: router .. the dies' experts, shared expert
   void moe_finish(int L, float* out, int M, Taps* taps);  // host: the CPU's experts, then the sum
   void block(int L, Taps* taps, int M = 1);

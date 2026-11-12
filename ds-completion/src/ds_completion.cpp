@@ -214,7 +214,8 @@ static int run(int argc, char** argv) {
     return 2;
   }
   if (model_path.empty() || (prompt.empty() && !interactive && !serve_port)) {
-    fprintf(stderr, "usage: ds-completion -m <model.gguf> (-p \"prompt\" | -f prompt.txt | -i) [--chat|--think [--effort 1-100|low|high|max]] [-n N] [-t N] [--no-quant] [--max-ctx N] [--rt dense-fp8.gguf [--gpu D] [--placement file [--moe-dies 0,1,2,3] [--load-test R [--load-pinned]] [--cache-loads R [--cache-period N] [--cache-window N] [--cache-min N] [--cache-wait]]] [--canon] [--profile]]\n");
+    fprintf(stderr, "usage: ds-completion -m <model.gguf> (-p \"prompt\" | -f prompt.txt | -i) [--chat|--think [--effort 1-100|low|high|max]] [-n N] [-t N] [--no-quant] [--max-ctx N] [--rt dense-fp8.gguf [--gpu D] [--placement file [--moe-dies 0,1,2,3] [--load-test R [--load-pinned]] [--cache-loads R [--cache-period N] [--cache-window N] [--cache-min N] [--cache-wait]]] [--canon] [--profile]]\n"
+                    "more (--dspark/--spec, --layers/--serve/--remote, --trace, ...): QUICKSTART.md, Options\n");
     return 2;
   }
 
@@ -369,9 +370,9 @@ static int run(int argc, char** argv) {
   const int32_t think_end = think_end_toks[0];
   std::vector<int32_t> answer;  // --think: the last reply after its </think>
   const int eos = llama_vocab_eos(vocab);
-  const int n_predict_turn = n_predict;
+  [[maybe_unused]] const int n_predict_turn = n_predict;
   std::vector<int32_t> pending;  // printed by the last turn but not yet run through the model (it stopped at -n)
-  for (bool first = true;; first = false) {
+  for ([[maybe_unused]] bool first = true;; first = false) {
 #ifdef DS_RUNTIME
     if (interactive && (!first || toks.empty())) {
       fprintf(stderr, "\n> ");
@@ -413,7 +414,7 @@ static int run(int argc, char** argv) {
 #endif
     const double t_pp = std::chrono::duration<double>(Clock::now() - t1).count();
     int n_gen = 0;
-    bool hit_eos = false;
+    [[maybe_unused]] bool hit_eos = false;
     auto t2 = Clock::now();
     std::string out;
     // shadow mode (--dspark): after every generated token, the draft's guesses for the tokens after

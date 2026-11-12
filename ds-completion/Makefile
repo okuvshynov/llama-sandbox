@@ -145,5 +145,5 @@ $(BIN)/llama-logits: ref/llama_logits.cpp
 	$(CXX) $(CXXFLAGS) -o $@ $< $(LLAMA_LIB) $(LDLIBS)
 
 clean:
-	rm -rf bin bin-hip
+	rm -rf bin bin-hip bin-asan
 .PHONY: all clean

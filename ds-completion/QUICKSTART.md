@@ -117,9 +117,10 @@ keeps that out of a timed run.
 
 Options:
 
+- `-m FILE`: the model's first GGUF shard. `--rt FILE`: the GPU runtime, with the fp8 file.
 - `-p "text"` or `-f prompt.txt`: the prompt, inline or from a file (as is).
 - `--chat`: one user turn, no thinking.
-- `-i` (with `--chat` or `--think`, and `--rt`): an interactive session, one user line per turn on
+- `-i` / `--interactive` (with `--chat` or `--think`, and `--rt`): an interactive session, one user line per turn on
   one context; `-p` is then optional (the first turn), `-n` is per reply (reasoning included). An
   empty line ends it. With `--think`, earlier turns' reasoning is dropped from the context, as the
   reference does. `scripts/chat.sh [--think [--effort max]]` runs it with the fast configuration
@@ -128,6 +129,7 @@ Options:
   `high` / `max` (50 / 75 / 100), as the official encoding; the model card's benchmarks use 100.
 - neither: the prompt is raw text after BOS.
 - `-n`: max new tokens.
+- `--max-ctx N`: the context's size (default 65,536 with `--rt`; "Limits" below).
 - `--layers a-b` (with `--rt`): only that range of layers ("Two machines" below). A range must
   hold the layers its own layers read from, which leaves layer 20 as the only cut (checked;
   README step 110).
@@ -153,7 +155,7 @@ Options:
 - `--spec`: speculative decoding (needs `--dspark`, or `--remote` to a back that has it); the number of guesses verified per step
   is chosen from the draft's confidence. `--spec-n N` fixes it; `--spec-log FILE` writes
   per-step data.
-- `--canon`: placement-invariant expert numerics: the output no longer depends on where the
+- `--canon` ([NUMERICS.md](NUMERICS.md)): placement-invariant expert numerics: the output no longer depends on where the
   experts run (any placement, any `--moe-dies`, with or without the draft, with or without the
   cache give the same bytes); generation ~2% slower, the prompt ~32% (93 -> 63 t/s; its CPU expert
   kernel is slower).
@@ -167,6 +169,9 @@ Options:
   `--cache-min N` (2) the uses a newcomer needs (1 was ~0.7% slower, README step 59).
 - `--load-test R [--load-pinned]`: a measurement aid: loads random experts into spare GPU slots
   at R loads/s in the background, as the cache would (README step 30); output unchanged.
+
+- `--log-routing FILE`: the router's choices per token and layer (the routing studies).
+- `--no-quant` (CPU path only): without the reference's fp8/fp4 rounding (a comparison).
 
 Without `--rt` (or with `bin/ds-completion`) everything runs on the CPU.
 

@@ -35,6 +35,9 @@ static T* dalloc(size_t n) {
   void* p;
   CHECK(hipMalloc(&p, n * sizeof(T)));
   CHECK(hipMemset(p, 0, n * sizeof(T)));
+  // the zero fill is not ordered with any stream: a buffer allocated mid-run and written at once
+  // (verify's backups, the mark's copies) could be zeroed after its first copy (README step 109)
+  CHECK(hipDeviceSynchronize());
   return (T*)p;
 }
 
@@ -83,6 +86,10 @@ Runtime::Runtime(const Model& model, RtOptions options, const std::string& fp8_p
     if (!m.layers[L].loaded) throw std::runtime_error("runtime: the loaded layers must be one range");
   if (L0 >= L1) throw std::runtime_error("runtime: no layer loaded");
   for (int L = L0; L < L1; L++) range_engram |= m.layers[L].kind.engram >= 0;
+  // what the kernels are written for (this model's shapes): another model must fail here, not
+  // inside a kernel that assumes them
+  if (hp.hc_mult != 4 || hp.n_expert_used > kMoeMaxK || hp.n_embd > 8192 || hp.n_embd % 256 || hp.n_ff_exp % 256)
+    throw std::runtime_error("runtime: the kernels need hc_mult 4, at most " + std::to_string(kMoeMaxK) + " experts per token, n_embd <= 8192 and n_embd, n_ff_exp multiples of 256");
   // a range must hold what its layers read: their compressed-KV source, their index source and
   // the candidate source (for this model the only cut inside the stack is at layer 20)
   for (int L = L0; L < L1; L++) {
@@ -111,9 +118,10 @@ Runtime::Runtime(const Model& model, RtOptions options, const std::string& fp8_p
   {
     int fd = open(fp8_path.c_str(), O_RDONLY);
     struct stat st;
-    fstat(fd, &st);
+    if (fd < 0 || fstat(fd, &st) != 0) throw std::runtime_error("cannot open " + fp8_path);
     const size_t off = gguf_get_data_offset(g), n = st.st_size - off;
     void* map = mmap(nullptr, st.st_size, PROT_READ, MAP_SHARED, fd, 0);
+    if (map == MAP_FAILED) throw std::runtime_error("cannot map " + fp8_path);
     // each tensor as in the file, except the weight matrices whose rows fp8_row_stride sets apart
     // (README step 101): those row by row. fp8_off: every tensor's place in the device buffer
     const int64_t nt = gguf_get_n_tensors(g);
@@ -1660,11 +1668,6 @@ void Runtime::attn_prep(int L, int t, const float* xin, Codes qr_t, int& K, cons
   }
 }
 
-void Runtime::moe(int L, float* out, int M, Taps* taps) {
-  moe_launch(L, M);
-  moe_finish(L, out, M, taps);
-}
-
 // the GPU part: router, dispatch, staging to the host, the dies' experts, the shared expert
 void Runtime::moe_launch(int L, int M) {
   const LayerW& w = W[L];
@@ -2093,8 +2096,6 @@ void Runtime::begin_step(int32_t tok) {
   if (n_past_ >= opt.max_ctx) throw std::runtime_error("runtime: position " + std::to_string(n_past_) + " is past --max-ctx " + std::to_string(opt.max_ctx));
   pos = n_past_;
   token = tok;
-  hist = tokens_;
-  hist.push_back(tok);
   for (auto& tc : topk_cur) tc.clear();
   std::fill(cand_cur.begin(), cand_cur.end(), nullptr);
   last = Times{};
@@ -2227,6 +2228,7 @@ std::vector<float> Runtime::decode(int32_t tok, bool want_logits) {
   if (dspark) dspark->seed(pos);  // this position's K/V into the draft's window rings
   if (!has_head()) stream_to_host(1);
   if (!want_logits || !has_head()) {
+    mark("end");
     end_step();
     std::vector<float> logits;
     if (peer) {  // the back's layers and head
@@ -2236,6 +2238,7 @@ std::vector<float> Runtime::decode(int32_t tok, bool want_logits) {
         logits = peer->get_vec<float>(hp.n_vocab);
       }
     }
+    step_stats();
     last.total_ms = ms_since(t0);
     trace_host("decode (no logits)", t0, Clock::now(), 3);
     return logits;
@@ -2249,6 +2252,15 @@ std::vector<float> Runtime::decode(int32_t tok, bool want_logits) {
   mark("end");
   CHECK(hipMemcpyAsync(logits.data(), logits_d, logits.size() * 4, hipMemcpyDeviceToHost, s));
   end_step();
+  step_stats();
+  last.total_ms = ms_since(t0);
+  trace_host("decode", t0, Clock::now(), 3);
+  return logits;
+}
+
+// after a decode step's end_step(), with or without the head: the profile's groups, the misses
+// folded into them, the step's spans into the trace, the lookahead study's step
+void Runtime::step_stats() {
   if (profile) {
     last_groups.clear();
     for (size_t i = 0; i + 1 < marks.size(); i++) {
@@ -2256,12 +2268,9 @@ std::vector<float> Runtime::decode(int32_t tok, bool want_logits) {
       CHECK(hipEventElapsedTime(&ms, marks[i].second, marks[i + 1].second));
       last_groups[marks[i].first] += ms;
     }
+    fold_misses();
   }
-  if (profile) fold_misses();
   trace_step_end();
   if (ra_logits) ra_step_end();
-  last.total_ms = ms_since(t0);
-  trace_host("decode", t0, Clock::now(), 3);
-  return logits;
 }
 

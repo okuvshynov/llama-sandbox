@@ -140,6 +140,7 @@ static Hparams read_hparams(gguf_context* g) {
   need((int)h.compress_ratios.size() >= h.n_layer, "compress_ratios shorter than block_count");
   h.compress_ratios.resize(h.n_layer);  // drop the MTP entries: the GGUF has no MTP layers
   need((int)h.swiglu_clamp.size() == h.n_layer && (int)h.swiglu_clamp_sh.size() == h.n_layer, "swiglu clamps");
+  need(h.n_layer > 0 && h.o_groups > 0, "block_count and o_groups");
   need(h.n_head * h.head_dim % h.o_groups == 0, "heads split into o_groups");
   need(h.engram_mult.size() == h.engram_layers.size() * h.engram_ngram, "engram multipliers");
   need(h.engram_offsets.size() == h.engram_layers.size() * h.engram_cols(), "engram offsets");
@@ -219,6 +220,7 @@ void Model::load(const std::string& first, const std::vector<int>& want_layers) 
   auto pos = first.rfind("-00001-of-");
   if (pos == std::string::npos) throw err("expected the first shard (…-00001-of-000NN.gguf): " + first);
   const int n_split = atoi(first.c_str() + pos + 10);
+  if (n_split < 1) throw err("cannot read the shard count from " + first);
   for (int i = 1; i <= n_split; i++) {
     char suf[32];
     snprintf(suf, sizeof suf, "-%05d-of-%05d.gguf", i, n_split);

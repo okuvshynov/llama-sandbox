@@ -8,6 +8,7 @@ the model in two halves, 50.85 (README step 111; "Two machines" below). Prompt p
 93 t/s (63 `--canon`; 1,989 tokens, README step 68). Earlier milestones (sclk 2): no GPU experts
 ~12 t/s; the study30 placement 17.7-21.7; + `--spec` and the cache at 200 loads/s 25.6. The cost
 model below (2026-10-27) says where a token's time went before the cache; today: TIMING.md.
+The sections below carry their dates: "today" and "next" inside one mean that date.
 
 ## Overview
 
@@ -49,7 +50,7 @@ Speed
 | 23 | Weight interleaving for TP (C3) | idea | lay out weights so each die's slice is contiguous |
 | 24 | fp8 output head | idea | halves the 2.3 ms head, but is no longer exact vs the reference |
 | 25 | Clock level by phase | idea | sclk 4-6 for decode with CPU experts, 8 once GPU experts dominate |
-| 30 | Further optimization ideas (2026-10-29) | ideas | cache tuning, the dense part of a verify step and TP, speculation tuning, a faster draft: see the section below |
+| 32 | Further optimization ideas (2026-10-29) | ideas | cache tuning, the dense part of a verify step and TP, speculation tuning, a faster draft: see the section below |
 | 31 | Two machines, the model in two halves | done (steps 110-112) | layers 0-19 / 20-39 on two Mac Pros over TCP: held-out 44.60 -> 50.85 t/s, outputs identical; ideas after it in "Two machines" below |
 
 Features and limits
@@ -58,7 +59,7 @@ Features and limits
 |---|---|---|---|
 | 26 | Context above 4096 with the runtime | done | 65,536 by default, 1M with `--max-ctx`; see "Long context" below (README step 34) |
 | 27 | Candidate-block selection (>16k tokens) | done (runtime) | the reference's layer-20 path, checked against its own function; the CPU path still stops at 16k |
-| 28 | Full 1017 checkpoint | waiting | download pending (user); needed for item 19 and exact safetensors refs |
+| 28 | Full 1017 checkpoint | not needed | item 19 runs from the GGUF; exact references read the release by HTTP ranges (README "Which checkpoint") |
 | 29 | Sampling beyond greedy | idea | temperature/top-p; a non-goal so far. Greedy loops on some long reasoning (README step 48) |
 
 ## Current cost model (2026-10-27, sclk 2, 16 CPU threads)
@@ -191,7 +192,7 @@ threads)
    random, and the real placement.
 7. **Measure:** held-out prompts, live hit rate vs simulated, t/s vs ~18, per-layer CPU vs GPU.
 
-Phase 2: adaptive swapping (**next**; the detailed plan is "Adaptive expert cache" below. The
+Phase 2: adaptive swapping (done, README steps 28-32; the detailed plan is "Adaptive expert cache" below. The
 items here are the first sketch.)
 
 7a. **Pinned staging for loads:** today's upload copies straight from the mmap (pageable,
@@ -271,7 +272,8 @@ Phases:
    layer stays spread over the dies (a newcomer takes its victim's slot).
 4. **Tune** budget, admission rule and rebalance period (simulation, then live); expose them on
    the CLI with the tuned default. The knobs exist (`--cache-loads`, `--cache-period`,
-   `--cache-window`). Open: the default rate (100-200 loads/s), hysteresis so the cache settles
+   `--cache-window`). Closed since (step 50: 800 loads/s every 8 tokens; step 59: decay and
+   hysteresis simulated and checked live, not kept). Open then: the default rate (100-200 loads/s), hysteresis so the cache settles
    in long runs (today it keeps loading at the full rate: the boundary of the ranking is noisy),
    live vs simulated hits. **Deferred until after "Long context".**
 5. **Measure:** plain and `--spec` on the held-out set; live hit rate vs simulated; loads per
@@ -493,6 +495,7 @@ long proof or on 1-2-token steps. Next there: the machines take turns (no parall
 part of each is one die; the chat launcher and a server on two machines.
 Step 112: one trace of both machines (clocks aligned to ~1 us); the documents cover both setups.
 Step 113: review round 1 (error paths, checks between the halves, the launcher; the documents).
+Step 114: review round 2 (the runtime, kernels and loaders; what it left open is listed in the README's step).
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front
@@ -643,8 +646,8 @@ front 48.2, the wait for the CPU 26.7, the tail 4.7, outside the layers 5.0; the
 
 ## Long context: plan (2026-10-29; before any further cache tuning)
 
-The model supports 1,048,576 positions (YaRN: a 65,536-token training context x 16). The runtime
-stops at 4,096 tokens in all (prompt + generation; refused or capped with a message, never
+The model supports 1,048,576 positions (YaRN: a 65,536-token training context x 16). When this section
+was written the runtime stopped at 4,096 tokens in all (prompt + generation; refused or capped with a message, never
 silently wrong). Checked against the official `inference/model.py`, what already holds at any
 length: YaRN only on the compressed layers (compress_rope_theta 160000, factor 16, beta 32/1),
 plain rope on window-only layers; rope angles with full-precision cosf/sinf; the 128-slot window,

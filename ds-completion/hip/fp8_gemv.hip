@@ -1,3 +1,5 @@
+#include <stdexcept>
+#include <string>
 #include "fp8_gemv.h"
 
 #include <cstdlib>
@@ -309,6 +311,7 @@ static bool launch_virt(const uint8_t* w, const uint8_t* ws, int N, int K, int S
 #define CASE(m) case m: fp8_gemv_virt_kernel<P, R, m><<<grid, block, 0, stream>>>(w, ws, N, K, ST, rpg, x.q, x.s, y); break;
     CASE(2) CASE(3) CASE(4) CASE(5) CASE(6) CASE(7) CASE(8)
 #undef CASE
+    default: throw std::runtime_error("fp8_gemv: " + std::to_string(M) + " inputs (a call takes 1..8)");
   }
   return true;
 }
@@ -415,6 +418,7 @@ static void launch_r(const uint8_t* w, const uint8_t* ws, int N, int K, int ST, 
 #define CASE(m) case m: fp8_gemv_lds_kernel<LPR, R, m><<<grid, block, 0, stream>>>(w, ws, N, K, ST, rpg, x.q, x.s, y); break;
       CASE(2) CASE(3) CASE(4) CASE(5) CASE(6) CASE(7) CASE(8)
 #undef CASE
+    default: throw std::runtime_error("fp8_gemv: " + std::to_string(M) + " inputs (a call takes 1..8)");
     }
     return;
   }
@@ -422,6 +426,7 @@ static void launch_r(const uint8_t* w, const uint8_t* ws, int N, int K, int ST, 
 #define CASE(m) case m: fp8_gemv_kernel<LPR, R, m><<<grid, block, 0, stream>>>(w, ws, N, K, ST, rpg, x.q, x.s, y); break;
     CASE(1) CASE(2) CASE(3) CASE(4) CASE(5) CASE(6) CASE(7) CASE(8)
 #undef CASE
+    default: throw std::runtime_error("fp8_gemv: " + std::to_string(M) + " inputs (a call takes 1..8)");
   }
 }
 

@@ -163,7 +163,7 @@ Each rule is followed by where it mattered most.
   no. **Why:** CPU misses (~70 ms of a 170 ms verify step) do not scale with the GPU clock.
   This pointed straight at the cache.
 
-### Phase F: the adaptive expert cache, the decode work after it, sessions and two machines (steps 28-112)
+### Phase F: the adaptive expert cache, the decode work after it, sessions and two machines (steps 28-114; from step 87 on as rows of section 4's table)
 
 - **Q:** What could go wrong with a cache that changes what runs where while decoding?
   **Found:** an expert's bits depend on where it runs (GPU and CPU kernels sum in different
@@ -538,28 +538,42 @@ Each rule is followed by where it mattered most.
 
 Estimates were made before measuring wherever possible; this is how they fared.
 
-| step | prediction | outcome | why the difference |
+| step | prediction (or, without one, the question) | outcome | why the difference |
 |---|---|---|---|
 | dense on GPU via ggml (4) | >10 t/s with overlap | 6.0 t/s | no overlap; half the GPU time was launches |
 | whole layers on GPUs (8) | all 40 layers -> ~20 t/s | 13 layers 11.4 t/s, consistent | |
 | per-layer split, study30 (14) | ~18 t/s | 17.7-21.7 t/s (after fix 3) | |
 | oracle placement (15) | ~24 t/s | 16 t/s, then ~25 after three fixes | the expert path was serialized; 32 threads starved the host |
-| a second machine (PLAN's cost model -> 111) | ~1-2 ms per token once the cache adapts | +14% on 300-token runs, nothing on a 3,000-token run | right where it said (an adapted cache); the 300-token runs we measure end before the cache has adapted that far |
 | speculation with study30 (19) | chat ~22 vs ~20 t/s | +7% to +33%, gmean +22% | draft length chosen per step (phase 4) |
 | higher clock helps speculation more (27) | yes (the person's hypothesis) | no: +8% plain, +9% spec | CPU misses do not scale with the GPU clock |
 | canonical numerics cost (28) | within 15% | CPU +5%, GPU +13% (+2% after batching) | |
 | load cost at 100 loads/s (30) | 2.7% (the simulation's pessimistic case) | ~1.1% with direct copies | |
 | canonical cost end to end (32) | ~5% (kernel benchmarks) | 9-11%, then 1-2% after two fixes | benchmarks used 6 experts; the runtime's CPU gets 1-2 |
 | cache, `--spec`, 100 loads/s (29 -> 32) | ~28.9 t/s, 87% hits (1,024 tokens, no canonical cost) | 24.5 t/s, 80% hits (300 tokens) | shorter runs adapt for a larger share of the run |
-| CPU/GPU overlap of two half-chunks (38) | up to ~2x | 1.5x | half the tokens per CPU expert; both sides now ~33 s |
+| reference run, 20k tokens (35) | 6-10 h (scaled from 1,100 tokens) | 42 min | the 1,100-token run was mostly fixed cost |
 | chunks of 64 share CPU expert reads (37) | most of the 53% saved | nothing | 384 experts: ~1 token per CPU expert per chunk; then compute-bound until tiled |
+| CPU/GPU overlap of two half-chunks (38) | up to ~2x | 1.5x | half the tokens per CPU expert; both sides now ~33 s |
+| runtime's CPU experts = the benchmark x 1.65 (42) | overhead around the kernel | the build: -O2 vs -O3 | the runtime was compiled with the common CXXFLAGS (-O2) |
+| loads hidden behind the GPU's work (42 -> 44) | ~0.7 ms per load (standalone rate) | 1.9-2.4 ms | the unpack kernels queue behind the dies' own compute |
+| chunks of 1,024 cut CPU expert time 20-30% (46) | 20-30% | ~6% per pair, prompt 6-12% slower | the kernel had become arithmetic-bound (step 45) |
+| the long proof's loop is a bug (48) | possible | the model's greedy behaviour | both implementations continue the loop from the same tokens |
 | one CPU miss per layer hides behind the GPU's work (50) | partly | 0.05-0.15 of ~0.35-0.48 ms | the GPU's work alongside (shared expert, each die's experts) is shorter than one miss |
+| next layer's CPU expert guessable for a prefetch (52) | >= 60% needed | 17-28% (top-1) | the CPU's experts are the tail the cache did not keep |
+| batched router top-k (53) | ~4% (5-6 ms per code step) | +4.6% held-out, +1-4% prompt | as estimated; the prompt hides most of it behind the CPU |
+| co-selected experts on different dies (54) | some gain if clusters exist | <= 0.3% (bound 1-3%) | weak affinities; the CPU sets a layer's pace |
+| reading each expert once on the dies (55) | ~20 us saved per shared pair | -21% at heavy sharing, +23% without | a pair's cost was not the weight reads (a fit read as a mechanism) |
+| static schedule for verify-step CPU experts (56) | ~7% of a code step | 15-22% in the benchmark, 0-1% slower end to end | the benchmark lacked the gap before each call and the runtime's other threads |
+| one-token groups on the one-token routine (57) | the ~0.25 ms "fixed cost" removed | -35% per one-expert call, +1.1% end to end | the cost was one phase (down) on the wrong routine, not fixed overhead |
+| decayed counts / hysteresis for the cache (59) | settle the churn, some gain | decay = window, margins lose | the loads they skip were useful; misses left are unpredictable |
 | fp8 compressed caches free expert slots (59 -> 60) | the next lever | 21 slots at 64k | the caches are small; the draft is 8 GB |
-| the batched attention core (66-68) | attn.core 17.7 -> 6-9 ms, +6-8% on code | 7.8 ms, +5.7% mean (+10% on cpp-matrix), the prompt +6-12% | as planned; the stages kept every output identical |
-| the fp8 projections lose the step 62 way (65) | 3-7% | ~1% at 3-4 inputs, 0 at 6 | the cost is decoding inputs per lane group, not L2 reads; the fixes keep the bits only partly |
-| launches / host gaps (65) | <= 7-12% | <= 3-5% | the host is usually 0.1-1 ms ahead; it waits on its own work, not on launches |
+| the draft in fp8 frees ~4 GB (60 -> 61) | ~210 slots | nothing | its dense part was already fp8 and its experts mxfp4: assumed from the file's name |
+| expert parallelism for the draft (62) | proposed by the person | ~1 ms at best | experts are 16% of the draft; the head (27%) was the item |
+| the head through LDS (62) | ~1-2% | +1.4% held-out, +2% on code | as estimated from the per-part times |
 | the next layers' experts from this layer's router input (63) | "demonstrated for some models" (the person) | 72% one layer ahead, 4-7x the use counts for CPU experts | the residual stream changes little per layer |
 | a GPU prefetch from those guesses (64) | ~15% if a third of misses covered | 2.5% simulated (bound 10%) | loads need 3-4 layers' notice, where guesses are weaker; wrong loads take link time |
+| the fp8 projections lose the step 62 way (65) | 3-7% | ~1% at 3-4 inputs, 0 at 6 | the cost is decoding inputs per lane group, not L2 reads; the fixes keep the bits only partly |
+| launches / host gaps (65) | <= 7-12% | <= 3-5% | the host is usually 0.1-1 ms ahead; it waits on its own work, not on launches |
+| the batched attention core (66-68) | attn.core 17.7 -> 6-9 ms, +6-8% on code | 7.8 ms, +5.7% mean (+10% on cpp-matrix), the prompt +6-12% | as planned; the stages kept every output identical |
 | attention's output over dies 0-1 (76) | ~3.5% of a code step | +0.6% | ~55 us per layer of hand-off kernels and waits; the weights on die 1 cost its cache 1.41 GiB (CPU expert pairs +4.4%) |
 | a CPU expert from cache vs DRAM, the ceiling of an LLC prefetch (77) | ~3x (assumed, for a large-LLC EPYC) | x1.2 | DRAM is not the call's limit: half of a warm call is neither DRAM nor arithmetic (step 78) |
 | per-thread activation copies in the CPU call (78) | ~8-10% on code (from -0.1 ms per expert back to back) | flat | the runtime's calls follow a ~1.5 ms idle gap, after which the copy costs what it saves |
@@ -595,24 +609,11 @@ Estimates were made before measuring wherever possible; this is how they fared.
 | an interactive chat session (108) | towards serving the model (the person: a small chat-like CLI first): what does a second turn need? | nothing reset or recomputed: turns are appended to one context in the reference's chat format; the context must hold exactly what was printed (a token cut by -n carried over, the last speculative step commits no further); replies byte-identical to fresh runs on the whole conversation | kept; --chat only (thinking mode needs a rewind) |
 | thinking mode across turns (109) | the reference drops earlier turns' reasoning from the prompt: how much of the context's state must be saved to go back to a point? | little: per layer the window ring and the compressor's partial group, the draft's rings (~55 MB); the caches keyed by position rewrite themselves. A turn rewinds to before its reasoning and reruns only the answer; replies byte-identical to fresh runs on encoding.py's prompts. First version wrong and varying: a new buffer's zero fill landed after the first save into it | kept; a device sync after allocating |
 | the second machine; a range of layers (110) | how to use a second identical machine? (the person: first for capacity, the model in two halves, not for parallelism) | the machine reproduces every output at the same speed; layer 20 is a clean cut (nothing but the residual stream crosses: 64 KB per token); the runtime runs a layer range with the stream handed in and out, ids identical to the whole model; each half holds ~88% of its expert pairs on GPUs against 42% | kept; next the two processes over TCP |
+| a second machine (PLAN's cost model -> 111) | ~1-2 ms per token once the cache adapts | +14% on 300-token runs, nothing on a 3,000-token run | right where it said (an adapted cache); the 300-token runs we measure end before the cache has adapted that far |
 | two processes, two machines (111) | what does the second machine's GPU capacity give with the model in two halves? | held-out mean 44.60 -> 50.85 t/s (+14.0%), every output identical; the gain is the CPU's experts (expert uses on GPUs 75-88% -> 97-99%): +23-27% where many ran on the CPU, +2.5% on 1-2-token steps, 0 on the long proof; the network costs nothing visible; a wrong-device bug with the cache and a home die other than 0 found on the way | kept; the machines take turns: parallelism is next |
 | one trace of both machines (112) | two traces on two clocks do not show a step: how well can the clocks be aligned over the link the halves already use? | to ~1 us: NTP-style samples on the small exchanges, but only those with near-least delay (a draft request queued behind the back's commit biases its sample: the first fit had 90 us residuals). A 6-token code step: front 36.4 ms, back 36.1, draft 9.35, network 0.5; no wait for the CPU on either half | kept; the documents now cover both setups |
 | review round 1 (113) | the person: pause performance, review code and documents | two independent reads (the recent code; the documents as a newcomer with two machines): no wrong output; a lone half ran and printed garbage, errors aborted, the halves did not check each other, the launcher could strand a back; QUICKSTART could not be followed for two machines | fixed; outputs unchanged |
-| expert parallelism for the draft (62) | proposed by the person | ~1 ms at best | experts are 16% of the draft; the head (27%) was the item |
-| the head through LDS (62) | ~1-2% | +1.4% held-out, +2% on code | as estimated from the per-part times |
-| the draft in fp8 frees ~4 GB (60 -> 61) | ~210 slots | nothing | its dense part was already fp8 and its experts mxfp4: assumed from the file's name |
-| decayed counts / hysteresis for the cache (59) | settle the churn, some gain | decay = window, margins lose | the loads they skip were useful; misses left are unpredictable |
-| one-token groups on the one-token routine (57) | the ~0.25 ms "fixed cost" removed | -35% per one-expert call, +1.1% end to end | the cost was one phase (down) on the wrong routine, not fixed overhead |
-| static schedule for verify-step CPU experts (56) | ~7% of a code step | 15-22% in the benchmark, 0-1% slower end to end | the benchmark lacked the gap before each call and the runtime's other threads |
-| reading each expert once on the dies (55) | ~20 us saved per shared pair | -21% at heavy sharing, +23% without | a pair's cost was not the weight reads (a fit read as a mechanism) |
-| batched router top-k (53) | ~4% (5-6 ms per code step) | +4.6% held-out, +1-4% prompt | as estimated; the prompt hides most of it behind the CPU |
-| co-selected experts on different dies (54) | some gain if clusters exist | <= 0.3% (bound 1-3%) | weak affinities; the CPU sets a layer's pace |
-| next layer's CPU expert guessable for a prefetch (52) | >= 60% needed | 17-28% (top-1) | the CPU's experts are the tail the cache did not keep |
-| the long proof's loop is a bug (48) | possible | the model's greedy behaviour | both implementations continue the loop from the same tokens |
-| chunks of 1,024 cut CPU expert time 20-30% (46) | 20-30% | ~6% per pair, prompt 6-12% slower | the kernel had become arithmetic-bound (step 45) |
-| runtime's CPU experts = the benchmark x 1.65 (42) | overhead around the kernel | the build: -O2 vs -O3 | the runtime was compiled with the common CXXFLAGS (-O2) |
-| loads hidden behind the GPU's work (42 -> 44) | ~0.7 ms per load (standalone rate) | 1.9-2.4 ms | the unpack kernels queue behind the dies' own compute |
-| reference run, 20k tokens (35) | 6-10 h (scaled from 1,100 tokens) | 42 min | the 1,100-token run was mostly fixed cost |
+| review round 2 (114) | the older core, never read from outside: is the rollback complete, can a kernel read a half-loaded expert, what do the loaders trust? | both invariants hold as the comments claim; no wrong bits on this model. Found: bookkeeping skipped on steps without logits, a third launch for two, loaders that crash on a damaged file, checks missing for another model's shapes, dead code; pinning `-ffp-contract` changed every object and was not kept | fixed; outputs unchanged; a list of what stays open |
 
 ## 5. Mistakes and how they were caught
 

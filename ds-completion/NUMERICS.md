@@ -41,6 +41,16 @@ Fake quantization (the reference's rounding points): activations before every fp
 (e4m3, ue8m0 per 32); window KV (fp8); compressed KV (fp4 with an e4m3 scale per 16); indexer
 q/k (fp4, e8m0 per 32).
 
+## Routed experts with `--canon`
+
+The table above describes the fast expert kernels: the GPU's and the CPU's each exact in their
+products, but summing in different orders, so an expert's output bits depend on where it runs.
+With `--canon` (README steps 28, 31, 80) both sides use one canonical accumulation
+(`src/canon_dot.cpp` on the CPU, the matching kernel in `hip/fp4_moe.hip`): the same bits on any
+die and on the CPU. That is what lets the adaptive cache move experts while decoding, speculation
+match plain decoding under it, and two machines print one machine's bytes; it is the
+configuration QUICKSTART.md recommends.
+
 ## Why fp16 and not fp32 after dequantization
 
 - **The results are the same:** the products are exact either way.

@@ -26,13 +26,6 @@
     if (e_ != hipSuccess) throw std::runtime_error(std::string(#x) + ": " + hipGetErrorString(e_)); \
   } while (0)
 
-static float bf16f(uint16_t b) {
-  const uint32_t u = (uint32_t)b << 16;
-  float f;
-  memcpy(&f, &u, 4);
-  return f;
-}
-
 void* DSpark::upload(const void* src, size_t n) {
   void* p;
   CHECK(hipMalloc(&p, n));
@@ -99,9 +92,10 @@ DSpark::DSpark(Runtime& r, const std::string& path) : rt(r) {
   // tensors: mmap the file, data pointers per tensor
   const int fd = open(path.c_str(), O_RDONLY);
   struct stat st;
-  fstat(fd, &st);
+  if (fd < 0 || fstat(fd, &st) != 0) throw std::runtime_error("dspark: cannot open " + path);
   void* map = mmap(nullptr, st.st_size, PROT_READ, MAP_SHARED, fd, 0);
   close(fd);
+  if (map == MAP_FAILED) throw std::runtime_error("dspark: cannot map " + path);
   const size_t data0 = gguf_get_data_offset(g);
   auto T = [&](const std::string& name, ggml_type type, std::vector<int64_t> ne) -> const void* {
     const int64_t id = gguf_find_tensor(g, name.c_str());
@@ -111,7 +105,9 @@ DSpark::DSpark(Runtime& r, const std::string& path) : rt(r) {
     ne.resize(4, 1);
     for (int d = 0; d < 4; d++)
       if (t->ne[d] != ne[d]) throw std::runtime_error("dspark: " + name + " has an unexpected shape");
-    return (const char*)map + data0 + gguf_get_tensor_offset(g, id);
+    const size_t off = data0 + gguf_get_tensor_offset(g, id);
+    if (off + ggml_nbytes(t) > (size_t)st.st_size) throw std::runtime_error("dspark: " + name + " runs past the end of the file (truncated?)");
+    return (const char*)map + off;
   };
   auto f32 = [&](const std::string& name, std::vector<int64_t> ne) {
     int64_t n = 1;
@@ -331,8 +327,13 @@ DraftResult DSpark::draft(int32_t anchor, int pos, bool keep_logits, int gap) {
   mark("embed");
   // the block's input: [anchor, noise, ...] embedded, hc copies, identity pre-mix
   {
-    std::vector<float> emb((size_t)B * E), one_hot((size_t)B * HC, 0.0f);
-    std::vector<int32_t> ids(B + 1, noise_id);
+    if (noise_id < 0 || noise_id >= rt.m.tok_embd->ne[1]) throw std::runtime_error("dspark: the noise token id is outside the vocabulary");
+    // members, not locals: the copies below are asynchronous and must find them after this scope
+    std::vector<float>&emb = in_emb, &one_hot = in_one_hot;
+    std::vector<int32_t>& ids = in_ids;
+    emb.assign((size_t)B * E, 0.0f);
+    one_hot.assign((size_t)B * HC, 0.0f);
+    ids.assign(B + 1, noise_id);
     ids[0] = anchor;
     for (int j = 0; j < B; j++) {
       const ggml_bf16_t* row = (const ggml_bf16_t*)((const char*)rt.m.tok_embd->data + (size_t)ids[j] * rt.m.tok_embd->nb[1]);

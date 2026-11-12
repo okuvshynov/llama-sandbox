@@ -6,6 +6,8 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <random>
 #include <stdexcept>
@@ -173,6 +175,15 @@ void ExpertLoader::submit(const Request& r) {
 }
 
 void ExpertLoader::work(int d) {
+  try {
+    work_loop(d);
+  } catch (const std::exception& e) {  // (a thread's exception would end the process without a word)
+    fprintf(stderr, "\nfatal: expert loader, die %d: %s\n", d, e.what());
+    std::abort();
+  }
+}
+
+void ExpertLoader::work_loop(int d) {
   {
     char name[16];
     snprintf(name, sizeof name, "load-die%d", d);  // a fatal-signal handler prints the thread's name

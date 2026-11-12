@@ -320,7 +320,7 @@ static void gemv_m(const T* W, int N, int K, int ST, const float* x, int M, floa
   }
   const int R = N < 16384 ? 1 : M <= 3 ? 4 : 2;
   const int nx = cdiv(N, 4 * R), b1 = gemv_split(nx, splits, M);
-  for (int b0 = 0; b0 < nx; b0 += b1) {
+  for (int b0 = 0; b0 < nx; b0 = b0 ? nx : b1) {  // one launch, or two: [0, b1) and [b1, nx)
     const dim3 grid(b0 ? nx - b1 : b1, splits);
     switch (M * 8 + R) {
 #define CASE(mm)                                                                                                        \
@@ -765,7 +765,7 @@ __global__ void __launch_bounds__(1024) topk_kernel(const float* score, int n, i
     __syncthreads();
     if (threadIdx.x == 0) {
       int d = 255, above = 0;
-      while (above + hist[d] < krem) above += hist[d--];
+      while (d > 0 && above + hist[d] < krem) above += hist[d--];  // (d > 0: k beyond the count must not leave the histogram)
       s_prefix = prefix | ((uint32_t)d << shift);
       s_krem = krem - above;
     }

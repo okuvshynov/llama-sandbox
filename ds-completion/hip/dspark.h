@@ -50,6 +50,8 @@ class DSpark {
   void seed(int pos, const float* hidden = nullptr);
   float* hid_chunk = nullptr;      // device [Runtime::kChunk][n_targets][n_embd]: a forward chunk's hiddens
   static constexpr int kMaxChunk = 8;
+  std::vector<float> in_emb, in_one_hot;  // draft()'s input block, on the host (kept for its asynchronous copies)
+  std::vector<int32_t> in_ids;
   FILE* hidden_log = nullptr;
   FILE* debug_log = nullptr;   // debugging: the next draft's per-layer attn/ffn in/out [layer][4][block][n_embd], then closed  // debugging: every seeded position's main_hidden, f32 [n_targets][n_embd]
   // gap (a study, README step 107): the block sits at positions pos + 1 + gap .. while the window

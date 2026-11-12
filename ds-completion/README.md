@@ -186,7 +186,10 @@ Precision (decided in step 3):
 - The remaining inexact op is ggml's mxfp4 expert kernel, which re-quantizes
   activations to int8.
 
-## Steps
+(As of step 3. The ggml GPU path went in step 11; the expert kernels are exact since step 7 on
+the CPU and step 17 on the GPUs, and the own runtime has no inexact op.)
+
+## The original plan (items 0-8: not the numbered steps of the log)
 
 The original plan, with status. Steps 5-8 are superseded by [PLAN.md](PLAN.md).
 
@@ -4199,7 +4202,7 @@ line is not needed: the second machine was built without it). TIMING, OVERVIEW a
 "today" numbers, the experts' share on GPUs as measured (88% / 42%), the gain per kind of prompt
 with chat in it (+8%).
 
-**Checks:** a 3-turn thinking session (`results/chat/think/th45`) on one machine and on two:
+**Checks:** a 3-turn thinking session (`results/chat/think/th45.*`) on one machine and on two:
 the saved bytes; cpp-matrix and tcp-udp on one machine 54.31 and 39.13 t/s, sql-report on two
 57.44, outputs the same. The merged traces of step 112 were collected again with the back's
 flag right (`results/trace/two-machines/`: 60.3 and 38.1 t/s traced; the clock fit 14 samples,
@@ -4208,3 +4211,72 @@ residuals 0.7 and 1.4 us, drift 16 and 14 ppm this time against under 1 in step 
 Left open by the review: one order for the rows of REPRODUCE section 6 and PROCESS's log; one
 owning document per number; the plain and the speculative loop in `main` keep their end-of-reply
 state differently; step 107's shadow log sits in the speculative loop.
+
+## Step 114: review round 2 (the runtime, the kernels and loaders, the log and the repository)
+
+Three independent reads: `hip/rt.cpp` and `rt.h`; the kernels, the CPU expert code, the draft and
+the model loading; the documents' long tail and the repository. None found an input on this
+model that gives wrong or batch-dependent bits. Two things the code relies on were checked
+through and hold: speculation's rollback (the window ring, the compressors' partial groups, the
+compressed caches, the token history, the draft's rings), and the cache's rule that a kernel
+never reads a slot being loaded (a table entry names a slot only after its load has finished,
+and a slot is reused only after its entry is gone and the table uploaded at a step boundary).
+
+**Fixed in the runtime:**
+- A decode step without logits (every step of a front, and prompt tokens run one by one)
+  skipped the step's bookkeeping: the profile's misses piled up across steps and its spans never
+  reached the trace. One `step_stats()` on both paths.
+- `dalloc` waits for its zero fill. `verify()`'s backup buffers were allocated on first use and
+  written at once, the pattern behind step 109's race; no run had shown it here.
+- An exception in an expert-loader thread ended the process without a word: now with its message.
+- The model's shapes are checked against what the kernels are written for (hc_mult 4, at most
+  6 experts per token, the widths' multiples): another model stops at startup, not in a kernel.
+- The fp8 file's open and map are checked. Removed: `hist` (a copy of the whole token history
+  every step, never read), `Runtime::moe`. Three comments that described older code.
+
+**Fixed in the kernels and loaders:**
+- `gemv_m` (the f32 matrix-vector product with a split launch) issued three launches for two:
+  the third computed the last blocks again. The same bits; one launch less per call (the
+  compressor's projections at 1-3 tokens).
+- The draft's loader checks the file, each tensor's end against the file's size (a truncated
+  draft crashed in the upload) and the noise token's id; `draft()`'s input block lives in members
+  (its asynchronous copies outlived the locals they read).
+- `Model::load`: o_groups and the shard count are checked before use.
+- `fp8_gemv` with an input count outside 1..8 throws (it launched nothing); the top-k's
+  histogram walk is bounded. Removed: two unused `dot_row_multi`, `bf16f`.
+
+**Documents and repository:** REPRODUCE section 6 and PROCESS section 4 in one order
+(ascending); REPRODUCE says which files are not in a clone (`*.log` is ignored: 339 files, two
+directories empty) and lists the `DS_*` switches; QUICKSTART's options complete (`-m`,
+`--max-ctx`, `--log-routing`, `--no-quant`); NUMERICS has `--canon`; PLAN's items that later
+steps closed are marked; the "Steps" list at the top of this file is named the original plan.
+
+**Tried, not kept:** stating `-ffp-contract` in the Makefile. The fast kernels' bits depend on
+which a*b+c the compilers fuse, and no flag says so. With the modes I took for the defaults
+(g++ fast, hipcc fast-honor-pragmas) every object's hash changed, and hipcc's objects differ in
+hash for every value of the flag at the same size, so the hash cannot tell which mode is the
+default. Not changed without knowing.
+
+**Checks** (sclk 6): the 8 held-out prompts, outputs the same, 39.20 46.51 54.86 47.29 55.19
+34.37 37.10 45.15 t/s (mean 44.96; 44.60 this morning, not a `spec-measure.sh` run); cpp-matrix
+with `--profile` the same output; the 3-turn thinking session the saved bytes; the fast path
+(no `--canon`) with and without `--spec` the same 1,105 bytes; a 2,905-token prompt in chunks of
+512 and of 7 the same continuation; cpp-matrix and summary-json on two machines 62.55 and
+55.60 t/s, outputs the same.
+
+**Left open** (found, not changed):
+- `--cache-loads` without `--canon` is accepted and makes the output depend on load timing.
+- Three places shift member pointers during a forward (`early_gather`, `set_half`, the h / h2
+  swap): right today, and a throw in between leaves them shifted.
+- `decode()` and `forward_chunk()` repeat their prologue and epilogue; `mark` names both the
+  session's save point and the profiler's events; the constructor, `moe_launch` and `moe_finish`
+  are long, with natural seams.
+- About 200 lines of finished studies run next to the hot path (the lookahead and prefetch
+  predictions of steps 52 and 63, the host-bound estimate of step 65) and six experiment
+  switches in the kernels.
+- The fake-quant rule exists in several copies that must stay bit-identical (three files' helpers,
+  six kernels' absmax-scale-round block); four fp8 GEMV kernels repeat one prologue.
+- Loading checks structure, not content: a flipped byte inside a tensor passes (the checksum
+  manifest is the only guard). NaN logits would become an out-of-range expert id.
+- A trace is held in memory until exit; the destructor leaves a few events and buffers unfreed.
+- The compilers' contraction modes (above). The `*.log` files outside git.

@@ -95,5 +95,6 @@ class ExpertLoader {
   std::atomic<long> n_loads{0};
   double test_rate = 0;  // loads/s per die; 0 = serve the queue
   int test_n = 0;
-  void work(int die);
+  void work(int die);       // a worker thread: work_loop, ending the process with a message if it throws
+  void work_loop(int die);
 };
