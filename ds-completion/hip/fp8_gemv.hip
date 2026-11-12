@@ -214,6 +214,114 @@ __global__ void __launch_bounds__(256) fp8_gemv_lds_kernel(const uint8_t* __rest
     }
 }
 
+// Several inputs on 64-lane rows (README step 104): the rows' work split over P physical lanes
+// as in fp8_gemv_lds_kernel, the additions kept in the 64-lane order. Physical lane l of a row
+// carries V = 64 / P of the specification's 64 partial sums, those of lanes l, l + P, l + 2 P, ...:
+// in a 1024-code tile its step s is spec lane l + s P's one step there (k0 + 16 (l + s P)), added
+// to accumulator s. At the end the tree's first levels (lanes 32, 16, ... P apart) are sums inside
+// the lane, the rest the shuffles over P lanes. Same expression per step as fp8_gemv_kernel:
+// bit-identical to a one-input call. K a multiple of 1024; a block's rows lie in one group.
+template <int P, int R, int M>
+__global__ void __launch_bounds__(256) fp8_gemv_virt_kernel(const uint8_t* __restrict__ w, const uint8_t* __restrict__ ws,
+                                                            int N, int K, int ST, int rpg, const uint8_t* __restrict__ xq,
+                                                            const float* __restrict__ xs, float* __restrict__ y) {
+  constexpr int KT = 1024, V = 64 / P, ROWS = 4 * (64 / P) * R;
+  __shared__ uint4 xlo[M][KT / 16], xhi[M][KT / 16];
+  __shared__ float st[M][KT / 32];
+  const int lane = threadIdx.x & 63;
+  const int set = (blockIdx.x * (blockDim.x >> 6) + (threadIdx.x >> 6)) * (64 / P) + lane / P;
+  const int row0 = set * R;
+  const int l = lane % P;
+  const bool live = row0 < N;
+  const int r0 = live ? row0 : N - R;
+  const int g = (blockIdx.x * ROWS) / rpg;
+  const int K_total = K * (N / rpg);
+  const uint8_t* wr = w + (size_t)r0 * ST;
+  const uint8_t* sr = ws + (size_t)(r0 / 32) * (K / 32);
+  const uint8_t* xg = xq + (size_t)g * K;
+  const float* xsg = xs + (size_t)g * (K / 32);
+  float acc[V][R][M];
+#pragma unroll
+  for (int s = 0; s < V; s++)
+#pragma unroll
+    for (int i = 0; i < R; i++)
+#pragma unroll
+      for (int m = 0; m < M; m++) acc[s][i][m] = 0.0f;
+
+  for (int k0 = 0; k0 < K; k0 += KT) {
+    __syncthreads();
+    for (int i = threadIdx.x; i < M * (KT / 16); i += blockDim.x) {
+      const int m = i / (KT / 16), j = i % (KT / 16);
+      uint32_t h[8];
+      decode16(*(const uint4*)(xg + (size_t)m * K_total + k0 + j * 16), h);
+      xlo[m][j] = make_uint4(h[0], h[1], h[2], h[3]);
+      xhi[m][j] = make_uint4(h[4], h[5], h[6], h[7]);
+    }
+    for (int i = threadIdx.x; i < M * (KT / 32); i += blockDim.x) {
+      const int m = i / (KT / 32), j = i % (KT / 32);
+      st[m][j] = xsg[(size_t)m * (K_total / 32) + k0 / 32 + j];
+    }
+    __syncthreads();
+#pragma unroll
+    for (int s = 0; s < V; s++) {
+      const int j = l + s * P, k = k0 + j * 16;  // spec lane j's step of this tile
+      const float wscale = __uint_as_float((uint32_t)sr[k / 32] << 23) * 65536.0f;
+      uint32_t hw[R][8];
+#pragma unroll
+      for (int i = 0; i < R; i++) decode16(*(const uint4*)(wr + (size_t)i * ST + k), hw[i]);
+#pragma unroll
+      for (int m = 0; m < M; m++) {
+        const uint4 a = xlo[m][j], b = xhi[m][j];
+        const uint32_t hx[8] = {a.x, a.y, a.z, a.w, b.x, b.y, b.z, b.w};
+        const float sc = wscale * st[m][j / 2];
+#pragma unroll
+        for (int i = 0; i < R; i++) {
+          float p = 0.0f;
+#pragma unroll
+          for (int e = 0; e < 8; e++) p = dot2(hw[i][e], hx[e], p);
+          acc[s][i][m] += p * sc;
+        }
+      }
+    }
+  }
+#pragma unroll
+  for (int i = 0; i < R; i++)
+#pragma unroll
+    for (int m = 0; m < M; m++) {
+#pragma unroll
+      for (int o = V / 2; o > 0; o >>= 1)  // the tree's levels 32 ... P lanes apart
+#pragma unroll
+        for (int s = 0; s < o; s++) acc[s][i][m] += acc[s + o][i][m];
+      float v = acc[0][i][m];
+#pragma unroll
+      for (int o = P / 2; o > 0; o >>= 1) v += __shfl_xor(v, o, 64);
+      if (live && l == 0) y[(size_t)m * N + row0 + i] = v;
+    }
+}
+
+template <int P, int R>
+static bool launch_virt(const uint8_t* w, const uint8_t* ws, int N, int K, int ST, int rpg, Fp8Act x, int M, float* y,
+                        hipStream_t stream) {
+  const int rows_per_block = 4 * (64 / P) * R;
+  if (K % 1024 || rpg % rows_per_block || M < 2 || M > 8) return false;
+  const dim3 grid((N + rows_per_block - 1) / rows_per_block), block(256);
+  switch (M) {
+#define CASE(m) case m: fp8_gemv_virt_kernel<P, R, m><<<grid, block, 0, stream>>>(w, ws, N, K, ST, rpg, x.q, x.s, y); break;
+    CASE(2) CASE(3) CASE(4) CASE(5) CASE(6) CASE(7) CASE(8)
+#undef CASE
+  }
+  return true;
+}
+
+bool fp8_gemv_virt(const uint8_t* w, const uint8_t* w_scale, int N, int K, int rows_per_group, Fp8Act x, int M,
+                   float* y, hipStream_t stream, int phys, int r, int w_stride) {
+  const int ST = w_stride ? w_stride : K;
+#define V(P_, R_) if (phys == P_ && r == R_) return launch_virt<P_, R_>(w, w_scale, N, K, ST, rows_per_group, x, M, y, stream);
+  V(8, 1) V(8, 2) V(16, 1) V(16, 2) V(16, 4) V(32, 1) V(32, 2) V(32, 4)
+#undef V
+  return false;
+}
+
 // Many inputs (prompt chunks): the same per-element arithmetic as fp8_gemv_kernel for the same
 // lanes-per-row split, so every result is bit-identical to a one-input fp8_gemv call. A block
 // takes MT inputs (blockIdx.y picks the tile), decodes their K tile into shared memory once, and
@@ -393,9 +501,33 @@ void fp8_gemm(const uint8_t* w, const uint8_t* w_scale, int N, int K, int rows_p
   fp8_gemm_cfg(w, w_scale, N, K, rows_per_group, x, M, y, stream, 0, 0, 0, w_stride);
 }
 
+// 64-lane rows at 3-8 inputs: the physical lanes per row and rows per lane group of
+// fp8_gemv_virt, as measured (bench-fp8 --virt, results/decode-next/fp8-virt.txt); false: the
+// 64-lane kernel is as fast or faster (2 inputs; few rows). The choice does not touch the bits.
+static bool virt_choice(int N, int K, int M, int& phys, int& r) {
+  struct C { int phys, r; };
+  static const C none = {0, 0};
+  //                         M = 3        4        5        6        7        8
+  static const C out_a[6] = {{32, 2}, {16, 4}, {32, 2}, {16, 1}, {8, 2}, {32, 2}};   // 8192 x 4096
+  static const C out_b[6] = {{32, 4}, {16, 2}, {32, 2}, {32, 2}, {32, 2}, {32, 2}};  // 5120 x 8192
+  static const C many[6] = {{32, 2}, {32, 2}, {32, 2}, {16, 1}, {32, 2}, {32, 2}};   // engram: 25600 x 6144
+  static const C mid[6] = {{32, 1}, {32, 1}, {32, 1}, {16, 1}, {32, 2}, {16, 1}};    // shared gate / up: 2304 x 5120
+  static const C few[6] = {{32, 1}, {32, 1}, none, {32, 1}, {32, 1}, {32, 1}};       // query A: 1280 x 5120
+  static const bool on = !getenv("DS_FP8_VIRT") || atoi(getenv("DS_FP8_VIRT"));
+  if (!on || M < 3 || M > 8 || N < 1024) return false;
+  const C c = (N >= 4096 ? (K == 4096 ? out_a : K == 8192 ? out_b : many) : N >= 2048 ? mid : few)[M - 3];
+  phys = c.phys;
+  r = c.r;
+  return c.phys != 0;
+}
+
 void fp8_gemv_cfg(const uint8_t* w, const uint8_t* w_scale, int N, int K, int rows_per_group, Fp8Act x, int M,
                   float* y, hipStream_t stream, int lpr, int r, int w_stride) {
   const int ST = w_stride ? w_stride : K;
+  int vp, vr;
+  if (lpr == 0 && r == 0 && fp8_lpr(N, K) == 64 && virt_choice(N, K, M, vp, vr) &&
+      fp8_gemv_virt(w, w_scale, N, K, rows_per_group, x, M, y, stream, vp, vr, w_stride))
+    return;
   if (lpr == 0) lpr = fp8_lpr(N, K);
   // several inputs: two rows per lane group; four for 8 inputs over 64-lane rows (sweeps at M = 6, 8)
   if (r == 0) r = M == 1 ? 1 : (M >= 8 && lpr == 64 && N >= 2048) ? 4 : 2;

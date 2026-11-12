@@ -3747,3 +3747,50 @@ Nothing is changed here: the wave count is rows / rows per wave, the rows per wa
 (1, 2, 4, 8: the sweeps chose 2), so removing the tail means some waves taking a third row, or
 fewer registers per wave. Both belong to the several-input kernel's design (PLAN's "big" item),
 where this is now one of its measurements.
+
+## Step 104: the fp8 GEMV at several inputs: 16 or 32 physical lanes carrying the 64 sums
+
+PLAN's "big" item. What fixes a 64-lane row's bits: lane l adds its steps (k = 16 l, 16 l + 1024,
+...) in order into one partial sum, and the 64 sums meet in a fixed tree (lanes 32 apart, then 16,
+8, 4, 2, 1). Any kernel that forms the same 64 sums and the same tree gives the same bits,
+whichever lane does the work. And what costs at several inputs (step 101's probe): with 64 lanes
+per row a wave holds one or two rows and loads and decodes every input's activations for itself.
+The 8- and 16-lane kernels share one decoded tile per block of 16-64 rows through shared memory
+and read the large matrices at 450-620 GB/s at 3-6 inputs (64 lanes: 290-450), but add in
+another order.
+
+**The kernel** (`fp8_gemv_virt_kernel`, `hip/fp8_gemv.hip`): the shared-memory kernel's work
+split over P = 8, 16 or 32 physical lanes per row, each lane holding 64 / P accumulators per row
+and input. In a 1024-code tile a P-lane kernel's lane l already takes the steps k0 + 16 (l + s P),
+s = 0 .. 64 / P - 1: exactly the one step each of spec lanes l, l + P, l + 2 P, ... there. Step s
+adds into accumulator s instead of a shared one; at the end the tree's first levels are sums
+inside the lane, the rest the shuffles over P lanes. Loads, decodes and dot products are the
+shared-memory kernel's. The one-input kernel is untouched and stays the specification. Needs K a
+multiple of 1024 and a block's rows in one activation group (true for the 64-lane matrices).
+
+**Measured** (`bench-fp8 --virt`, new: every layout against one-input calls bit for bit, and
+timed; `results/decode-next/fp8-virt.txt`): all layouts identical at 2-8 inputs; `--bitwise` 63 of
+63. The extra accumulators cost: the attention outputs reach about two thirds of the 8- / 16-lane
+kernels' speed-up (output A at 6 inputs: 113 us, 68 for the best plain 8-lane layout, 79 here).
+The layout per matrix and input count is a measured table (`virt_choice`); 2 inputs and matrices
+under 1024 rows stay on the 64-lane kernel. `DS_FP8_VIRT=0` turns it off.
+
+| us per call (64-lane -> the built-in choice) | 3 inputs | 4 | 5 | 6 | 8 |
+|---|---|---|---|---|---|
+| attention output A (8192 x 4096) | 77.2 -> 60.4 | 97.4 -> 63.5 | 101.8 -> 71.5 | 113.4 -> 79.4 | 184.0 -> 89.9 |
+| attention output B (5120 x 8192) | 93.2 -> 72.4 | 113.1 -> 82.5 | 112.4 -> 98.3 | 131.6 -> 105.6 | 170.1 -> 100.0 |
+| shared expert gate, up (2304 x 5120) | 36.2 -> 28.0 | 42.0 -> 29.9 | 40.6 -> 34.3 | 45.3 -> 42.3 | 75.7 -> 42.4 |
+| engram projection (25600 x 6144) | 312.9 -> 266.3 | 394.4 -> 279.6 | 417.0 -> 305.0 | 466.9 -> 340.8 | 675.4 -> 360.2 |
+| attention query A (1280 x 5120) | 25.6 -> 23.1 | 27.0 -> 24.3 | 27.1 (kept) | 30.0 -> 28.2 | 59.7 -> 30.4 |
+
+The shared expert's gain is partly step 103's extra round going away (1152 waves become 144-288).
+
+Held-out mean **44.00 -> 44.57 t/s (+1.3%)**, every output identical: geometry +2.2%, py-lru and
+summary-json +1.7%, cpp-matrix +1.5%, sql-report +1.0%, ja-email +0.9%, tcp-udp +0.7%, zh-travel
+-0.1% (its steps are mostly 1-2 tokens, which do not use the kernel); long-proof 56.04 -> 57.11.
+Less than the table suggests (~60 us per layer at 3-6 inputs would be ~3% of a step): not
+explained here; the next traces will show what the dense front takes now.
+
+Open: the prompt's many-input kernel is now slower than slices of 8 through this one on the large
+matrices (output A at 64 inputs 1008 us against 720, B 1118 / 801, engram 4282 / 2878; same
+bits), though the CPU bounds prompt speed; 2-input calls; fewer registers per lane.

@@ -447,6 +447,7 @@ Step 102: light launches of exactly 2048 waves sent as two, the router's and com
 padded: 43.55 -> 44.00 t/s. Expert slots padded, fp8 GEMVs as two launches: not kept.
 Step 103: query B and output A do not pay for their multiples of 2048 waves (closed); the
 several-input fp8 kernels run in rounds of ~512 waves (measured, nothing changed).
+Step 104: the several-input fp8 kernel (64-lane order on 16 / 32 physical lanes): 44.00 -> 44.57 t/s.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front
@@ -475,7 +476,10 @@ launch of 2017-2048 waves takes ~48 us whatever it does (`bin-hip/bench-wave-slo
 ones (compressor, a 4-token quantize) go out as two launches, +1.0% together. Query B and output A,
 on multiples of 2048 waves, do not pay for it (step 103).
 
-Big, a design first: the fp8 GEMVs at 6 tokens (step 101's probe: the multiplies fit, the
+Done (step 104, +1.3%): the fp8 GEMVs at 3-8 tokens on 16 / 32 physical lanes carrying the 64
+partial sums; attention output A 113 -> 79 us at 6 tokens. Left there: the gain in the runtime is
+under the bench's (new traces), the prompt kernel on the large matrices, 2-token calls.
+Was: the fp8 GEMVs at 6 tokens (step 101's probe: the multiplies fit, the
 activations' loads per lane and step are the cost; a kernel that keeps the 64-lane order of
 additions on an 8- or 16-lane work split; local variants failed in 65 and 75; step 103: at
 several inputs a launch just over a multiple of ~512 waves pays a whole extra round, query A

@@ -55,6 +55,11 @@ void fp8_gemv_cfg(const uint8_t* w, const uint8_t* w_scale, int N, int K, int ro
                   float* y, hipStream_t stream, int lpr, int r, int w_stride = 0);
 void fp8_gemv(const uint8_t* w, const uint8_t* w_scale, int N, int K, int rows_per_group, Fp8Act x, int M,
               float* y, hipStream_t stream, int w_stride = 0);
+// 64-lane rows at 2-8 inputs over `phys` physical lanes per row (8, 16, 32) and r rows per lane
+// group, the additions in the 64-lane order (README step 104). False: no such instance, or the
+// shape does not allow it (K a multiple of 1024, a block's rows in one group); nothing launched.
+bool fp8_gemv_virt(const uint8_t* w, const uint8_t* w_scale, int N, int K, int rows_per_group, Fp8Act x, int M,
+                   float* y, hipStream_t stream, int phys, int r, int w_stride = 0);
 // the lanes-per-row split fp8_gemv uses for a shape (it fixes every output's order of additions)
 int fp8_lpr(int N, int K);
 // Any number of inputs (prompt chunks): tiles of mt inputs, r rows per lane group; every result

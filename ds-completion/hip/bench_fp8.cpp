@@ -1,6 +1,6 @@
 // bench-fp8: the fp8 GEMV (fp8_gemv.hip) on real weights from dense-fp8.gguf (fp8pack output).
 //
-//   bench-fp8 <dense-fp8.gguf> [--dev D] [--layer L] [--ms 1,2,4,8] [--reps 200] [--bitwise | --gemm [--sweep] | --sweep | --waves]
+//   bench-fp8 <dense-fp8.gguf> [--dev D] [--layer L] [--ms 1,2,4,8] [--reps 200] [--bitwise | --gemm [--sweep] | --sweep | --waves | --virt]
 //
 // Per tensor and batch size M:
 //   - the device activation quantizer must equal the host one (src/fakequant.cpp rules) bit for bit;
@@ -12,6 +12,8 @@
 // --gemm: the many-input kernel (fp8_gemm, prompt chunks) for each M of --ms: every token's
 // result against a one-token fp8_gemv call, bit for bit; time against fp8_gemv in slices of 8;
 // with --sweep every (rows per lane group, inputs per tile) instance.
+// --virt: the 64-lane tensors at M >= 2 through fp8_gemv_virt, every physical-lane layout: bits
+// against one-input calls ("!" marks a difference) and us per call. README step 104.
 // --waves: time only, the built-in split over fewer rows (the launch 0, 4, 32, ... 512 waves
 // smaller): us per call (us per 1000 waves). README step 103.
 
@@ -25,6 +27,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <functional>
 #include <random>
 #include <string>
 #include <vector>
@@ -49,7 +52,7 @@ int main(int argc, char** argv) {
   setvbuf(stdout, nullptr, _IOLBF, 0);
   if (argc < 2) { fprintf(stderr, "usage: bench-fp8 <dense-fp8.gguf> [--dev D] [--layer L] [--ms 1,2,4,8] [--reps N]\n"); return 2; }
   int dev = 0, layer = 2, reps = 200;
-  bool sweep = false, bitwise = false, gemm = false, waves = false;
+  bool sweep = false, bitwise = false, gemm = false, waves = false, virt = false;
   std::vector<int> ms = {1, 2, 4, 8};
   for (int i = 2; i < argc; i++) {
     std::string a = argv[i];
@@ -60,6 +63,7 @@ int main(int argc, char** argv) {
     else if (a == "--bitwise") bitwise = true;
     else if (a == "--gemm") gemm = true;
     else if (a == "--waves") waves = true;
+    else if (a == "--virt") virt = true;
     else if (a == "--ms") { ms.clear(); for (char* p = argv[++i]; *p;) { ms.push_back((int)strtol(p, &p, 10)); if (*p == ',') p++; } }
   }
   CHECK(hipSetDevice(dev));
@@ -180,6 +184,47 @@ int main(int argc, char** argv) {
           printf("  gemm %d/%d/%d: %8.1f us (%.1fx) %s", r, mt, mb, us, us8 / us, diff ? "DIFFERS" : "same");
         }
         printf("\n");
+        CHECK(hipFree(dy1));
+        CHECK(hipFree(dx)); CHECK(hipFree(dxq)); CHECK(hipFree(dxs)); CHECK(hipFree(dy));
+        continue;
+      }
+      if (virt) {  // README step 104: the 64-lane rows over 8 / 16 / 32 physical lanes, bits against one-input calls
+        if (fp8_lpr(N, K) != 64 || M < 2) { CHECK(hipFree(dx)); CHECK(hipFree(dxq)); CHECK(hipFree(dxs)); CHECK(hipFree(dy)); continue; }
+        float* dy1;
+        CHECK(hipMalloc(&dy1, (size_t)N * 4));
+        std::vector<float> ref((size_t)M * N), got((size_t)M * N);
+        for (int m = 0; m < M; m++) {
+          Fp8Act a1 = {dxq + (size_t)m * Kt, dxs + (size_t)m * Kt / 32};
+          fp8_gemv(dw, ds, N, K, rpg, a1, 1, dy1, st, WST);
+          CHECK(hipMemcpyAsync(ref.data() + (size_t)m * N, dy1, N * 4, hipMemcpyDeviceToHost, st));
+          CHECK(hipStreamSynchronize(st));
+        }
+        auto timed = [&](const std::function<void()>& f) {
+          for (int i = 0; i < 10; i++) f();
+          CHECK(hipEventRecord(e0, st));
+          for (int i = 0; i < reps; i++) f();
+          CHECK(hipEventRecord(e1, st));
+          CHECK(hipEventSynchronize(e1));
+          float ms_total;
+          CHECK(hipEventElapsedTime(&ms_total, e0, e1));
+          return ms_total * 1000.0 / reps;
+        };
+        printf("%-16s M=%d  64-lane %6.1f |", sh.name, M,
+               timed([&] { fp8_gemv_cfg(dw, ds, N, K, rpg, act, M, dy, st, 64, M >= 8 && N >= 2048 ? 4 : 2, WST); }));
+        double best = 1e30;
+        int bp = 0, br = 0;
+        for (const std::array<int, 2>& c : {std::array<int, 2>{8, 1}, {8, 2}, {16, 1}, {16, 2}, {16, 4}, {32, 1}, {32, 2}, {32, 4}}) {
+          const int ph = c[0], r = c[1];
+          CHECK(hipMemset(dy, 0, (size_t)M * N * 4));
+          if (!fp8_gemv_virt(dw, ds, N, K, rpg, act, M, dy, st, ph, r, WST)) { printf(" %d/%d:   -  ", ph, r); continue; }
+          CHECK(hipMemcpyAsync(got.data(), dy, got.size() * 4, hipMemcpyDeviceToHost, st));
+          CHECK(hipStreamSynchronize(st));
+          const bool same = !memcmp(got.data(), ref.data(), got.size() * 4);
+          const double us = timed([&] { fp8_gemv_virt(dw, ds, N, K, rpg, act, M, dy, st, ph, r, WST); });
+          printf(" %d/%d:%6.1f%s", ph, r, us, same ? " " : "!");
+          if (same && us < best) { best = us; bp = ph; br = r; }
+        }
+        printf(" | best %d/%d %.1f\n", bp, br, best);
         CHECK(hipFree(dy1));
         CHECK(hipFree(dx)); CHECK(hipFree(dxq)); CHECK(hipFree(dxs)); CHECK(hipFree(dy));
         continue;
