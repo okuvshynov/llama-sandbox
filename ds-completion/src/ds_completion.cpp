@@ -311,6 +311,12 @@ int main(int argc, char** argv) {
     // draft's head over part of the vocabulary: scripts/draft_vocab_sim.py)
     FILE* tok_log = getenv("DS_DRAFT_TOKEN_LOG") ? fopen(getenv("DS_DRAFT_TOKEN_LOG"), "w") : nullptr;
     if (tok_log) fprintf(tok_log, "# n_verified accepted verify_ms draft_ms | drafted ids (all of the block; none on a plain step) | emitted ids\n");
+    // README step 107: a second draft block in shadow (nothing uses it): from the first block's last
+    // token, at its true positions with the window 5 positions behind (gap), and as if it followed
+    // the window directly (shift). Per drafted step: the anchor's index in the generated tokens,
+    // the block, the two second blocks with their confidences; at the end every generated id.
+    FILE* d2_log = getenv("DS_DRAFT2_LOG") ? fopen(getenv("DS_DRAFT2_LOG"), "w") : nullptr;
+    if (d2_log) fprintf(d2_log, "# anchor index, drafts the rule verified | block 1: ids ; conf | gap: ids ; conf | shift: ids ; conf  (last line: G, every generated id)\n");
     if (spec_log) fprintf(spec_log, "# n_verified accepted verify_ms draft_ms conf[0..block)\n");
     // Draft length per step (unless --spec-n): the confidence head's sigmoid is the chance a draft
     // is accepted given the earlier ones were (calibrated: scripts/spec_conf.py, README step 25);
@@ -373,6 +379,20 @@ int main(int argc, char** argv) {
           draft_ms += dms;
           draft_cost += 0.1 * (dms - draft_cost);
           n_verify = spec_n > 0 ? spec_n : choose_n(d.conf);
+          if (d2_log) {
+            fprintf(d2_log, "%d %d |", n_gen - 1, n_verify);
+            for (size_t i = 1; i < d.ids.size(); i++) fprintf(d2_log, " %d", d.ids[i]);
+            fprintf(d2_log, " ;");
+            for (float c : d.conf) fprintf(d2_log, " %.3f", c);
+            for (int gap : {(int)d.ids.size() - 1, 0}) {
+              const DraftResult d2 = rt->draft_shadow(d.ids.back(), gap);
+              fprintf(d2_log, " |");
+              for (size_t i = 1; i < d2.ids.size(); i++) fprintf(d2_log, " %d", d2.ids[i]);
+              fprintf(d2_log, " ;");
+              for (float c : d2.conf) fprintf(d2_log, " %.3f", c);
+            }
+            fprintf(d2_log, "\n");
+          }
           if (spec_n == 0) {
             backoff = n_verify == 0 ? std::min(backoff == 0 ? 1 : 2 * backoff, 8) : 0;
             skip = backoff;
@@ -426,6 +446,12 @@ int main(int argc, char** argv) {
     }
     if (spec_log) fclose(spec_log);
     if (tok_log) fclose(tok_log);
+    if (d2_log) {
+      fprintf(d2_log, "G");
+      for (int32_t t : gen) fprintf(d2_log, " %d", t);
+      fprintf(d2_log, "\n");
+      fclose(d2_log);
+    }
     fprintf(stderr, "\n# drafts verified per step:");
     for (size_t n = 0; n < n_hist.size(); n++) fprintf(stderr, " %zu: %ld", n, n_hist[n]);
     fprintf(stderr, " (of the 0s, %ld plain steps without a draft); verify cost fit %.1f + %.1f n ms", plain_steps,

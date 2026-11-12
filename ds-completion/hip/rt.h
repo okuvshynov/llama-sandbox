@@ -101,6 +101,8 @@ class Runtime {
   static constexpr int kChunk = 512;
   void commit(int n_keep);
   DraftResult draft(int32_t anchor, bool keep_logits = false);
+  // a study (README step 107): a block from `anchor` as if it sat `gap` positions after the last main position
+  DraftResult draft_shadow(int32_t anchor, int gap) { return dspark->draft(anchor, n_past_ - 1, false, gap); }
   void draft_log_hidden(const std::string& path) {
     if (!dspark) return;
     dspark->hidden_log = fopen(path.c_str(), "wb");

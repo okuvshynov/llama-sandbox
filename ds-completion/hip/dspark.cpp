@@ -284,7 +284,7 @@ void DSpark::seed(int pos, const float* hidden) {
 // single-row form, so the drafts are the same as one position at a time). Attention per
 // position, after every position's K/V is written. The Markov step runs on the GPU (row gather,
 // bias GEMV, argmax), left to right; one host sync at the end.
-DraftResult DSpark::draft(int32_t anchor, int pos, bool keep_logits) {
+DraftResult DSpark::draft(int32_t anchor, int pos, bool keep_logits, int gap) {
   const auto t_call0 = std::chrono::steady_clock::now();
   const Hparams& hp = rt.hp;
   const int E = hp.n_embd, HC = hp.hc_mult, HD = hp.head_dim, NH = hp.n_head, RD = hp.rope_dim, F = hp.n_ff_exp;
@@ -359,7 +359,7 @@ DraftResult DSpark::draft(int32_t anchor, int pos, bool keep_logits) {
     g8(w.q_b, rt.B, qblk, 0, B);
     g8(w.kv, rt.A, kvv, 0, B);
     for (int j = 0; j < B; j++) {
-      const int pj = pos + 1 + j;
+      const int pj = pos + 1 + gap + j;
       k_rope(qblk + (size_t)j * NH * HD, NH, HD, RD, freqs, pj, false, s);
       k_kv_finish(kvv + (size_t)j * HD, w.kv_norm, HD, RD, freqs, pj, eps, kvblk + (size_t)j * HD, s);
     }
@@ -369,7 +369,7 @@ DraftResult DSpark::draft(int32_t anchor, int pos, bool keep_logits) {
       float* oj = o + (size_t)j * NH * HD;
       k_attn_decode(qblk + (size_t)j * NH * HD, NH, HD, rings[l], hp.window, pos, kvblk, iota5, B, w.sinks,
                     1.0f / sqrtf((float)HD), oj, rt.att_scratch, s);
-      k_rope(oj, NH, HD, RD, freqs, pos + 1 + j, true, s);
+      k_rope(oj, NH, HD, RD, freqs, pos + 1 + gap + j, true, s);
     }
     mark("attn.out");
     rt.quant(o, NH * HD, rt.B, B);

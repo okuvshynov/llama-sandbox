@@ -451,6 +451,8 @@ Step 104: the several-input fp8 kernel (64-lane order on 16 / 32 physical lanes)
 Step 105: traces at step 104; the kernel gives what the bench said (+2.0% on code back to back),
 the shared expert's part hides behind the CPU's experts; section B's spans refreshed.
 Step 106: drafting ahead estimated from the draft's logs: ~+1-2%, least on code; not built.
+Step 107: a second draft block before the verify, in shadow: accepted too rarely (every rule
+loses 1-4%, an oracle +3.2%); not built.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front

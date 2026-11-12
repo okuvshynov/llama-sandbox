@@ -52,7 +52,9 @@ class DSpark {
   static constexpr int kMaxChunk = 8;
   FILE* hidden_log = nullptr;
   FILE* debug_log = nullptr;   // debugging: the next draft's per-layer attn/ffn in/out [layer][4][block][n_embd], then closed  // debugging: every seeded position's main_hidden, f32 [n_targets][n_embd]
-  DraftResult draft(int32_t anchor, int pos, bool keep_logits);
+  // gap (a study, README step 107): the block sits at positions pos + 1 + gap .. while the window
+  // still ends at pos: a second block drafted from the first one's last token, before any verify
+  DraftResult draft(int32_t anchor, int pos, bool keep_logits, int gap = 0);
 
  private:
   struct Fp8 { uint8_t* q = nullptr; uint8_t* s = nullptr; int N = 0, K = 0, stride = 0; };

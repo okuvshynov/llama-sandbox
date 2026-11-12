@@ -3878,3 +3878,43 @@ speculative loop, the draft's placement and the host's threading. Not built.
 
 A correction found on the way: the model has 40 layers; step 103's and 104's per-step estimates
 multiplied per-layer savings by 43 (~7% high). No measurement is affected.
+
+## Step 107: a second draft block before the verify, in shadow (not built)
+
+On code more than half the steps verify all 5 drafts and accept them, and an extra verified token
+costs ~3 ms against ~75 ms for a new step. The draft's block is 5, so more drafts per step means a
+second draft call from the first block's last token, without the main model's states for those 5
+tokens (the draft reads them from layers 37-39 of the verify that has not run yet). Whether such
+a block is any good was unknown, so it was measured without using it.
+
+**How:** `DS_DRAFT2_LOG` (a study log like step 92's) runs two extra blocks after every draft and
+writes them with their confidences: "gap", the block at its true positions with the window of
+main-model states 5 positions behind (`DSpark::draft`'s new `gap` argument), and "shift", as if it
+followed the window directly. The log ends with every generated id, so each block is scored
+against what the main model went on to emit (`scripts/draft2_sim.py`,
+`results/decode-next/draft2.txt`; the logs themselves, `results/decode-next/draft2/*.log`, are not in git,
+as step 92's: REPRODUCE has the command; every output identical).
+
+**The second block is weak.** Of the steps that verified 5 drafts and accepted all of them:
+
+| prompt | such steps | second block ("gap"): first draft right | mean accepted of its 5 |
+|---|---|---|---|
+| cpp-matrix | 29 | 13 | 1.24 |
+| geometry | 31 | 17 | 1.42 |
+| sql-report | 29 | 12 | 0.97 |
+| py-lru | 19 | 9 | 1.42 |
+
+Its first token is right under half the time, where the first block's drafts on these steps were
+all right. "shift" is worse (0.4-1.1 accepted). The chat and Chinese / Japanese prompts hardly
+have such steps (0-4 each).
+
+**Every rule loses.** With 8 ms for the second draft call on each 5-draft step and the run's
+fitted cost per extra verified token: always verifying its first 1, 2, 3 or 5 drafts changes the
+8-prompt mean by -1.7%, -1.8%, -2.3%, -4.3%; using its own confidence (the product above 0.5 or
+0.7) -0.8% and -1.0%. An oracle that calls the second draft only when it will be accepted, and
+verifies exactly that far, gains +3.2% (cpp-matrix +8.0%, geometry +7.7%): the bound, not
+reachable with the confidences this block gives.
+
+Not built. The shadow log and the `gap` argument stay (off by default; no change without the
+variable). What it says about the draft: its accuracy comes from the main model's states right
+behind the block; five tokens behind, it drafts like a much weaker model.
