@@ -74,7 +74,8 @@ def main():
 TEMPLATE = r"""<title>Held-out Decode History</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <style>
-/* layout: one reading column; the chart, then the per-prompt grid, then the table, each scrolling sideways on its own */
+/* layout: one reading column; the chart and the per-prompt grid are drawn to the column's width (every point on screen,
+   labels thinned as slots narrow); the table drops columns as the column narrows instead of scrolling */
 :root {
   --bg: #f7f7f4; --surface: #fcfcfb; --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
   --grid: #e1e0d9; --axis: #c3c2b7; --line: #2a78d6; --pending: #c3c2b7; --ring: rgba(11,11,11,0.10);
@@ -101,14 +102,19 @@ h2 { font-size: 1.05rem; margin: 0; }
 .facts b { color: var(--ink); font-variant-numeric: tabular-nums; font-size: 1.05rem; }
 section { background: var(--surface); border: 1px solid var(--ring); border-radius: 8px; padding: 18px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 .note { color: var(--ink-2); font-size: 0.85rem; margin: 0; line-height: 1.45; max-width: 80ch; }
-.scroll { overflow-x: auto; }
+.fit { min-width: 0; }
+.fit svg { display: block; width: 100%; height: auto; }
+.tablewrap { container-type: inline-size; min-width: 0; }
 svg text { font-family: var(--sans); }
 .mono { font-family: var(--mono); font-size: 0.82rem; }
-table { border-collapse: collapse; font-size: 0.82rem; font-variant-numeric: tabular-nums; width: 100%; }
-th, td { padding: 6px 8px; border-bottom: 1px solid var(--grid); text-align: right; white-space: nowrap; }
-th { color: var(--ink-2); font-weight: 600; position: sticky; top: 0; background: var(--surface); }
+table { border-collapse: collapse; font-size: 0.8rem; font-variant-numeric: tabular-nums; width: 100%; }
+th, td { padding: 6px 5px; border-bottom: 1px solid var(--grid); text-align: right; white-space: nowrap; vertical-align: top; }
+th { color: var(--ink-2); font-weight: 600; position: sticky; top: 0; background: var(--surface); vertical-align: bottom; }
+th.p { white-space: normal; font-size: 0.72rem; line-height: 1.2; max-width: 52px; }
+@container (max-width: 860px) { .c-commit { display: none; } }
+@container (max-width: 700px) { .c-prompt { display: none; } }
 td.l, th.l { text-align: left; }
-td.what { white-space: normal; min-width: 260px; max-width: 420px; color: var(--ink-2); text-align: left; }
+td.what { white-space: normal; color: var(--ink-2); text-align: left; width: 99%; min-width: 0; overflow-wrap: anywhere; }
 tr.pending td { color: var(--muted); }
 .chip { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 0.72rem; border: 1px solid var(--axis); color: var(--ink-2); }
 .legend { display: flex; align-items: center; gap: 8px; font-size: 0.78rem; color: var(--ink-2); flex-wrap: wrap; }
@@ -126,18 +132,19 @@ tr.pending td { color: var(--muted); }
   </header>
   <section>
     <h2>Mean generation speed by step</h2>
-    <div class="scroll"><svg id="line" role="img" aria-label="Mean generation speed by step"></svg></div>
-    <p class="note">Mean of the 8 prompts, tokens per second. Hollow marks on the axis are pending points. Steps 20 onward use speculative decoding; steps 32 onward the adaptive expert cache with byte-identical outputs.</p>
+    <div class="fit" id="linebox"><svg id="line" role="img" aria-label="Mean generation speed by step"></svg></div>
+    <p class="note">Mean of the 8 prompts, tokens per second. Hollow marks on the axis are pending points. Every step has a tick; step numbers are shown where they fit, and hovering a point names it. Steps 20 onward use speculative decoding; steps 32 onward the adaptive expert cache with byte-identical outputs.</p>
   </section>
   <section>
     <h2>Change per prompt from the previous point</h2>
-    <div class="legend"><span>slower</span><span class="ramp" id="ramp"></span><span>faster</span><span>&middot; clamped at &plusmn;10%; prompts ordered by tokens per step at the latest point (most speculation-friendly first)</span></div>
-    <div class="scroll"><svg id="heat" role="img" aria-label="Per-prompt change from the previous point"></svg></div>
+    <div class="legend"><span>slower</span><span class="ramp" id="ramp"></span><span>faster</span><span>&middot; percent, clamped at &plusmn;10%; prompts ordered by tokens per step at the latest point (most speculation-friendly first)</span></div>
+    <div class="fit" id="heatbox"><svg id="heat" role="img" aria-label="Per-prompt change from the previous point"></svg></div>
     <p class="note">A column of one color is a change every prompt feels. A column that splits by row is prompt-specific: rows near the top accept the most drafted tokens per step, so speculation-side changes land there first.</p>
   </section>
   <section>
     <h2>Points</h2>
-    <div class="scroll"><table id="tbl"></table></div>
+    <div class="tablewrap"><table id="tbl"></table></div>
+    <p class="note">Generation speed in tokens per second. On a narrow screen the per-prompt columns are left out; the grid above carries them.</p>
   </section>
 </main>
 <div id="tip" hidden></div>
@@ -167,37 +174,51 @@ function bindTip(node, fn) { node.addEventListener("mouseenter", e => showTip(e,
 const pointTip = p => `<div><b>Step ${esc(p.step)}</b> <span class="mono">${esc(p.commit)}</span></div><div>${esc(p.summary)}</div>` +
   (p.mean ? `<div style="margin-top:4px">mean <b>${p.mean.toFixed(2)}</b> t/s</div>` : `<div style="margin-top:4px">pending: queued for the rerun</div>`);
 
-// line chart: every point gets a slot, so the layout holds when pending points fill in
+// the labels that fit: every k-th slot, the last one always (the one before it dropped if it would touch)
+function labelSet(n, slot, need) {
+  const k = Math.max(1, Math.ceil(need / slot)), show = new Set();
+  for (let i = 0; i < n; i += k) show.add(i);
+  if (!show.has(n - 1)) { const prev = Math.floor((n - 1) / k) * k; if ((n - 1 - prev) * slot < need) show.delete(prev); show.add(n - 1); }
+  return show;
+}
+
+// line chart: drawn to the box's width; every point gets an equal slot, so the layout holds when pending points fill in
 function drawLine() {
   const svg = document.getElementById("line"); svg.innerHTML = "";
-  const slot = 40, L = 44, R = 16, T = 14, B = 46, H = 230;
-  const W = Math.max(640, L + R + slot * pts.length);
-  svg.setAttribute("viewBox", `0 0 ${W} ${H}`); svg.setAttribute("width", W); svg.setAttribute("height", H);
+  const W = Math.max(300, Math.floor(document.getElementById("linebox").clientWidth)), narrow = W < 560;
+  const L = 34, R = 22, T = 22, B = 44, H = narrow ? 210 : 250;
+  const slot = (W - L - R) / pts.length, r = slot < 12 ? 2.5 : slot < 20 ? 3.5 : 4.5;
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
   const maxV = Math.max(...have.map(p => p.mean)); const top = Math.ceil(maxV / 10) * 10;
   const y = v => T + (H - T - B) * (1 - v / top);
   const x = i => L + slot * i + slot / 2;
   for (let v = 0; v <= top; v += 10) {
     el("line", {x1: L, x2: W - R, y1: y(v), y2: y(v), stroke: v ? css("--grid") : css("--axis"), "stroke-width": 1}, svg);
-    el("text", {x: L - 8, y: y(v) + 4, "text-anchor": "end", "font-size": 11, fill: css("--muted")}, svg).textContent = v;
+    el("text", {x: L - 6, y: y(v) + 4, "text-anchor": "end", "font-size": 11, fill: css("--muted")}, svg).textContent = v;
   }
-  el("text", {x: 4, y: T + 2, "font-size": 11, fill: css("--muted")}, svg).textContent = "t/s";
+  el("text", {x: 2, y: 11, "font-size": 11, fill: css("--muted")}, svg).textContent = "t/s";
   let d = "";
-  pts.forEach((p, i) => { if (p.mean) d += (d ? "L" : "M") + x(i) + "," + y(p.mean); });
+  pts.forEach((p, i) => { if (p.mean) d += (d ? "L" : "M") + x(i).toFixed(1) + "," + y(p.mean).toFixed(1); });
   el("path", {d, fill: "none", stroke: css("--line"), "stroke-width": 2, "stroke-linejoin": "round"}, svg);
+  const show = labelSet(pts.length, slot, 26);
+  const cross = el("line", {y1: T, y2: y(0), stroke: css("--axis"), "stroke-width": 1, visibility: "hidden"}, svg);
   pts.forEach((p, i) => {
-    el("text", {x: x(i), y: H - B + 18, "text-anchor": "middle", "font-size": 11, fill: css("--ink-2")}, svg).textContent = p.step;
+    el("line", {x1: x(i), x2: x(i), y1: y(0), y2: y(0) + (show.has(i) ? 5 : 3), stroke: css("--axis"), "stroke-width": 1}, svg);
+    if (show.has(i)) el("text", {x: x(i), y: y(0) + 18, "text-anchor": "middle", "font-size": 11, fill: css("--ink-2")}, svg).textContent = p.step;
     const g = el("g", {}, svg);
     if (p.mean) {
-      el("circle", {cx: x(i), cy: y(p.mean), r: 4.5, fill: css("--line"), stroke: css("--surface"), "stroke-width": 2}, g);
+      el("circle", {cx: x(i), cy: y(p.mean), r, fill: css("--line"), stroke: css("--surface"), "stroke-width": r > 3 ? 2 : 1}, g);
       if (p === first || p === last)
-        el("text", {x: x(i), y: y(p.mean) - 10, "text-anchor": "middle", "font-size": 12, "font-weight": 600, fill: css("--ink")}, g).textContent = p.mean.toFixed(1);
+        el("text", {x: Math.min(W - 14, Math.max(L + 12, x(i))), y: y(p.mean) - 9, "text-anchor": "middle", "font-size": 12, "font-weight": 600, fill: css("--ink")}, g).textContent = p.mean.toFixed(1);
     } else {
-      el("circle", {cx: x(i), cy: y(0), r: 4.5, fill: css("--surface"), stroke: css("--pending"), "stroke-width": 2}, g);
+      el("circle", {cx: x(i), cy: y(0), r, fill: css("--surface"), stroke: css("--pending"), "stroke-width": r > 3 ? 2 : 1.5}, g);
     }
     el("rect", {x: x(i) - slot / 2, y: T, width: slot, height: H - T - B + 24, fill: "transparent"}, g);
     bindTip(g, () => pointTip(p));
+    g.addEventListener("mouseenter", () => { cross.setAttribute("x1", x(i)); cross.setAttribute("x2", x(i)); cross.setAttribute("visibility", "visible"); });
+    g.addEventListener("mouseleave", () => cross.setAttribute("visibility", "hidden"));
   });
-  el("text", {x: L, y: H - 8, "font-size": 11, fill: css("--muted")}, svg).textContent = "README step";
+  el("text", {x: L, y: H - 6, "font-size": 11, fill: css("--muted")}, svg).textContent = "README step";
 }
 
 // diverging scale: --down .. --neutral .. --up, clamped at +-10%
@@ -211,18 +232,25 @@ function drawHeat() {
   [-10, -6, -3, 0, 3, 6, 10].forEach(v => { const s = document.createElement("span"); s.style.background = divColor(v); ramp.appendChild(s); });
   const svg = document.getElementById("heat"); svg.innerHTML = "";
   const cols = have.slice(1), order = [...P].sort((a, b) => (last.prompts[b].tok || 0) - (last.prompts[a].tok || 0));
-  const cw = 52, ch = 26, gap = 2, L = 150, T = 22, B = 8;
-  const W = Math.max(600, L + cols.length * cw + 8), H = T + order.length * ch + B;
-  svg.setAttribute("viewBox", `0 0 ${W} ${H}`); svg.setAttribute("width", W); svg.setAttribute("height", H);
-  cols.forEach((p, j) => el("text", {x: L + j * cw + cw / 2, y: 14, "text-anchor": "middle", "font-size": 11, fill: css("--ink-2")}, svg).textContent = p.step);
+  const W = Math.max(300, Math.floor(document.getElementById("heatbox").clientWidth)), narrow = W < 620;
+  const L = narrow ? 96 : 176, T = 22, B = 4, ch = narrow ? 22 : 26;
+  const cw = (W - L - 2) / cols.length, gap = cw < 14 ? 1 : 2, H = T + order.length * ch + B;
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  const show = labelSet(cols.length, cw, 26);
+  cols.forEach((p, j) => { if (show.has(j)) el("text", {x: L + j * cw + cw / 2, y: 14, "text-anchor": "middle", "font-size": 11, fill: css("--ink-2")}, svg).textContent = p.step; });
+  // a cell's number: one decimal where it fits, a whole percent in a narrower cell, colour alone below that
+  const cellText = pct => cw >= 40 ? (pct >= 0 ? "+" : "") + pct.toFixed(1) : cw >= 21 ? (Math.abs(pct) < 0.5 ? "" : (pct > 0 ? "+" : "−") + Math.abs(pct).toFixed(0)) : "";
   order.forEach((n, i) => {
     const tok = last.prompts[n].tok;
-    el("text", {x: L - 10, y: T + i * ch + ch / 2 + 4, "text-anchor": "end", "font-size": 12, fill: css("--ink")}, svg).textContent = n + (tok ? `  ${tok.toFixed(1)} tok/step` : "");
+    const lab = el("text", {x: L - 8, y: T + i * ch + ch / 2 + 4, "text-anchor": "end", "font-size": narrow ? 11 : 12, fill: css("--ink")}, svg);
+    lab.textContent = n;
+    if (tok && !narrow) { lab.setAttribute("x", L - 62); el("text", {x: L - 8, y: T + i * ch + ch / 2 + 4, "text-anchor": "end", "font-size": 11, fill: css("--muted")}, svg).textContent = tok.toFixed(1) + " tok"; }
     cols.forEach((p, j) => {
       const prev = have[have.indexOf(p) - 1], pct = (p.prompts[n].tps / prev.prompts[n].tps - 1) * 100, fill = divColor(pct);
       const g = el("g", {}, svg);
-      el("rect", {x: L + j * cw + gap / 2, y: T + i * ch + gap / 2, width: cw - gap, height: ch - gap, rx: 3, fill}, g);
-      el("text", {x: L + j * cw + cw / 2, y: T + i * ch + ch / 2 + 4, "text-anchor": "middle", "font-size": 11, fill: inkOn(fill), "font-variant-numeric": "tabular-nums"}, g).textContent = (pct >= 0 ? "+" : "") + pct.toFixed(1);
+      el("rect", {x: L + j * cw + gap / 2, y: T + i * ch + gap / 2, width: cw - gap, height: ch - gap, rx: cw < 14 ? 1.5 : 3, fill}, g);
+      const t = cellText(pct);
+      if (t) el("text", {x: L + j * cw + cw / 2, y: T + i * ch + ch / 2 + 4, "text-anchor": "middle", "font-size": cw >= 40 ? 11 : 10, fill: inkOn(fill), "font-variant-numeric": "tabular-nums"}, g).textContent = t;
       bindTip(g, () => `<div><b>${esc(n)}</b>, step ${esc(p.step)} vs ${esc(prev.step)}</div><div><b>${prev.prompts[n].tps.toFixed(2)} &rarr; ${p.prompts[n].tps.toFixed(2)}</b> t/s (${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%)</div><div style="color:var(--ink-2)">${esc(p.summary)}</div>`);
     });
   });
@@ -230,16 +258,18 @@ function drawHeat() {
 
 function drawTable() {
   const t = document.getElementById("tbl");
-  let h = `<thead><tr><th class="l">step</th><th class="l">commit</th><th class="l">change</th><th>mean</th>${P.map(n => `<th>${esc(n)}</th>`).join("")}</tr></thead><tbody>`;
+  let h = `<thead><tr><th class="l">step</th><th class="l c-commit">commit</th><th class="l">change</th><th>mean</th>${P.map(n => `<th class="p c-prompt">${esc(n).replace(/-/g, "-<wbr>")}</th>`).join("")}</tr></thead><tbody>`;
   [...pts].reverse().forEach(p => {
-    const cells = P.map(n => `<td>${p.mean ? p.prompts[n].tps.toFixed(2) : ""}</td>`).join("");
-    h += `<tr class="${p.mean ? "" : "pending"}"><td class="l">${esc(p.step)}</td><td class="l mono">${esc(p.commit)}</td><td class="what">${esc(p.summary)}${p.mean ? "" : ` <span class="chip">${esc(p.status === "optional" ? "optional rerun" : "pending")}</span>`}</td><td><b>${p.mean ? p.mean.toFixed(2) : ""}</b></td>${cells}</tr>`;
+    const cells = P.map(n => `<td class="c-prompt">${p.mean ? p.prompts[n].tps.toFixed(1) : ""}</td>`).join("");
+    h += `<tr class="${p.mean ? "" : "pending"}"><td class="l">${esc(p.step)}</td><td class="l mono c-commit">${esc(p.commit)}</td><td class="what">${esc(p.summary)}${p.mean ? "" : ` <span class="chip">${esc(p.status === "optional" ? "optional rerun" : "pending")}</span>`}</td><td><b>${p.mean ? p.mean.toFixed(2) : ""}</b></td>${cells}</tr>`;
   });
   t.innerHTML = h + "</tbody>";
 }
 function drawAll() { drawLine(); drawHeat(); }
 drawAll(); drawTable();
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change", drawAll);
+let lastW = 0;
+new ResizeObserver(() => { const w = document.getElementById("linebox").clientWidth; if (w !== lastW) { lastW = w; drawAll(); } }).observe(document.getElementById("linebox"));
 new MutationObserver(drawAll).observe(document.documentElement, {attributes: true, attributeFilter: ["data-theme"]});
 </script>
 """
