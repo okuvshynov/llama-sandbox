@@ -97,9 +97,11 @@ Options:
 
 - `-p "text"` or `-f prompt.txt`: the prompt, inline or from a file (as is).
 - `--chat`: one user turn, no thinking.
-- `-i` (with `--chat` and `--rt`): an interactive session, one user line per turn on one growing
-  context; `-p` is then optional (the first turn), `-n` is per reply. An empty line ends it.
-  `scripts/chat.sh` runs it with the fast configuration (README step 108).
+- `-i` (with `--chat` or `--think`, and `--rt`): an interactive session, one user line per turn on
+  one context; `-p` is then optional (the first turn), `-n` is per reply (reasoning included). An
+  empty line ends it. With `--think`, earlier turns' reasoning is dropped from the context, as the
+  reference does. `scripts/chat.sh [--think [--effort max]]` runs it with the fast configuration
+  and `-n 30000` (README steps 108, 109).
 - `--think`: with thinking. `--effort N`: its reasoning effort, 1-100 (default 75), or `low` /
   `high` / `max` (50 / 75 / 100), as the official encoding; the model card's benchmarks use 100.
 - neither: the prompt is raw text after BOS.
@@ -174,7 +176,7 @@ Means over all 17 steps: 1.8e-2 to 2.5e-2 for every mode.
 
 ## Limits
 
-- `-i` sessions are `--chat` only: no thinking mode across turns, no system prompt.
+- `-i` sessions: one line per turn, no system prompt, no tool calls.
 - Context with `--rt`: 65,536 tokens by default (prompt + generation), up to the model's
   1,048,576 with `--max-ctx N` (~6.4 KB of GPU 0 memory per position). A 30k-token prompt takes
   ~5-8 min at 63-97 t/s (it took ~30 min token by token). Without `--rt` (the CPU path): 4,096 by

@@ -3947,3 +3947,39 @@ summary-json single-shot are unchanged.
 the prompt (`drop_thinking`), which one growing context cannot do, so `-i` refuses `--think`
 rather than differ from it; that needs a rewind or reset of the context. One line per turn, no
 system prompt; each turn prints the usual statistics lines to stderr.
+
+## Step 109: thinking mode across turns: a mark and a rewind of the context
+
+Step 108's session was `--chat` only. In thinking mode the reference renders a finished turn
+without its reasoning (`encoding.py`, `drop_thinking`): `<｜Assistant｜></think>answer`, where the
+turn was generated after `<｜Assistant｜><think>reasoning</think>`. One growing context cannot do
+that: the reasoning has to leave it.
+
+**`Runtime::mark()` / `rewind()`:** one saved point of the sequence. What a position's forward
+leaves behind is small: each layer's window ring (640 slots), the compressor's partial group,
+the draft's rings; the compressed caches are keyed by position and read only up to the current
+one, so the positions run again rewrite them. mark() copies those buffers on the device (~55 MB
+on GPU 0, allocated at the first mark); rewind() copies them back and truncates the sequence,
+however far it went.
+
+**The session** marks each turn after its `<｜Assistant｜>`. The next turn rewinds there and runs
+`</think>`, the answer's tokens, the end of sequence and its own question: everything before the
+mark is kept, only the answer runs again (at prompt speed; its states depended on the reasoning).
+A reply cut by `-n` inside its reasoning leaves an empty answer, as the reference renders it.
+`scripts/chat.sh --think [--effort max]`; its `-n` default is now 30000 (a reply's reasoning
+counts).
+
+**Checked against the reference's own rendering** (`scripts/chat_ref_prompts.py` calls
+`encoding.py` for the conversation before each reply; `results/chat/think/`): the second and
+third replies of four three-turn sessions are byte-identical to fresh runs on those prompts:
+`-n 600`; `-n 20` and `-n 45` (replies cut inside the reasoning and inside the answer); and
+effort max with replies up to 2,500 tokens, where the rewind is longer than the window ring. A
+session without speculation prints the same bytes; step 108's chat session and three held-out
+prompts are unchanged.
+
+**A bug on the way, worth knowing:** the first version's replies after a rewind were wrong and
+differed from run to run. A mark followed at once by a rewind already changed the output, and
+only when the ring was among the copies. The cause: `hipMemset` (the zero fill of a new device
+buffer) is not ordered with the stream's copies, so it could land after the first save into the
+buffer. `hipDeviceSynchronize()` after allocating fixes it. Every other buffer of the runtime is
+allocated at startup, long before its first use; not audited.

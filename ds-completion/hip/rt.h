@@ -100,6 +100,13 @@ class Runtime {
   // DSpark::kMaxChunk. Per-token buffers are sized by it.
   static constexpr int kChunk = 512;
   void commit(int n_keep);
+  // One saved point of the sequence (README step 109: a chat's earlier reasoning is dropped from
+  // the context). mark() saves the state at n_past(); rewind() returns to it, however far the
+  // sequence went since. Saved: each layer's window ring and compressor partial group, the
+  // draft's rings. The compressed caches need nothing: they are keyed by position and read only
+  // up to the current one, and the positions run again rewrite them.
+  void mark();
+  void rewind();
   DraftResult draft(int32_t anchor, bool keep_logits = false);
   // a study (README step 107): a block from `anchor` as if it sat `gap` positions after the last main position
   DraftResult draft_shadow(int32_t anchor, int gap) { return dspark->draft(anchor, n_past_ - 1, false, gap); }
@@ -169,9 +176,11 @@ class Runtime {
     float* win = nullptr;                          // window KV ring [window][head_dim]
     float *cmp_kv = nullptr, *cmp_score = nullptr; // compressor partial group [ratio][head_dim] (ratio > 1)
     float *comp = nullptr, *idx_k = nullptr;       // compressed KV, index keys [max_ctx / ratio][...] (KV sources)
+    float *win_mark = nullptr, *cmp_mark = nullptr; // mark()'s copies: the ring; the partial group [kv | score]
   };
   std::vector<LayerState> S;
   int n_past_ = 0;
+  int mark_past = -1;  // mark()'s position
   std::vector<int32_t> tokens_;  // all tokens so far
   hipStream_t s;
   std::vector<LayerW> W;
@@ -220,6 +229,7 @@ class Runtime {
   // a short forward's lists sit in the last kEarlyGatherMaxM tokens' list slots, next to x: one copy
   size_t short_lists_off() const { return moe_lists_bytes - (size_t)kEarlyGatherMaxM * kMoeListStride * sizeof(MoeList); }
   void setup_experts();
+  void mark_state(bool restore);
 
   // device scratch (one token)
   float *h, *h2, *pre, *a_pre, *a_post, *a_comb, *f_pre, *f_post, *f_comb, *mixes;

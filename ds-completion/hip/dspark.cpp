@@ -279,6 +279,16 @@ void DSpark::seed(int pos, const float* hidden) {
   }
 }
 
+void DSpark::mark_rings(bool restore) {
+  const size_t n = (size_t)rt.hp.window * rt.hp.head_dim * 4;
+  if (rings_mark.empty()) {
+    for (size_t l = 0; l < rings.size(); l++) rings_mark.push_back((float*)upload(nullptr, n));
+    CHECK(hipDeviceSynchronize());  // the buffers' zero fill is not on rt.s
+  }
+  for (size_t l = 0; l < rings.size(); l++)
+    CHECK(hipMemcpyAsync(restore ? rings[l] : rings_mark[l], restore ? rings_mark[l] : rings[l], n, hipMemcpyDeviceToDevice, rt.s));
+}
+
 // The block's positions go through each layer together: projections, mixes, experts and the
 // head as multi-token calls (one weight read; every kernel bit-identical per row to its
 // single-row form, so the drafts are the same as one position at a time). Attention per

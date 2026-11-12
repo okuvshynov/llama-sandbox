@@ -158,7 +158,7 @@ int main(int argc, char** argv) {
     }
     else if (a == "--chat") mode = "chat";
     else if (a == "--think") mode = "think";
-    else if (a == "-i" || a == "--interactive") interactive = true;  // runtime, --chat: a session of turns on one context
+    else if (a == "-i" || a == "--interactive") interactive = true;  // runtime, --chat or --think: a session of turns on one context
     else if (a == "-n") n_predict = atoi(next());
     else if (a == "-t") opt.n_threads = atoi(next());
     else if (a == "--gpu") gpu = atoi(next());
@@ -189,10 +189,8 @@ int main(int argc, char** argv) {
     else if (a == "--no-overlap") prefill_overlap = false;  // runtime: prompt chunks without the CPU/GPU overlap
     else { fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
   }
-  if (interactive && (mode != "chat" || rt_path.empty())) {
-    // --think is left out: the reference drops earlier turns' reasoning from the prompt
-    // (encoding.py, drop_thinking), which one growing context cannot do
-    fprintf(stderr, "-i needs --chat and --rt\n");
+  if (interactive && (mode == "raw" || rt_path.empty())) {
+    fprintf(stderr, "-i needs --chat or --think, and --rt\n");
     return 2;
   }
   if (model_path.empty() || (prompt.empty() && !interactive)) {
@@ -210,13 +208,15 @@ int main(int argc, char** argv) {
   const llama_vocab* vocab = llama_model_get_vocab(tok_model);
 
   const std::string bos = "<｜begin▁of▁sentence｜>";
-  std::string text;
-  if (mode == "chat") text = bos + "<｜User｜>" + prompt + "<｜Assistant｜></think>";
-  else if (mode == "think")
-    text = bos + "<｜System｜>Reasoning Effort: " + std::to_string(effort) +
-           " (range 1-100, the higher the value, the more thorough the reasoning)\n\n<｜User｜>" + prompt +
-           "<｜Assistant｜><think>";
-  else text = bos + prompt;
+  // a user turn as encoding.py renders it; the first one carries BOS and, with --think, the effort
+  auto turn_text = [&](const std::string& user, bool first) {
+    std::string t = first ? bos : "";
+    if (first && mode == "think")
+      t += "<｜System｜>Reasoning Effort: " + std::to_string(effort) +
+           " (range 1-100, the higher the value, the more thorough the reasoning)\n\n";
+    return t + "<｜User｜>" + user + "<｜Assistant｜>" + (mode == "think" ? "<think>" : "</think>");
+  };
+  const std::string text = mode == "raw" ? bos + prompt : turn_text(prompt, true);
   std::vector<int32_t> toks;
   if (!prompt.empty()) toks = tokenize(vocab, text);  // -i without a prompt: the first turn is read after the load
   // the GPU runtime defaults to the model's original training context (YaRN extends it 16x, to
@@ -285,6 +285,12 @@ int main(int argc, char** argv) {
   // One turn, or with -i a session: every turn's tokens are appended to the same context, as
   // encoding.py renders a chat: the reply's end of sequence, then <｜User｜>line<｜Assistant｜></think>.
   // So a turn's reply is what a fresh run on the whole conversation would print.
+  // With --think the reference drops earlier turns' reasoning: a finished turn is rendered
+  // <｜Assistant｜></think>answer. So each turn marks the context after its <｜Assistant｜>, and the
+  // next one rewinds there and runs </think>, the answer's tokens, then its own (the answer runs
+  // again: its states depended on the reasoning).
+  const int32_t think_end = tokenize(vocab, "</think>").at(0);
+  std::vector<int32_t> answer;  // --think: the last reply after its </think>
   const int eos = llama_vocab_eos(vocab);
   const int n_predict_turn = n_predict;
   std::vector<int32_t> pending;  // printed by the last turn but not yet run through the model (it stopped at -n)
@@ -299,10 +305,16 @@ int main(int argc, char** argv) {
       const std::string user(line ? line : "", len > 0 ? len : 0);
       free(line);
       if (user.empty()) break;  // an empty line or the end of input ends the session
-      toks = pending;
+      if (mode == "think" && !first) {
+        rt->rewind();
+        toks = {think_end};
+        toks.insert(toks.end(), answer.begin(), answer.end());
+      } else {
+        toks = pending;
+      }
       pending.clear();
       if (!first) toks.push_back(eos);
-      const std::vector<int32_t> turn = tokenize(vocab, (first ? bos : "") + "<｜User｜>" + user + "<｜Assistant｜></think>");
+      const std::vector<int32_t> turn = tokenize(vocab, turn_text(user, first));
       toks.insert(toks.end(), turn.begin(), turn.end());
       const int room = opt.max_ctx - rt->n_past() - (int)toks.size();
       if (room < 1) { fprintf(stderr, "# the context is full (--max-ctx %d)\n", opt.max_ctx); break; }
@@ -311,7 +323,14 @@ int main(int argc, char** argv) {
 #endif
     auto t1 = Clock::now();
 #ifdef DS_RUNTIME
-    std::vector<float> logits = rt ? rt->prefill(toks) : eng->forward(toks);
+    std::vector<float> logits;
+    if (rt && interactive && mode == "think") {  // the mark: after <｜Assistant｜>, before <think>
+      rt->prefill(std::vector<int32_t>(toks.begin(), toks.end() - 1));
+      rt->mark();
+      logits = rt->prefill({toks.back()});
+    } else {
+      logits = rt ? rt->prefill(toks) : eng->forward(toks);
+    }
 #else
     std::vector<float> logits = eng->forward(toks);
 #endif
@@ -569,6 +588,11 @@ int main(int argc, char** argv) {
     fprintf(stderr, "# prompt: %zu tokens in %.2f s = %.2f t/s; generation: %d tokens in %.2f s = %.2f t/s\n",
             toks.size(), t_pp, toks.size() / t_pp, n_gen, t_tg, n_gen > 0 ? n_gen / t_tg : 0.0);
     if (!interactive) break;
+    {  // --think: what the next turn keeps of this reply
+      auto it = std::find(gen.begin(), gen.end(), think_end);
+      answer.assign(it == gen.end() ? it : it + 1, gen.end());
+      if (!answer.empty() && answer.back() == eos) answer.pop_back();
+    }
   }
   fatal_phase("main: freeing the tokenizer");
   llama_model_free(tok_model);

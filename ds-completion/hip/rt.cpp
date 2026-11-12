@@ -710,6 +710,45 @@ std::vector<int32_t> Runtime::forward_chunk(const std::vector<int32_t>& toks, bo
   return next;
 }
 
+void Runtime::mark() { mark_state(false); }
+void Runtime::rewind() {
+  if (mark_past < 0) throw std::runtime_error("rewind without a mark");
+  mark_state(true);
+}
+
+void Runtime::mark_state(bool restore) {
+  const int HD = hp.head_dim;
+  auto copy = [&](float* live, float* saved, size_t n) {
+    CHECK(hipMemcpyAsync(restore ? live : saved, restore ? saved : live, n * 4, hipMemcpyDeviceToDevice, s));
+  };
+  if (mark_past < 0 && !restore) {  // the first mark: the copies' buffers
+    for (int L = 0; L < hp.n_layer; L++) {
+      if (!S[L].win) continue;
+      S[L].win_mark = dalloc<float>((size_t)ring_n * HD);
+      if (S[L].cmp_kv) S[L].cmp_mark = dalloc<float>(2 * (size_t)m.layers[L].kind.ratio * HD);
+    }
+    // dalloc's zero fill is not on stream s: without this it could land after the first copies
+    CHECK(hipDeviceSynchronize());
+  }
+  for (int L = 0; L < hp.n_layer; L++) {
+    if (!S[L].win) continue;
+    const size_t nc = S[L].cmp_kv ? (size_t)m.layers[L].kind.ratio * HD : 0;
+    copy(S[L].win, S[L].win_mark, (size_t)ring_n * HD);
+    if (nc) {
+      copy(S[L].cmp_kv, S[L].cmp_mark, nc);
+      copy(S[L].cmp_score, S[L].cmp_mark + nc, nc);
+    }
+  }
+  if (dspark) dspark->mark_rings(restore);
+  CHECK(hipStreamSynchronize(s));
+  if (restore) {
+    n_past_ = mark_past;
+    tokens_.resize(n_past_);
+  } else {
+    mark_past = n_past_;
+  }
+}
+
 void Runtime::commit(int n_keep) {
   const auto t_c0 = Clock::now();  // README step 86: commit's parts on the steps track
   const int HD = hp.head_dim, M = verify_m;
