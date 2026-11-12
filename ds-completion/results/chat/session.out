@@ -1,0 +1,30 @@
+Here are three prime numbers above 100:
+
+- **101**
+- **103**
+- **107**
+101 × 103 = **10,403**
+Here's a C function that checks whether a number is prime:
+
+```c
+#include <stdbool.h>
+#include <math.h>
+
+bool is_prime(unsigned long long n) {
+    if (n < 2) return false;
+    if (n < 4) return true;          // 2 and 3
+    if (n % 2 == 0) return false;    // even
+    if (n % 3 == 0) return false;    // divisible by 3
+
+    // Check divisors of the form 6k ± 1 up to sqrt(n)
+    for (unsigned long long i = 5; i * i <= n; i += 6) {
+        if (n % i == 0 || n % (i + 2) == 0)
+            return false;
+    }
+    return true;
+}
+```
+
+**How it works:**
+
+1. **Handle small cases:** Numbers less than 2 aren't prime

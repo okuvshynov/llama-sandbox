@@ -453,6 +453,8 @@ the shared expert's part hides behind the CPU's experts; section B's spans refre
 Step 106: drafting ahead estimated from the draft's logs: ~+1-2%, least on code; not built.
 Step 107: a second draft block before the verify, in shadow: accepted too rarely (every rule
 loses 1-4%, an oracle +3.2%); not built.
+Step 108: an interactive chat session (`--chat -i`, `scripts/chat.sh`), replies identical to fresh
+runs; next towards a server: thinking mode across turns (a context rewind), tool calls.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front

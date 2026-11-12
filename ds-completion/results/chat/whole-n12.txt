@@ -1,0 +1,3 @@
+<｜User｜>Name three prime numbers above 100.<｜Assistant｜></think>Here are three prime numbers above 100:
+
+- **101<｜end▁of▁sentence｜><｜User｜>Now multiply the first two of them.<｜Assistant｜></think>101 × 103 = **10,403**<｜end▁of▁sentence｜><｜User｜>Write a C function that checks whether a number is prime.<｜Assistant｜></think>

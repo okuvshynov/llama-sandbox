@@ -3918,3 +3918,32 @@ reachable with the confidences this block gives.
 Not built. The shadow log and the `gap` argument stay (off by default; no change without the
 variable). What it says about the draft: its accuracy comes from the main model's states right
 behind the block; five tokens behind, it drafts like a much weaker model.
+
+## Step 108: an interactive chat session (`-i`)
+
+A first step towards serving the model: `ds-completion --chat -i` keeps the model loaded and
+reads one user line per turn (`scripts/chat.sh` is the launcher with the fast configuration; an
+empty line or the end of input ends the session).
+
+**No reset, no recomputation.** Every turn's tokens are appended to the same context, in the
+format `encoding.py` renders a chat: the reply's end of sequence, then
+`<｜User｜>line<｜Assistant｜></think>`. The runtime's prompt pass already starts at the current
+position, so a turn costs its new tokens only, and a turn's reply is what a fresh run on the whole
+conversation prints.
+
+**What the context must hold: exactly what was printed.** Two details:
+- A reply cut by `-n` ends with a token that was printed but never run through the model; it
+  is carried into the next turn's tokens (`pending`).
+- With `--spec`, the last step of a reply could commit accepted drafts beyond what was printed
+  (after an end of sequence among them, or past `-n`). The step now commits only up to there.
+  Output unchanged; it matters only when a session continues.
+
+**Checked** (`results/chat/`): a three-turn session's second and third replies are byte-identical
+to fresh runs on the conversation before them as one raw prompt, at `-n 200` and at `-n 12`
+(every reply cut); a session without speculation prints the same bytes; cpp-matrix, tcp-udp and
+summary-json single-shot are unchanged.
+
+**Limits:** `--chat` only. In thinking mode the reference drops earlier turns' reasoning from
+the prompt (`drop_thinking`), which one growing context cannot do, so `-i` refuses `--think`
+rather than differ from it; that needs a rewind or reset of the context. One line per turn, no
+system prompt; each turn prints the usual statistics lines to stderr.
