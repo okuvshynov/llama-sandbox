@@ -450,6 +450,7 @@ several-input fp8 kernels run in rounds of ~512 waves (measured, nothing changed
 Step 104: the several-input fp8 kernel (64-lane order on 16 / 32 physical lanes): 44.00 -> 44.57 t/s.
 Step 105: traces at step 104; the kernel gives what the bench said (+2.0% on code back to back),
 the shared expert's part hides behind the CPU's experts; section B's spans refreshed.
+Step 106: drafting ahead estimated from the draft's logs: ~+1-2%, least on code; not built.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front
@@ -486,7 +487,8 @@ activations' loads per lane and step are the cost; a kernel that keeps the 64-la
 additions on an 8- or 16-lane work split; local variants failed in 65 and 75; step 103: at
 several inputs a launch just over a multiple of ~512 waves pays a whole extra round, query A
 640 waves, the shared expert's gate / up 1152, down 640: ~1-1.5% of a step in those tails);
-drafting ahead while the verify runs (~2-4% on code; memory and a second stream or die).
+drafting ahead while the verify runs: estimated in step 106 at ~+1-2% (the guess holds in 25% of
+steps, the draft needs the verify's last layers, code steps have no sixth guess); not built.
 
 Backlog (less likely): cache policy tweaks (59 lost; 63-64 2.5% simulated), an LLC prefetch (77:
 x1.2 ceiling), CPU micro-fixes around the idle gap (78, 79, 81), load pacing (85), attention over

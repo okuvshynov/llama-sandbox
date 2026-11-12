@@ -3833,3 +3833,48 @@ What this says about the next step: on code, die 0's wait for the CPU (~27-31 ms
 now the largest single piece, and any saving in the shared expert stays invisible until that
 wait shrinks. The dense front's largest spans: ffn.shared 8.3 (hidden), attn.out 7.7, attn.core
 5.7, attn.q 5.1, hc 5.0.
+
+## Step 106: drafting ahead, estimated from the draft's logs (not built)
+
+The draft runs serially on die 0 (8 ms per step: three layers 4.3, of them the routed experts 1.6,
+the head 2.15, the Markov bias 1.0), and during it dies 1-3 and the CPU idle. Spreading its
+experts over the dies would save little (1.6 ms to split, ~100 us of handoff per layer, the
+memory zero-sum). The larger idea is PLAN's "drafting ahead": start the next draft on another die
+while the verify runs, from a guessed anchor. Estimated before building anything
+(`scripts/draft_ahead_sim.py` over step 92's draft token logs; `results/decode-next/draft-ahead.txt`).
+
+**When the guess holds:** every verified draft is accepted and the main model's own next token
+equals the draft's next guess (drafted token n + 1, when n < 5 were verified).
+
+| prompt | steps | the guess holds | share | est. gain |
+|---|---|---|---|---|
+| tcp-udp | 142 | 40 | 28% | +2.6% |
+| py-lru | 99 | 36 | 36% | +2.8% |
+| cpp-matrix | 65 | 13 | 20% | +1.2% |
+| sql-report | 77 | 10 | 13% | +0.8% |
+| geometry | 85 | 24 | 28% | +1.9% |
+| zh-travel | 194 | 44 | 23% | +2.5% |
+| ja-email | 174 | 43 | 25% | +2.7% |
+| summary-json | 28 | 8 | 29% | +1.8% |
+| mean | | | 25% | +2.0% |
+
+**Two limits:**
+- **The draft cannot start until the verify is nearly done.** It reads the main model's hidden
+  states at layers 37-39 (of 40) for the tokens just verified (`DSpark::seed`), so only the last
+  layer, the head and the commit can overlap it: ~5.5 ms of its 8 (the table's figure; with the
+  whole 8 ms the mean would be +3.0%).
+- **Code steps have no guess.** There the rule mostly verifies all 5 drafts (34 of 65 steps on
+  cpp-matrix, 34 of 77 on sql-report) and the draft's block is 5: no sixth token to start from.
+  Counting every fully accepted 5-draft step as a hit (a sixth guess always right; it would take
+  a second draft call) bounds the mean at +3.3%.
+
+**Not in the table:** issuing a draft takes ~0.65 ms of the host thread, which is driving the
+verify's last layers then: without a second host thread that lands on every step and about
+halves the gain. The draft would have to move to die 1 whole (a second copy costs ~410 expert
+slots), with the hidden states copied over each step.
+
+So ~+1% without a helper thread, up to +2% with one, least on code, for a change to the
+speculative loop, the draft's placement and the host's threading. Not built.
+
+A correction found on the way: the model has 40 layers; step 103's and 104's per-step estimates
+multiplied per-layer savings by 43 (~7% high). No measurement is affected.
