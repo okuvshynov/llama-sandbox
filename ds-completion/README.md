@@ -1,10 +1,11 @@
 # ds-completion — DeepSeek-V4.1-Flash inference for the Mac Pro (755 GB RAM, 4x Vega II)
 
-Goal: `./ds-completion -m <model> -p "prompt"`. One model, one machine, one
-sequence. Priorities: correctness, clarity, then performance. Non-goals: other
-models, other quants, other hardware, serving features.
+Goal: `./ds-completion -m <model> -p "prompt"`. One model, one sequence, on one
+Mac Pro or split over two (the same outputs either way). Priorities: correctness,
+clarity, then performance. Non-goals: other models, other quants, other hardware,
+serving many users.
 
-Status, 2026-11-07 (the milestones in order; details in [OVERVIEW.md](OVERVIEW.md), today's numbers in [TIMING.md](TIMING.md)):
+Status, 2026-11-12 (the milestones in order; details in [OVERVIEW.md](OVERVIEW.md), today's numbers in [TIMING.md](TIMING.md)):
 
 - CPU only: 3.5 t/s decode, matching the reference (the llama.cpp fork: 3.5 t/s).
 - Own GPU runtime (exact fp8, deterministic), routed experts on the CPU: ~12 t/s.
@@ -14,9 +15,16 @@ Status, 2026-11-07 (the milestones in order; details in [OVERVIEW.md](OVERVIEW.m
 - Placement-invariant numerics (`--canon`, step 31) and the adaptive expert cache (step 32):
   with `--spec`, 25.6 t/s mean on held-out prompts at sclk 2 (step 32), every output
   byte-identical. Since then, at sclk 6 with the cache tuned (800 loads/s every 8 tokens) and
-  the decode work of steps 50-88: **41.2 t/s mean (31.7-50.8)** on the 8 held-out prompts, every
-  output byte-identical (step 88; the whole history: `results/heldout-history/`, step 72). The
+  the decode work of steps 50-104: **44.6 t/s mean (34-55)** on the 8 held-out prompts, every
+  output byte-identical (step 104; the whole history: `results/heldout-history/`, step 72). The
   fastest settings per job: QUICKSTART.md.
+- **Two machines** (steps 110-112): the model in two halves, layers 0-19 on one Mac Pro and
+  20-39 with the head and the draft on a second identical one, the residual stream handed over
+  10 GbE once per step: **50.9 t/s mean (35-63)** on the same prompts, every output
+  byte-identical. The gain is GPU room for experts (97-99% of expert uses on GPUs against 75-88%),
+  not parallelism: the machines take turns.
+- Interactive sessions (`-i`, `scripts/chat.sh`; steps 108-109): chat and thinking mode over
+  several turns on one context, each reply what a fresh run on the whole conversation prints.
 - Prompt processing in chunks of 512 (steps 37-45, 68): ~17 -> 93 t/s on a 1,989-token prompt
   (63 with `--canon`; sclk 6), output byte-identical to token by token.
 - Long context: 65,536 tokens by default, up to 1M (step 34); gated against the reference at
@@ -57,6 +65,10 @@ bin-hip/bench-kernels                                                    # each 
 bin/bench-cpu-moe -m $M [-t 32] [--tokens 5]                             # the CPU expert kernel vs ggml
 bin-hip/bench-fp4-moe -m $M [--layer 20] [--dev 0]                       # one layer's experts in HBM
 bin-hip/ds-completion ... --rt $F8 --placement placements/study30.txt   # most-used experts on GPUs
+scripts/chat.sh [--think]                                                # an interactive session (steps 108-109)
+bin-hip/ds-completion ... --layers 20-39 --dspark $D --serve 7001        # two machines: the back, on the second one
+bin-hip/ds-completion ... --layers 0-19 --remote <host>:7001 --spec ...  #   the front, used as the whole model (step 111)
+[TRACE=1] scripts/split-measure.sh                                       # the held-out set on two machines; one merged trace
 bin-hip/bench-expert-pool -m $M -p placements/study30.txt                # expert pools: load, exactness, time
 bin/ds-inspect -m $M [--layers 0,1,2-5] [--touch]
 bin/ds-test -m $M -g data/golden/hello [--layers 0-39] [--no-quant]  # teacher-forced, per layer
@@ -4092,3 +4104,63 @@ Every output is byte-identical to the references (long-proof to the one-machine 
 
 A session leaves the back when it ends (one front per back process); `scripts/chat.sh` is still
 one machine.
+
+## Step 112: one trace of both machines
+
+Each half already wrote its own `--trace`; two files on two clocks do not show a step.
+
+**The clocks:** every answer from the back carries its clock when the request had arrived and
+when the answer left; with the front's own times around it that is one sample of the offset, as
+NTP takes them: offset = ((t2 - t1) + (t3 - t4)) / 2, delay = (t4 - t1) - (t3 - t2). Samples come
+from the small exchanges only (HELLO, a new SYNC message sent 8 times at the start and the end of
+a traced run, DRAFT): a verify's 64 KB per token upward would bias it. The front's trace keeps
+them (`peerSync`), each trace its zero on its machine's monotonic clock (`clockEpochUs`).
+
+**The merge** (`scripts/trace_merge.py FRONT BACK -o MERGED`): a line through the offsets over
+time (the clocks drift), the back's events moved onto the front's clock, the two as processes 1
+and 2 of one Chrome trace. The first fit used the samples with a delay up to the median and came
+out with residuals of ~90 us: most samples are drafts, and a draft request waits in the back's
+socket behind the commit sent just before it, a wait on one side only. Keeping only the samples
+within 1.5x of the least delay (the SYNCs, and drafts that found the back idle): 15 samples,
+least delay 68-70 us, **residuals ~1 us rms**, drift under 1 ppm (the offset itself: the back's
+clock 2.09 s behind, as both machines booted together).
+
+`TRACE=1 scripts/split-measure.sh` runs both halves traced, fetches the back's file and merges:
+`results/trace/two-machines/{cpp-matrix,tcp-udp}.json.gz` (ui.perfetto.dev). New spans: the
+front's "send to the back: ..." and "waiting for the back"; the back's "receive the stream: ..."
+and a "messages from the front" track with one "serve ..." span per message. Every answered
+message's work on the back lies inside one of the front's waits (134 and 257 of them), and an
+answer reaches the front ~155 us after the back finished it.
+
+**A 6-token code step on two machines** (cpp-matrix, medians of 37 steps, traced):
+
+| part | ms |
+|---|---|
+| the front's layers 0-19 | 36.4 |
+| sending 6 tokens' stream (384 KB) / the back receiving it | 0.4 |
+| the back's layers 20-39 and the head | 36.1 |
+| the ids back | 0.14 |
+| the draft (the back's 8.1, behind its commit of ~1 ms) | 9.35 |
+| **the cycle** | **82.7** |
+
+Against 92.9 on one machine (step 105: 84.8 + 8.1). Neither half waits for the CPU's experts in
+these steps (0 ms on both; it was 26.7). A 2-token chat step (tcp-udp): 21.4 + 22.4 + the draft
+8.8 = 53.7 ms. What the trace shows next: the back's commit seeds the draft before the draft
+call can start (~1 ms per step, visible as the front's 9.1 ms wait for an 8.1 ms draft), and at
+any moment one machine is idle.
+
+Traced runs: cpp-matrix 59.0 t/s (62.9 untraced), tcp-udp 38.2 (42.1); outputs identical.
+
+**Two guards added while reviewing the documents for both setups:**
+- A range must contain what its layers read (their compressed-KV source, index source and the
+  candidate source): `--layers 10-39` is now refused ("layer 10 reads layer 8's state") instead
+  of reading memory that range never allocated. For this model that leaves layer 20 as the only
+  cut inside the stack.
+- `--spec` without `--placement` aborted since step 97 (the early copy of the dies' results used
+  a stream that only exists with a placement); never run in a measurement. Fixed: same output as
+  plain decoding there too.
+
+The documents now describe both setups: this file's status, QUICKSTART (what the second machine
+needs, the two commands, what to expect, limits), OVERVIEW (results, what is next, the code
+map), TIMING (a two-machine section), PLAN (today's numbers; "Two machines": what the split is
+and is not, the ideas after it), REPRODUCE (the second machine).

@@ -1,0 +1,3 @@
+# clocks: 15 of 138 samples over 8.3 s kept (delay within 1.5x of the least, 68 us; median of all 523 us)
+# back - front = -2.089523 s at the start, drifting -0.49 ppm; residuals rms 0.9 us, largest 1.7 us
+# 70093 front + 76642 back events in results/trace/two-machines/tcp-udp.json.gz

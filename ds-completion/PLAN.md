@@ -2,8 +2,9 @@
 
 Status: **done**, **next** (agreed, in order), **planned** (agreed, later), **idea** (not
 decided). Today (sclk 6, 16 CPU threads): `--spec` with the adaptive cache (`--canon
---cache-loads 800 --cache-period 8`) 41.19 t/s mean on the 8 held-out prompts (31.7-50.8; README
-step 88; every decode change on the same ruler: `results/heldout-history/`). Prompt processing
+--cache-loads 800 --cache-period 8`) 44.57 t/s mean on the 8 held-out prompts (33.9-55.0; README
+step 104; every decode change on the same ruler: `results/heldout-history/`); on two machines,
+the model in two halves, 50.85 (README step 111; "Two machines" below). Prompt processing
 93 t/s (63 `--canon`; 1,989 tokens, README step 68). Earlier milestones (sclk 2): no GPU experts
 ~12 t/s; the study30 placement 17.7-21.7; + `--spec` and the cache at 200 loads/s 25.6. The cost
 model below (2026-10-27) says where a token's time went before the cache; today: TIMING.md.
@@ -92,7 +93,9 @@ What follows:
    dispatch. Beyond it: clock (sclk 6-8: dense ~34 -> ~29 ms, GPU experts ~25% faster),
    fusion (~3 ms), tensor parallelism on the ~13 ms of fp8 GEMVs.
 2. **A second machine adds ~1-2 ms once the cache adapts.** Without adaptation, two machines
-   with a fixed set get what one machine needs an adaptive cache for.
+   with a fixed set get what one machine needs an adaptive cache for. (Measured in step 111: true
+   of a 3,000-token run, 57.0 t/s either way; on 300-token runs the cache has not adapted that far
+   and two machines give +14%.)
 3. **The adaptive cache is worth it** (~20 -> ~23 t/s on chat, ~16 -> ~23 on code), but its
    background loads (~4.8 GB/s) equal today's whole pageable upload speed: pinned staging
    comes first.
@@ -305,6 +308,30 @@ Risks: the CPU kernel's speed under A; memory bandwidth (loads + CPU misses shar
 PCIe shared with the per-layer staging copies; hit rate under speculation below the
 simulation's 95% (rejected drafts, late loads).
 
+## Two machines (2026-11-12)
+
+**Done** (README steps 110-112): a second identical Mac Pro; the model cut at layer 20, the only
+cut where nothing but the residual stream crosses (compressed caches and index picks stay within
+each half; the engram is in the front, the draft and the head in the back); the halves as two
+processes over TCP (`hip/peer.h`), the front driving; one merged trace. Held-out mean 44.60 ->
+50.85 t/s, outputs identical.
+
+**What the split is and is not.** It is GPU room: each machine holds ~85% of its half's expert
+pairs (40% before), so the CPU's experts (26.7 ms of a 6-token code step) are gone from both
+halves. It is not parallelism: a 6-token code step is front 36.4 ms, then back 36.1 ms, then the
+draft 9.35 ms, and one machine idles throughout. A long reasoning run, whose cache already had
+97% of the uses on GPUs, runs at the same 57.0 t/s.
+
+**Ideas, not decided, in the order I would look at them:**
+
+| idea | what it could give | what it needs |
+|---|---|---|
+| The draft without waiting for the commit | ~1 ms per step (the draft call queues behind the back's commit, which seeds the draft's rings) | the verify answer carrying enough for the back to commit and draft at once (the back can apply the accept rule itself), or the seed done lazily |
+| Overlap between the halves | up to the smaller half of a step: the front runs the next step's layers 0-19 while the back runs this step's 20-39 | the next step's tokens before the back's answer: a guess (the drafts all accepted, the next draft from the back). Steps 106-107 measured such guesses on one machine: right 25-45% of the time, and a draft made without fresh states is weak. To be estimated from the two-machine logs before building |
+| The dense part over each machine's idle dies | each half's ~36 ms is one die's dense work | this machine's XGMI pair is not on the second; attention split by heads was studied (step 76) |
+| A cache budget per half | the cache was tuned for one machine (800 loads/s every 8 tokens) | a sweep; not parameter tuning for its own sake, since the split changes what is worth loading |
+| Sessions and serving on two machines | `scripts/chat.sh` and a server use one machine | the back serving more than one front in a row (a reset of its context), a launcher |
+
 ## Further optimization ideas (2026-10-29)
 
 From the verify-step breakdown with the cache (README step 33: per verify step + draft ~122 ms
@@ -463,6 +490,7 @@ Step 111: the halves as two processes over TCP (`hip/peer.h`), then on the two m
 mean 44.60 -> 50.85 t/s (+14.0%), outputs identical; the gain is the CPU's experts, nothing on the
 long proof or on 1-2-token steps. Next there: the machines take turns (no parallelism), the dense
 part of each is one die; the chat launcher and a server on two machines.
+Step 112: one trace of both machines (clocks aligned to ~1 us); the documents cover both setups.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front

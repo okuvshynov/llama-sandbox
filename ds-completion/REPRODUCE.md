@@ -19,6 +19,13 @@ Items marked **(to confirm)** are not yet pinned down; they are listed at the en
 The RAM must hold the whole GGUF (474 GB) in the page cache next to the work: everything runs
 from mmap, and the routed experts are read from it on every token.
 
+**The second machine** (README steps 110-112; hostnames `tomb`, the first, and `shower`): the
+same computer, CPU, RAM and GPUs, without the XGMI bridges (unused); 10 GbE between the two
+(direct or switched, MTU 1500, ping ~0.2 ms). The same software (section 2), the same model
+files at the same paths with the same sha256 (`results/split/sha256.txt`), this repository at
+the same commit and built (section 4), the same sclk level. The one-machine results do not need
+it; it reproduces them to the byte at the same speed (44.33 against 44.60 t/s held-out).
+
 ## 2. Software
 
 | | version |
@@ -133,6 +140,7 @@ Unless stated: sclk 2, 16 CPU threads (32 before README step 18), the study30 pl
 | 109 | `chat/think/` | the commands in `chat/think/README.txt`: `scripts/chat.sh --think` sessions from the `.q` files, `scripts/chat_ref_prompts.py` (needs the reference's `encoding.py`), then `ds-completion -f` on each `-ref<k>.txt` |
 | 110 | `split/sha256.txt`, `split/teacher.txt`, `spec-measure-sclk6-cacheloads800cacheperiod8-shower/`, `-tomb-baseline/` | on each machine the `sha256sum` line in `split/sha256.txt` and `CACHE="--cache-loads 800 --cache-period 8" scripts/spec-measure.sh` (the second machine: the repo, `~/forks/llama.cpp` built with `-DBUILD_SHARED_LIBS=OFF`, the fp8 file, the same `~/llms` paths); the three `--teacher` commands in `split/teacher.txt` |
 | 111 | `split/two-machines/` | `BACK=oleksandr@192.168.2.2 scripts/split-measure.sh` (the back machine prepared as in step 110, the same commit built there, ssh without a prompt); the one-machine side: `spec-measure-sclk6-cacheloads800cacheperiod8-tomb-baseline/` of step 110. On one machine: the back with `--layers 20-39 --gpu 2 --moe-dies 2,3 --dspark $D --serve 7001`, the front with `--layers 0-19 --gpu 0 --moe-dies 0,1 --remote 127.0.0.1:7001 --spec` |
+| 112 | `trace/two-machines/` | `TRACE=1 PROMPTS="cpp-matrix tcp-udp" scripts/split-measure.sh` (both halves with `--trace`, then `scripts/trace_merge.py FRONT BACK -o MERGED`; the per-step table: the spans named in README step 112, medians over the 6-token and 2-token verify steps) |
 | 100 | `trace/` (`cpp-matrix.json.gz`, `tcp-udp.json.gz`, `compare-step88.txt`, `critpath.txt`) | the command in `trace/README.txt` for both prompts; `scripts/trace_compare.py <step 88's trace> <new>` (step 88's: `git show 2509593:ds-completion/results/trace/<name>.json.gz`); `scripts/trace_critpath.py <trace>` |
 | 99 | `decode-next/review-leftovers.txt`, `decode-next/{hc-mix,compressor-chunk,gather-streams}.patch`, `spec-measure-sclk6-cacheloads800cacheperiod8-cmpchunk/` | each patch on 5f21709 (`git apply`): `bin-hip/bench-kernels` (hc lines); `scripts/spec-measure.sh` with the tuned cache; the prompt gate's `--canon` runs against `results/prefill/gate/p*-base-canon.out`; the held-out command for cpp-matrix, tcp-udp, ja-email |
 | 98 | `decode-next/local-review.txt`, `spec-measure-sclk6-cacheloads800cacheperiod8-compressor/` | `CACHE="--cache-loads 800 --cache-period 8" scripts/spec-measure.sh` |

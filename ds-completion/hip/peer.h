@@ -13,11 +13,19 @@
 //   COMMIT    arg = tokens kept                       -
 //   DRAFT     arg = the anchor token                  block + 1 ids, block confidences
 //   MARK, REWIND                                      -
+//   SYNC      -                                       -            (a clock sample only)
 //   BYE                                               -
 //
 // Messages without an answer are not waited for: the front goes on with its next chunk while
 // the back works (TCP orders them). Plain blocking TCP with TCP_NODELAY; floats and ints as
 // they are in memory (both ends are the same machine type), so the stream arrives bit for bit.
+//
+// One trace of both machines (README step 112): every answer carries the back's clock when the
+// request had arrived and when the answer left. With the front's own times around it that is one
+// sample of the two clocks' offset (as NTP takes them). Only the small symmetric exchanges are
+// kept as samples (HELLO, SYNC, DRAFT: a verify's 64 KB per token up would bias it); each
+// process writes its trace on its own clock and scripts/trace_merge.py puts the back's on the
+// front's.
 #pragma once
 
 #include <arpa/inet.h>
@@ -27,6 +35,8 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <array>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <stdexcept>
@@ -34,16 +44,26 @@
 #include <vector>
 
 struct Peer {
-  enum Type : uint32_t { HELLO = 1, CHUNK, DECODE, VERIFY, COMMIT, DRAFT, MARK, REWIND, BYE };
+  enum Type : uint32_t { HELLO = 1, CHUNK, DECODE, VERIFY, COMMIT, DRAFT, MARK, REWIND, BYE, SYNC };
+  static const char* name(uint32_t t) {
+    static const char* n[] = {"?", "HELLO", "CHUNK", "DECODE", "VERIFY", "COMMIT", "DRAFT", "MARK", "REWIND", "BYE", "SYNC"};
+    return t <= SYNC ? n[t] : n[0];
+  }
+  // this machine's monotonic clock, microseconds (what the traces' clockEpochUs is in)
+  static double now_us() { return std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
   struct Header {
     uint32_t type = 0;
     uint32_t n = 0;    // tokens in the payload
     int32_t arg = 0;
     uint32_t bytes = 0;  // of the payload that follows
+    double t_recv = 0, t_send = 0;  // answers: the back's clock at the request's arrival and at this answer's start
   };
   int fd = -1;
   long sent_bytes = 0, recv_bytes = 0, round_trips = 0;
   double wait_ms = 0;  // the front's time between a request's last byte and its answer's last
+  double last_sent_us = 0;   // the front: its clock when its last message was handed to the socket
+  double reply_t_recv = 0;   // the back: its clock when the request being answered had arrived
+  std::vector<std::array<double, 4>> sync;  // the front: {sent, the back's arrival, the back's answer, received} per sample
 
   ~Peer() { if (fd >= 0) close(fd); }
 
@@ -110,9 +130,11 @@ struct Peer {
     Header hd;
     hd.type = type, hd.n = n, hd.arg = arg;
     for (const Part& x : parts) hd.bytes += (uint32_t)x.bytes;
+    hd.t_recv = reply_t_recv, hd.t_send = now_us();
     put(&hd, sizeof hd);
     for (const Part& x : parts)
       if (x.bytes) put(x.p, x.bytes);
+    last_sent_us = now_us();
   }
   template <class T>
   std::vector<T> get_vec(size_t n) {

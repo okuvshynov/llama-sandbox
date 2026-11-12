@@ -115,6 +115,27 @@ fast one per (token, expert) pair, so only the CPU side helps there.
 **Scale:** a 30,000-token document takes ~5.4 min at ~93 t/s (it took ~30 min token by token).
 10,000 tokens of reasoning take ~4.5 min at ~37 t/s.
 
+## Two machines (the model in two halves)
+
+Layers 0-19 on one machine, layers 20-39 with the head and the draft on a second one; per step
+the stream of the verified tokens goes over once (64 KB per token) and a few ids come back
+(README steps 110-112). Held-out mean **50.9 t/s** against 44.6 on one machine.
+
+- **A 6-token code step** (merged trace, medians): the front's layers 36.4 ms, the stream over
+  0.4, the back's layers and head 36.1, the ids back 0.14, the draft 9.35: **82.7 ms** against
+  92.9 on one machine. A 2-token chat step: 21.4 + 22.4 + 8.8 = 53.7.
+- **What it removed:** die 0's wait for the CPU's experts (26.7 ms of a 6-token step on one
+  machine, 0 on both halves here): each machine holds ~85% of its half's experts on GPUs (~40% on
+  one machine) and 97-99% of the expert uses.
+- **What it did not change:** the dense work (48 ms of a step on one machine, ~36 + ~36 here,
+  as each half's layers now include what used to hide under the CPU's time). So the gain follows
+  the CPU's share: +23-27% where a third of the experts ran on the CPU, +2.5% on 1-2-token steps,
+  0 on a 3,000-token reasoning run whose cache had 97% on GPUs already.
+- **The network** is ~0.5 ms per step. A millisecond of the back's work is a millisecond of the
+  step: the front waits for exactly what the back takes (answers arrive ~155 us after it is done).
+- **The machines take turns:** half of the two machines' GPUs is idle at any moment. The draft
+  call waits ~1 ms behind the back's commit.
+
 ## Seeing a step: traces
 
 `results/trace/tcp-udp.json.gz` (chat) and `cpp-matrix.json.gz` (code), 300 tokens each with
@@ -136,6 +157,12 @@ handoffs and the engram fetch of steps 71 and 73; `compare-step73.txt`: the inde
 `compare-step74.txt`: steps 80-84; `compare-step84.txt`: step 86). `scripts/trace_critpath.py TRACE` splits each verify size into
 die 0's front, the handoffs to and from the CPU, the CPU's experts, the tail and the draft
 (`results/trace/critpath.txt`).
+
+Two machines: each half writes its own trace on its own clock; `scripts/trace_merge.py` puts
+the back's on the front's (clock samples from the small exchanges, the ones with the least
+network delay, a line through them: ~1 us residuals) and writes one file with the front as
+process 1 and the back as process 2 (`results/trace/two-machines/`, README step 112;
+`TRACE=1 scripts/split-measure.sh`). The scripts above read one-machine traces.
 
 ## Background expert loads (the adaptive cache)
 

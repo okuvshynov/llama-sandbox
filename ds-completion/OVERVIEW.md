@@ -1,4 +1,4 @@
-# ds-completion: overview (2026-10-28, numbers updated 2026-11-07)
+# ds-completion: overview (2026-10-28, numbers updated 2026-11-12)
 
 A ~20-minute read: what was built, how it works, what we measured, what we learned, and what
 is next. How to run it: [QUICKSTART.md](QUICKSTART.md). Where the time goes, one page: [TIMING.md](TIMING.md). Every step and number in detail:
@@ -8,11 +8,13 @@ is next. How to run it: [QUICKSTART.md](QUICKSTART.md). Where the time goes, one
 ## 1. Goal and scope
 
 Text completion with **DeepSeek-V4.1-Flash-1017** on one Mac Pro 2019, as fast as the machine
-allows, with **outputs that match the official reference implementation**.
+allows, with **outputs that match the official reference implementation**. Since step 111 also
+on two of them, the model cut in two halves, with the same outputs.
 
 - Priorities, in order: correctness, code clarity, performance.
 - Non-goals: other models, other hardware, serving features (batching users, sampling options).
-  A CLI (`ds-completion -m model -p "prompt"`) is the interface.
+  A CLI (`ds-completion -m model -p "prompt"`) is the interface, with an interactive session
+  mode (`-i`).
 
 | | |
 |---|---|
@@ -35,6 +37,13 @@ Decode speed (sclk level 2, 16 CPU threads, 128 generated tokens):
 | upper bound: placement from the prompt's own routing (perfect knowledge) | ~25 t/s plain; 29-41 t/s with `--spec` |
 
 (The speculative and cache numbers are 300-token runs on held-out prompts; README steps 26, 32.)
+
+Two machines (README steps 110-112; sclk 6, the same prompts): **mean 50.9 t/s** against 44.6
+(+14%; +12% to +27% on code, math, SQL and JSON, +2.5% on 1-2-token steps, nothing on a long reasoning
+run whose cache had adapted), every output byte-identical. Layers 0-19 run on the first machine,
+layers 20-39 with the head and the draft on the second; once per step the residual stream (64 KB
+per token) crosses 10 GbE. Each machine then holds ~85% of its half's experts on GPUs instead of
+~40%: the gain is the CPU's experts, and the network costs ~0.5 ms of an ~83 ms step.
 
 Prompt processing (chunks of 512, README steps 37-45, 68): 93 t/s, 63 with `--canon` (1,989 tokens, sclk 6),
 output byte-identical to token by token (which ran at ~17 t/s). Startup: ~15 s, plus 10-30 s to upload
@@ -212,10 +221,14 @@ experts ~3% visible.
    the indexer batched over a verify step past 512 keys (PLAN F; step 74 skips it below).
 4. **The prompt:** 93 / 63 t/s (fast / `--canon`); with `--canon` the CPU's experts set the pace,
    so the CPU work above helps there too.
-5. **More hardware** (studied, not built): a second machine as a layer pipeline, or many more
+5. **Two machines** (built, steps 110-112: +14%): the halves take turns, so one machine is
+   always idle and each half's dense part runs on one die. Next there: overlap between the
+   halves (the front starting the next step while the back finishes), to be estimated first.
+6. **More hardware** (studied, not built): many more
    experts on GPUs; the CPU stays on the critical path for larger models.
 
-Explored, not planned: a second machine (pipeline split; ~1-2 ms gain once the cache adapts),
+Explored, not planned (the second machine's first estimate, a pipeline split worth ~1-2 ms once
+the cache adapts, was right for long runs and too low for 300-token ones: step 111):
 RDMA between machines, an MI210 for the dense part (~33 t/s estimated), and a hypothetical
 V4.1-Pro (engram on SSD is easy; experts barely fit in two machines' RAM).
 
@@ -245,8 +258,9 @@ V4.1-Pro (engram on SSD is easy; experts barely fit in two machines' RAM).
 | `hip/fp4_moe.{h,hip}` | exact fp4 routed-expert kernel (4 launches) |
 | `hip/expert_pool.{h,hip}` | expert slots per die, placement reading and assignment |
 | `hip/dspark.{h,cpp}` | the DSpark draft (3 layers, Markov and confidence heads) |
+| `hip/peer.h` | two machines: the messages between the front and the back half (TCP) |
 | `hip/bench_*.cpp`, `src/bench_*.cpp` | benchmarks of each kernel |
 | `ref/` | the Python reference, golden export, weight checks, logits comparison |
-| `scripts/` | routing study and analysis, clock sweep, DSpark confidence calibration (`spec_conf.py`) |
+| `scripts/` | routing study and analysis, clock sweep, DSpark confidence calibration (`spec_conf.py`), the chat launcher (`chat.sh`), the two-machine measurement and trace merge (`split-measure.sh`, `trace_merge.py`) |
 | `placements/` | ranked expert placements (`study30.txt` is the default) |
 | `results/` | raw outputs of every measurement quoted in the README |

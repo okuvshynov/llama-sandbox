@@ -215,6 +215,7 @@ class Runtime {
   void prefill_chunk(const std::vector<int32_t>& chunk);  // prompt tokens, no head (and the back's part)
   void peer_send_tokens(Peer::Type type, const std::vector<int32_t>& toks, int32_t arg);  // with stream_out
   Peer::Header peer_answer(Peer::Type type);  // waits for the back's answer header
+  void peer_sync(int n);
   bool range_engram = false;  // an engram layer among them (else no rows are fetched)
   void stream_from_host(int M);  // stream_in's next M rows into h, pre
   void stream_to_host(int M);    // h, pre of M tokens appended to stream_out (after a synchronize)

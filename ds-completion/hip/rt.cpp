@@ -83,6 +83,15 @@ Runtime::Runtime(const Model& model, RtOptions options, const std::string& fp8_p
     if (!m.layers[L].loaded) throw std::runtime_error("runtime: the loaded layers must be one range");
   if (L0 >= L1) throw std::runtime_error("runtime: no layer loaded");
   for (int L = L0; L < L1; L++) range_engram |= m.layers[L].kind.engram >= 0;
+  // a range must hold what its layers read: their compressed-KV source, their index source and
+  // the candidate source (for this model the only cut inside the stack is at layer 20)
+  for (int L = L0; L < L1; L++) {
+    const LayerKind& k = m.layers[L].kind;
+    for (int src : {k.kv_from, k.idx_from, k.uses_cands ? hp.cand_source : -1})
+      if (src >= 0 && (src < L0 || src >= L1))
+        throw std::runtime_error("runtime: layer " + std::to_string(L) + " reads layer " + std::to_string(src) + "'s state, which is outside --layers " +
+                                 std::to_string(L0) + "-" + std::to_string(L1 - 1));
+  }
   if (L0 > 0 || L1 < hp.n_layer) fprintf(stderr, "# runtime: layers %d-%d of %d%s\n", L0, L1 - 1, hp.n_layer, has_head() ? " and the head" : "");
 
   // rotary frequencies: window-only layers at rope_base, compressed layers at
@@ -612,7 +621,9 @@ void Runtime::set_half(int i, int t0) {
 void Runtime::peer_send_tokens(Peer::Type type, const std::vector<int32_t>& toks, int32_t arg) {
   const size_t n = toks.size(), nh = (size_t)hp.n_embd * hp.hc_mult, np = hp.hc_mult;
   if (stream_out.h.size() != n * nh || stream_out.pre.size() != n * np) throw std::runtime_error("peer: the stream does not match the tokens");
+  const auto t0 = Clock::now();
   peer->send_msg(type, (uint32_t)n, arg, {{toks.data(), n * 4}, {stream_out.h.data(), n * nh * 4}, {stream_out.pre.data(), n * np * 4}});
+  trace_host((std::string("send to the back: ") + Peer::name(type) + " " + std::to_string(n)).c_str(), t0, Clock::now(), 3);
 }
 
 Peer::Header Runtime::peer_answer(Peer::Type type) {
@@ -620,10 +631,21 @@ Peer::Header Runtime::peer_answer(Peer::Type type) {
   Peer::Header hd;
   peer->get(&hd, sizeof hd);
   if (hd.type != type) throw std::runtime_error("peer: unexpected answer " + std::to_string(hd.type));
+  if (!trace_path.empty() && (type == Peer::HELLO || type == Peer::SYNC || type == Peer::DRAFT))
+    peer->sync.push_back({peer->last_sent_us, hd.t_recv, hd.t_send, Peer::now_us()});
   peer->wait_ms += ms_since(t0);
   peer->round_trips++;
   trace_host("waiting for the back", t0, Clock::now(), 3);
   return hd;
+}
+
+// a few clock samples (tracing only): at the start and the end of a run, so the merge can follow the clocks' drift
+void Runtime::peer_sync(int n) {
+  if (trace_path.empty()) return;
+  for (int i = 0; i < n; i++) {
+    peer->send_msg(Peer::SYNC, 0, 0);
+    peer_answer(Peer::SYNC);
+  }
 }
 
 void Runtime::connect_peer(const std::string& host_port) {
@@ -636,6 +658,7 @@ void Runtime::connect_peer(const std::string& host_port) {
   if (v[0] != hp.n_layer || v[1] != L1 || v[2] != hp.n_layer)
     throw std::runtime_error("peer: the back runs layers " + std::to_string(v[1]) + "-" + std::to_string(v[2] - 1) + ", this front ends at " + std::to_string(L1 - 1));
   peer_block = v[3];
+  peer_sync(8);
   fprintf(stderr, "# peer: layers %d-%d and the head at %s, draft block %d\n", v[1], v[2] - 1, host_port.c_str(), peer_block);
 }
 
@@ -652,6 +675,7 @@ void Runtime::serve(int port) {
   double work_ms = 0;
   for (Peer::Header hd; p.get(&hd, sizeof hd, true) && hd.type != Peer::BYE; msgs++) {
     std::vector<int32_t> toks;
+    const auto t_hd = Clock::now();
     if (hd.type == Peer::CHUNK || hd.type == Peer::DECODE || hd.type == Peer::VERIFY) {
       if (hd.bytes != hd.n * (4 + (nh + np) * 4)) throw std::runtime_error("peer: a message of the wrong size");
       toks = p.get_vec<int32_t>(hd.n);
@@ -660,9 +684,12 @@ void Runtime::serve(int port) {
       p.get(in.h.data(), in.h.size() * 4);
       p.get(in.pre.data(), in.pre.size() * 4);
       stream_in_tok = 0;
+      trace_host((std::string("receive the stream: ") + Peer::name(hd.type) + " " + std::to_string(hd.n)).c_str(), t_hd, Clock::now(), 3);
     }
+    p.reply_t_recv = Peer::now_us();
     const auto t0 = Clock::now();
     switch (hd.type) {
+      case Peer::SYNC: p.send_msg(Peer::SYNC, 0, 0); break;
       case Peer::HELLO: {
         const int32_t v[4] = {hp.n_layer, L0, L1, dspark ? dspark->block_size : 0};
         p.send_msg(Peer::HELLO, 0, 0, {{v, sizeof v}});
@@ -692,6 +719,7 @@ void Runtime::serve(int port) {
       default: throw std::runtime_error("peer: unknown message " + std::to_string(hd.type));
     }
     work_ms += ms_since(t0);
+    trace_host((std::string("serve ") + Peer::name(hd.type)).c_str(), t_hd, Clock::now(), 4);
   }
   stream_in = nullptr;
   fprintf(stderr, "# peer: the front left after %ld messages; %.1f MB received, %.1f MB sent; %.2f s in this range's work\n", msgs,
@@ -1052,7 +1080,7 @@ void Runtime::setup_experts() {
 Runtime::~Runtime() {
   fatal_phase("runtime: the last synchronize, trace and reports");
   if (peer) {
-    try { peer->send_msg(Peer::BYE, 0, 0); } catch (...) {}
+    try { peer_sync(8); peer->send_msg(Peer::BYE, 0, 0); } catch (...) {}
     fprintf(stderr, "# peer: %ld answers waited for, %.2f s in all (%.2f ms each); %.1f MB sent, %.1f MB received\n", peer->round_trips,
             peer->wait_ms / 1e3, peer->round_trips ? peer->wait_ms / peer->round_trips : 0.0, peer->sent_bytes / 1e6, peer->recv_bytes / 1e6);
   }
@@ -1334,6 +1362,7 @@ void Runtime::trace_write() {
   };
   meta(1, "host thread", true);
   meta(3, "steps (host)");
+  if (L0 > 0) meta(4, "messages from the front");
   meta(2, "GPU " + std::to_string(opt.gpu) + " main stream (dense part)");
   for (size_t i = 0; i < dies.size(); i++)
     meta(10 + (int)i, "GPU " + std::to_string(dies[i].dev) + (dies[i].st ? " experts" : " experts (second stream)"));
@@ -1348,7 +1377,14 @@ void Runtime::trace_write() {
     fprintf(f, ",\n{\"name\":\"%s\",\"ph\":\"X\",\"pid\":1,\"tid\":%d,\"ts\":%.1f,\"dur\":%.1f%s%s%s}", e.name.c_str(), e.tid, a,
             b - a, e.args.empty() ? "" : ",\"args\":{", e.args.c_str(), e.args.empty() ? "" : "}");
   }
-  fprintf(f, "\n]}\n");
+  // for scripts/trace_merge.py (README step 112): this trace's zero on this machine's monotonic
+  // clock, the layers, and the front's clock samples against the back
+  fprintf(f, "\n],\n\"clockEpochUs\":%.1f,\"layers\":[%d,%d],\"peerSync\":[",
+          std::chrono::duration<double, std::micro>(trace_epoch.time_since_epoch()).count(), L0, L1 - 1);
+  if (peer)
+    for (size_t i = 0; i < peer->sync.size(); i++)
+      fprintf(f, "%s[%.1f,%.1f,%.1f,%.1f]", i ? "," : "", peer->sync[i][0], peer->sync[i][1], peer->sync[i][2], peer->sync[i][3]);
+  fprintf(f, "]}\n");
   fclose(f);
   fprintf(stderr, "# trace: %zu events in %s (open in ui.perfetto.dev)\n", trace_evs.size(), trace_path.c_str());
   if (gen_gpu_us > 0) {  // README step 65
@@ -1658,7 +1694,7 @@ void Runtime::moe_launch(int L, int M) {
   mark("ffn.dispatch");
   // a short forward (decode, verify): see below. Its lists go next to x (README step 97), so one
   // copy stages both; moe_finish moves the pointers back
-  early_gather = cur_half < 0 && M <= kEarlyGatherMaxM;
+  early_gather = s_gather && cur_half < 0 && M <= kEarlyGatherMaxM;  // (no placement: no dies, no gather stream)
   if (early_gather) {
     d_moe.lists = (MoeList*)((char*)d_moe.lists + short_lists_off());
     h_moe.lists = (MoeList*)((char*)h_moe.lists + short_lists_off());
