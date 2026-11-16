@@ -102,7 +102,50 @@ clocks differ.
   `scripts/trace_critpath.py` say what the step waits for. Use rocprofv3 to rank and to count,
   then measure a change with the ordinary runs.
 
+## Hardware counters (`--pmc`)
+
+One more package, which `rocprofiler-sdk` does not pull in (without it: `undefined symbol:
+aqlprofile_register_agent`):
+
+    sudo apt install hsa-amd-aqlprofile6.3.4
+
+    $RP -L                                   # the counters: 86 per die on gfx906
+    timeout 1500 $RP --pmc MemUnitBusy MemUnitStalled -d prof -o p --output-format csv -- \
+        bin-hip/ds-completion ... -n 16
+
+`prof/p_counter_collection.csv` has one line per launch and counter: the kernel, the die, the
+grid, the counter's value, start and end.
+
+- **Few counters per run.** A set that needs more hardware counters than the card has is
+  refused ("error code 38: Request exceeds the capabilities of the hardware to collect"):
+  the five of the table below together are refused, and so is `L2CacheHit` with `FetchSize`.
+  Accepted here: each alone, `MemUnitBusy MemUnitStalled`, `VALUBusy VALUUtilization`,
+  `VALUBusy VALUInsts VFetchInsts`. One run per set.
+- **Always under `timeout`.** A refused set aborted the model at once, but left a small test
+  program hanging. `bin-hip/bench-launch` is the cheap way to ask whether a set is accepted.
+- **Very slow:** a 1.6 us launch takes 57-146 us; the model generates at 4-7 t/s where it
+  does 26.6. Sixteen tokens are enough. The output's bytes do not change.
+
+Example (`results/rocprof/counters.txt`; generation only, mean over a kernel's launches):
+
+| kernel | MemUnitBusy | MemUnitStalled | L2CacheHit | FetchSize, KB | VALUBusy |
+|---|---|---|---|---|---|
+| `fp8_gemv_kernel<64,1,1>` | 48.9% | 1.5% | 12.9% | 18,777 | 44.2% |
+| `fp8_gemv_kernel<8,1,1>` | 79.4% | 2.3% | 3.0% | 41,024 | 52.8% |
+| `canon_gate_up_kernel` | 36.3% | 0.1% | 41.1% | 13,791 | 21.2% |
+| `canon_down_kernel` | 31.9% | 0.1% | 43.9% | 6,761 | 22.3% |
+| `quant_act_kernel` | 2.0% | 0.2% | 32.6% | 37 | 1.5% |
+
+How to read them: a percentage is of the time the die was active during that launch, so for
+a kernel of a few microseconds it is mostly the launch around it (`quant_act`: 2% and 1.5%).
+`FetchSize` is what the kernel read from video memory; against the size of its weights it
+says whether it reads them once. A low `L2CacheHit` with a large `FetchSize` is a kernel
+streaming weights (the fp8 kernels); `MemUnitStalled` near zero says the memory unit is busy
+but not held up. The exact definitions are the expressions in
+`/opt/rocm-6.3.4/share/rocprofiler-sdk/counter_defs.yaml`; we have not checked any of these
+values against a kernel whose behaviour we know, so read them as relative until one is.
+
 ## Not tried yet
 
-`--pmc` (hardware counters per kernel; `rocprofv3 -L` lists what the card offers), `--hsa-trace`,
-and the kernel filters (`--kernel-include-regex`).
+`--hsa-trace`, the kernel filters (`--kernel-include-regex`, which should make a counter run on
+one kernel cheap), and the timeline in a viewer.

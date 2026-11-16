@@ -5137,3 +5137,21 @@ in step 49): of the HIP calls only the counts are usable.
 
 `docs/rocprof.md`: how to run it, the files, the timeline, how to read the numbers. Not tried:
 hardware counters (`--pmc`), and the timeline in a viewer.
+
+## Step 141: `rocprofv3`'s hardware counters
+
+Step 140 left `--pmc` untried. It needs one more package (`hsa-amd-aqlprofile6.3.4`, installed
+by the person; `rocprofiler-sdk` does not pull it in). Then the card reports 86 counters per die.
+
+**What works** (`results/rocprof/counters.txt`; sclk 6): each of twelve counters alone and
+some small sets; a set that needs more hardware counters than the card has is refused, e.g.
+five at once, or `L2CacheHit` with `FetchSize`. A refusal aborted the model at once and left
+a small test program hanging, so every counter run goes under `timeout`. The cost is of
+another order than tracing: a 1.6 us launch takes 57-146 us, the model generates at 4.0-7.4
+t/s against 26.6; the output's bytes do not change.
+
+**A first table**, four 16-token runs with one set each, generation only: the fp8 kernels
+read 18.8 MB (`<64>`) and 41.0 MB (`<8>`) per launch with the memory unit busy 49% and 79% of
+the time and stalled 1.5-2.3%, cache hits 13% and 3%; the two expert kernels read 13.8 and
+6.8 MB per launch, memory unit busy 32-36%, cache hits 41-44%. None of the values is checked
+against a kernel of known behaviour yet: relative for now. `docs/rocprof.md` has the how-to.

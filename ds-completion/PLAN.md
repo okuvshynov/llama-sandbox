@@ -559,6 +559,8 @@ Step 139: programs out of the library directories: `apps/` (the CLI, `ds-inspect
 `bench/`; `src/` and `hip/` are libraries only. All programs rebuilt; the held-out set matches the reference values.
 Step 140: `rocprofv3` (rocprofiler-sdk 6.3.4) works on our binary: per-kernel device time, HIP call counts,
 copies; -21% to -26% speed, same output. `docs/rocprof.md`. ~2,200 launches per generated token.
+Step 141: its hardware counters work (with `hsa-amd-aqlprofile6.3.4`): few per run, 4-7 t/s, same output;
+a first per-kernel table (memory unit busy, cache hits, kilobytes fetched). Values not yet checked against a known kernel.
 constructor in parts.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits

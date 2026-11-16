@@ -150,7 +150,8 @@ Options:
   machines each half writes its own; `scripts/trace_merge.py FRONT BACK -o MERGED` makes one
   trace on the front's clock (`TRACE=1 scripts/split-measure.sh` does all of it; README step 112).
 - Time per kernel on the device, HIP call counts, memory copies: AMD's `rocprofv3` in front of the
-  command ([docs/rocprof.md](docs/rocprof.md), README step 140). It slows generation by 21-26%.
+  command ([docs/rocprof.md](docs/rocprof.md), README steps 140-141). It slows generation by 21-26%;
+  with hardware counters (`--pmc`) to 4-7 t/s.
 - `--gpu D`: the die for the runtime (default 0).
 - `--placement FILE`: routed experts on GPUs, the file's top-ranked ones that fit (10-30 s upload).
 - `--moe-dies 0,1,2,3`: the dies that hold experts (default all four).
