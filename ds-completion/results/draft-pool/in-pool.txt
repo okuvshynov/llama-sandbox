@@ -1,0 +1,42 @@
+# The draft's routed experts in the home die's expert pool (README step 123).
+# Old: commit 566de25's build. New: 566de25 + this change. sclk 6, 2026-11-15; nothing read from storage in any run.
+#
+# 1. Old against new, cpp-matrix, a fixed draft length so that the drafts do not depend on timing:
+#    DS_DRAFT_TOKEN_LOG=FILE bin-hip/ds-completion -m $M -p PROMPT --chat -n 120 --rt $F8 --dspark $D --spec --spec-n 5 --canon [OPTIONS] --record FILE
+#    compared: the output's bytes, and per verify step the drafts verified, the drafts accepted, the drafted ids
+#    and the emitted ids (the token log without its two time columns).
+#
+#    OPTIONS                                              draft's experts (new)   output   ids, 26 steps   accepted
+#    --placement placements/study30.txt                   in the pool             same     same            96 / 96
+#    --placement placements/study30.txt --moe-dies 1,2,3  its own arrays          same     same            96 / 96
+#    (none)                                               its own arrays          same     same            96 / 96
+#    The three configurations also print the same bytes as each other.
+#
+# 2. Memory on GPU 0 with the placement on all four dies (stderr's startup table, GB), and the experts placed:
+== old
+# dspark: 3 layers, block 5, 128 experts top-3, targets 37 38 39; 7.7 GB on GPU 0
+# runtime: 6096 experts (39.7% of the loaded layers' pairs) on GPUs (0: 801, 1: 1765, 2: 1765, 3: 1765), loaded in 5.0 s
+#   draft (DSpark)                                                   8.02   0.00   0.00   0.00
+#   expert slots                                                    15.07  33.20  33.20  33.20
+#   free                                                             0.77   0.76   0.76   0.76
+== new
+# dspark: 3 layers, block 5, 128 experts top-3, targets 37 38 39; 0.5 GB on GPU 0, its routed experts in the expert pool
+# runtime: 6097 experts (39.7% of the loaded layers' pairs) on GPUs (0: 802, 1: 1765, 2: 1765, 3: 1765), loaded in 6.2 s
+#   draft (DSpark)                                                   0.79   0.00   0.00   0.00
+#   expert slots                                                    22.31  33.20  33.20  33.20
+#   free                                                             0.76   0.76   0.76   0.76
+
+# 3. New, the fastest single-machine settings (the command of results/record/fast.txt), 300 tokens, twice:
+#    the same bytes as results/cache-test/plain-canon-static/cpp-matrix.out.
+  "args": {"mode": "chat", "effort": 75, "n": 300, "threads": 16, "runtime": true, "canon": true, "spec": true,
+  "spec": {"steps": 66, "plain_steps": 0, "accepted": 233, "verified": [0, 3, 7, 12, 10, 34], "draft_ms": 513.3, "verify_ms": 4889.3},
+  "experts": {"gpu_uses": 72768, "cpu_uses": 12192, "dies": [0, 1, 2, 3], "placed": [802, 1765, 1765, 1765],
+                         "loads_started_by_die": [0, 1198, 1217, 1275]}},
+  "counters": {"load_s": 115.585, "prompt_s": 0.5916, "prompt_tps": 42.259, "gen_tokens": 300, "gen_s": 5.4647, "gen_tps": 54.898}
+  "args": {"mode": "chat", "effort": 75, "n": 300, "threads": 16, "runtime": true, "canon": true, "spec": true,
+  "spec": {"steps": 66, "plain_steps": 0, "accepted": 233, "verified": [0, 3, 7, 12, 10, 34], "draft_ms": 516.1, "verify_ms": 4894.4},
+  "experts": {"gpu_uses": 72763, "cpu_uses": 12197, "dies": [0, 1, 2, 3], "placed": [802, 1765, 1765, 1765],
+                         "loads_started_by_die": [0, 1198, 1217, 1275]}},
+  "counters": {"load_s": 115.699, "prompt_s": 0.5821, "prompt_tps": 42.948, "gen_tokens": 300, "gen_s": 5.4733, "gen_tps": 54.812}
+
+# 54.90 and 54.81 t/s (the old build the same evening: 54.48-55.11 in eight runs); draft_ms 513.3 and 516.1 (old: 512.9-515.5).

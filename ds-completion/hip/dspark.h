@@ -2,7 +2,9 @@
 // DSparkAttention, DSparkMarkovHead, DSparkConfidenceHead, Transformer.forward_spec), on the
 // runtime's GPU. Weights: the DSpark GGUF (arch "dflash"); its dense linears are exact fp8 in
 // bf16 and are re-blocked to fp8 at load (fp8_repack_bf16), so they run through the same exact
-// fp8 GEMV as the main model; its 3 x 128 routed experts are uploaded whole to the home die.
+// fp8 GEMV as the main model. Its 3 x 128 routed experts have the main model's shapes and type:
+// they live in slots of the home die's expert pool when there is one (pool_slots, load_experts;
+// README step 123), else in arrays of their own on the home die.
 //
 // How it drafts (model.py):
 //   - The main forward hands over its stream at the *inputs* of layers 37, 38, 39, averaged over
@@ -18,6 +20,7 @@
 // Numerics as the main runtime: fp32, fake quantization where the reference has it.
 #pragma once
 
+#include "expert_pool.h"
 #include "fp4_moe.h"
 
 #include <hip/hip_runtime.h>
@@ -36,8 +39,13 @@ struct DraftResult {
 
 class DSpark {
  public:
-  DSpark(Runtime& rt, const std::string& gguf_path);
+  // experts_in_pool: the routed experts are not uploaded here; the runtime then gives them
+  // pool_slots() slots of the home die's pool with load_experts() (before the first draft)
+  DSpark(Runtime& rt, const std::string& gguf_path, bool experts_in_pool = false);
   ~DSpark();
+  int pool_slots() const { return in_pool ? (int)L.size() * n_expert : 0; }
+  // expert e of draft layer l into slot base + l * n_expert + e (current device = pool.dev)
+  void load_experts(ExpertPool& pool, int base);
 
   int block_size = 5;
   int32_t noise_id = 128799;
@@ -76,6 +84,12 @@ class DSpark {
   float route_scale = 1.5f;
   bool route_norm = true;
   std::vector<LayerW> L;
+  // experts in a pool: until load_experts, each layer's gate / up / down tensors in the mapped file
+  bool in_pool = false;
+  struct ExpertSrc { const void *gate, *up, *down; };
+  std::vector<ExpertSrc> ex_src;
+  void* file_map = nullptr;
+  size_t file_bytes = 0;
   Fp8 fc;
   const float *enc_norm = nullptr, *out_norm = nullptr;
   const uint16_t* markov_w2 = nullptr;      // device [n_vocab][rank] bf16

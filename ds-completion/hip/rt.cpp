@@ -381,7 +381,11 @@ Runtime::Runtime(const Model& model, RtOptions options, const std::string& fp8_p
 
   mem_mark("sequence state: window, compressed KV, indexer keys (--max-ctx)");
   if (!opt.dspark.empty() && !has_head()) throw std::runtime_error("runtime: the draft needs the last layers and the head");
-  if (!opt.dspark.empty()) dspark.reset(new DSpark(*this, opt.dspark));  // before the pools take the rest
+  if (!opt.dspark.empty()) {  // before the pools take the rest
+    // with an expert pool on the home die the draft's routed experts go into its slots (setup_experts)
+    const bool home_pool = !opt.placement.empty() && std::count(opt.moe_dies.begin(), opt.moe_dies.end(), opt.gpu) > 0;
+    dspark.reset(new DSpark(*this, opt.dspark, home_pool));
+  }
   mem_mark("draft (DSpark)");
   setup_experts();
 
@@ -1024,7 +1028,10 @@ void Runtime::setup_experts() {
   mem_mark("expert path buffers (per die: scratch, staging)");
   std::vector<int> cap;
   const int spare = opt.load_test >= 0 ? kLoadTestSlots : 0;
-  for (const Die& d : dies) cap.push_back(std::max(0, pool_slots_that_fit(d.dev, E, F, (size_t)(opt.reserve_gb * 1e9)) - spare));
+  // the home die's pool also holds the draft's experts: after the main model's slots, before the spare ones
+  const int n_draft = dspark ? dspark->pool_slots() : 0;
+  for (const Die& d : dies)
+    cap.push_back(std::max(0, pool_slots_that_fit(d.dev, E, F, (size_t)(opt.reserve_gb * 1e9)) - spare - (d.dev == home ? n_draft : 0)));
   std::vector<bool> loaded(hp.n_layer);
   for (int L = 0; L < hp.n_layer; L++) loaded[L] = m.layers[L].loaded;
   placement = place_experts(read_placement(opt.placement), hp.n_layer, X, cap, loaded);
@@ -1035,7 +1042,7 @@ void Runtime::setup_experts() {
     th.emplace_back([&, i] {
       try {
         Die& d = dies[i];
-        d.pool = pool_create(d.dev, placement.used[i] + spare, E, F);
+        d.pool = pool_create(d.dev, placement.used[i] + (d.dev == home ? n_draft : 0) + spare, E, F);
         CHECK(hipSetDevice(d.dev));
         hipStream_t ls;
         CHECK(hipStreamCreate(&ls));
@@ -1054,8 +1061,11 @@ void Runtime::setup_experts() {
     });
   for (auto& t : th) t.join();
   for (auto& e : errors) if (!e.empty()) throw std::runtime_error("expert upload: " + e);
-  mem_mark("expert slots");
   CHECK(hipSetDevice(home));
+  if (n_draft > 0)
+    for (size_t i = 0; i < dies.size(); i++)
+      if (dies[i].dev == home) dspark->load_experts(dies[i].pool, placement.used[i]);
+  mem_mark("expert slots");
   std::vector<int>& table = h_table;
   table.assign((size_t)hp.n_layer * X, -1);
   size_t n_gpu = 0;

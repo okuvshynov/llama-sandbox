@@ -4574,3 +4574,46 @@ every output the stored one's bytes; nothing read from storage):
   runs lose, ~255 are the drafts and ~170 the verify steps.
 - **The price of the rule is small here:** with every die adapting, 0.1 points more of the
   uses ran on GPUs.
+
+## Step 123: the draft's routed experts in the home die's expert pool (nothing else changes)
+
+**Why.** A draft expert and a main-model expert are the same thing: three mxfp4 matrices of the
+same shapes (5120 x 2304 twice, 2304 x 5120), 18.8 MB, the same layout on the GPU and the same
+kernels. They differ in number and in how they are kept: the main model has 15,360 (40 layers
+of 384, 6 per token), ~6,100 of them in the dies' slot pools and under the cache; the draft has
+384 (3 layers of 128, 3 per token), all in arrays of their own on the home die, 7.2 GB that the
+main model's ~800 slots there cannot use. A prompt uses ~120 of the 384 (step 87). To give the
+unused ones' memory to the main model, the draft's experts first have to be slots.
+
+**This step only moves them.** With an expert pool on the home die, the draft no longer uploads
+its experts: the runtime sizes that pool for the main model's slots, then the draft's 384, then
+any spare ones, and the draft loads its experts into its range (`DSpark::load_experts`). A draft
+layer's experts are the pool's view moved to the layer's first slot, so the kernels still take
+expert ids and no kernel changed. All 384 stay resident; nothing is evicted, masked or cached.
+Without a pool on the home die (no `--placement`, or `--moe-dies` without it) the draft keeps
+its own arrays, as before.
+
+**Checked** (`results/draft-pool/in-pool.txt`; sclk 6), the old build against the new with a
+fixed draft length (`--spec-n 5`, so the drafts do not depend on timing), cpp-matrix, 120 tokens:
+
+| placement | the draft's experts (new) | output | drafted and emitted ids, 26 steps |
+|---|---|---|---|
+| all four dies | in the pool | same | same |
+| dies 1-3 | its own arrays | same | same |
+| none | its own arrays | same | same |
+
+The ids are the stricter test: the output only says the main model is unchanged, the drafted
+ids that the draft is. The three configurations print the same bytes as each other.
+
+**Memory** on GPU 0 moves from one line of the startup table to another: "draft" 8.02 -> 0.79
+GB, "expert slots" 15.07 -> 22.31 GB, free 0.77 -> 0.76. The main model got one slot more on
+the home die (802, was 801): one allocation where the draft made eighteen.
+
+**Speed** with the fastest settings, twice: 54.90 and 54.81 t/s (the old build that evening:
+54.48-55.11 in eight runs), the draft 513 and 516 ms (512.9-515.5), the stored output's bytes.
+
+**Next, not built:** leaving draft experts out. Two things to decide first. What a draft expert
+that is not resident means: the draft has no CPU path; masking such experts in its router would
+let it choose among the resident ones, which cannot change the output, only how often drafts
+are accepted. And how the resident set follows the prompt: loads into the home die during a
+run are what step 86 removed, 8% in step 122's measurement.

@@ -246,6 +246,7 @@ Unless stated: sclk 2, 16 CPU threads (32 before README step 18), the study30 pl
 | 120 | `record/knobs.txt` | the command in the file's header, without and with the knobs it names |
 | 121 | `record/timing-options.txt` | the two commands in the file with `--record`, plain and with the switches and options it names |
 | 122 | `record/loads-by-die.txt` | the command of `record/fast.txt` with `--record`, with this build and with a build that has the one-line change in the file's header |
+| 123 | `draft-pool/in-pool.txt` | the command in the file with a build of 566de25 and with this one; the ids: each token log without its time columns (`awk -F'\|' '{split($1,a," "); print a[1], a[2], "\|" $2 "\|" $3}'`), compared with `cmp`; then the command of `record/fast.txt` |
 
 ## 7. Open items (to confirm)
 

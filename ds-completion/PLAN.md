@@ -513,6 +513,9 @@ Step 121: the options and switches that perturb timing in the record (`profile`,
 runs within ~1%.
 Step 122: the cache's loads per die in the record. Step 86's rule (no loads on the home die)
 switched off on purpose: 13% of the loads there, -8.1%, drafts +50%, verify steps +3.5%.
+Step 123: the draft's 384 experts in slots of the home die's pool (the same bytes, kernels, memory and
+speed; drafted ids identical). Next: leaving some out (a router mask for the ones not resident; how
+the resident set changes without loads into the home die during a run).
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front

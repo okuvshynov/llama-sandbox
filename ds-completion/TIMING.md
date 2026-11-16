@@ -199,7 +199,7 @@ decode time at best against a 10% bound for perfect guesses (step 64).
 ## Memory
 
 Expert slots fill 84% of the four GPUs (6,126 slots of 18.8 MB at 4k context). GPU 0 also holds
-the draft (8.0 GB, mostly its own 384 mxfp4 experts), the dense fp8 weights (6.85), the small
+the draft (8.0 GB, mostly its own 384 mxfp4 experts; since step 123 they are 384 slots of die 0's expert pool, the same memory), the dense fp8 weights (6.85), the small
 weights (1.9) and activations (0.8),
 so it has 831 slots against 1,765 on each other GPU; 64k context costs only 0.4 GB (README step
 60, `results/gpu-memory/`). The runtime prints this ledger at startup.

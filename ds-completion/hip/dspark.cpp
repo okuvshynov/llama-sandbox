@@ -53,7 +53,7 @@ DSpark::Fp8 DSpark::fp8(const void* bf16, int N, int K, const std::string& name)
   return w;
 }
 
-DSpark::DSpark(Runtime& r, const std::string& path) : rt(r) {
+DSpark::DSpark(Runtime& r, const std::string& path, bool experts_in_pool) : rt(r), in_pool(experts_in_pool) {
   const Hparams& hp = rt.hp;
   const int E = hp.n_embd, HC = hp.hc_mult, HD = hp.head_dim, NH = hp.n_head, F = hp.n_ff_exp;
   if (!fp8_codec_selftest()) throw std::runtime_error("dspark: e4m3 codec mismatch");
@@ -146,10 +146,16 @@ DSpark::DSpark(Runtime& r, const std::string& path) : rt(r) {
     w.hc_ffn_fn = f32(p + "hc_ffn_fn.weight", {E * HC, mix});
     w.hc_ffn_base = f32(p + "hc_ffn_base.weight", {mix});
     w.hc_ffn_scale = f32(p + "hc_ffn_scale.weight", {3});
-    w.ex = {fp4_upload(T(p + "ffn_gate_exps.weight", GGML_TYPE_MXFP4, {E, F, n_expert}), E, F, n_expert, up_s),
-            fp4_upload(T(p + "ffn_up_exps.weight", GGML_TYPE_MXFP4, {E, F, n_expert}), E, F, n_expert, up_s),
-            fp4_upload(T(p + "ffn_down_exps.weight", GGML_TYPE_MXFP4, {F, E, n_expert}), F, E, n_expert, up_s)};
-    bytes += (size_t)3 * n_expert * F * E / 32 * 17;
+    const void* gate_t = T(p + "ffn_gate_exps.weight", GGML_TYPE_MXFP4, {E, F, n_expert});
+    const void* up_t = T(p + "ffn_up_exps.weight", GGML_TYPE_MXFP4, {E, F, n_expert});
+    const void* down_t = T(p + "ffn_down_exps.weight", GGML_TYPE_MXFP4, {F, E, n_expert});
+    if (in_pool) {
+      ex_src.push_back({gate_t, up_t, down_t});  // load_experts() puts them in pool slots
+    } else {
+      w.ex = {fp4_upload(gate_t, E, F, n_expert, up_s), fp4_upload(up_t, E, F, n_expert, up_s),
+              fp4_upload(down_t, F, E, n_expert, up_s)};
+      bytes += (size_t)3 * n_expert * F * E / 32 * 17;
+    }
     w.clamp = clamp[i];
     w.clamp_sh = clamp_sh[i];
   }
@@ -169,7 +175,12 @@ DSpark::DSpark(Runtime& r, const std::string& path) : rt(r) {
   markov_w2 = (const uint16_t*)upload(T("markov_w2.weight", GGML_TYPE_BF16, {rank, V}), (size_t)V * rank * 2);
   const float* cp = (const float*)T("conf_proj.weight", GGML_TYPE_F32, {E + rank, 1});
   conf_proj.assign(cp, cp + E + rank);
-  munmap(map, st.st_size);
+  if (in_pool) {  // the experts are still to be read from the file: unmapped by load_experts
+    file_map = map;
+    file_bytes = st.st_size;
+  } else {
+    munmap(map, st.st_size);
+  }
   gguf_free(g);
   ggml_free(ctx);
 
@@ -232,17 +243,48 @@ DSpark::DSpark(Runtime& r, const std::string& path) : rt(r) {
   owned.push_back(moe_scratch);
   fprintf(stderr, "# dspark: %d layers, block %d, %d experts top-%d, targets", n_layer, block_size, n_expert, n_used);
   for (int t : target_layers) fprintf(stderr, " %d", t);
-  fprintf(stderr, "; %.1f GB on GPU %d\n", (bytes + (size_t)n_layer * 165e6) / 1e9, rt.opt.gpu);
+  fprintf(stderr, "; %.1f GB on GPU %d%s\n", (bytes + (size_t)n_layer * 165e6) / 1e9, rt.opt.gpu,
+          in_pool ? ", its routed experts in the expert pool" : "");
+}
+
+// The routed experts into the home die's pool: the same codes and scales as fp4_upload's (both
+// unpack ggml's blocks with fp4_unpack), in slots instead of one array per tensor; a layer's
+// GpuExperts is the pool's view moved to its first slot, so the kernels' ids stay expert ids.
+void DSpark::load_experts(ExpertPool& pool, int base) {
+  if (!in_pool) throw std::runtime_error("dspark: load_experts without experts_in_pool");
+  const int E = rt.hp.n_embd, F = rt.hp.n_ff_exp;
+  const size_t gate_bytes = (size_t)F * E / 32 * 17;  // one expert's ggml blocks, gate or up or down
+  hipStream_t ls;
+  CHECK(hipStreamCreate(&ls));
+  for (size_t l = 0; l < L.size(); l++) {
+    const int first = base + (int)l * n_expert;
+    for (int e = 0; e < n_expert; e++) {
+      auto ex = [&](const void* t) { return (const char*)t + (size_t)e * gate_bytes; };
+      pool_load(pool, first + e, ex(ex_src[l].gate), ex(ex_src[l].up), ex(ex_src[l].down), ls);
+    }
+    L[l].ex = pool.view;
+    for (GpuMatrix* m : {&L[l].ex.gate, &L[l].ex.up, &L[l].ex.down}) {
+      m->codes += (size_t)first * pool.slot_bytes;
+      m->scales += (size_t)first * pool.slot_bytes;
+    }
+  }
+  CHECK(hipStreamSynchronize(ls));
+  CHECK(hipStreamDestroy(ls));
+  munmap(file_map, file_bytes);
+  file_map = nullptr;
+  ex_src.clear();
 }
 
 DSpark::~DSpark() {
   if (hidden_log) fclose(hidden_log);
   if (route_log) fclose(route_log);
-  for (LayerW& w : L) {
-    fp4_free(w.ex.gate);
-    fp4_free(w.ex.up);
-    fp4_free(w.ex.down);
-  }
+  if (!in_pool)  // (in a pool: the slots are the pool's)
+    for (LayerW& w : L) {
+      fp4_free(w.ex.gate);
+      fp4_free(w.ex.up);
+      fp4_free(w.ex.down);
+    }
+  if (file_map) munmap(file_map, file_bytes);
   for (void* p : owned) (void)hipFree(p);
 }
 
