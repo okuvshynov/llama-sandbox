@@ -547,6 +547,9 @@ commit with it: def1a2a. Next: the router lookahead (step 63), the draft's unuse
 `DS_DRAFT_KEEP`. Kept as checks: `DS_ATTN_CHECK`, `DS_EARLY_ROWS`.
 Step 135: the router lookahead (step 63) out: 174 lines; the last commit with it: 8798740. The draft's
 hidden-state dump stays: `ds-test` and `ref/dspark_check.py` use it. Next: `DS_DRAFT_KEEP`.
+Step 136: `DS_DRAFT_KEEP` and the hidden-state dump stay for now. `hip/rt.cpp` part 1: the trace, the
+profile's groups and the memory ledger into `hip/rt_trace.cpp` (+ `hip/rt_internal.h`); speed unchanged.
+Next: the two-machine code into its own file, then the constructor in parts.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front

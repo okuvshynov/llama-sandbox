@@ -261,6 +261,7 @@ Unless stated: sclk 2, 16 CPU threads (32 before README step 18), the study30 pl
 | 133 | `cleanup/study-draft2.txt` | the commands in the file with a build of 012bf44 and with this one |
 | 134 | `cleanup/study-load-test.txt` | the commands in the file with a build of def1a2a and with this one |
 | 135 | `cleanup/study-route-ahead.txt` | the commands in the file with a build of 8798740 and with this one |
+| 136 | `cleanup/rt-split-trace.txt` | the commands in the file with a build of 6425e03 and with this one |
 
 ## 7. Open items (to confirm)
 

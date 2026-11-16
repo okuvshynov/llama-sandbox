@@ -5008,3 +5008,27 @@ with the reference, the check a new draft or checkpoint would need. A search of 
 files alone had found no caller; the search now covers `src/`, `hip/`, `ref/`, `scripts/` and
 `results/`. Of the switches removed in steps 133-135, only their own filed study scripts name
 them.
+
+## Step 136: `hip/rt.cpp` split, part 1: observability into `hip/rt_trace.cpp`
+
+The study removals end with step 135: the draft's hidden-state dump and `DS_DRAFT_KEEP` stay
+for now (the person's decision). The last item of step 131's order is `hip/rt.cpp`, 2,123
+lines holding four things: construction and teardown (~600 lines; the constructor alone ~360),
+the forward (~800: attention, the experts' launch and finish, the blocks, the entry points),
+observability (~250) and the two-machine code (~150).
+
+**This step moves the third out, whole functions and nothing inside them changed:**
+`hip/rt_trace.cpp` has the startup memory ledger, `mark()` with `--profile`'s bookkeeping, and
+all of `--trace`; `hip/rt_internal.h` has the two helpers both files use (the error check and
+the clock). `rt.cpp` is 1,872 lines.
+
+The one risk is speed: `mark()` runs at every profile group of every layer and the compiler
+can no longer inline it from another file.
+
+**Checked** old build against new (`results/cleanup/rt-split-trace.txt`; sclk 6): with
+`--profile`, plain and speculative, every stderr line the same but for its numbers; a traced
+run the same tracks and the same 52 kinds of spans; the memory ledger the same text; the
+fastest settings three times 54.52 / 54.90 / 54.61 t/s before and 54.53 / 54.61 / 54.57 after
+(means 54.68 and 54.57, inside the ~1% spread of repeats).
+
+Next: the two-machine code the same way, then the constructor in parts.

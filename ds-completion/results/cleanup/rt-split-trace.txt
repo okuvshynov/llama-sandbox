@@ -1,0 +1,15 @@
+# hip/rt.cpp split, part 1 (README step 136): the trace, the profile's groups and the memory ledger into hip/rt_trace.cpp.
+# Before: the build of commit 6425e03. After: 6425e03 + this change. sclk 6, 2026-11-16. Each command with both builds.
+# P = "What are the differences between TCP and UDP, and when would you choose each?"; PC = cpp-matrix of results/spec-heldout/prompts.txt.
+# Every run: --rt $F8 --canon --placement placements/study30.txt --record F.
+#
+#   plainprof  -p P --chat -n 32 --profile                              stdout and output hash same; all 60 '#' lines the same but for their numbers; 21.84 / 22.07 t/s
+#   prof       -p PC --chat -n 120 --dspark $D --spec --spec-n 5        stdout and output hash same; 26 steps, 96 accepted both; all 66 '#' lines the same
+#              --cache-loads 800 --cache-period 8 --cache-wait --profile  but for their numbers; 41.09 / 40.86 t/s
+#   traced     -p PC --chat -n 300 --dspark $D --spec --cache-loads 800  stdout and output hash same; the trace: the same tracks and the same 52 kinds of spans,
+#              --cache-period 8 --cache-wait --trace F                   104,501 / 104,586 spans (*); 49.28 / 49.04 t/s
+#   fast       the same without --trace, three times                    stdout and output hash same; 54.52 54.90 54.61 / 54.53 54.61 54.57 t/s
+#                                                                       (verify steps 66 65 66 / 66 66 66: the draft-length rule follows time)
+# (*) the counts differ by the CPU's expert spans (2,418 / 2,419) and by per-token spans of steps that verified different numbers of
+#     drafts: what differs between any two runs with the cache and the draft-length rule.
+# The startup memory ledger ("# GPU memory ..." and its 12 lines): the same text.
