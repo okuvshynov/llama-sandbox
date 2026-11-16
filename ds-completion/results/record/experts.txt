@@ -1,0 +1,32 @@
+# The routed experts' uses, placement and cache totals in the record (README step 119).
+# Commit 13ea50c+changes (this change), sclk 6, 2026-11-15; read_bytes 0 in every phase of every run.
+# Of each record the "prompt", "experts" and "counters" lines, then the stderr lines "experts" repeats.
+
+== no placement (the prompt of results/record/first.txt, 32 tokens): the same output as before
+  "prompt": {"tokens": 20, "hash": "fnv1a64:ca691ad07d0dd8ee"},
+  "read_bytes": {"load": 0, "prompt": 0, "gen": 0},
+  "experts": {"gpu_uses": 0, "cpu_uses": 12240, "dies": [], "placed": [],
+               "cache": null},
+  "counters": {"load_s": 3.970, "prompt_s": 0.9381, "prompt_tps": 21.321, "gen_tokens": 32, "gen_s": 2.1880, "gen_tps": 14.625}
+# routed experts: 0.0% on GPUs (0 of 12240)
+
+== cpp-matrix, --placement placements/study30.txt --moe-dies 1,2,3 --canon, plain decoding, -n 40:
+== the same output as step 118's run with all four dies and --spec --spec-n 5
+  "prompt": {"tokens": 25, "hash": "fnv1a64:32138dd9ac19a294"},
+  "read_bytes": {"load": 0, "prompt": 0, "gen": 0},
+  "experts": {"gpu_uses": 9140, "cpu_uses": 6220, "dies": [1, 2, 3], "placed": [1765, 1765, 1765],
+               "cache": null},
+  "counters": {"load_s": 9.592, "prompt_s": 0.6257, "prompt_tps": 39.957, "gen_tokens": 40, "gen_s": 1.6985, "gen_tps": 23.550}
+# runtime: 5295 experts (34.5% of the loaded layers' pairs) on GPUs (1: 1765, 2: 1765, 3: 1765), loaded in 4.9 s
+# routed experts: 59.5% on GPUs (9140 of 15360)
+
+== the fastest single-machine settings (the command of results/record/fast.txt), cpp-matrix, 300 tokens:
+== the same bytes as results/cache-test/plain-canon-static/cpp-matrix.out
+  "prompt": {"tokens": 25, "hash": "fnv1a64:32138dd9ac19a294"},
+  "read_bytes": {"load": 0, "prompt": 0, "gen": 0},
+  "experts": {"gpu_uses": 72804, "cpu_uses": 12156, "dies": [0, 1, 2, 3], "placed": [801, 1765, 1765, 1765],
+               "cache": {"rebalances": 32, "swaps_planned": 3857, "loads_started": 3686, "loads_published": 3621}},
+  "counters": {"load_s": 116.699, "prompt_s": 0.6114, "prompt_tps": 40.889, "gen_tokens": 300, "gen_s": 5.4982, "gen_tps": 54.564}
+# runtime: 6096 experts (39.7% of the loaded layers' pairs) on GPUs (0: 801, 1: 1765, 2: 1765, 3: 1765), loaded in 5.0 s
+# routed experts: 85.7% on GPUs (72804 of 84960)
+# expert cache: 32 rebalances, 3857 swaps planned, 3686 loads started, 3621 published

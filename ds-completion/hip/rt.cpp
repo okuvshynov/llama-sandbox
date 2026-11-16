@@ -1245,6 +1245,17 @@ void Runtime::gemv8(const Fp8W& w, Codes c, float* yout, int rows_per_group, int
 
 // profile: each layer's GPU wait for the CPU (its "ffn.wait_for_cpu_experts" interval) next to
 // what the CPU had to do there, folded into the histogram (call once the step's marks are done)
+Runtime::ExpertStats Runtime::expert_stats() const {
+  ExpertStats r;
+  for (size_t i = 0; i < dies.size(); i++) {
+    r.dies.push_back(dies[i].dev);
+    r.placed.push_back(i < placement.used.size() ? placement.used[i] : 0);
+  }
+  r.has_cache = (bool)cache;
+  if (cache) r.cache = cache->stats();
+  return r;
+}
+
 void Runtime::fold_misses() {
   for (const MissRec& r : miss_recs) {
     float w = 0;

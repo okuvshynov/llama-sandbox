@@ -153,6 +153,10 @@ class Runtime {
   // time spent per decode step (host wall clock), split at the CPU-expert waits
   struct Times { double total_ms = 0, cpu_moe_ms = 0, wait_ms = 0; int gpu_experts = 0, cpu_experts = 0; } last;
   long total_gpu_experts = 0, total_cpu_experts = 0;  // over the run (hit rate)
+  // for --record (docs/record.md): the experts each die of moe_dies held after startup (empty
+  // without --placement), and the adaptive cache's totals so far (has_cache: --cache-loads)
+  struct ExpertStats { std::vector<int> dies, placed; bool has_cache = false; ExpertCache::Stats cache; };
+  ExpertStats expert_stats() const;
   // profile = true: GPU events between groups of launches; per group, the GPU time of the
   // last step (gaps included: a group charged with idle time was waiting on the host)
   bool profile = false;

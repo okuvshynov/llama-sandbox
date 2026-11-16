@@ -4435,3 +4435,39 @@ the speculative loop (the rule, the commit, printing) is 63 ms, 1.1%.
 
 **The object also proves the feature ran:** `"spec": true` among the arguments with `steps` 0
 would be a run that asked for speculation and did none.
+
+## Step 119: the routed experts' uses, placement and cache totals in the record
+
+`--record` with `--rt` now writes an `"experts"` object (`null` on the CPU path):
+
+| field | what |
+|---|---|
+| `gpu_uses`, `cpu_uses` | routed-expert uses by where they ran, the whole run: the prompt, the generation, and the drafts a verify step rejected (they were computed) |
+| `dies`, `placed` | the dies that hold experts and how many each held after startup; both empty without `--placement` |
+| `cache` | with `--cache-loads`: `rebalances`, `swaps_planned`, `loads_started`, `loads_published` so far; else `null` |
+
+The runtime gained one accessor for it (`Runtime::expert_stats()`): the placement and the cache
+are private there. Totals again: the share of experts on GPUs is `gpu_uses / (gpu_uses + cpu_uses)`.
+
+**Checked** (`results/record/experts.txt`; sclk 6, nothing read from storage in any run), each
+against the stderr lines of the same run:
+
+| run | uses on GPUs / CPU | placed | cache |
+|---|---|---|---|
+| no placement, 32 tokens | 0 / 12,240 | `[]` | `null` |
+| study30 on dies 1-3, `--canon`, plain, 40 tokens | 9,140 / 6,220 (59.5%) | `[1765, 1765, 1765]` | `null` |
+| the fastest settings, 300 tokens | 72,804 / 12,156 (85.7%) | `[801, 1765, 1765, 1765]` | 32 rebalances, 3,857 swaps planned, 3,686 loads started, 3,621 published |
+
+The cache's numbers at the record's time equal the ones the runtime prints when it shuts down:
+loads are started and published only between forwards, and the record is written after the last.
+
+**Outputs:** the first as before; the third the stored one's bytes (54.56 t/s). The second, on
+three dies without speculation, printed the same 40 tokens as step 118's run on four dies with
+`--spec --spec-n 5`: `--canon`'s promise, seen in passing.
+
+**One whole record is kept as an example:** `results/record/example.json`, the third run's file
+as the program wrote it (its command, commit and clock level are in `results/record/README.txt`,
+since JSON holds no comment).
+
+**Proof that the features ran** is now in the record for all three: `spec.steps`, `placed`, and
+`cache.loads_published` (a cache that never got to load would show 0 next to `"cache_loads": 800`).

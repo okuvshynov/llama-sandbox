@@ -177,8 +177,9 @@ Options:
   hash, the GPU clock setting (each card's level, or `"auto"`), the bytes read from storage during
   the load, the prompt and the generation (0: nothing waited for the disk), with `--spec` the
   speculative loop's totals (steps, drafts accepted, steps by drafts verified, draft and verify
-  time), load time, prompt and generation t/s. A first version, to grow
-  ([docs/record.md](docs/record.md), README steps 115-118). One prompt only (not with `-i`, `--serve`, `--teacher`); a run that does not
+  time), the routed experts' uses on GPUs and on the CPU, the experts placed per die and the
+  cache's totals, load time, prompt and generation t/s. A first version, to grow
+  ([docs/record.md](docs/record.md), README steps 115-119). One prompt only (not with `-i`, `--serve`, `--teacher`); a run that does not
   finish leaves the file empty.
 - `--no-quant` (CPU path only): without the reference's fp8/fp4 rounding (a comparison).
 

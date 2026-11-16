@@ -504,6 +504,8 @@ Step 117: bytes read from storage per phase in the record; with the engram table
 cache a new prompt reads its rows from disk and runs ~12% slower once (sql-report 41.2 against 46.8 t/s).
 Step 118: the speculative loop's totals in the record (steps, drafts accepted, the steps by drafts
 verified, draft and verify time).
+Step 119: the routed experts in the record (uses on GPUs and on the CPU, experts placed per die, the
+cache's rebalances and loads).
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front

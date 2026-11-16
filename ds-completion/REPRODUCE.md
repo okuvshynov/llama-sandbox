@@ -242,6 +242,7 @@ Unless stated: sclk 2, 16 CPU threads (32 before README step 18), the study30 pl
 | 116 | `record/sclk.txt` | the reader: a directory of made-up `card<N>/device/{vendor,power_dpm_force_performance_level,pp_dpm_sclk}` files and a three-line program printing `json_array(gpu_sclk(dir))` from `src/record.h`; the run: the command of `record/fast.txt` with `--record`, while a loop prints the starred line of each card's `pp_dpm_sclk` every 0.1 s |
 | 117 | `record/read-bytes.txt` | the two commands in the file with `--record`; the evicted file: `python3 -c "import os,sys; fd=os.open(sys.argv[1],os.O_RDONLY); os.posix_fadvise(fd,0,0,os.POSIX_FADV_DONTNEED)" ~/llms/ds-1017-fp8/dense-fp8.gguf`; the cold prompts need the engram table out of the page cache (after a reboot, before the model is read through) |
 | 118 | `record/spec.txt` | the three commands named in the file, each with `--record` |
+| 119 | `record/experts.txt`, `record/example.json` (its header: `record/README.txt`) | the three commands named in `experts.txt`, each with `--record`; `example.json` is the third one's record |
 
 ## 7. Open items (to confirm)
 

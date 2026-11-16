@@ -1,6 +1,6 @@
 # `--record`: a run as one record
 
-**Status (2026-11-15, README steps 115-118):** the idea, and a first minimal `--record` in
+**Status (2026-11-15, README steps 115-119):** the idea, and a first minimal `--record` in
 `ds-completion`. No test uses it yet and no existing script changed. The record is meant to grow
 field by field, each addition a small change; the testing procedure follows once the record has
 shown what it can see.
@@ -76,7 +76,8 @@ Decided in the discussion this document comes from:
 
 ## What the first version writes
 
-`--record FILE` with a single prompt (not with `-i`, `--serve` or `--teacher`):
+`--record FILE` with a single prompt (not with `-i`, `--serve` or `--teacher`). A whole record
+as the program wrote it, the fastest single-machine settings (`results/record/example.json`):
 
 ```json
 {
@@ -86,8 +87,10 @@ Decided in the discussion this document comes from:
   "prompt": {"tokens": 25, "hash": "fnv1a64:32138dd9ac19a294"},
   "env": {"gpu_sclk": [6, 6, 6, 6]},
   "read_bytes": {"load": 0, "prompt": 0, "gen": 0},
-  "spec": {"steps": 66, "plain_steps": 0, "accepted": 233, "verified": [0, 3, 7, 12, 10, 34], "draft_ms": 514.5, "verify_ms": 4904.9},
-  "counters": {"load_s": 116.652, "prompt_s": 0.6165, "prompt_tps": 40.548, "gen_tokens": 300, "gen_s": 5.4818, "gen_tps": 54.727}
+  "spec": {"steps": 66, "plain_steps": 0, "accepted": 233, "verified": [0, 3, 7, 12, 10, 34], "draft_ms": 514.0, "verify_ms": 4921.8},
+  "experts": {"gpu_uses": 72804, "cpu_uses": 12156, "dies": [0, 1, 2, 3], "placed": [801, 1765, 1765, 1765],
+               "cache": {"rebalances": 32, "swaps_planned": 3857, "loads_started": 3686, "loads_published": 3621}},
+  "counters": {"load_s": 116.699, "prompt_s": 0.6114, "prompt_tps": 40.889, "gen_tokens": 300, "gen_s": 5.4982, "gen_tps": 54.564}
 }
 ```
 
@@ -110,6 +113,10 @@ Decided in the discussion this document comes from:
   steps; `plain_steps`: those without a draft; `accepted`: drafts the main model agreed with;
   `verified`: the steps by the number of drafts verified, from 0; `draft_ms`, `verify_ms`: the
   time in the draft and in the verify steps. Totals only: tokens per step is `gen_tokens / steps`.
+- `experts` (step 119; `null` on the CPU path): `gpu_uses` and `cpu_uses`, routed-expert uses
+  by where they ran over the whole run (rejected drafts included); `dies` and `placed`, the dies
+  that hold experts and how many each held after startup; `cache`, the adaptive cache's totals
+  (`null` without `--cache-loads`).
 - `counters`: the numbers of the `# loaded in ...` and `# prompt: ... generation: ...` lines.
 
 The file is opened before the model loads and written after the generation. A run that fails or
@@ -150,8 +157,8 @@ length follows measured times, so the steps of two runs differ while their outpu
 A record is committed when something in the repository points at it; otherwise it stays out.
 
 - **Evidence:** the records a README step quotes. In `results/record/`, a new file per step,
-  never overwritten. Until a record carries its own commit, date and clock level, it sits in a
-  text file under the usual `#` header.
+  never overwritten. Until a record carries its own commit and date, it sits in a text file
+  under the usual `#` header, or as a `.json` file whose header is in `results/record/README.txt`.
 - **References** (none yet): stored records that checks compare against. Values only, no
   counters, since counters differ on every run; changed only by a commit that says why.
 - **One-off runs** (comparisons, sweeps, repeated timings): not in git; `data/` is ignored
@@ -164,14 +171,14 @@ In the order I would take them; the order is not decided.
 1. The rest of the configuration as it took effect: every option, the `DS_*` switches, the commit
    the binary was built from, the input files' sizes and dates. (The GPU clock setting: done,
    step 116.)
-2. Proof that a requested feature ran: drafts made with `--spec` (there since step 118: `steps`
-   and `accepted`), loads with `--cache-loads`, slots filled with `--placement`. A feature that silently did not apply looks like "no
+2. Proof that a requested feature ran: done with steps 118-119 (`spec.steps`, `experts.placed`,
+   `experts.cache.loads_published`). A check must still compare them with the arguments. A feature that silently did not apply looks like "no
    difference".
 3. Cold runs: done (step 117), as bytes read from storage per phase; major page faults do not
    measure it (one fault for 64 MiB). Still open on the machine's side: how much of each model
    file is cached when a run starts, which says whether the machine is ready, not what a run read.
-4. The counters the engine already prints. Speculation: done (step 118). Left: the share of
-   experts on GPUs, the cache's rebalances and loads.
+4. The counters the engine already prints: done (speculation in step 118, experts and the cache
+   in step 119).
 5. Values: a hash of the emitted token ids, then of the logits. On the speculative path the
    logits stay on the GPU (README step 88), so a checksum would be computed there, next to the
    argmax, and its cost measured with the record itself. Its definition (which positions, which

@@ -11,7 +11,8 @@
 // Only the tokenizer comes from libllama (vocab-only load).
 // --record FILE: the run as one JSON object (docs/record.md): a few of its arguments, the prompt's
 // token count and hash, the GPU clock setting, the bytes read from storage per phase, the
-// speculative loop's totals, and the times the "# ..." lines on stderr report.
+// speculative loop's totals, the routed experts' uses, placement and cache totals, and the times
+// the "# ..." lines on stderr report.
 // Without --rt: everything on the CPU through the ggml Engine (forward.cpp), the prompt as one
 // chunk. --rt <dense-fp8.gguf> (bin-hip build): every token through the own runtime (hip/rt.h:
 // dense part on GPU D in exact fp8, routed experts on the CPU or, with --placement, partly on
@@ -712,6 +713,22 @@ static int run(int argc, char** argv) {
       } else {
         fprintf(record, "  \"spec\": null,\n");
       }
+#ifdef DS_RUNTIME
+      if (rt) {  // routed experts: uses by where they ran (prompt, generation and rejected drafts), the placement, the cache
+        const Runtime::ExpertStats es = rt->expert_stats();
+        std::vector<std::string> dv, pv;
+        for (int d : es.dies) dv.push_back(std::to_string(d));
+        for (int n : es.placed) pv.push_back(std::to_string(n));
+        fprintf(record, "  \"experts\": {\"gpu_uses\": %ld, \"cpu_uses\": %ld, \"dies\": %s, \"placed\": %s,\n               \"cache\": ",
+                rt->total_gpu_experts, rt->total_cpu_experts, json_array(dv).c_str(), json_array(pv).c_str());
+        if (es.has_cache)
+          fprintf(record, "{\"rebalances\": %ld, \"swaps_planned\": %ld, \"loads_started\": %ld, \"loads_published\": %ld}},\n",
+                  es.cache.rebalances, es.cache.swaps_planned, es.cache.loads_started, es.cache.loads_published);
+        else
+          fprintf(record, "null},\n");
+      } else
+#endif
+        fprintf(record, "  \"experts\": null,\n");
       fprintf(record, "  \"counters\": {\"load_s\": %.3f, \"prompt_s\": %.4f, \"prompt_tps\": %.3f, \"gen_tokens\": %d, \"gen_s\": %.4f, \"gen_tps\": %.3f}\n}\n",
               t_load, t_pp, toks.size() / t_pp, n_gen, t_tg, n_gen > 0 ? n_gen / t_tg : 0.0);
       if (fclose(record) != 0) { fprintf(stderr, "cannot write %s\n", record_path.c_str()); return 1; }

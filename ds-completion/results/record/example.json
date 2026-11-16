@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "args": {"mode": "chat", "effort": 75, "n": 300, "threads": 16, "runtime": true, "canon": true, "spec": true,
+           "placement": "placements/study30.txt", "cache_loads": 800, "cache_period": 8},
+  "prompt": {"tokens": 25, "hash": "fnv1a64:32138dd9ac19a294"},
+  "env": {"gpu_sclk": [6, 6, 6, 6]},
+  "read_bytes": {"load": 0, "prompt": 0, "gen": 0},
+  "spec": {"steps": 66, "plain_steps": 0, "accepted": 233, "verified": [0, 3, 7, 12, 10, 34], "draft_ms": 514.0, "verify_ms": 4921.8},
+  "experts": {"gpu_uses": 72804, "cpu_uses": 12156, "dies": [0, 1, 2, 3], "placed": [801, 1765, 1765, 1765],
+               "cache": {"rebalances": 32, "swaps_planned": 3857, "loads_started": 3686, "loads_published": 3621}},
+  "counters": {"load_s": 116.699, "prompt_s": 0.6114, "prompt_tps": 40.889, "gen_tokens": 300, "gen_s": 5.4982, "gen_tps": 54.564}
+}
