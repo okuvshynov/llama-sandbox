@@ -116,7 +116,7 @@ with its results and the rows below name it there; `scripts/` has the tools stil
 Diagnostic switches read from the environment (each explained at its `getenv` and in the step
 that used it; none changes the output): `DS_ROUTE_LOG`, `DS_ROUTE_AHEAD`, `DS_EARLY_ROWS`,
 `DS_ATTN_CHECK` (`hip/rt.cpp`), `DS_DRAFT_PROFILE`, `DS_DRAFT_ROUTE_LOG` (`hip/dspark.cpp`),
-`DS_DRAFT_TOKEN_LOG`, `DS_DRAFT2_LOG` (`src/ds_completion.cpp`), `DS_DRAFT_KEEP`, `DS_DRAFT_KEEP_RESIDENT` (`hip/dspark.cpp`, steps 124-125; with the placement they change what is loaded and so the speed, never the output), `DS_FP8_PAD`, `DS_FP8_VIRT`,
+`DS_DRAFT_TOKEN_LOG` (`src/ds_completion.cpp`), `DS_DRAFT_KEEP`, `DS_DRAFT_KEEP_RESIDENT` (`hip/dspark.cpp`, steps 124-125; with the placement they change what is loaded and so the speed, never the output), `DS_FP8_PAD`, `DS_FP8_VIRT`,
 `DS_STALL_SPLIT` (`hip/fp8_gemv.*`), `DS_F32_PAD` (`hip/kernels.hip`). A `DS_*` name next to a
 `git apply results/...patch` below exists only with that patch applied.
 
@@ -232,7 +232,7 @@ Unless stated: sclk 2, 16 CPU threads (32 before README step 18), the study30 pl
 | 104 | `decode-next/fp8-virt.txt`, `spec-measure-sclk6-cacheloads800cacheperiod8-virt/` | `bin-hip/bench-fp8 $F8 --ms 2,3,4,5,6,7,8 --virt`; `[DS_FP8_VIRT=0] bin-hip/bench-fp8 $F8 --ms 2,3,4,5,6,8`; `--bitwise --ms 2,3,4,5,6,7,8`; `--gemm --ms 13,64`; `CACHE="--cache-loads 800 --cache-period 8" scripts/spec-measure.sh` |
 | 105 | `trace/` (`cpp-matrix.json.gz`, `tcp-udp.json.gz`, `compare-step98.txt`, `critpath.txt`), `decode-next/virt-onoff.txt` | the command in `trace/README.txt` for both prompts, and again with `DS_FP8_VIRT=0`; `scripts/trace_compare.py <old> <new>` (step 98's traces: `git show cb5b695:ds-completion/results/trace/<name>.json.gz`); `scripts/trace_critpath.py <trace>`; untraced: the held-out command on cpp-matrix and geometry with and without `DS_FP8_VIRT=0` |
 | 106 | `decode-next/draft-ahead.txt` | `python3 results/decode-next/draft_ahead_sim.py` (over step 92's `decode-next/draft-vocab/` logs) |
-| 107 | `decode-next/draft2.txt`, `decode-next/draft2/` | `DS_DRAFT2_LOG=results/decode-next/draft2/<name>.log` with `scripts/spec-measure.sh`'s command for each held-out prompt; `python3 results/decode-next/draft2_sim.py results/decode-next/draft2 results/spec-measure-sclk6-cacheloads800cacheperiod8-virt` |
+| 107 | `decode-next/draft2.txt`, `decode-next/draft2/` | with a build of commit 012bf44 (the switch was removed in step 133): `DS_DRAFT2_LOG=results/decode-next/draft2/<name>.log` with `scripts/spec-measure.sh`'s command for each held-out prompt; `python3 results/decode-next/draft2_sim.py results/decode-next/draft2 results/spec-measure-sclk6-cacheloads800cacheperiod8-virt` |
 | 108 | `chat/` | the commands in `chat/README.txt`: a piped three-turn `scripts/chat.sh` session, then `ds-completion -f chat/whole.txt` with the same options |
 | 109 | `chat/think/` | the commands in `chat/think/README.txt`: `scripts/chat.sh --think` sessions from the `.q` files, `results/chat/chat_ref_prompts.py` (needs the reference's `encoding.py`), then `ds-completion -f` on each `-ref<k>.txt` |
 | 110 | `split/sha256.txt`, `split/teacher.txt`, `spec-measure-sclk6-cacheloads800cacheperiod8-shower/`, `-tomb-baseline/` | on each machine the `sha256sum` line in `split/sha256.txt` and `CACHE="--cache-loads 800 --cache-period 8" scripts/spec-measure.sh` (the second machine: the repo, `~/forks/llama.cpp` built with `-DBUILD_SHARED_LIBS=OFF`, the fp8 file, the same `~/llms` paths); the three `--teacher` commands in `split/teacher.txt` |
@@ -258,6 +258,7 @@ Unless stated: sclk 2, 16 CPU threads (32 before README step 18), the study30 pl
 | 130 | (no results file: scripts moved) | `git show --stat` of the step's commit lists every move; the checks: `bash -n` on each `.sh`, `python3 -m py_compile` on each `.py`, `python3 results/draft-pool/draft_keep_table.py \| diff - <(tail -n +4 results/draft-pool/keep/table.txt)` and the same for `draft_leave_out_table.py` (`tail -n +2`, `leave-out/table.txt`) |
 | 131 | `cleanup/run-split-1.txt` | the commands in the file with a build of e4a04ca and with this one; the records compared without their times |
 | 132 | `cleanup/run-split-2.txt` | the commands in the file with a build of 60433e8 and with this one |
+| 133 | `cleanup/study-draft2.txt` | the commands in the file with a build of 012bf44 and with this one |
 
 ## 7. Open items (to confirm)
 

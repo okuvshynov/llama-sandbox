@@ -1,0 +1,13 @@
+# The second draft block's study removed (README step 133): DS_DRAFT2_LOG, Runtime::draft_shadow, DSpark::draft's gap.
+# Before: the build of commit 012bf44 (the last with the study). After: 012bf44 + this change. sclk 6, 2026-11-16.
+# P = "What are the differences between TCP and UDP, and when would you choose each?"; PC = cpp-matrix of results/spec-heldout/prompts.txt.
+# Every run: --rt $F8 --canon --dspark $D --placement placements/study30.txt; each with both builds.
+#
+#   shadow   -p P --chat -n 32 (drafts measured, not used)       stdout same; output hash same; 19.79 / 19.72 t/s; the report the same:
+#            "27 drafts of 5; accepted prefix mean 2.96", "accepted 0..5: 3 5 4 3 2 10", "per position correct: 89% 70% 59% 59% 48%"
+#   specn    -p PC --chat -n 120 --spec --spec-n 5               stdout same; output hash same; 26 steps, 96 accepted both; drafted and
+#            (DS_DRAFT_TOKEN_LOG)                                emitted ids of the 26 steps the same; draft 198.6 / 198.8 ms; 30.31 / 30.38 t/s
+#   fast     -p PC --chat -n 300 --spec --cache-loads 800        stdout same; output hash same; 66 steps, 233 accepted both; draft 514.0 / 515.3 ms;
+#            --cache-period 8 --cache-wait                       54.53 / 54.56 t/s; again: 515.8 / 513.9 ms, 54.47 / 54.57 t/s
+#   chat     -i --think --effort low -n 200 --spec, two turns    stdout same
+# With the new build DS_DRAFT2_LOG=FILE writes no file; the record still names the variable in env.ds (a switch that is set and not read shows).

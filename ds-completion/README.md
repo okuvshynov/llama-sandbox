@@ -4950,3 +4950,21 @@ The fastest settings twice: 54.57 and 54.60 t/s before, 54.62 and 54.48 after.
 `src/ds_completion.cpp`, top to bottom, is now: the tokenizer helpers, the crash handler,
 `Args` and `parse_args`, `write_record`, `Turn` and the two loops, `run` (load, the session's
 turns, the summaries), `main`.
+
+## Step 133: an unadopted study out: the second draft block (step 107)
+
+The second item of step 131's order: studies that were measured and not built leave the code,
+one per commit. Each keeps its README step, its results and the commit that last had it.
+
+Step 107 asked whether a second draft block, drafted from the first one's last token before any
+verify, would pay; it would not. Its instrument stayed: `DS_DRAFT2_LOG` (two extra blocks after
+every draft, logged), `Runtime::draft_shadow`, and a `gap` parameter through `DSpark::draft`
+into the block's positions. All three are gone (33 lines, four files). The study's results and
+its simulator (`results/decode-next/draft2.txt`, `draft2_sim.py`) stay; to run it again, build
+commit `012bf44`, the last one with the switch.
+
+**Checked** old build against new on the draft's paths (`results/cleanup/study-draft2.txt`;
+sclk 6): shadow mode's report the same numbers; with a fixed draft length the same drafted and
+emitted ids at all 26 steps; the fastest settings twice the same output hash, steps and
+accepted drafts, draft time 514.0 and 515.8 ms before, 515.3 and 513.9 after, 54.5 t/s both; a
+two-turn `--think` session the same bytes.

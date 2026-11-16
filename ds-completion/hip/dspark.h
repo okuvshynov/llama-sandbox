@@ -63,9 +63,7 @@ class DSpark {
   std::vector<int32_t> in_ids;
   FILE* hidden_log = nullptr;
   FILE* debug_log = nullptr;   // debugging: the next draft's per-layer attn/ffn in/out [layer][4][block][n_embd], then closed  // debugging: every seeded position's main_hidden, f32 [n_targets][n_embd]
-  // gap (a study, README step 107): the block sits at positions pos + 1 + gap .. while the window
-  // still ends at pos: a second block drafted from the first one's last token, before any verify
-  DraftResult draft(int32_t anchor, int pos, bool keep_logits, int gap = 0);
+  DraftResult draft(int32_t anchor, int pos, bool keep_logits);
   // Runtime::mark / rewind: the window rings saved, or put back
   void mark_rings(bool restore);
 
