@@ -9,7 +9,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <random>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -158,12 +157,6 @@ bool ExpertLoader::wait_direct() {
   return registered;
 }
 
-void ExpertLoader::start_test(int n, double rate) {
-  test_n = n;
-  test_rate = rate / pools.size();
-  for (int d = 0; d < (int)pools.size(); d++) workers.emplace_back([this, d] { work(d); });
-}
-
 void ExpertLoader::submit(const Request& r) {
   if (workers.empty())
     for (int d = 0; d < (int)pools.size(); d++) workers.emplace_back([this, d] { work(d); });
@@ -197,19 +190,9 @@ void ExpertLoader::work_loop(int d) {
   LoadStage st = load_stage_create(p.dev, bytes, lo);
   hipEvent_t fin;  // a served request's completion (blocking: the thread sleeps)
   CHECK(hipEventCreateWithFlags(&fin, hipEventDisableTiming | hipEventBlockingSync));
-  std::mt19937 rng(1234 + d);
-  const auto t0 = std::chrono::steady_clock::now();
-  long n = 0;
   while (!stop) {
     Request r;
-    if (test_rate > 0) {
-      const auto due = t0 + std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(n / test_rate));
-      if (std::chrono::steady_clock::now() < due) {
-        std::this_thread::sleep_until(std::min(due, std::chrono::steady_clock::now() + std::chrono::milliseconds(20)));
-        continue;
-      }
-      r = {d, p.n_slots - test_n + (int)(rng() % test_n), layers[rng() % layers.size()], (int)(rng() % m.hp.n_expert)};
-    } else {
+    {
       std::unique_lock<std::mutex> lk(mu);
       cv.wait(lk, [&] { return stop || !queues[d].empty(); });
       if (stop) break;
@@ -219,16 +202,12 @@ void ExpertLoader::work_loop(int d) {
     const auto ta = std::chrono::steady_clock::now();
     if (d < kFatalDies) g_fatal_loads_started[d]++;
     load_expert(st, p, r.slot, m.layers[r.layer], r.expert, registered);
-    n++;
-    n_loads++;
-    if (test_rate == 0) {
-      CHECK(hipEventRecord(fin, st.s));
-      CHECK(hipEventSynchronize(fin));
-      if (d < kFatalDies) g_fatal_loads_done[d]++;
-      std::lock_guard<std::mutex> lk(mu);
-      done.push_back(r);
-      if (trace_on) spans.push_back({d, r.layer, r.expert, ta, std::chrono::steady_clock::now()});
-    }
+    CHECK(hipEventRecord(fin, st.s));
+    CHECK(hipEventSynchronize(fin));
+    if (d < kFatalDies) g_fatal_loads_done[d]++;
+    std::lock_guard<std::mutex> lk(mu);
+    done.push_back(r);
+    if (trace_on) spans.push_back({d, r.layer, r.expert, ta, std::chrono::steady_clock::now()});
   }
   // one thread at a time (README step 96): on stop every die's thread gets here at once
   std::lock_guard<std::mutex> lk(free_mu);

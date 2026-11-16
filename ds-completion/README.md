@@ -4968,3 +4968,20 @@ sclk 6): shadow mode's report the same numbers; with a fixed draft length the sa
 emitted ids at all 26 steps; the fastest settings twice the same output hash, steps and
 accepted drafts, draft time 514.0 and 515.8 ms before, 515.3 and 513.9 after, 54.5 t/s both; a
 two-turn `--think` session the same bytes.
+
+## Step 134: an unadopted study out: `--load-test` (step 30)
+
+Step 30 measured what background expert loads cost a running generation, before the cache
+existed: `--load-test R` kept 8 spare slots per die and loaded random experts into them at R
+loads/s, `--load-pinned` chose the staging path. The cache (step 32) has done real loads since,
+through the same loader's queue. Removed (59 lines, six files): the two options, the spare
+slots, the runtime's test loader, and the loader's test mode, so its worker loop only serves
+its queue. `results/load-test.sh` and the step's results stay; the last commit with the
+options is `def1a2a`.
+
+**Checked** old build against new (`results/cleanup/study-load-test.txt`; sclk 6): a plain run
+and a speculative one without the cache, the fastest settings three times, the cache without
+`--cache-wait`, and the fastest settings traced: the same output hash everywhere, the same
+experts placed per die, 3,621-3,627 loads published in both builds, 55.05 / 54.99 / 55.02 t/s
+before and 54.99 / 54.95 / 54.59 after, and in the trace one cache-load span per load published
+(3,679 and 3,675). `--load-test` is now an unknown argument.

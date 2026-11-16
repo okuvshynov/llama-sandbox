@@ -1027,11 +1027,10 @@ void Runtime::setup_experts() {
   CHECK(hipEventCreateWithFlags(&ev_gathered, hipEventDisableTiming));
   mem_mark("expert path buffers (per die: scratch, staging)");
   std::vector<int> cap;
-  const int spare = opt.load_test >= 0 ? kLoadTestSlots : 0;
-  // the home die's pool also holds the draft's experts: after the main model's slots, before the spare ones
+  // the home die's pool also holds the draft's experts, after the main model's slots
   const int n_draft = dspark ? dspark->pool_slots() : 0;
   for (const Die& d : dies)
-    cap.push_back(std::max(0, pool_slots_that_fit(d.dev, E, F, (size_t)(opt.reserve_gb * 1e9)) - spare - (d.dev == home ? n_draft : 0)));
+    cap.push_back(std::max(0, pool_slots_that_fit(d.dev, E, F, (size_t)(opt.reserve_gb * 1e9)) - (d.dev == home ? n_draft : 0)));
   std::vector<bool> loaded(hp.n_layer);
   for (int L = 0; L < hp.n_layer; L++) loaded[L] = m.layers[L].loaded;
   placement = place_experts(read_placement(opt.placement), hp.n_layer, X, cap, loaded);
@@ -1042,7 +1041,7 @@ void Runtime::setup_experts() {
     th.emplace_back([&, i] {
       try {
         Die& d = dies[i];
-        d.pool = pool_create(d.dev, placement.used[i] + (d.dev == home ? n_draft : 0) + spare, E, F);
+        d.pool = pool_create(d.dev, placement.used[i] + (d.dev == home ? n_draft : 0), E, F);
         CHECK(hipSetDevice(d.dev));
         hipStream_t ls;
         CHECK(hipStreamCreate(&ls));
@@ -1080,7 +1079,6 @@ void Runtime::setup_experts() {
   for (size_t i = 0; i < dies.size(); i++) fprintf(stderr, "%s%d: %d", i ? ", " : " (", dies[i].dev, placement.used[i]);
   fprintf(stderr, "), loaded in %.1f s\n", ms_since(t0) / 1000);
   if (opt.cache_loads > 0) {
-    if (opt.load_test >= 0) throw std::runtime_error("--load-test and the expert cache are exclusive");
     std::vector<ExpertPool*> pools;
     for (Die& d : dies) pools.push_back(&d.pool);
     int home_die = -1;  // the home die (its index in dies) keeps its startup experts (README step 86)
@@ -1091,16 +1089,6 @@ void Runtime::setup_experts() {
     fprintf(stderr, "# expert cache: up to %.0f loads/s, rebalance every %d tokens over the last %d%s\n", opt.cache_loads,
             opt.cache_period, opt.cache_window, opt.canon ? "" : " (without --canon the output depends on load timing)");
     CHECK(hipSetDevice(opt.gpu));  // (a local `home`, the die's index, once shadowed the device here: wrong unless --gpu 0)
-  }
-  if (opt.load_test >= 0) {
-    std::vector<ExpertPool*> pools;
-    for (Die& d : dies) pools.push_back(&d.pool);
-    loader.reset(new ExpertLoader(m, pools, !opt.load_pinned));
-    if (!opt.load_pinned) loader->wait_direct();  // measure the direct path only
-    if (opt.load_test > 0) loader->start_test(kLoadTestSlots, opt.load_test);
-    fprintf(stderr, "# load test: %d spare slots per die, %.0f loads/s (%s)\n", kLoadTestSlots, opt.load_test,
-            loader->direct_ready() ? "direct" : "pinned");
-    CHECK(hipSetDevice(home));
   }
 }
 
@@ -1118,11 +1106,6 @@ Runtime::~Runtime() {
     fprintf(stderr, "# attention check (README step 68): %ld launches, %ld tokens, %ld differ from one-token launches\n",
             attn_check_calls, attn_check_tokens, attn_check_bad);
   if (ra_log) fclose(ra_log);
-  fatal_phase("runtime: the load test's loader");
-  if (loader) {
-    fprintf(stderr, "# load test: %ld loads\n", loader->loads());
-    loader.reset();
-  }
   if (n_gather_dies)
     fprintf(stderr, "# short forwards: %ld of %ld (die, layer) results needed a second copy (%d rows per token in the first)\n",
             n_gather_more, n_gather_dies, early_rows_per_tok);

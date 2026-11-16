@@ -1,0 +1,16 @@
+# --load-test removed (README step 134): the options --load-test and --load-pinned, the 8 spare slots per die, the loader's test mode.
+# Before: the build of commit def1a2a (the last with it). After: def1a2a + this change. sclk 6, 2026-11-16. Each command with both builds.
+# P = "What are the differences between TCP and UDP, and when would you choose each?"; PC = cpp-matrix of results/spec-heldout/prompts.txt.
+# Every run: --rt $F8 --canon --placement placements/study30.txt --record F.
+#
+#                                                                       stdout, output hash   experts placed per die    loads published   t/s before, after
+#   plain    -p P --chat -n 32                                          same                  1228 1765 1765 1765 both  -                 24.37 24.15
+#   nocache  -p PC --chat -n 120 --dspark $D --spec --spec-n 5          same                  802 1765 1765 1765 both   -                 30.82 30.59
+#   fast     -p PC --chat -n 300 --dspark $D --spec --cache-loads 800   same                  802 1765 1765 1765 both   3623 3621         55.05 54.99
+#            --cache-period 8 --cache-wait, three times                 same                                            3623 3626         54.99 54.95
+#                                                                       same                                            3627 3622         55.02 54.59
+#   nowait   fast without --cache-wait (--trace)                        same                  802 1765 1765 1765 both   0 0 (*)           30.72 30.66
+#   traced   fast with --trace                                          same                                            3679 3675         48.99 49.07
+# (*) without --cache-wait the cache loads nothing before the expert tensors are registered, which takes longer than this run.
+# traced: the trace's cache-load spans (the four "GPU d cache loads" tracks): 3679 before, 3675 after: one per load published.
+# The new build: "--load-test 100" -> "unknown argument --load-test", exit code 2.

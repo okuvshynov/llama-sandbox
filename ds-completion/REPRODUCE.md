@@ -145,7 +145,7 @@ Unless stated: sclk 2, 16 CPU threads (32 before README step 18), the study30 pl
 | 27 | `spec-sclk/` | `results/spec-sclk/spec-sclk.sh` at sclk 0, 2, 8 |
 | 28 | `canon-phase0.txt` | `bin/bench-cpu-moe -t 16 --tokens 14 --check-layers 2,20,39`, `bin-hip/bench-fp4-moe --layer 20 --reps 300` |
 | 29 | `cache-sim.txt` | `results/spec-routing.sh`, then `results/cache_sim.py` |
-| 30 | `bench-expert-load.txt`, `load-test/` | `bin-hip/bench-expert-load -m $M`, `results/load-test.sh` |
+| 30 | `bench-expert-load.txt`, `load-test/` | `bin-hip/bench-expert-load -m $M`, `results/load-test.sh` (with a build of commit def1a2a: `--load-test` was removed in step 134) |
 | 31-32 | `canon-gate.txt`, `canon-gate/` | `results/canon-gate/canon-gate.sh` (rerun for steps 32 and 45) |
 | 32 | `cache-test/`, `cache-test-sclk8/` | `results/cache-test/cache-test.sh` (at sclk 8: `results/cache-test/cache-test.sh "spec fast static" "spec canon 200"`); the CPU kernel at 1, 2, 6 experts: `bin/bench-cpu-moe -m $M -t 16 --tokens 8 --check-layers 2 -k N` |
 | 33 | `verify-breakdown.txt` | `bin-hip/ds-completion ... --dspark $D --spec --spec-n 5 --canon --profile [--cache-loads 200 --cache-wait]` (command in the file's header), medians of the second half |
@@ -259,6 +259,7 @@ Unless stated: sclk 2, 16 CPU threads (32 before README step 18), the study30 pl
 | 131 | `cleanup/run-split-1.txt` | the commands in the file with a build of e4a04ca and with this one; the records compared without their times |
 | 132 | `cleanup/run-split-2.txt` | the commands in the file with a build of 60433e8 and with this one |
 | 133 | `cleanup/study-draft2.txt` | the commands in the file with a build of 012bf44 and with this one |
+| 134 | `cleanup/study-load-test.txt` | the commands in the file with a build of def1a2a and with this one |
 
 ## 7. Open items (to confirm)
 

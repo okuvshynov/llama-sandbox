@@ -542,6 +542,9 @@ Step 132: part 2: `Turn`, `generate_spec()`, `generate_plain()`, `report_shadow(
 664); eleven kinds of run the same old against new. Next: the unadopted studies, one per commit.
 Step 133: the second draft block's study (step 107) out of the code: `DS_DRAFT2_LOG`, `draft_shadow`, `gap`;
 the last commit with it: 012bf44. Next: `--load-test`.
+Step 134: `--load-test` (step 30) out: the options, the spare slots, the loader's test mode; the last
+commit with it: def1a2a. Next: the router lookahead (step 63), the draft's unused hidden-state logs,
+`DS_DRAFT_KEEP`. Kept as checks: `DS_ATTN_CHECK`, `DS_EARLY_ROWS`.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front

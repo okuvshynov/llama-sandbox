@@ -633,6 +633,7 @@ Estimates were made before measuring wherever possible; this is how they fared.
 | run() split, part 1 (131) | the person: another look for leftovers, keeping speed and observability, code easier to understand | a survey: `run()` 664 lines, `rt.cpp` 2,297, ~200 lines of unadopted studies. First the options and the record out of `run()`, code moved and not changed: 8 usage errors and 7 kinds of run the same old against new | kept; next the loops, then the studies (the person: study code can go, the kernels stay) |
 | run() split, part 2 (132) | the two generation loops as functions, behaviour unchanged? | `Turn`, `generate_spec`, `generate_plain`, `report_shadow`: eleven kinds of run give the same output, records, logs and speed old against new; `run()` 268 lines | kept; next the unadopted studies out, one per commit |
 | the second draft block out (133) | remove a study that was measured and not built, with nothing else changing? | `DS_DRAFT2_LOG`, `draft_shadow` and `gap` removed (33 lines); the draft's paths the same old against new: ids, report, draft time, speed | kept; the study stays reproducible from commit 012bf44. Next `--load-test` |
+| --load-test out (134) | the same for step 30's load test, which shares the loader with the cache | options, spare slots and the loader's test mode removed (59 lines); the cache's paths the same old against new: hashes, placement, loads published, speed, the trace's load spans | kept; reproducible from commit def1a2a. Next the router lookahead |
 
 ## 5. Mistakes and how they were caught
 

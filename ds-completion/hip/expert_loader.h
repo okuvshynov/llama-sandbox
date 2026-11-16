@@ -64,12 +64,8 @@ class ExpertLoader {
   ExpertLoader(const Model& m, std::vector<ExpertPool*> pools, bool direct);
   ~ExpertLoader();
   void submit(const Request& r);
-  // test mode (README step 30): every die loads random experts into the last n slots of its
-  // pool at `rate` loads/s in all, until destroyed; nothing reads those slots
-  void start_test(int n, double rate);
   // blocks until registering is over (true: direct loads from now on)
   bool wait_direct();
-  long loads() const { return n_loads.load(); }
   // requests whose copy and unpack have finished since the last call (served from the queue)
   std::vector<Request> take_done();
   bool direct_ready() const { return registered.load(); }
@@ -92,9 +88,6 @@ class ExpertLoader {
   std::vector<Request> done;  // finished, not yet taken (guarded by mu)
   std::vector<LoadSpan> spans;  // (guarded by mu)
   std::atomic<bool> stop{false}, registered{false};
-  std::atomic<long> n_loads{0};
-  double test_rate = 0;  // loads/s per die; 0 = serve the queue
-  int test_n = 0;
   void work(int die);       // a worker thread: work_loop, ending the process with a message if it throws
   void work_loop(int die);
 };

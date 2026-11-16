@@ -45,10 +45,6 @@ struct RtOptions {
   double reserve_gb = 0.75;
   // the DSpark draft head's GGUF (dspark.h); empty = none
   std::string dspark;
-  // load test (README step 30): >= 0 keeps kLoadTestSlots spare slots per die and loads random
-  // experts into them at this many loads/s in all (0: spare slots, no loads), in the background,
-  // as an adaptive cache would; nothing reads them, so the output must not change
-  double load_test = -1;
   // placement-invariant expert numerics (canon_dot.h; PLAN.md "Adaptive expert cache"): every
   // routed expert gives the same bits on any die or the CPU and they are summed in router-rank
   // order, so the output does not depend on the placement (or on a cache's contents); slower
@@ -59,7 +55,6 @@ struct RtOptions {
   double cache_loads = 0;
   int cache_period = 16, cache_window = 256, cache_min = 2;
   bool cache_wait = false;  // wait at startup until the cache can load (expert_cache.h)
-  bool load_pinned = false;  // the load test's path: pinned staging instead of direct (expert_loader.h)
 };
 
 // The residual stream between two layers, for n tokens: what a layer hands to the next one and
@@ -252,8 +247,6 @@ class Runtime {
     hipEvent_t done_more = nullptr;  // a short forward's rows past the early copy are in h_y (step 97)
   };
   std::vector<Die> dies;
-  static constexpr int kLoadTestSlots = 8;
-  std::unique_ptr<ExpertLoader> loader;  // the load test's
   std::vector<int> h_table;              // host copy of d_table (the cache edits it)
   std::unique_ptr<ExpertCache> cache;
   Placement placement;

@@ -2,7 +2,7 @@
 //
 //   ds-completion -m <model-00001-of-000NN.gguf> (-p "prompt" | -f prompt.txt) [--chat | --think [--effort 75]] [-n 128]
 //                 [-t 16] [--no-quant] [--max-ctx 4096] [--record run.json [--record-label k=v,...]]
-//                 [--rt <dense-fp8.gguf> [--gpu D] [--placement file [--moe-dies 0,1,2,3] [--load-test R [--load-pinned]] [--cache-loads R [--cache-period N] [--cache-window N] [--cache-min N] [--cache-wait]]] [--canon] [--profile]]
+//                 [--rt <dense-fp8.gguf> [--gpu D] [--placement file [--moe-dies 0,1,2,3] [--cache-loads R [--cache-period N] [--cache-window N] [--cache-min N] [--cache-wait]]] [--canon] [--profile]]
 //
 // The prompt is fed as one chunk (prefill), then one token per step, greedy. --chat wraps the
 // prompt as one user turn in the model's chat format without thinking, --think with it (the
@@ -127,8 +127,6 @@ struct Args {
   std::string route_log;
   std::string placement;
   std::vector<int> moe_dies = {0, 1, 2, 3};
-  double load_test = -1;
-  bool load_pinned = false;
   bool canon = false;
   bool max_ctx_set = false;
   int prefill_chunk = 512;
@@ -197,8 +195,6 @@ static int parse_args(int argc, char** argv, Args& args) {
     else if (a == "--spec-log") args.spec_log_path = next();  // per verify step: n k verify_ms draft_ms conf[0..]
     else if (a == "--spec-n") args.spec_n = atoi(next());  // fixed drafts verified per step (default: chosen per step)  // drafts verified per step (default: all the draft makes)  // with --rt and --dspark: speculative decoding (greedy, same output)  // runtime: the DSpark draft GGUF (shadow mode: drafts measured, not used)
     else if (a == "--placement") args.placement = next();  // runtime: routed experts on GPUs (expert_pool.h)
-    else if (a == "--load-test") args.load_test = atof(next());  // runtime: background loads to spare slots (rt.h)
-    else if (a == "--load-pinned") args.load_pinned = true;
     else if (a == "--canon") args.canon = true;  // runtime: placement-invariant expert numerics (rt.h)
     else if (a == "--cache-loads") args.cache_loads = atof(next());  // runtime: adaptive expert cache (expert_cache.h)
     else if (a == "--cache-period") args.cache_period = atoi(next());
@@ -229,7 +225,7 @@ static int parse_args(int argc, char** argv, Args& args) {
     return 2;
   }
   if (args.model_path.empty() || (args.prompt.empty() && !args.interactive && !args.serve_port)) {
-    fprintf(stderr, "usage: ds-completion -m <model.gguf> (-p \"prompt\" | -f prompt.txt | -i) [--chat|--think [--effort 1-100|low|high|max]] [-n N] [-t N] [--no-quant] [--max-ctx N] [--rt dense-fp8.gguf [--gpu D] [--placement file [--moe-dies 0,1,2,3] [--load-test R [--load-pinned]] [--cache-loads R [--cache-period N] [--cache-window N] [--cache-min N] [--cache-wait]]] [--canon] [--profile]]\n"
+    fprintf(stderr, "usage: ds-completion -m <model.gguf> (-p \"prompt\" | -f prompt.txt | -i) [--chat|--think [--effort 1-100|low|high|max]] [-n N] [-t N] [--no-quant] [--max-ctx N] [--rt dense-fp8.gguf [--gpu D] [--placement file [--moe-dies 0,1,2,3] [--cache-loads R [--cache-period N] [--cache-window N] [--cache-min N] [--cache-wait]]] [--canon] [--profile]]\n"
                     "more (--dspark/--spec, --layers/--serve/--remote, --trace, --record, ...): QUICKSTART.md, Options\n");
     return 2;
   }
@@ -624,8 +620,6 @@ static int run(int argc, char** argv) {
     ro.max_ctx = args.opt.max_ctx;
     ro.placement = args.placement;
     ro.moe_dies = args.moe_dies;
-    ro.load_test = args.load_test;
-    ro.load_pinned = args.load_pinned;
     ro.canon = args.canon;
     ro.prefill_chunk = args.prefill_chunk;
     ro.prefill_overlap = args.prefill_overlap;
