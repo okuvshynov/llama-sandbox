@@ -177,8 +177,9 @@ A record is committed when something in the repository points at it; otherwise i
 - **Evidence:** the records a README step quotes. In `results/record/`, a new file per step,
   never overwritten. Until a record carries its own commit and date, it sits in a text file
   under the usual `#` header, or as a `.json` file whose header is in `results/record/README.txt`.
-- **References** (none yet): stored records that checks compare against. Values only, no
-  counters, since counters differ on every run; changed only by a commit that says why.
+- **References:** stored values that checks compare against. Values only, no counters, since
+  counters differ on every run; changed only by a commit that says why. The first (README step
+  138): `results/record/reference/heldout-output.tsv`, the held-out prompts' output hashes.
 - **One-off runs** (comparisons, sweeps, repeated timings): not in git; `data/` is ignored
   already. One that ends up deciding something moves to `results/` in that commit.
 

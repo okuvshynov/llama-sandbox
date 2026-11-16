@@ -1,0 +1,11 @@
+# The held-out prompts with the fastest single-machine settings after the cleanup round (README
+# step 138): outputs against the stored ones (--keep-out), speed against step 125's "all" runs.
+set M  ~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf
+set F8 ~/llms/ds-1017-fp8/dense-fp8.gguf
+set D  ~/llms/dspark/dspark-DeepSeek-V4.1-Flash-1017-BF16.gguf
+prompts results/spec-heldout/prompts.txt
+out results/cleanup/heldout
+reps 2
+base --rt $F8 --placement placements/study30.txt --dspark $D --spec --canon
+base --cache-loads 800 --cache-period 8 --cache-wait
+config cleanup

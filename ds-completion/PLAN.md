@@ -552,6 +552,9 @@ profile's groups and the memory ledger into `hip/rt_trace.cpp` (+ `hip/rt_intern
 Next: the two-machine code into its own file, then the constructor in parts.
 Step 137: the two-machine code into `hip/rt_peer.cpp`; both halves as two processes on one machine, old
 and new builds in every pairing: the whole model's output. Two-machine speed not measured. Next: the
+Step 138: the eight held-out prompts after the round, by `run_matrix.py` and `records.py` alone: all outputs
+the stored ones' bytes, speed 44.75 -> 44.70 t/s (inside the spread). First reference values:
+`results/record/reference/heldout-output.tsv`.
 constructor in parts.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits

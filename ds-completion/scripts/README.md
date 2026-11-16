@@ -6,7 +6,7 @@ results file); REPRODUCE.md names each by its path.
 
 | | |
 |---|---|
-| `run_matrix.py` | start prompts x configurations x repeats from a matrix file, one `--record` file per run (step 129) |
+| `run_matrix.py` | start prompts x configurations x repeats from a matrix file, one `--record` file per run (step 129); `--keep-out` also keeps each output (step 138) |
 | `records.py` | read records: groups, the spread of repeats, a comparison, a condition (step 128) |
 | `chat.sh` | an interactive chat with the fastest single-machine settings |
 | `split-measure.sh` | the model in two halves on two machines: the held-out prompts, optionally traced |

@@ -2,7 +2,7 @@
 """Run ds-completion over prompts x configurations x repeats, one --record file per run
 (docs/record.md). It starts runs and nothing else: scripts/records.py reads the records.
 
-  scripts/run_matrix.py MATRIX [--prompts a,b] [--reps N] [--out DIR] [--dry-run] [--resume]
+  scripts/run_matrix.py MATRIX [--prompts a,b] [--reps N] [--out DIR] [--keep-out] [--dry-run] [--resume]
 
 MATRIX is a text file, one statement per line, '#' comments; words are split as a shell does,
 and ~, $NAME and {prompt} (the prompt's name) are replaced in every word:
@@ -21,7 +21,8 @@ Order: repeat by repeat, within it prompt by prompt, within it the configuration
 that a slow drift of the machine falls on every configuration alike. Each run gets
   -m $M -p TEXT --MODE -n N  BASE...  CONFIG...
   --record DIR/CONFIG-PROMPT-REP.json --record-label config=CONFIG,prompt=PROMPT,rep=REP
-Its stdout is dropped (the record has the output's hash); its stderr is kept as
+Its stdout is dropped (the record has the output's hash) unless --keep-out, which writes it to
+DIR/CONFIG-PROMPT-REP.out (to compare with a stored output file); its stderr is kept as
 DIR/CONFIG-PROMPT-REP.err only if the run failed or left no record. DIR/matrix.txt gets the
 '#' header (this command, commit, GPU clock, date) and a copy of MATRIX.
 A DIR that already has records is refused, or with --resume only the missing runs are made.
@@ -64,6 +65,7 @@ def main():
     ap.add_argument('--prompts', help='only these prompt names, comma-separated')
     ap.add_argument('--reps', type=int)
     ap.add_argument('--out')
+    ap.add_argument('--keep-out', action='store_true', help="keep each run's stdout as CONFIG-PROMPT-REP.out")
     ap.add_argument('--dry-run', action='store_true', help='print the commands, run nothing')
     ap.add_argument('--resume', action='store_true')
     a = ap.parse_args()
@@ -167,8 +169,8 @@ def main():
             say(f'[{i}/{len(runs)}] {what}: has a record, skipped')
             continue
         say(f'[{i}/{len(runs)}] running {what} ...')
-        with open(stem + '.err', 'w') as err:
-            rc = subprocess.run(cmd, env={**os.environ, **env}, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=err).returncode
+        with open(stem + '.err', 'w') as err, open(stem + '.out' if a.keep_out else os.devnull, 'wb') as out_f:
+            rc = subprocess.run(cmd, env={**os.environ, **env}, stdin=subprocess.DEVNULL, stdout=out_f, stderr=err).returncode
         if rc == 0 and done(stem):
             os.remove(stem + '.err')
             r = json.load(open(stem + '.json'))

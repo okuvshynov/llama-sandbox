@@ -1,0 +1,40 @@
+# The held-out prompts after the cleanup round (README step 138). sclk 6, 2026-11-16.
+# scripts/run_matrix.py results/cleanup/heldout.matrix --keep-out      (16 runs, 0 failed, none read from storage in generation;
+#   records and matrix.txt in results/cleanup/heldout/; the 16 kept outputs were compared and removed)
+#
+# 1. Outputs: each of the 16 the same bytes as results/cache-test/plain-canon-static/<prompt>.out (cmp).
+#
+# 2. One output hash per prompt:
+#    scripts/records.py results/cleanup/heldout/*.json --by prompt --show output.tokens,output.hash --same output.hash --within prompt
+prompt        runs  output.tokens  spread               output.hash  spread
+cpp-matrix       2            300    0.0%  fnv1a64:55214691a828a176
+geometry         2            345    0.0%  fnv1a64:39009bbaad3bdfec
+ja-email         2            300    0.0%  fnv1a64:cb2c332218b24ed0
+py-lru           2            300    0.0%  fnv1a64:ccdf68228376b5ca
+sql-report       2            300    0.0%  fnv1a64:f316e2fad109b2e0
+summary-json     2             98    0.0%  fnv1a64:963abaf982b15a33
+tcp-udp          2            300    0.0%  fnv1a64:e84010b498310b61
+zh-travel        2            300    0.0%  fnv1a64:6fa28c9df3b39c7c
+# --same output.hash within prompt: holds for all 8 (16 runs)
+
+# 3. Speed against the build before the round ("all": step 125's runs of commit fd5d6fe + step 125's change, the same command):
+#    scripts/records.py results/draft-pool/leave-out/all-*.json results/cleanup/heldout/*.json \
+#        --name-label '/(?P<config>[a-z]+)-(?P<prompt>[^/]+)-(?P<rep>\d)\.json$' --by prompt,config --show counters.gen_tps,spec.steps --vs config=all
+prompt        config   runs  counters.gen_tps  spread           vs all  spec.steps  spread           vs all
+cpp-matrix    all         2              54.7    0.2%                           66    0.0%
+geometry      all         2             54.72    0.3%                           85    0.0%
+ja-email      all         2             37.04    0.3%                          170    0.0%
+py-lru        all         2             46.49    0.5%                          100    0.0%
+sql-report    all         2              47.1    0.4%                           77    0.0%
+summary-json  all         2             44.76    0.1%                           28    0.0%
+tcp-udp       all         2             38.96    0.8%                          144    0.0%
+zh-travel     all         2             34.26    0.5%                          199    0.0%
+cpp-matrix    cleanup     2             54.54    0.2%            -0.3%          66    0.0%                =
+geometry      cleanup     2             54.94    0.5%  ~ (spread 0.5%)          85    0.0%                =
+ja-email      cleanup     2             36.84    1.3%  ~ (spread 1.3%)       172.5    4.1%  ~ (spread 4.1%)
+py-lru        cleanup     2             46.51    0.0%  ~ (spread 0.5%)         100    0.0%                =
+sql-report    cleanup     2             46.93    0.3%  ~ (spread 0.4%)          77    0.0%                =
+summary-json  cleanup     2             44.74    0.3%  ~ (spread 0.3%)          28    0.0%                =
+tcp-udp       cleanup     2             38.96    0.5%  ~ (spread 0.8%)         144    0.0%                =
+zh-travel     cleanup     2             34.11    0.4%  ~ (spread 0.5%)       199.5    0.5%  ~ (spread 0.5%)
+# vs all: a difference of the means, printed if larger than the spread of both groups' repeats; ~: inside it; ?: a side has one run, no spread; =: equal

@@ -5049,3 +5049,45 @@ sides. The mixed pairings say the new build speaks the old protocol in both role
 **Not checked:** the speed on two machines. The second machine was not touched (it needs this
 commit built; `scripts/split-measure.sh` then measures). The moved functions run a few times
 per step.
+
+## Step 138: the held-out set after the cleanup round, and the first reference values
+
+Steps 131-137 were each checked against the build before, on one or two prompts. This step
+checks the end state on all eight held-out prompts, with the tools of steps 127-129 only: a
+matrix file (`results/cleanup/heldout.matrix`, the fastest settings, two repeats), the runner,
+the reader. The runner got one option, `--keep-out` (a run's stdout kept as a file): the stored
+references are output files, not hashes.
+
+**Outputs** (`results/cleanup/heldout.txt`; sclk 6): all 16 are the same bytes as
+`results/cache-test/plain-canon-static/<prompt>.out`, and each prompt has one output hash over
+its two runs.
+
+**Speed** against the build before the round (step 125's `all` runs: the same command, their
+records in git), read by one `records.py` command:
+
+| prompt | before | after | reader |
+|---|---|---|---|
+| tcp-udp | 38.96 | 38.96 | inside the spread |
+| py-lru | 46.49 | 46.51 | inside the spread |
+| cpp-matrix | 54.70 | 54.54 | -0.3% |
+| sql-report | 47.10 | 46.93 | inside the spread |
+| geometry | 54.72 | 54.94 | inside the spread |
+| zh-travel | 34.26 | 34.11 | inside the spread |
+| ja-email | 37.04 | 36.84 | inside the spread |
+| summary-json | 44.76 | 44.74 | inside the spread |
+
+Mean of the prompts 44.75 and 44.70 t/s (-0.1%). Seven differences are inside the spread of
+the repeats; cpp-matrix's -0.3% is printed because both of its pairs happen to be 0.2% apart
+(two repeats underestimate the spread, step 128). The round changed no speed that this can see.
+
+**The first reference values** (`results/record/reference/heldout-output.tsv`): per held-out
+prompt its token count and hash and the output's, taken from these records right after their
+outputs were compared with the stored files. A later check needs no output file: `--same
+output.hash` over new records, and the hash against this table. With `--canon` the values do
+not depend on placement, cache, speculation or the machine; a new checkpoint or tokenizer
+changes them, and then this file is made again the same way.
+
+A mistake on the way, kept for the record: the first start of this run never ran. An edit to
+the runner had a wrong indent, the command ended with `echo` and so reported success, and it
+was announced as running without its output being read. Since then: the dry run first, chained
+with `&&` to the real run, and the exit code that is reported is the runner's.

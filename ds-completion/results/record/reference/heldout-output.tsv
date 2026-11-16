@@ -1,0 +1,14 @@
+# Reference values (docs/record.md, "Records in git"): the held-out prompts' output under --canon, as --record writes it.
+# From scripts/run_matrix.py results/cleanup/heldout.matrix --keep-out, commit b9fe8fe + the runner's --keep-out, sclk 6, 2026-11-16:
+# each of the 16 outputs was the same bytes as results/cache-test/plain-canon-static/<prompt>.out (README step 138).
+# prompt: its name in results/spec-heldout/prompts.txt (mode and tokens to generate are there); the hashes: fnv1a64 over token ids.
+# With --canon these do not depend on placement, cache, speculation or the machine; a new checkpoint or tokenizer changes them.
+prompt	prompt_tokens	prompt_hash	output_tokens	output_hash
+tcp-udp	20	fnv1a64:ca691ad07d0dd8ee	300	fnv1a64:e84010b498310b61
+py-lru	27	fnv1a64:9e5d1da757a7a870	300	fnv1a64:ccdf68228376b5ca
+cpp-matrix	25	fnv1a64:32138dd9ac19a294	300	fnv1a64:55214691a828a176
+sql-report	49	fnv1a64:3cef864372fb529c	300	fnv1a64:f316e2fad109b2e0
+geometry	55	fnv1a64:31111264fac1a7a5	345	fnv1a64:39009bbaad3bdfec
+zh-travel	17	fnv1a64:5b47625f5035c82d	300	fnv1a64:6fa28c9df3b39c7c
+ja-email	31	fnv1a64:5955aaff776b79ee	300	fnv1a64:cb2c332218b24ed0
+summary-json	91	fnv1a64:63baccd01e4f4dcf	98	fnv1a64:963abaf982b15a33
