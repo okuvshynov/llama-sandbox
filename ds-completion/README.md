@@ -4404,3 +4404,34 @@ samples.
 **For measurements:** QUICKSTART's `cat ~/llms/UD-Q8_K_XL/*.gguf > /dev/null` after a reboot
 matters for more than the first run: until the engram table is cached, every new text is slow
 once. A check on records can now drop a run whose `read_bytes.gen` is not 0 by itself.
+
+## Step 118: the speculative loop's totals in the record
+
+`--record` with `--spec` now writes a `"spec"` object; without it, `"spec": null`.
+
+| field | what |
+|---|---|
+| `steps` | verify steps (each emits the accepted drafts and the main model's own next token) |
+| `plain_steps` | those of them that made no draft (the backoff after a step that verified none) |
+| `accepted` | drafts the main model agreed with, all steps together |
+| `verified` | the steps by the number of drafts verified, from 0: `[0, 3, 7, 12, 10, 34]` is 34 steps with 5 |
+| `draft_ms`, `verify_ms` | the time in `draft()` and in `verify()`, all steps together |
+
+Totals, not ratios: drafts accepted per step, tokens per step and ms per draft, which stderr
+prints, are divisions a reader of the record does. `verify_ms` is new: the loop had the time of
+each verify step (it fits the draft-length rule's cost line with it) but kept no sum.
+
+**Checked** (`results/record/spec.txt`; sclk 6):
+- No `--spec`: `null`, the output unchanged.
+- The fastest single-machine settings, cpp-matrix, 300 tokens: 66 steps, 233 accepted,
+  `[0, 3, 7, 12, 10, 34]`, draft 514.5 ms, verify 4,904.9 ms; 54.73 t/s, the output the stored
+  one's bytes. From them 3.53 accepted and 4.55 tokens per step and 7.8 ms per draft, and the
+  histogram: the stderr lines' numbers.
+- `--spec-n 5`, 40 tokens: 7 steps, all in the histogram's last place, 33 accepted; a prefix of
+  the 300-token output.
+
+**What the two sums show:** draft + verify are 5,419 ms of the generation's 5,482. The rest of
+the speculative loop (the rule, the commit, printing) is 63 ms, 1.1%.
+
+**The object also proves the feature ran:** `"spec": true` among the arguments with `steps` 0
+would be a run that asked for speculation and did none.

@@ -10,8 +10,8 @@
 // otherwise the prompt is raw text after BOS. -f reads the prompt from a file.
 // Only the tokenizer comes from libllama (vocab-only load).
 // --record FILE: the run as one JSON object (docs/record.md): a few of its arguments, the prompt's
-// token count and hash, the GPU clock setting, the bytes read from storage per phase, and the
-// times the "# ..." lines on stderr report.
+// token count and hash, the GPU clock setting, the bytes read from storage per phase, the
+// speculative loop's totals, and the times the "# ..." lines on stderr report.
 // Without --rt: everything on the CPU through the ggml Engine (forward.cpp), the prompt as one
 // chunk. --rt <dense-fp8.gguf> (bin-hip build): every token through the own runtime (hip/rt.h:
 // dense part on GPU D in exact fp8, routed experts on the CPU or, with --placement, partly on
@@ -443,6 +443,10 @@ static int run(int argc, char** argv) {
     std::vector<std::vector<float>> confs;
     [[maybe_unused]] double draft_ms = 0;
     [[maybe_unused]] long spec_steps = 0, spec_accepted = 0;
+    // for --record: the time in verify steps, the steps by drafts verified, the steps without a draft
+    [[maybe_unused]] double verify_ms = 0;
+    std::vector<long> spec_hist;
+    long spec_plain = 0;
 #ifdef DS_RUNTIME
     if (spec) {
       // speculative decoding (greedy): draft from the anchor (the last emitted token, not yet run),
@@ -561,6 +565,7 @@ static int run(int argc, char** argv) {
           const std::vector<int32_t> next = rt->verify(chunk);
           const auto tv1 = Clock::now();
           const double vms = std::chrono::duration<double, std::milli>(tv1 - tv).count();
+          verify_ms += vms;
           int k = 0;
           while (k + 1 < (int)chunk.size() && chunk[k + 1] == next[k]) k++;
           {
@@ -612,6 +617,8 @@ static int run(int argc, char** argv) {
         fprintf(d2_log, "\n");
         fclose(d2_log);
       }
+      spec_hist = n_hist;
+      spec_plain = plain_steps;
       fprintf(stderr, "\n# drafts verified per step:");
       for (size_t n = 0; n < n_hist.size(); n++) fprintf(stderr, " %zu: %ld", n, n_hist[n]);
       fprintf(stderr, " (of the 0s, %ld plain steps without a draft); verify cost fit %.1f + %.1f n ms", plain_steps,
@@ -697,6 +704,14 @@ static int run(int argc, char** argv) {
       fprintf(record, "  \"env\": {\"gpu_sclk\": %s},\n", json_array(sclk).c_str());
       auto read = [&](int i) { return rd[i] < 0 || rd[i + 1] < 0 ? std::string("null") : std::to_string(rd[i + 1] - rd[i]); };
       fprintf(record, "  \"read_bytes\": {\"load\": %s, \"prompt\": %s, \"gen\": %s},\n", read(0).c_str(), read(1).c_str(), read(2).c_str());
+      if (spec) {  // totals of the speculative loop; "verified": steps by the number of drafts verified, from 0
+        std::vector<std::string> h;
+        for (long c : spec_hist) h.push_back(std::to_string(c));
+        fprintf(record, "  \"spec\": {\"steps\": %ld, \"plain_steps\": %ld, \"accepted\": %ld, \"verified\": %s, \"draft_ms\": %.1f, \"verify_ms\": %.1f},\n",
+                spec_steps, spec_plain, spec_accepted, json_array(h).c_str(), draft_ms, verify_ms);
+      } else {
+        fprintf(record, "  \"spec\": null,\n");
+      }
       fprintf(record, "  \"counters\": {\"load_s\": %.3f, \"prompt_s\": %.4f, \"prompt_tps\": %.3f, \"gen_tokens\": %d, \"gen_s\": %.4f, \"gen_tps\": %.3f}\n}\n",
               t_load, t_pp, toks.size() / t_pp, n_gen, t_tg, n_gen > 0 ? n_gen / t_tg : 0.0);
       if (fclose(record) != 0) { fprintf(stderr, "cannot write %s\n", record_path.c_str()); return 1; }

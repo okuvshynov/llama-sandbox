@@ -1,6 +1,6 @@
 # `--record`: a run as one record
 
-**Status (2026-11-15, README steps 115-117):** the idea, and a first minimal `--record` in
+**Status (2026-11-15, README steps 115-118):** the idea, and a first minimal `--record` in
 `ds-completion`. No test uses it yet and no existing script changed. The record is meant to grow
 field by field, each addition a small change; the testing procedure follows once the record has
 shown what it can see.
@@ -83,10 +83,11 @@ Decided in the discussion this document comes from:
   "schema": 1,
   "args": {"mode": "chat", "effort": 75, "n": 300, "threads": 16, "runtime": true, "canon": true, "spec": true,
            "placement": "placements/study30.txt", "cache_loads": 800, "cache_period": 8},
-  "prompt": {"tokens": 49, "hash": "fnv1a64:3cef864372fb529c"},
+  "prompt": {"tokens": 25, "hash": "fnv1a64:32138dd9ac19a294"},
   "env": {"gpu_sclk": [6, 6, 6, 6]},
-  "read_bytes": {"load": 0, "prompt": 11489280, "gen": 72409088},
-  "counters": {"load_s": 116.713, "prompt_s": 1.2937, "prompt_tps": 37.875, "gen_tokens": 300, "gen_s": 7.2878, "gen_tps": 41.165}
+  "read_bytes": {"load": 0, "prompt": 0, "gen": 0},
+  "spec": {"steps": 66, "plain_steps": 0, "accepted": 233, "verified": [0, 3, 7, 12, 10, 34], "draft_ms": 514.5, "verify_ms": 4904.9},
+  "counters": {"load_s": 116.652, "prompt_s": 0.6165, "prompt_tps": 40.548, "gen_tokens": 300, "gen_s": 5.4818, "gen_tps": 54.727}
 }
 ```
 
@@ -102,9 +103,13 @@ Decided in the discussion this document comes from:
   hand during a run is not seen. After a reboot every card is on auto.
 - `read_bytes` (step 117): what the process had fetched from storage in each phase
   (`/proc/self/io`): this process only, all its threads, only reads that reached the disk. 0: the
-  phase did not wait for storage. In the example the generation read 72 MB: the prompt had not
-  been run since a reboot, its engram rows came from the disk, and the run was 12% slower than
-  its repeat. `null`: not available.
+  phase did not wait for storage. A prompt not run since a reboot read 72 MB during its
+  generation (its engram rows came from the disk) and ran 12% slower than its repeat.
+  `null`: not available.
+- `spec` (step 118; `null` without `--spec`): the speculative loop's totals. `steps`: verify
+  steps; `plain_steps`: those without a draft; `accepted`: drafts the main model agreed with;
+  `verified`: the steps by the number of drafts verified, from 0; `draft_ms`, `verify_ms`: the
+  time in the draft and in the verify steps. Totals only: tokens per step is `gen_tokens / steps`.
 - `counters`: the numbers of the `# loaded in ...` and `# prompt: ... generation: ...` lines.
 
 The file is opened before the model loads and written after the generation. A run that fails or
@@ -159,14 +164,14 @@ In the order I would take them; the order is not decided.
 1. The rest of the configuration as it took effect: every option, the `DS_*` switches, the commit
    the binary was built from, the input files' sizes and dates. (The GPU clock setting: done,
    step 116.)
-2. Proof that a requested feature ran: drafts made with `--spec`, loads with `--cache-loads`,
-   slots filled with `--placement`. A feature that silently did not apply looks like "no
+2. Proof that a requested feature ran: drafts made with `--spec` (there since step 118: `steps`
+   and `accepted`), loads with `--cache-loads`, slots filled with `--placement`. A feature that silently did not apply looks like "no
    difference".
 3. Cold runs: done (step 117), as bytes read from storage per phase; major page faults do not
    measure it (one fault for 64 MiB). Still open on the machine's side: how much of each model
    file is cached when a run starts, which says whether the machine is ready, not what a run read.
-4. The counters the engine already prints: verify steps, drafts accepted, tokens per step, the
-   share of experts on GPUs.
+4. The counters the engine already prints. Speculation: done (step 118). Left: the share of
+   experts on GPUs, the cache's rebalances and loads.
 5. Values: a hash of the emitted token ids, then of the logits. On the speculative path the
    logits stay on the GPU (README step 88), so a checksum would be computed there, next to the
    argmax, and its cost measured with the record itself. Its definition (which positions, which

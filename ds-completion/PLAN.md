@@ -502,6 +502,8 @@ Step 116: the GPU clock setting in the record (a level, or "auto": after a reboo
 auto and the level moves during a run).
 Step 117: bytes read from storage per phase in the record; with the engram table out of the page
 cache a new prompt reads its rows from disk and runs ~12% slower once (sql-report 41.2 against 46.8 t/s).
+Step 118: the speculative loop's totals in the record (steps, drafts accepted, the steps by drafts
+verified, draft and verify time).
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front

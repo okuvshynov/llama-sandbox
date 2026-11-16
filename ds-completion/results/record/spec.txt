@@ -1,0 +1,36 @@
+# The speculative loop's totals in the record (README step 118). Commit 3b7b735+changes (this change), sclk 6, 2026-11-15.
+# Each record without its "schema" and "args" lines, then the stderr lines the "spec" object repeats.
+
+== no --spec (the prompt of results/record/first.txt, 32 tokens, experts on the CPU): the same output as before
+  "args": {"mode": "chat", "effort": 75, "n": 32, "threads": 16, "runtime": true, "canon": false, "spec": false,
+  "prompt": {"tokens": 20, "hash": "fnv1a64:ca691ad07d0dd8ee"},
+  "env": {"gpu_sclk": [6, 6, 6, 6]},
+  "read_bytes": {"load": 0, "prompt": 0, "gen": 0},
+  "spec": null,
+  "counters": {"load_s": 4.054, "prompt_s": 0.9567, "prompt_tps": 20.905, "gen_tokens": 32, "gen_s": 2.1780, "gen_tps": 14.693}
+
+== the fastest single-machine settings (the command of results/record/fast.txt), cpp-matrix, 300 tokens:
+== the same bytes as results/cache-test/plain-canon-static/cpp-matrix.out
+  "args": {"mode": "chat", "effort": 75, "n": 300, "threads": 16, "runtime": true, "canon": true, "spec": true,
+  "prompt": {"tokens": 25, "hash": "fnv1a64:32138dd9ac19a294"},
+  "env": {"gpu_sclk": [6, 6, 6, 6]},
+  "read_bytes": {"load": 0, "prompt": 0, "gen": 0},
+  "spec": {"steps": 66, "plain_steps": 0, "accepted": 233, "verified": [0, 3, 7, 12, 10, 34], "draft_ms": 514.5, "verify_ms": 4904.9},
+  "counters": {"load_s": 116.652, "prompt_s": 0.6165, "prompt_tps": 40.548, "gen_tokens": 300, "gen_s": 5.4818, "gen_tps": 54.727}
+# drafts verified per step: 0: 0 1: 3 2: 7 3: 12 4: 10 5: 34 (of the 0s, 0 plain steps without a draft); verify cost fit 65.8 + 2.7 n ms
+# speculative: 66 verify steps, 3.53 drafts accepted per step, 4.55 tokens per step; draft 7.8 ms per step
+
+== cpp-matrix with --placement, --dspark, --spec --spec-n 5, --canon, -n 40 (no cache): a prefix of the 300-token output
+  "args": {"mode": "chat", "effort": 75, "n": 40, "threads": 16, "runtime": true, "canon": true, "spec": true,
+  "prompt": {"tokens": 25, "hash": "fnv1a64:32138dd9ac19a294"},
+  "env": {"gpu_sclk": [6, 6, 6, 6]},
+  "read_bytes": {"load": 0, "prompt": 0, "gen": 364544},
+  "spec": {"steps": 7, "plain_steps": 0, "accepted": 33, "verified": [0, 0, 0, 0, 0, 7], "draft_ms": 53.6, "verify_ms": 863.0},
+  "counters": {"load_s": 13.613, "prompt_s": 0.5861, "prompt_tps": 42.656, "gen_tokens": 40, "gen_s": 0.9245, "gen_tps": 43.266}
+# drafts verified per step: 0: 0 1: 0 2: 0 3: 0 4: 0 5: 7 (of the 0s, 0 plain steps without a draft); verify cost fit 73.5 + 11.9 n ms
+# speculative: 7 verify steps, 4.71 drafts accepted per step, 5.71 tokens per step; draft 7.7 ms per step
+
+# The object against stderr, fast settings: 233 / 66 = 3.53 drafts accepted per step; 300 / 66 = 4.55 tokens per
+# step; 514.5 / 66 = 7.8 ms per draft; "verified" is the "drafts verified per step" line. --spec-n 5: 33 / 7 = 4.71,
+# 40 / 7 = 5.71, 53.6 / 7 = 7.7, every step in the histogram's last place.
+# verify_ms + draft_ms = 5,419 ms of the generation's 5,482 (fast settings): 63 ms, 1.1%, outside the two.

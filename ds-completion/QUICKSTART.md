@@ -175,8 +175,10 @@ Options:
 - `--log-routing FILE`: the router's choices per token and layer (the routing studies).
 - `--record FILE`: the run as one JSON object: a few of its options, the prompt's token count and
   hash, the GPU clock setting (each card's level, or `"auto"`), the bytes read from storage during
-  the load, the prompt and the generation (0: nothing waited for the disk), load time, prompt and
-  generation t/s. A first version, to grow ([docs/record.md](docs/record.md), README steps 115-117). One prompt only (not with `-i`, `--serve`, `--teacher`); a run that does not
+  the load, the prompt and the generation (0: nothing waited for the disk), with `--spec` the
+  speculative loop's totals (steps, drafts accepted, steps by drafts verified, draft and verify
+  time), load time, prompt and generation t/s. A first version, to grow
+  ([docs/record.md](docs/record.md), README steps 115-118). One prompt only (not with `-i`, `--serve`, `--teacher`); a run that does not
   finish leaves the file empty.
 - `--no-quant` (CPU path only): without the reference's fp8/fp4 rounding (a comparison).
 
