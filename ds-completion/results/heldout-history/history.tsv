@@ -1,4 +1,4 @@
-# scripts/heldout_history.py: held-out generation t/s per point (8 prompts, 300 tokens, sclk 6); empty: pending
+# results/heldout-history/heldout_history.py: held-out generation t/s per point (8 prompts, 300 tokens, sclk 6); empty: pending
 step	commit	mean	tcp-udp	py-lru	cpp-matrix	sql-report	geometry	zh-travel	ja-email	summary-json	data
 6	69474c2	10.06	9.85	10.05	10.11	9.97	10.15	10.12	10.15	10.06	results/heldout-history/runs/6-69474c2
 7	8cd730f	12.32	12.28	12.28	12.24	12.34	12.52	12.28	12.34	12.30	results/heldout-history/runs/7-8cd730f

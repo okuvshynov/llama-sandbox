@@ -748,9 +748,9 @@ What it says:
 
 All earlier numbers were taken at sclk level 2 (1204 MHz); mclk is fixed at 1000 MHz. The level
 is set by hand with sudo (`power_dpm_force_performance_level=manual`, `pp_dpm_sclk=<level>` on
-every card). `scripts/sclk-sweep.sh` runs the GPU-side benchmarks and both decode
+every card). `results/sclk/sclk-sweep.sh` runs the GPU-side benchmarks and both decode
 configurations at the current level, sampling hwmon power, into `results/sclk/sclk<level>.txt`;
-`python3 scripts/sclk-summary.py` makes the table.
+`python3 results/sclk/sclk-summary.py` makes the table.
 
 | | L0 999 | L2 1204 | L4 1445 | L6 1608 | L8 1730 MHz |
 |---|---|---|---|---|---|
@@ -869,7 +869,7 @@ Steps 4-6 above describe the removed ggml GPU path as it was; their numbers stay
 
 ## Step 13: routing statistics (30 prompts) - an adaptive expert cache is the way
 
-`--log-routing` records every token's 6 experts per layer; `scripts/routing-study.sh` ran the
+`--log-routing` records every token's 6 experts per layer; `results/routing-study.sh` ran the
 30 prompts of `prompts/routing-study.tsv` (8 categories: code, math with thinking, story, fact,
 chat, Chinese, Ukrainian, translation, plus 2 long-document prompts), up to 1,024 generated
 tokens each: 20,919 generated tokens (`data/routing/study/`, not in git).
@@ -1213,7 +1213,7 @@ model, keeps the matching prefix plus the main model's own next token, and commi
   predicts acceptance (draft 0: 0.71 predicted, 0.71 observed; 0.9-1.0 bin: 99% accepted,
   0.1-0.2 bin: 23%); AUC 0.875; refitting the sigmoid gains almost nothing (log-loss 0.390 ->
   0.385). Measured on 6 calibration prompts that are not among the 4 test prompts
-  (`results/spec-conf/`, `results/spec-conf-calibration.txt`, `scripts/spec_conf.py`).
+  (`results/spec-conf/`, `results/spec-conf-calibration.txt`, `results/spec-conf/spec_conf.py`).
 - **Rule** (`--spec` without `--spec-n`): with p_i = sigmoid(conf_i), verify the n in 0..5 with
   the most expected tokens per ms, (1 + p0 + p0 p1 + ..) / (draft + verify(n)). Costs are
   running averages from the run itself, starting at 52 + 28 n ms. No other parameters. n = 0
@@ -1281,7 +1281,7 @@ model, keeps the matching prefix plus the main model's own next token, and commi
 
 ## Step 27: speculation and the GPU clock (sclk levels 0, 2, 8)
 
-`scripts/spec-sclk.sh` at the current sclk level (set by hand): the 8 held-out prompts, plain and
+`results/spec-sclk/spec-sclk.sh` at the current sclk level (set by hand): the 8 held-out prompts, plain and
 `--spec` back to back, study30, with the 4 dies' power sampled every 100 ms; then the median
 6-token verify step. Outputs byte-identical across all three levels (`results/spec-sclk/`).
 Means over the 8 prompts (`results/spec-sclk/summary.txt`):
@@ -1352,12 +1352,12 @@ are limited, take time and compete with the CPU, and what policy should decide t
 
 - **Data**: routing logs now cover verify chunks too (log version 2: every forwarded token,
   rejected drafts included, with its forward's number; the last record of a position is the
-  committed one). `scripts/spec-routing.sh` logged the 8 held-out prompts with `--spec` and
+  committed one). `results/spec-routing.sh` logged the 8 held-out prompts with `--spec` and
   study30, up to 1,024 tokens (5,480 generated tokens in 2,018 steps); every output starts with
   the earlier 300/500-token output (logging changes nothing). Plain decoding of the same texts
   is replayed from the committed tokens; the 30 study logs (plain) are a second set, warm
   started leave-one-out.
-- **Simulator** (`scripts/cache_sim.py`): 6,201 slots (the runtime's, with the draft loaded),
+- **Simulator** (`results/cache_sim.py`): 6,201 slots (the runtime's, with the draft loaded),
   warm start from study30; a step's slots hit if their expert is resident when it starts; loads
   start at up to R per second of modelled time, evict a victim at once and become resident 1
   step later (sensitivity: 2-8).
@@ -1439,7 +1439,7 @@ Throughput is 7-14x the 100-200 loads/s the simulation asks for. The cost is on 
 pinned load reads and writes 18.8 MB through the same memory the CPU expert kernel streams.
 Copying in 1 MB pieces instead of 6.27 MB was no better for the GPU step.
 
-Live (`scripts/load-test.sh`, `results/load-test/summary.txt`): the runtime with
+Live (`results/load-test.sh`, `results/load-test/summary.txt`): the runtime with
 `--load-test R` keeps 8 spare slots per die and loads random experts into them at R loads/s in
 all, as the cache would, while decoding the 8 held-out prompts (study30):
 
@@ -1486,7 +1486,7 @@ adaptive cache (whose contents depend on timing) cannot change it.
 - **The fast path is unchanged** (the default; same output as before, checked on a 300-token
   run against `results/spec-sclk/out2`).
 
-Gate (`scripts/canon-gate.sh`, `results/canon-gate.txt`, 128 tokens, 3 prompts): with `--canon`,
+Gate (`results/canon-gate/canon-gate.sh`, `results/canon-gate.txt`, 128 tokens, 3 prompts): with `--canon`,
 every configuration gives the same output bytes:
 
 | configuration | tcp-udp | py-lru | zh-travel |
@@ -1530,7 +1530,7 @@ canonical costs 1-2%, and its CPU kernel is now faster than the fast one at 1-2 
 -14%; the fast path has the same one-thread preparation, a later fix). Exactness unchanged
 (vector = scalar specification on every row; GPU vs CPU 0 of 5,120 differ).
 
-Results (`scripts/cache-test.sh`, `results/cache-test/`, 8 held-out prompts, 300 tokens,
+Results (`results/cache-test/cache-test.sh`, `results/cache-test/`, 8 held-out prompts, 300 tokens,
 study30 warm start, sclk 2; "same" = every output byte-identical to the plain static `--canon`
 run, `--spec` included):
 
@@ -1556,7 +1556,7 @@ misses do not scale with it): the cache turned CPU misses into GPU work.
   allows before the next one; near the cut-off (~6,200 slots of ~10,000 experts in use) counts
   are 1-3 and noisy. Hysteresis (a newcomer must beat its victim by a margin) is the tuning
   item (PLAN phase 4, deferred until after long context).
-- The full placement-invariance gate (`scripts/canon-gate.sh`) passes again on this code.
+- The full placement-invariance gate (`results/canon-gate/canon-gate.sh`) passes again on this code.
 
 ## Step 33: where a verify step goes with the cache
 
@@ -1698,7 +1698,7 @@ at its usual ~15 t/s.
 
 The prompt went through the runtime one token at a time (~19-25 t/s): a 30k-token document took
 half an hour. Every change below keeps the output byte-identical to token by token
-(`scripts/prefill-gate.sh`, `results/prefill/gate.txt`).
+(`results/prefill/prefill-gate.sh`, `results/prefill/gate.txt`).
 
 - **Chunks through the batched forward.** `Runtime::prefill` runs all but the last prompt token
   through `forward_chunk` (the path speculation verifies with) without the output head, then
@@ -1858,7 +1858,7 @@ Step 41 left the prompt limited by the CPU's experts. Whether loading them to th
 pays depends on how many tokens each non-resident expert gets per chunk: a load costs a fixed
 ~0.7 ms of host-link time per expert (1,437 loads/s over the four dies, step 30), the CPU a weight
 read plus a cost per token. Routing logs of two long prompts (README prose, 7,369 tokens; C++ code,
-11,286) and `scripts/prefill_stream_sim.py` model three policies per chunk and layer: all on the
+11,286) and `results/prefill/prefill_stream_sim.py` model three policies per chunk and layer: all on the
 CPU (today, on the overlap's half-chunks), all streamed, and a hybrid (the most-used non-resident
 experts streamed, the rest on the CPU, split so the two take equally long; they run in
 parallel).
@@ -2002,7 +2002,7 @@ die 0 holds 12 fewer experts. `kChunk` stays 512.
 **Momentum?** Should the draft-length rule (step 25) trust speculation more after recent
 successes? Only if past success predicts acceptance beyond the draft's own confidence head. On the
 step-25 calibration logs (every draft verified; 1,443 reached drafts, 6 prompts;
-`scripts/spec_momentum.py`, `results/spec-momentum.txt`), adding the previous step's accepted
+`results/spec_momentum.py`, `results/spec-momentum.txt`), adding the previous step's accepted
 fraction, its surprise, or a running average to a fit on the confidence improves the fit on its own
 data by a hair and makes predictions for left-out prompts slightly worse (log-loss 0.3872 without,
 0.3879-0.3896 with). Within confidence bins, acceptance after a poor and after a good step differs
@@ -2093,7 +2093,7 @@ Even with the cache warm (87% of expert uses on GPUs), the CPU's experts are aga
 item: a 6-token code step has ~185 of them, ~0.3 ms each. Most serve one token, so the kernel is
 bound by reading 18.8 MB per expert: ~63 GB/s, about half this machine's DDR4 peak (~140 GB/s).
 
-**Launches:** `scripts/hip_count_shim.c` (an LD_PRELOAD counter) counts ~2,450 kernel launches
+**Launches:** `results/hip_count_shim.c` (an LD_PRELOAD counter) counts ~2,450 kernel launches
 per plain decode step and ~3,000-3,900 per verify step (draft included); `bin-hip/bench-launch`
 measures ~2.2-2.5 us per launch back to back (~11.5 us for a launch plus a synchronize). So
 launches cost at most ~7-12% of a step, and part of that overlaps work.
@@ -2226,7 +2226,7 @@ measuring; `fincore` shows what is resident.
 
 ## Step 54: experts chosen together: some affinity, nothing to place by
 
-Could co-selection guide the split over the CPU and the dies (`scripts/coselect.py`,
+Could co-selection guide the split over the CPU and the dies (`results/coselect.py`,
 `results/coselect.txt`; the 30-prompt study's logs, generated tokens)?
 
 - **Within a token**, per layer, pairs common enough to judge: the median pair is chosen together
@@ -2357,7 +2357,7 @@ from 1.1 to 0.2 ms per token, leaving the GPU side (9.6 ms) just under the CPU's
 The cache counts each expert's uses over the last 256 forwarded tokens and, every 8 tokens, swaps
 the most used non-resident experts (at least 2 uses) for the least used residents. Would decayed
 counts (each use +1, every token multiplying all scores by 2^(-1/half-life)) or hysteresis (a
-newcomer must beat its victim by a margin) do better? `scripts/cache_sim.py --decay` (step 29's
+newcomer must beat its victim by a margin) do better? `results/cache_sim.py --decay` (step 29's
 simulator with `half_life`, `margin` and `min_count`; its time model is the sclk-2 fit, so
 policies are compared, not absolute t/s): `results/cache-decay/sweep.txt`, `threshold.txt`.
 
@@ -2462,7 +2462,7 @@ L+j's router may already say which experts L+j will choose. `DS_ROUTE_AHEAD=K` (
 generation only) runs, at each layer L, the routers of layers L..L+K on L's router input (the
 same top-6 rule with each layer's bias) and at the step's end compares the guesses with what
 each layer chose, including the experts it had to compute on the CPU (residency as it was when
-the layer routed). `scripts/route-ahead.sh`, the 8 held-out prompts, `results/route-ahead/`
+the layer routed). `results/route-ahead/route-ahead.sh`, the 8 held-out prompts, `results/route-ahead/`
 (`pooled.txt`; outputs identical):
 
 | j layers ahead | chosen experts in the guess's top 6 / 12 / 24 | CPU experts among the guess's top 1 / 3 / 6 not on a GPU | the cache's top 1 / 3 / 6 by use (step 52's guess) |
@@ -2487,7 +2487,7 @@ takes ~2 ms, a layer 1.6-2.5 ms) within the links' budget: step 64 simulates the
 ## Step 64: prefetching the CPU's experts to the GPUs from the lookahead, simulated
 
 A load takes ~2 ms of one GPU's link (~2.9 with the cache's own loads), a layer 1.6-2.5 ms: a
-guess must be acted on two or more layers ahead. `scripts/prefetch_sim.py` replays the 8
+guess must be acted on two or more layers ahead. `results/route-ahead/prefetch_sim.py` replays the 8
 prompts' logs (`DS_ROUTE_LOG`, step 63): per step and target layer, a policy picks up to B
 experts from the guess made j layers earlier, a load goes to the least busy of 4 links and is
 issued only if it can land before the layer routes (the logged routing times, scaled to the
@@ -2676,9 +2676,9 @@ part of a ~2-3% faster step.
 
 One point per decode change: commit, a one-line summary, and generation speed on the 8 held-out
 prompts (300 tokens, sclk 6), mean and per prompt (`results/heldout-history/`: `points.tsv` the
-plan, `history.tsv` the numbers, `history.html` the chart, all from `scripts/heldout_history.py`).
+plan, `history.tsv` the numbers, `history.html` the chart, all from `results/heldout-history/heldout_history.py`).
 Steps 48-71 were measured then at sclk 6 (27.96 -> 34.98 t/s); steps 6-45 were measured at other
-clocks or settings, so `scripts/heldout-rerun.sh` rebuilds their commits in worktrees (all 16
+clocks or settings, so `results/heldout-history/heldout-rerun.sh` rebuilds their commits in worktrees (all 16
 build against today's tree of dependencies) and reruns them at sclk 6 with each commit's own
 flags: 13 points in tier 1 (~6-7 h), 3 optional, and steps 48-71 again so every point shares one
 night's conditions (~12 h in all). The chart's per-prompt grid shows each step's
@@ -2706,7 +2706,7 @@ complete (25 run, step 67 from its source), no failures. Mean t/s on the 8 promp
   (71: 34.98 then, 34.80 now; 74: 35.94 both).
 - **Outputs:** every point from 31 on gives the reference output on all 8 prompts; points 6-25
   differ from it by design (the fast numerics of their time).
-- `scripts/heldout-status.sh` (added after the start): points complete, the current point and
+- `results/heldout-history/heldout-status.sh` (added after the start): points complete, the current point and
   its prompts, the age of the last write (`STALLED?` after 15 min), the means so far; run it
   under `watch -n 60`.
 
@@ -3206,7 +3206,7 @@ experts pruned to free die 0's space; the draft's window seeded for all kept tok
 room of ~384 of the main model's experts. A smaller draft cannot change the output (the main
 model verifies every drafted token), only how much of it is accepted. `DS_DRAFT_ROUTE_LOG=path`
 writes each draft call's choices (layer, block position, 3 experts);
-`scripts/draft_route_stats.py` reads them (`results/decode-next/draft-route.txt`, the 8 held-out
+`results/decode-next/draft_route_stats.py` reads them (`results/decode-next/draft-route.txt`, the 8 held-out
 prompts, 713 draft calls):
 
 | draft layer | experts covering 50 / 90 / 95 / 99% of its choices | never chosen |
@@ -3364,7 +3364,7 @@ full vocabulary (1.0 ms), then takes the argmax. Over a subset S the argmax is t
 whenever the full one is in S, so this can be simulated exactly for accepted drafts: a step
 keeps its accepted drafts up to the first one outside S. `DS_DRAFT_TOKEN_LOG` (new, a study log
 like step 87's) writes per verify step the drafted and emitted ids; one held-out run with it
-(`results/decode-next/draft-vocab/`, every output identical), then `scripts/draft_vocab_sim.py`
+(`results/decode-next/draft-vocab/`, every output identical), then `results/decode-next/draft_vocab_sim.py`
 (`results/decode-next/draft-vocab.txt`) for K from 1k to 96k and four orders of the vocabulary
 (every subset also holds the 1,280 ids from 128,000: special tokens):
 
@@ -3432,7 +3432,7 @@ B's attention, and back) and found it 10-13% slower without measuring why; die 0
 still take turns (~25 ms of CPU experts per code step against die 0's ~54 ms), so it was the
 triage's largest open idea. Its patch (`results/decode-next/verify-halves.patch`,
 `DS_VERIFY_HALVES=1`) still applies; traced against step 88's traces
-(`results/decode-next/verify-halves-trace.txt`, new `scripts/trace_overlap.py`):
+(`results/decode-next/verify-halves-trace.txt`, new `results/decode-next/trace_overlap.py`):
 
 | a 6-token code step, median ms | without halves | halves (traced) |
 |---|---|---|
@@ -3684,8 +3684,8 @@ Later multiples of 2048 cost a light kernel ~30 us more than their neighbours (4
 What the dispatcher does there was not established; the effect is measured. Two launches avoid it
 for a light kernel and cost a heavy one 10-15% (4096 waves x 20 KB: 139 -> 173 us).
 
-**Which of the runtime's launches are there** (`scripts/hip_launch_waves_shim.cpp`, an LD_PRELOAD
-count of every launch by kernel and waves, and `scripts/launch_waves.py`; tcp-udp, 382 k launches):
+**Which of the runtime's launches are there** (`results/decode-next/hip_launch_waves_shim.cpp`, an LD_PRELOAD
+count of every launch by kernel and waves, and `results/decode-next/launch_waves.py`; tcp-udp, 382 k launches):
 7,920 on the floor, about 55 per verify step. Most are fp8 GEMVs that take longer than 48 us
 anyway: attention query B (2048 waves at 2+ inputs, 4096 at one) and output A (8192 / 4096). As two
 launches those were slower in every case (query B 61.8 -> 66-67 us at one input, output A 46.1 ->
@@ -3858,7 +3858,7 @@ the head 2.15, the Markov bias 1.0), and during it dies 1-3 and the CPU idle. Sp
 experts over the dies would save little (1.6 ms to split, ~100 us of handoff per layer, the
 memory zero-sum). The larger idea is PLAN's "drafting ahead": start the next draft on another die
 while the verify runs, from a guessed anchor. Estimated before building anything
-(`scripts/draft_ahead_sim.py` over step 92's draft token logs; `results/decode-next/draft-ahead.txt`).
+(`results/decode-next/draft_ahead_sim.py` over step 92's draft token logs; `results/decode-next/draft-ahead.txt`).
 
 **When the guess holds:** every verified draft is accepted and the main model's own next token
 equals the draft's next guess (drafted token n + 1, when n < 5 were verified).
@@ -3908,7 +3908,7 @@ a block is any good was unknown, so it was measured without using it.
 writes them with their confidences: "gap", the block at its true positions with the window of
 main-model states 5 positions behind (`DSpark::draft`'s new `gap` argument), and "shift", as if it
 followed the window directly. The log ends with every generated id, so each block is scored
-against what the main model went on to emit (`scripts/draft2_sim.py`,
+against what the main model went on to emit (`results/decode-next/draft2_sim.py`,
 `results/decode-next/draft2.txt`; the logs themselves, `results/decode-next/draft2/*.log`, are not in git,
 as step 92's: REPRODUCE has the command; every output identical).
 
@@ -3986,7 +3986,7 @@ A reply cut by `-n` inside its reasoning leaves an empty answer, as the referenc
 `scripts/chat.sh --think [--effort max]`; its `-n` default is now 30000 (a reply's reasoning
 counts).
 
-**Checked against the reference's own rendering** (`scripts/chat_ref_prompts.py` calls
+**Checked against the reference's own rendering** (`results/chat/chat_ref_prompts.py` calls
 `encoding.py` for the conversation before each reply; `results/chat/think/`): the second and
 third replies of four three-turn sessions are byte-identical to fresh runs on those prompts:
 `-n 600`; `-n 20` and `-n 45` (replies cut inside the reasoning and inside the answer); and
@@ -4628,10 +4628,10 @@ Keeping fewer was tried first, as a measurement of what the draft loses.
 expert) pairs the draft's router may choose; every other expert gets a bias of -1e30 at load.
 `k_router` picks the top 3 of scores + bias and takes the weights from the scores alone, so the
 kept experts act as before. Every expert stays loaded: this measures the loss only.
-`scripts/draft_keep.py N LOG...` writes such a file from step 87's routing logs: the N most
+`results/draft-pool/draft_keep.py N LOG...` writes such a file from step 87's routing logs: the N most
 chosen pairs, the three layers ranked together.
 
-**The sweep** (`scripts/draft-keep-sweep.sh`, `results/draft-pool/keep/`; sclk 6): the 8 held-out
+**The sweep** (`results/draft-pool/draft-keep-sweep.sh`, `results/draft-pool/keep/`; sclk 6): the 8 held-out
 prompts, study30, `--canon`, no cache, `--spec-n 5`. With every draft verified, the drafts
 accepted per step measure the draft alone and do not depend on timing. Sets chosen without the
 prompt (`loo`: from the other seven prompts' logs) and sets chosen for it (`own`: from its own
@@ -4693,7 +4693,7 @@ separates the two effects. Without `DS_DRAFT_KEEP` nothing changes. Still a stud
 kept): the same drafted ids at every step (81 and 118 steps), the same routing log, the stored
 outputs' bytes. The home die holds 944 and 950 main-model experts, was 802.
 
-**End to end** (`scripts/draft-leave-out.sh`, `results/draft-pool/leave-out/`; sclk 6): the 8
+**End to end** (`results/draft-pool/draft-leave-out.sh`, `results/draft-pool/leave-out/`; sclk 6): the 8
 held-out prompts with the fastest settings, `all` and `out` twice each, `resident` once. All 40
 outputs are the stored ones' bytes.
 
@@ -4870,3 +4870,29 @@ configuration with an unknown option is reported as failed with its stderr kept 
 **With this the pattern is replaced going forward:** a sweep is a matrix file, its table and
 its gate one `records.py` command, and both files of evidence are small. Left from step 127's
 plan: file the old one-step scripts with their results.
+
+## Step 130: the one-step scripts filed with their results
+
+The last part of step 127's plan. `scripts/` had 44 files; 33 were written for one step. They
+moved to that step's results: `results/<topic>/` where the step has a directory (the draft
+studies to `results/decode-next/`, the cache test to `results/cache-test/`, ...), `results/`
+itself where its result is a single file (`results/cache_sim.py` beside `cache-sim.txt`).
+`scripts/` keeps 11, listed in `scripts/README.md`: the runner and the reader, two launchers,
+`spec-measure.sh` with its analysis (28 rows of REPRODUCE.md use it), the trace tools,
+`profile_verify.py` and `route_stats.py`.
+
+What moving needed, and nothing else changed in them:
+
+- a moved script finds the project's root one directory further up, and the simulators that
+  import `route_stats` look for it in `scripts/`;
+- every mention of a moved script in the documents, the code's comments and the scripts
+  themselves has the new path (153 places; REPRODUCE.md's rows first of all);
+- the results' own text files were **not** rewritten: a `#` header names the command at its
+  commit, and that was `scripts/<name>` then. `scripts/README.md` says where to look.
+
+**Checked without the GPUs:** every shell script parses and its `cd` reaches the project's
+root; every Python file compiles; the ones with `--help` start (the numpy ones under the
+reference's Python); `draft_keep_table.py`, `draft_leave_out_table.py` and `draft_keep.py`
+write their stored files again byte for byte from the new place, and `heldout_history.py`
+rewrote `history.tsv` with only its own name changed in the header. **Not checked:** the moved
+sweeps were not run again (hours of GPU time each); what they need beyond the path is unchanged.

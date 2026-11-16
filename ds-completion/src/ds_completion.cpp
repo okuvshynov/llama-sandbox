@@ -473,7 +473,7 @@ static int run(int argc, char** argv) {
       const char* log_mode = first ? "w" : "a";  // a session's later turns add to the logs
       FILE* spec_log = spec_log_path.empty() ? nullptr : fopen(spec_log_path.c_str(), log_mode);
       // README step 92: per verify step the draft's token ids and the ids it emitted (a study of the
-      // draft's head over part of the vocabulary: scripts/draft_vocab_sim.py)
+      // draft's head over part of the vocabulary: results/decode-next/draft_vocab_sim.py)
       FILE* tok_log = getenv("DS_DRAFT_TOKEN_LOG") ? fopen(getenv("DS_DRAFT_TOKEN_LOG"), log_mode) : nullptr;
       if (tok_log) fprintf(tok_log, "# n_verified accepted verify_ms draft_ms | drafted ids (all of the block; none on a plain step) | emitted ids\n");
       // README step 107: a second draft block in shadow (nothing uses it): from the first block's last
@@ -484,7 +484,7 @@ static int run(int argc, char** argv) {
       if (d2_log) fprintf(d2_log, "# anchor index, drafts the rule verified | block 1: ids ; conf | gap: ids ; conf | shift: ids ; conf  (last line: G, every generated id)\n");
       if (spec_log) fprintf(spec_log, "# n_verified accepted verify_ms draft_ms conf[0..block)\n");
       // Draft length per step (unless --spec-n): the confidence head's sigmoid is the chance a draft
-      // is accepted given the earlier ones were (calibrated: scripts/spec_conf.py, README step 25);
+      // is accepted given the earlier ones were (calibrated: results/spec-conf/spec_conf.py, README step 25);
       // verify the n in 0..5 with the most expected tokens per ms, (1 + p0 + p0 p1 + ...) /
       // (draft + verify(n)); n = 0 is a plain step. Verify cost: a line a + b n, fitted by weighted
       // least squares to this run's steps (weights decay by 0.97 per step, ~30 steps) plus a weak

@@ -425,7 +425,7 @@ class Runtime {
   std::vector<std::vector<char>> ra_res;  // [layer][expert]: on a GPU for this forward (snapshot at routing)
   std::vector<std::vector<uint16_t>> ra_cnt;  // [layer][expert]: the cache's use counts then
   std::vector<std::chrono::steady_clock::time_point> ra_tl;  // [layer]: host time of the routing
-  FILE* ra_log = nullptr;  // DS_ROUTE_LOG: per step and layer, for scripts/prefetch_sim.py
+  FILE* ra_log = nullptr;  // DS_ROUTE_LOG: per step and layer, for results/route-ahead/prefetch_sim.py
   struct RaCell { long exp = 0, in6 = 0, in12 = 0, in24 = 0, cpu = 0, p1 = 0, p3 = 0, p6 = 0, f1 = 0, f3 = 0, f6 = 0; };
   std::vector<RaCell> ra;      // [j]
   void ra_step_end();

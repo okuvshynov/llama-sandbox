@@ -6,7 +6,7 @@ and per prompt. Per prompt shows whether a change is universal (every prompt gai
 speculation-specific (the prompts that accept many drafted tokens gain most).
 
 - `points.tsv`: the plan, one row per point (step, commit, status, flags, source, summary).
-- `history.tsv`, `history.html`: every point's numbers, written by `scripts/heldout_history.py`;
+- `history.tsv`, `history.html`: every point's numbers, written by `results/heldout-history/heldout_history.py`;
   the page charts the mean by step and each prompt's change from the previous point.
 - `runs/<step>-<commit>/`: the reruns (`summary.txt`, each prompt's `.out` and `.err`).
 
@@ -37,10 +37,10 @@ from that reference by design ("DIFFERS" is expected there); the token counts ar
 
 ## Running it
 
-    scripts/heldout-rerun.sh --build rerun optional measured   # worktrees + builds, ~20 s each (done 2026-11-03)
-    scripts/heldout-rerun.sh rerun optional measured           # the overnight run, ~4 h 50 min at sclk 6
-    watch -n 60 scripts/heldout-status.sh                      # progress; STALLED? after 15 min without a write
-    python3 scripts/heldout_history.py                         # history.tsv, history.html
+    results/heldout-history/heldout-rerun.sh --build rerun optional measured   # worktrees + builds, ~20 s each (done 2026-11-03)
+    results/heldout-history/heldout-rerun.sh rerun optional measured           # the overnight run, ~4 h 50 min at sclk 6
+    watch -n 60 results/heldout-history/heldout-status.sh                      # progress; STALLED? after 15 min without a write
+    python3 results/heldout-history/heldout_history.py                         # history.tsv, history.html
 
 The overnight run includes steps 48-71 again (`measured`, ~4 h; step 67 is skipped, not being a
 commit), so every point is measured under one set of conditions; a complete rerun takes
@@ -48,7 +48,7 @@ precedence over the source directory, and the runs of the time stay as they are.
 page cache first, runs each point's 8 prompts from its own worktree
 (`~/.cache/ds-heldout-history/<commit>`), skips points already complete (so it can be stopped
 and restarted), and prints each point's mean. Set the GPU clock to level 6 on all four cards
-first. A subset: `scripts/heldout-rerun.sh 20 21a 32` (step labels) or `rerun` (a status).
+first. A subset: `results/heldout-history/heldout-rerun.sh 20 21a 32` (step labels) or `rerun` (a status).
 
 Checked before the first night (2026-11-03): every point's commit builds (23 worktrees, ~20-40 s
 each), and a 24-token smoke run of three of them works with today's model files: 69474c2 (the

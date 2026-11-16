@@ -247,7 +247,7 @@ Phases:
    compute exact integer block sums (VNNI / v_dot4_i32_i8) with one fixed conversion,
    accumulator layout and tree (`src/canon_dot.h`), plus a shared expf (`src/canon_math.h`).
    Whole expert block GPU = CPU bit for bit; CPU +5%, GPU +13%; accuracy unchanged.
-1. **Simulation with realistic constraints** (`scripts/cache_sim.py`, CPU only): load latency, a
+1. **Simulation with realistic constraints** (`results/cache_sim.py`, CPU only): load latency, a
    load rate, speculative verify chunks (rejected drafts included). **Done** (README step 29):
    with a time model fitted on the measured runs (4.8% rms), held-out `--spec` goes from 18.8
    (static) to ~26.7 t/s at 50 loads/s and ~28.9 at 100 (unlimited LRU: 33.5, ~8 GB/s).
@@ -533,6 +533,8 @@ differences are inside the spread. Next: the runner.
 Step 129: the runner, `scripts/run_matrix.py` (a matrix file: prompts, base arguments, configurations,
 repeats; a labelled record per run). Step 125's comparison again from a 12-line file: the same result.
 Next: file each old step's scripts with its results.
+Step 130: done: 33 one-step scripts moved to their results, 11 stay (`scripts/README.md`). New
+measurements: a matrix file beside its results, read with `scripts/records.py`.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front
@@ -550,7 +552,7 @@ Promising, in order:
    The review's leftovers (step 99): hc kernels fused, the compressor's state per chunk (prompt
    +1.1%, decode 0), a gather stream per die: tried, not kept; the draft's head in fp8 waits for
    the multi-input fp8 kernel.
-5. A simulation of ~190 more slots on die 0 (`scripts/cache_sim.py`): what a draft-expert cache
+5. A simulation of ~190 more slots on die 0 (`results/cache_sim.py`): what a draft-expert cache
    would buy, before building one.
 6. Commit's 0.86 ms wait: the draft's window seeded for all kept tokens at once (~1%).
 
@@ -581,7 +583,7 @@ compile-time shapes, the batched indexer (long context), die 0's staleness metri
 **A. Tuning the expert cache** (the CPU experts' ~25 ms)
 - Hysteresis: a newcomer must beat its victim by a margin, so the cache settles in long runs
   instead of churning at the noisy boundary; window length / decayed counts; the default rate
-  (100-200 loads/s). Simulate first (`scripts/cache_sim.py`), then live.
+  (100-200 loads/s). Simulate first (`results/cache_sim.py`), then live.
 - Place newcomers so each layer stays spread over the dies (today a newcomer takes its victim's
   slot).
 - More slots: compressed caches in fp8/fp4 (part of "Long context") and anything else freed on
