@@ -1,0 +1,42 @@
+# scripts/draft-leave-out.sh, commit fd5d6fe+changes, sclk 6, 2026-11-16T00:06:29-05:00
+# config name rep: main experts placed per die | verify steps, drafts accepted | GPU share of expert uses | draft ms, verify ms | generation t/s | output vs results/cache-test/plain-canon-static
+all tcp-udp 1: 802 1765 1765 1765 | 144 155 | 87.55% | 957 6707 | 38.80 | same, read 757760 bytes in generation
+out tcp-udp 1: 941 1765 1765 1765 | 144 155 | 88.06% | 959 6588 | 39.40 | same
+resident tcp-udp 1: 802 1765 1765 1765 | 144 155 | 87.58% | 961 6680 | 38.91 | same
+all py-lru 1: 802 1765 1765 1765 | 100 199 | 85.17% | 683 5722 | 46.37 | same, read 434176 bytes in generation
+out py-lru 1: 943 1765 1765 1765 | 101 198 | 85.59% | 684 5712 | 46.43 | same
+resident py-lru 1: 802 1765 1765 1765 | 100 199 | 85.21% | 683 5699 | 46.53 | same
+all cpp-matrix 1: 802 1765 1765 1765 | 66 233 | 85.67% | 515 4900 | 54.76 | same
+out cpp-matrix 1: 940 1765 1765 1765 | 66 233 | 85.96% | 516 4880 | 54.96 | same
+resident cpp-matrix 1: 802 1765 1765 1765 | 66 233 | 85.69% | 516 4919 | 54.57 | same
+all sql-report 1: 802 1765 1765 1765 | 77 225 | 81.94% | 599 5718 | 47.01 | same
+out sql-report 1: 943 1765 1765 1765 | 75 227 | 82.44% | 583 5745 | 46.92 | same, read 135168 bytes in generation
+resident sql-report 1: 802 1765 1765 1765 | 76 226 | 82.10% | 590 5806 | 46.43 | same, read 147456 bytes in generation
+all geometry 1: 802 1765 1765 1765 | 85 261 | 86.28% | 658 5583 | 54.64 | same, read 536576 bytes in generation
+out geometry 1: 944 1765 1765 1765 | 94 252 | 86.49% | 728 5744 | 52.70 | same, read 1310720 bytes in generation
+resident geometry 1: 802 1765 1765 1765 | 93 253 | 86.13% | 719 5701 | 53.13 | same, read 65536 bytes in generation
+all zh-travel 1: 802 1765 1765 1765 | 199 100 | 87.77% | 919 7788 | 34.17 | same, read 557056 bytes in generation
+out zh-travel 1: 947 1765 1765 1765 | 205 96 | 87.92% | 922 7947 | 33.55 | same, read 204800 bytes in generation
+resident zh-travel 1: 802 1765 1765 1765 | 205 96 | 87.73% | 920 7955 | 33.53 | same, read 217088 bytes in generation
+all ja-email 1: 802 1765 1765 1765 | 170 129 | 87.02% | 999 7041 | 36.99 | same, read 548864 bytes in generation
+out ja-email 1: 950 1765 1765 1765 | 168 131 | 87.21% | 1023 6977 | 37.18 | same, read 532480 bytes in generation
+resident ja-email 1: 802 1765 1765 1765 | 168 131 | 86.95% | 1023 6964 | 37.24 | same
+all summary-json 1: 802 1765 1765 1765 | 28 71 | 75.35% | 214 1955 | 44.73 | same
+out summary-json 1: 942 1765 1765 1765 | 28 71 | 75.96% | 214 1945 | 44.94 | same
+resident summary-json 1: 802 1765 1765 1765 | 28 71 | 75.08% | 214 1982 | 44.19 | same
+all tcp-udp 2: 802 1765 1765 1765 | 144 155 | 87.50% | 954 6645 | 39.13 | same
+out tcp-udp 2: 941 1765 1765 1765 | 144 155 | 88.07% | 961 6592 | 39.36 | same
+all py-lru 2: 802 1765 1765 1765 | 100 199 | 85.16% | 684 5687 | 46.61 | same
+out py-lru 2: 943 1765 1765 1765 | 100 199 | 85.58% | 684 5645 | 46.92 | same
+all cpp-matrix 2: 802 1765 1765 1765 | 66 233 | 85.68% | 516 4912 | 54.63 | same
+out cpp-matrix 2: 940 1765 1765 1765 | 76 228 | 86.22% | 577 5106 | 52.20 | same, read 413696 bytes in generation
+all sql-report 2: 802 1765 1765 1765 | 77 225 | 81.96% | 599 5694 | 47.19 | same
+out sql-report 2: 943 1765 1765 1765 | 77 225 | 82.45% | 598 5794 | 46.46 | same
+all geometry 2: 802 1765 1765 1765 | 85 261 | 86.30% | 658 5565 | 54.80 | same
+out geometry 2: 944 1765 1765 1765 | 92 254 | 86.45% | 713 5658 | 53.53 | same
+all zh-travel 2: 802 1765 1765 1765 | 199 100 | 87.79% | 920 7742 | 34.35 | same
+out zh-travel 2: 947 1765 1765 1765 | 205 96 | 87.91% | 921 7942 | 33.58 | same
+all ja-email 2: 802 1765 1765 1765 | 170 129 | 86.96% | 999 7018 | 37.09 | same
+out ja-email 2: 950 1765 1765 1765 | 169 130 | 87.17% | 1022 6972 | 37.20 | same
+all summary-json 2: 802 1765 1765 1765 | 28 71 | 75.34% | 214 1952 | 44.79 | same
+out summary-json 2: 942 1765 1765 1765 | 28 71 | 76.01% | 214 1956 | 44.70 | same

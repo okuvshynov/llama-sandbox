@@ -519,6 +519,9 @@ the resident set changes without loads into the home die during a run).
 Step 124: fewer draft experts measured with a router mask (`DS_DRAFT_KEEP`), nothing left out yet: the
 142 pairs other prompts never chose cost +1.5% steps; a set of 96 chosen for the prompt +1.4%, of 48
 +4.6%; a set of 192 chosen without it +11.6% (ja-email halves). Next: leave the unchosen out for real.
+Step 125: left out for real (`k_remap_ids`, the freed slots to the main model: 802 -> ~944 experts on the
+home die): GPU share +0.1-0.6 points, speed -0.7% over 8 prompts (+1.1% .. -2.9%). Not the default.
+Memory on the home die does not limit speed now: no draft-expert cache, no 2-bit draft for its slots.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front

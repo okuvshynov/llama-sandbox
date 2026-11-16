@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "args": {"mode": "chat", "effort": 75, "n": 300, "threads": 16, "runtime": true, "canon": true, "spec": true,
+           "placement": "placements/study30.txt", "cache_loads": 800, "cache_period": 8, "cache_window": 256, "cache_min": 2,
+           "cache_wait": true, "spec_n": 0,
+           "profile": false, "trace": false, "spec_log": false, "log_routing": false},
+  "prompt": {"tokens": 17, "hash": "fnv1a64:5b47625f5035c82d"},
+  "env": {"gpu_sclk": [6, 6, 6, 6], "ds": {"DS_DRAFT_KEEP": "results/draft-pool/keep/loo-seen/zh-travel.keep"}},
+  "read_bytes": {"load": 0, "prompt": 0, "gen": 204800},
+  "spec": {"steps": 205, "plain_steps": 86, "accepted": 96, "verified": [130, 44, 24, 4, 3, 0], "draft_ms": 921.8, "verify_ms": 7946.7},
+  "experts": {"gpu_uses": 71317, "cpu_uses": 9803, "dies": [0, 1, 2, 3], "placed": [947, 1765, 1765, 1765],
+               "cache": {"rebalances": 39, "swaps_planned": 3039, "loads_started": 2943, "loads_published": 2910,
+                         "loads_started_by_die": [0, 990, 1002, 951]}},
+  "counters": {"load_s": 115.081, "prompt_s": 0.6337, "prompt_tps": 26.825, "gen_tokens": 300, "gen_s": 8.9406, "gen_tps": 33.555}
+}

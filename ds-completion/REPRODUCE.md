@@ -114,7 +114,7 @@ command writes them again.
 Diagnostic switches read from the environment (each explained at its `getenv` and in the step
 that used it; none changes the output): `DS_ROUTE_LOG`, `DS_ROUTE_AHEAD`, `DS_EARLY_ROWS`,
 `DS_ATTN_CHECK` (`hip/rt.cpp`), `DS_DRAFT_PROFILE`, `DS_DRAFT_ROUTE_LOG` (`hip/dspark.cpp`),
-`DS_DRAFT_TOKEN_LOG`, `DS_DRAFT2_LOG` (`src/ds_completion.cpp`), `DS_DRAFT_KEEP` (`hip/dspark.cpp`, step 124), `DS_FP8_PAD`, `DS_FP8_VIRT`,
+`DS_DRAFT_TOKEN_LOG`, `DS_DRAFT2_LOG` (`src/ds_completion.cpp`), `DS_DRAFT_KEEP`, `DS_DRAFT_KEEP_RESIDENT` (`hip/dspark.cpp`, steps 124-125; with the placement they change what is loaded and so the speed, never the output), `DS_FP8_PAD`, `DS_FP8_VIRT`,
 `DS_STALL_SPLIT` (`hip/fp8_gemv.*`), `DS_F32_PAD` (`hip/kernels.hip`). A `DS_*` name next to a
 `git apply results/...patch` below exists only with that patch applied.
 
@@ -248,6 +248,7 @@ Unless stated: sclk 2, 16 CPU threads (32 before README step 18), the study30 pl
 | 122 | `record/loads-by-die.txt` | the command of `record/fast.txt` with `--record`, with this build and with a build that has the one-line change in the file's header |
 | 123 | `draft-pool/in-pool.txt` | the command in the file with a build of 566de25 and with this one; the ids: each token log without its time columns (`awk -F'\|' '{split($1,a," "); print a[1], a[2], "\|" $2 "\|" $3}'`), compared with `cmp`; then the command of `record/fast.txt` |
 | 124 | `draft-pool/keep/` (`summary.txt`, `table.txt`, per configuration each prompt's `.keep` set and record) | `scripts/draft-keep-sweep.sh` (needs step 87's `decode-next/draft-route/*.log`: `*.log` is not in git; made with `DS_DRAFT_ROUTE_LOG` and the held-out command), then `scripts/draft_keep_table.py` |
+| 125 | `draft-pool/leave-out/` (`summary.txt`, `table.txt`, the records) | `scripts/draft-leave-out.sh` (needs step 124's `draft-pool/keep/loo-seen/*.keep`), then `scripts/draft_leave_out_table.py`; left out against masked: the first command of `draft-pool/in-pool.txt` with `DS_DRAFT_KEEP=results/draft-pool/keep/loo-seen/geometry.keep`, with and without `DS_DRAFT_KEEP_RESIDENT=1`, and `DS_DRAFT_ROUTE_LOG` |
 
 ## 7. Open items (to confirm)
 

@@ -4676,3 +4676,55 @@ Requantizing was not tried.
 
 **Next:** leave the unchosen ones out for real (the draft's slots compacted, an id -> slot table
 after its router) and measure end to end what ~140 more main-model slots on the home die give.
+
+## Step 125: the unchosen draft experts left out for real: the slots give almost nothing
+
+Step 124 measured what the draft loses when a third of its experts are masked (+1.5% verify
+steps). This step frees their memory and measures what the main model gains from it.
+
+**The change.** With `DS_DRAFT_KEEP` and the draft's experts in the home die's pool (step 123),
+only the kept experts get slots, per layer in id order; the pool's remaining space goes to the
+main model through the same capacity rule as before. The draft's router still chooses among
+expert ids; one small kernel after it (`k_remap_ids`) turns the ids into slots with a table per
+layer. `DS_DRAFT_KEEP_RESIDENT=1` keeps step 124's behaviour (masked, all loaded), which
+separates the two effects. Without `DS_DRAFT_KEEP` nothing changes. Still a study switch.
+
+**Left out equals masked** (geometry and ja-email, `--spec-n 5`, the other seven prompts' pairs
+kept): the same drafted ids at every step (81 and 118 steps), the same routing log, the stored
+outputs' bytes. The home die holds 944 and 950 main-model experts, was 802.
+
+**End to end** (`scripts/draft-leave-out.sh`, `results/draft-pool/leave-out/`; sclk 6): the 8
+held-out prompts with the fastest settings, `all` and `out` twice each, `resident` once. All 40
+outputs are the stored ones' bytes.
+
+| prompt | die 0 experts: all, out | GPU share of expert uses: all, out | verify steps: all, out | t/s: all, out | |
+|---|---|---|---|---|---|
+| tcp-udp | 802, 941 | 87.53%, 88.06% | 144, 144 | 38.97, 39.38 | +1.1% |
+| py-lru | 802, 943 | 85.16%, 85.59% | 100, 100.5 | 46.49, 46.67 | +0.4% |
+| cpp-matrix | 802, 940 | 85.68%, 86.09% | 66, 71 | 54.70, 53.58 | -2.0% |
+| sql-report | 802, 943 | 81.95%, 82.44% | 77, 76 | 47.10, 46.69 | -0.9% |
+| geometry | 802, 944 | 86.29%, 86.47% | 85, 93 | 54.72, 53.12 | -2.9% |
+| zh-travel | 802, 947 | 87.78%, 87.91% | 199, 205 | 34.26, 33.56 | -2.0% |
+| ja-email | 802, 950 | 86.99%, 87.19% | 170, 168.5 | 37.04, 37.19 | +0.4% |
+| summary-json | 802, 942 | 75.34%, 75.98% | 28, 28 | 44.76, 44.82 | +0.1% |
+
+Mean of the prompts: **-0.7%**. (cpp-matrix's -2.0% is one run of the two: 76 steps and 52.20
+t/s, with 0.4 MB read from storage; the other was 66 steps and 54.96. The draft-length rule
+follows measured times.)
+
+- **The slots are worth little:** ~140 more experts on the home die (+17% of its slots, 2.7 GB)
+  move 0.1-0.6 points of the expert uses from the CPU to GPUs. Where the steps are the same
+  (tcp-udp, summary-json) that is 0-1% in speed. The cache already holds what a prompt uses
+  most on dies 1-3; the home die's slots are static (step 86) and hold the placement study's
+  next-ranked experts, which a given prompt seldom needs.
+- **The draft's loss is the same size and decides the sign:** on geometry and zh-travel the
+  masked-but-loaded runs (`resident`) are as slow as `out`: the steps the draft loses (8 of 85,
+  6 of 199) cost more than the slots return.
+- The run-to-run spread of one configuration is ~1%; no difference here is far outside it
+  except geometry's and zh-travel's.
+
+**Decision.** Not made the default: no gain, and a prompt outside the sample can lose much more
+(step 124: ja-email at 192). The switch and the pool layout stay; they cost nothing when off.
+What this rules out is the motive: memory on the home die is not what limits speed now, so
+neither a draft-expert cache nor a 2-bit draft would pay through slots. Requantizing could
+still pay through a faster draft (its experts are 1.7 of ~8 ms), which is a different question.

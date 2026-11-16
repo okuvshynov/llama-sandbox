@@ -117,6 +117,9 @@ void k_compress_pool(const float* kv_state, const float* score_state, int ratio,
 // (one wave each): logits at + t * n_expert, ids / w at + t * id_stride.
 void k_router(const float* logits, const float* bias, int n_expert, int k, bool norm, float route_scale, int* ids,
               float* w, hipStream_t s, int M = 1, int id_stride = 8);
+// ids[t * id_stride + j] = table[that id], j < k, t < M: a router's expert ids to the slots that
+// hold them (the draft's experts when some are left out, README step 125)
+void k_remap_ids(int* ids, const int* table, int M, int k, int id_stride, hipStream_t s);
 // out = silu(min(gate, lim)) * clamp(up, -lim, lim) * (weight ? *weight : 1)
 void k_swiglu(const float* gate, const float* up, float lim, int n, float* out, hipStream_t s);
 

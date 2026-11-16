@@ -115,10 +115,12 @@ DSpark::DSpark(Runtime& r, const std::string& path, bool experts_in_pool) : rt(r
     return (const float*)upload(T(name, GGML_TYPE_F32, ne), n * 4);
   };
 
-  // DS_DRAFT_KEEP=FILE (a study, README step 124): lines "layer expert", the draft experts its
+  // DS_DRAFT_KEEP=FILE (a study, README steps 124-125): lines "layer expert", the draft experts its
   // router may choose; every other one gets a bias of -1e30. k_router picks the top k of scores +
   // bias and takes the weights from the scores alone, so the kept experts' weights are as before.
   // The output cannot change (the main model verifies); how often drafts are accepted can.
+  // With the experts in the home die's pool, the others are not loaded and their slots go to the
+  // main model (step 125); DS_DRAFT_KEEP_RESIDENT=1 loads them all the same (step 124's measurement).
   std::vector<std::vector<char>> keep;
   if (const char* kp = getenv("DS_DRAFT_KEEP")) {
     keep.assign(n_layer, std::vector<char>(n_expert, 0));
@@ -138,7 +140,14 @@ DSpark::DSpark(Runtime& r, const std::string& path, bool experts_in_pool) : rt(r
       if (n < n_used) throw std::runtime_error("DS_DRAFT_KEEP: a layer keeps fewer experts than the router chooses");
       fprintf(stderr, " %d", n);
     }
-    fprintf(stderr, " of %d experts per layer\n", n_expert);
+    const bool resident = !in_pool || (getenv("DS_DRAFT_KEEP_RESIDENT") && atoi(getenv("DS_DRAFT_KEEP_RESIDENT")));
+    fprintf(stderr, " of %d experts per layer; the others %s\n", n_expert, resident ? "stay loaded" : "are left out");
+    if (!resident) {
+      kept.resize(n_layer);
+      for (int l = 0; l < n_layer; l++)
+        for (int e = 0; e < n_expert; e++)
+          if (keep[l][e]) kept[l].push_back(e);
+    }
   }
 
   CHECK(hipSetDevice(rt.opt.gpu));
@@ -284,23 +293,43 @@ DSpark::DSpark(Runtime& r, const std::string& path, bool experts_in_pool) : rt(r
 // The routed experts into the home die's pool: the same codes and scales as fp4_upload's (both
 // unpack ggml's blocks with fp4_unpack), in slots instead of one array per tensor; a layer's
 // GpuExperts is the pool's view moved to its first slot, so the kernels' ids stay expert ids.
+// With experts left out (kept), a layer has a slot per kept expert, in id order, and slot_of maps
+// the router's ids to them (an expert left out is never chosen: its bias is -1e30).
+int DSpark::pool_slots() const {
+  if (!in_pool) return 0;
+  if (kept.empty()) return (int)L.size() * n_expert;
+  int n = 0;
+  for (const auto& k : kept) n += (int)k.size();
+  return n;
+}
+
 void DSpark::load_experts(ExpertPool& pool, int base) {
   if (!in_pool) throw std::runtime_error("dspark: load_experts without experts_in_pool");
   const int E = rt.hp.n_embd, F = rt.hp.n_ff_exp;
   const size_t gate_bytes = (size_t)F * E / 32 * 17;  // one expert's ggml blocks, gate or up or down
   hipStream_t ls;
   CHECK(hipStreamCreate(&ls));
+  int first = base;
   for (size_t l = 0; l < L.size(); l++) {
-    const int first = base + (int)l * n_expert;
-    for (int e = 0; e < n_expert; e++) {
-      auto ex = [&](const void* t) { return (const char*)t + (size_t)e * gate_bytes; };
-      pool_load(pool, first + e, ex(ex_src[l].gate), ex(ex_src[l].up), ex(ex_src[l].down), ls);
+    std::vector<int> ids;  // the layer's experts, in slot order
+    if (kept.empty()) {
+      for (int e = 0; e < n_expert; e++) ids.push_back(e);
+    } else {
+      ids = kept[l];
+      std::vector<int> slot_of(n_expert, 0);
+      for (size_t j = 0; j < ids.size(); j++) slot_of[ids[j]] = (int)j;
+      L[l].slot_of = (const int*)upload(slot_of.data(), (size_t)n_expert * 4);
+    }
+    for (size_t j = 0; j < ids.size(); j++) {
+      auto ex = [&](const void* t) { return (const char*)t + (size_t)ids[j] * gate_bytes; };
+      pool_load(pool, first + (int)j, ex(ex_src[l].gate), ex(ex_src[l].up), ex(ex_src[l].down), ls);
     }
     L[l].ex = pool.view;
     for (GpuMatrix* m : {&L[l].ex.gate, &L[l].ex.up, &L[l].ex.down}) {
       m->codes += (size_t)first * pool.slot_bytes;
       m->scales += (size_t)first * pool.slot_bytes;
     }
+    first += (int)ids.size();
   }
   CHECK(hipStreamSynchronize(ls));
   CHECK(hipStreamDestroy(ls));
@@ -477,6 +506,7 @@ DraftResult DSpark::draft(int32_t anchor, int pos, bool keep_logits, int gap) {
     k_gemv_f32_m(w.gate_inp, n_expert, E, xa, B, rlog, rt.partial, s);
     k_router(rlog, w.gate_bias, n_expert, n_used, route_norm, route_scale, rids, rw, s, B, 8);
     if (route_log) CHECK(hipMemcpyAsync(route_buf.data() + l * B * 8, rids, (size_t)B * 8 * 4, hipMemcpyDeviceToHost, s));
+    if (w.slot_of) k_remap_ids(rids, w.slot_of, B, n_used, 8, s);  // (after the log's copy: it holds expert ids)
     fp4_moe_chunk(w.ex, xa, ExpertSel{rids, rw, nullptr, 8}, n_used, B, w.clamp, yr, moe_scratch, s);
     mark("ffn.shared");
     rt.quant(xa, E, rt.A, B);

@@ -896,6 +896,18 @@ __global__ void router_kernel(const float* logits, const float* bias, int n, boo
   }
 }
 
+__global__ void remap_ids_kernel(int* ids, const int* table, int M, int k, int id_stride) {
+  const int i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i < M * k) {
+    int* p = ids + (size_t)(i / k) * id_stride + i % k;
+    *p = table[*p];
+  }
+}
+
+void k_remap_ids(int* ids, const int* table, int M, int k, int id_stride, hipStream_t s) {
+  if (M > 0 && k > 0) remap_ids_kernel<<<cdiv(M * k, 64), 64, 0, s>>>(ids, table, M, k, id_stride);
+}
+
 void k_router(const float* logits, const float* bias, int n_expert, int k, bool norm, float route_scale, int* ids,
               float* w, hipStream_t s, int M, int id_stride) {
   if (M < 1) return;

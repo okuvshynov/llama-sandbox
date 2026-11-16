@@ -1,0 +1,12 @@
+# scripts/draft_leave_out_table.py over summary.txt (README step 125); sclk 6, 2026-11-16
+prompt        die 0 experts   GPU share %          verify steps         verify ms per step   t/s                   t/s out vs all
+              all   out       all    out    res    all    out    res    all    out    res    all    out    res
+tcp-udp       802   941        87.53  88.06  87.58    144.0  144.0  144.0     46.4   45.8   46.4    38.97  39.38  38.91    +1.1%
+py-lru        802   943        85.16  85.59  85.21    100.0  100.5  100.0     57.0   56.5   57.0    46.49  46.67  46.53    +0.4%
+cpp-matrix    802   940        85.68  86.09  85.69     66.0   71.0   66.0     74.3   70.3   74.5    54.70  53.58  54.57    -2.0%
+sql-report    802   943        81.95  82.44  82.10     77.0   76.0   76.0     74.1   75.9   76.4    47.10  46.69  46.43    -0.9%
+geometry      802   944        86.29  86.47  86.13     85.0   93.0   93.0     65.6   61.3   61.3    54.72  53.12  53.13    -2.9%
+zh-travel     802   947        87.78  87.91  87.73    199.0  205.0  205.0     39.0   38.8   38.8    34.26  33.56  33.53    -2.0%
+ja-email      802   950        86.99  87.19  86.95    170.0  168.5  168.0     41.4   41.4   41.5    37.04  37.19  37.24    +0.4%
+summary-json  802   942        75.34  75.98  75.08     28.0   28.0   28.0     69.8   69.7   70.8    44.76  44.82  44.19    +0.1%
+mean of the prompts: t/s out vs all -0.7%  (all, out: 2 runs each; res = resident: 1)

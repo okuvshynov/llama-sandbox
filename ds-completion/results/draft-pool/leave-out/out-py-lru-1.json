@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "args": {"mode": "chat", "effort": 75, "n": 300, "threads": 16, "runtime": true, "canon": true, "spec": true,
+           "placement": "placements/study30.txt", "cache_loads": 800, "cache_period": 8, "cache_window": 256, "cache_min": 2,
+           "cache_wait": true, "spec_n": 0,
+           "profile": false, "trace": false, "spec_log": false, "log_routing": false},
+  "prompt": {"tokens": 27, "hash": "fnv1a64:9e5d1da757a7a870"},
+  "env": {"gpu_sclk": [6, 6, 6, 6], "ds": {"DS_DRAFT_KEEP": "results/draft-pool/keep/loo-seen/py-lru.keep"}},
+  "read_bytes": {"load": 0, "prompt": 0, "gen": 0},
+  "spec": {"steps": 101, "plain_steps": 13, "accepted": 198, "verified": [23, 22, 18, 11, 6, 21], "draft_ms": 683.5, "verify_ms": 5712.5},
+  "experts": {"gpu_uses": 71481, "cpu_uses": 12039, "dies": [0, 1, 2, 3], "placed": [943, 1765, 1765, 1765],
+               "cache": {"rebalances": 33, "swaps_planned": 3715, "loads_started": 3662, "loads_published": 3649,
+                         "loads_started_by_die": [0, 1228, 1200, 1234]}},
+  "counters": {"load_s": 115.239, "prompt_s": 0.6206, "prompt_tps": 43.506, "gen_tokens": 300, "gen_s": 6.4612, "gen_tps": 46.431}
+}

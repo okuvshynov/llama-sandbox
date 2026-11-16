@@ -43,8 +43,9 @@ class DSpark {
   // pool_slots() slots of the home die's pool with load_experts() (before the first draft)
   DSpark(Runtime& rt, const std::string& gguf_path, bool experts_in_pool = false);
   ~DSpark();
-  int pool_slots() const { return in_pool ? (int)L.size() * n_expert : 0; }
-  // expert e of draft layer l into slot base + l * n_expert + e (current device = pool.dev)
+  // every expert, or with DS_DRAFT_KEEP only the kept ones (README step 125)
+  int pool_slots() const;
+  // the experts into slots from base on, layer after layer (current device = pool.dev)
   void load_experts(ExpertPool& pool, int base);
 
   int block_size = 5;
@@ -75,6 +76,7 @@ class DSpark {
     const float *attn_norm, *q_a_norm, *kv_norm, *sinks, *ffn_norm, *gate_inp, *gate_bias;
     const float *hc_attn_fn, *hc_attn_base, *hc_attn_scale, *hc_ffn_fn, *hc_ffn_base, *hc_ffn_scale;
     GpuExperts ex;
+    const int* slot_of = nullptr;  // experts left out: expert id -> its slot among the layer's (else ids are slots)
     float clamp, clamp_sh;
   };
   Runtime& rt;
@@ -86,6 +88,8 @@ class DSpark {
   std::vector<LayerW> L;
   // experts in a pool: until load_experts, each layer's gate / up / down tensors in the mapped file
   bool in_pool = false;
+  // DS_DRAFT_KEEP in a pool: per layer the kept experts, only they get slots (empty: every expert has one)
+  std::vector<std::vector<int>> kept;
   struct ExpertSrc { const void *gate, *up, *down; };
   std::vector<ExpertSrc> ex_src;
   void* file_map = nullptr;
