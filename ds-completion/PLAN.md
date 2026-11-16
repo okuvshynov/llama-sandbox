@@ -555,6 +555,8 @@ and new builds in every pairing: the whole model's output. Two-machine speed not
 Step 138: the eight held-out prompts after the round, by `run_matrix.py` and `records.py` alone: all outputs
 the stored ones' bytes, speed 44.75 -> 44.70 t/s (inside the spread). First reference values:
 `results/record/reference/heldout-output.tsv`.
+Step 139: programs out of the library directories: `apps/` (the CLI, `ds-inspect`, `fp8pack`), `tests/`,
+`bench/`; `src/` and `hip/` are libraries only. All programs rebuilt; the held-out set matches the reference values.
 constructor in parts.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits

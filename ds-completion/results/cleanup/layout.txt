@@ -1,0 +1,29 @@
+# The programs out of the library directories (README step 139): apps/, tests/, bench/; src/ and hip/ hold libraries only.
+# Before: commit 78471bb. After: 78471bb + this change. sclk 6, 2026-11-17.
+#
+# Build: the moved sources touched (a moved file keeps its time, so make had rebuilt nothing), then make and make HIP=1:
+#   all 25 programs of bin/ and bin-hip/ rebuilt (7 and 18 compile commands), no error.
+# Programs from each new directory: bin/test-fakequant "ALL BIT-EXACT" (exit code 0); bin-hip/test-topk and bin/ds-inspect print their usage;
+#   bin-hip/bench-launch: "small kernel (20K floats) x20000: host submit 2.17 us each, until done 2.42 us each".
+#
+# scripts/run_matrix.py results/cleanup/heldout.matrix --reps 1 --out <dir>      (8 runs, 0 failed)
+#   each record's prompt tokens and hash, output tokens and hash against results/record/reference/heldout-output.tsv: 8 of 8 the same.
+#   generation t/s against step 138's two runs per prompt (results/cleanup/heldout/), scripts/records.py --vs; one run here, so no spread ("?"):
+#   prompt        set             runs  counters.gen_tps  spread  vs heldout
+#   cpp-matrix    heldout            2             54.54    0.2%
+#   geometry      heldout            2             54.94    0.5%
+#   ja-email      heldout            2             36.84    1.3%
+#   py-lru        heldout            2             46.51    0.0%
+#   sql-report    heldout            2             46.93    0.3%
+#   summary-json  heldout            2             44.74    0.3%
+#   tcp-udp       heldout            2             38.96    0.5%
+#   zh-travel     heldout            2             34.11    0.4%
+#   cpp-matrix    layout             1             54.55             +0.0% ?
+#   geometry      layout             1              54.7             -0.4% ?
+#   ja-email      layout             1             37.13             +0.8% ?
+#   py-lru        layout             1             46.47             -0.1% ?
+#   sql-report    layout             1             47.08             +0.3% ?
+#   summary-json  layout             1             44.62             -0.3% ?
+#   tcp-udp       layout             1             38.98             +0.0% ?
+#   zh-travel     layout             1             34.34             +0.7% ?
+#   # vs heldout: a difference of the means, printed if larger than the spread of both groups' repeats; ~: inside it; ?: a side has one run, no spread; =: equal

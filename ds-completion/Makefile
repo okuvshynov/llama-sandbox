@@ -1,6 +1,8 @@
 # ds-completion: links ggml (and, for the tokenizer only, libllama) from the llama.cpp fork that
 # carries DeepSeek-V4.1 support (~/forks/llama.cpp).
 #
+# src/ and hip/ are the libraries (CPU side, GPU runtime); apps/, tests/ and bench/ the programs.
+#
 #   make          CPU build -> bin/
 #   make HIP=1    also the own GPU runtime (hip/, ROCm 6.3.4, gfx906) -> bin-hip/
 # Both link the fork's CPU build (build/, static libraries); ggml's own GPU backend is not used.
@@ -42,61 +44,61 @@ endif
 HIPCC    = $(ROCM)/bin/hipcc
 HIPFLAGS = -std=c++17 -O3 -fPIC --offload-arch=gfx906 -Ihip -Isrc -I$(FORK)/ggml/include
 
-$(BIN)/bench-fp8: hip/bench_fp8.cpp hip/fp8_gemv.hip hip/fp8_gemv.h src/fakequant.cpp
+$(BIN)/bench-fp8: bench/bench_fp8.cpp hip/fp8_gemv.hip hip/fp8_gemv.h src/fakequant.cpp
 	@mkdir -p $(BIN)
-	$(HIPCC) $(HIPFLAGS) -fopenmp -o $@ hip/bench_fp8.cpp hip/fp8_gemv.hip src/fakequant.cpp \
+	$(HIPCC) $(HIPFLAGS) -fopenmp -o $@ bench/bench_fp8.cpp hip/fp8_gemv.hip src/fakequant.cpp \
 	    -L$(FORK)/$(BUILD)/ggml/src -lggml -lggml-cpu -lggml-base -lpthread -ldl
 
 # the CLI: libllama only for the tokenizer (vocab-only load)
-$(BIN)/ds-completion: src/ds_completion.cpp src/record.h $(CORE) $(CORE_H) $(RT_OBJ)
+$(BIN)/ds-completion: apps/ds_completion.cpp apps/record.h $(CORE) $(CORE_H) $(RT_OBJ)
 	@mkdir -p $(BIN)
-	$(CXX) $(CXXFLAGS) $(RT_FLAGS) -o $@ src/ds_completion.cpp $(CORE) $(RT_LIBS) $(LLAMA_LIB) $(LDLIBS)
+	$(CXX) $(CXXFLAGS) $(RT_FLAGS) -o $@ apps/ds_completion.cpp $(CORE) $(RT_LIBS) $(LLAMA_LIB) $(LDLIBS)
 
-$(BIN)/ds-test: src/ds_test.cpp $(CORE) $(CORE_H) $(RT_OBJ)
+$(BIN)/ds-test: tests/ds_test.cpp $(CORE) $(CORE_H) $(RT_OBJ)
 	@mkdir -p $(BIN)
-	$(CXX) $(CXXFLAGS) $(RT_FLAGS) -o $@ src/ds_test.cpp $(CORE) $(RT_LIBS) $(LDLIBS)
+	$(CXX) $(CXXFLAGS) $(RT_FLAGS) -o $@ tests/ds_test.cpp $(CORE) $(RT_LIBS) $(LDLIBS)
 
-$(BIN)/bench-kernels: hip/bench_kernels.cpp hip/kernels.hip hip/fp8_gemv.hip hip/kernels.h hip/fp8_gemv.h
+$(BIN)/bench-kernels: bench/bench_kernels.cpp hip/kernels.hip hip/fp8_gemv.hip hip/kernels.h hip/fp8_gemv.h
 	@mkdir -p $(BIN)
-	$(HIPCC) $(HIPFLAGS) -o $@ hip/bench_kernels.cpp hip/kernels.hip hip/fp8_gemv.hip
+	$(HIPCC) $(HIPFLAGS) -o $@ bench/bench_kernels.cpp hip/kernels.hip hip/fp8_gemv.hip
 
-$(BIN)/bench-row-stride: hip/bench_row_stride.hip
+$(BIN)/bench-row-stride: bench/bench_row_stride.hip
 	@mkdir -p $(BIN)
-	$(HIPCC) $(HIPFLAGS) -o $@ hip/bench_row_stride.hip
+	$(HIPCC) $(HIPFLAGS) -o $@ bench/bench_row_stride.hip
 
-$(BIN)/bench-wave-slots: hip/bench_wave_slots.hip
+$(BIN)/bench-wave-slots: bench/bench_wave_slots.hip
 	@mkdir -p $(BIN)
-	$(HIPCC) $(HIPFLAGS) -o $@ hip/bench_wave_slots.hip
+	$(HIPCC) $(HIPFLAGS) -o $@ bench/bench_wave_slots.hip
 
-$(BIN)/bench-loader-exit: hip/bench_loader_exit.cpp
+$(BIN)/bench-loader-exit: bench/bench_loader_exit.cpp
 	@mkdir -p $(BIN)
-	$(HIPCC) $(HIPFLAGS) -o $@ hip/bench_loader_exit.cpp -lpthread
+	$(HIPCC) $(HIPFLAGS) -o $@ bench/bench_loader_exit.cpp -lpthread
 
-$(BIN)/bench-launch: hip/bench_launch.cpp
+$(BIN)/bench-launch: bench/bench_launch.cpp
 	@mkdir -p $(BIN)
-	$(HIPCC) $(HIPFLAGS) -o $@ hip/bench_launch.cpp
+	$(HIPCC) $(HIPFLAGS) -o $@ bench/bench_launch.cpp
 
-$(BIN)/bench-register: hip/bench_register.cpp
+$(BIN)/bench-register: bench/bench_register.cpp
 	@mkdir -p $(BIN)
-	$(HIPCC) $(HIPFLAGS) -o $@ hip/bench_register.cpp
+	$(HIPCC) $(HIPFLAGS) -o $@ bench/bench_register.cpp
 
-$(BIN)/test-topk: hip/test_topk.cpp hip/kernels.hip hip/kernels.h
+$(BIN)/test-topk: tests/test_topk.cpp hip/kernels.hip hip/kernels.h
 	@mkdir -p $(BIN)
-	$(HIPCC) $(HIPFLAGS) -o $@ hip/test_topk.cpp hip/kernels.hip
+	$(HIPCC) $(HIPFLAGS) -o $@ tests/test_topk.cpp hip/kernels.hip
 
-$(BIN)/bench-fp4-moe: hip/bench_fp4_moe.cpp $(BIN)/obj/fp4_moe.o src/model.cpp src/cpu_moe.cpp src/fakequant.cpp $(CORE_H)
+$(BIN)/bench-fp4-moe: bench/bench_fp4_moe.cpp $(BIN)/obj/fp4_moe.o src/model.cpp src/cpu_moe.cpp src/fakequant.cpp $(CORE_H)
 	@mkdir -p $(BIN)
-	$(CXX) $(CXXFLAGS) $(RT_FLAGS) -O3 -o $@ hip/bench_fp4_moe.cpp src/model.cpp src/cpu_moe.cpp src/canon_dot.cpp src/fakequant.cpp \
+	$(CXX) $(CXXFLAGS) $(RT_FLAGS) -O3 -o $@ bench/bench_fp4_moe.cpp src/model.cpp src/cpu_moe.cpp src/canon_dot.cpp src/fakequant.cpp \
 	    $(BIN)/obj/fp4_moe.o -L$(ROCM)/lib -Wl,-rpath,$(ROCM)/lib -lamdhip64 $(LDLIBS)
 
-$(BIN)/bench-expert-load: hip/bench_expert_load.cpp $(BIN)/obj/fp4_moe.o $(BIN)/obj/expert_pool.o $(BIN)/obj/expert_loader.o src/model.cpp src/cpu_moe.cpp src/fakequant.cpp $(CORE_H)
+$(BIN)/bench-expert-load: bench/bench_expert_load.cpp $(BIN)/obj/fp4_moe.o $(BIN)/obj/expert_pool.o $(BIN)/obj/expert_loader.o src/model.cpp src/cpu_moe.cpp src/fakequant.cpp $(CORE_H)
 	@mkdir -p $(BIN)
-	$(CXX) $(CXXFLAGS) $(RT_FLAGS) -O3 -o $@ hip/bench_expert_load.cpp src/model.cpp src/cpu_moe.cpp src/canon_dot.cpp src/fakequant.cpp \
+	$(CXX) $(CXXFLAGS) $(RT_FLAGS) -O3 -o $@ bench/bench_expert_load.cpp src/model.cpp src/cpu_moe.cpp src/canon_dot.cpp src/fakequant.cpp \
 	    $(BIN)/obj/fp4_moe.o $(BIN)/obj/expert_pool.o $(BIN)/obj/expert_loader.o -L$(ROCM)/lib -Wl,-rpath,$(ROCM)/lib -lamdhip64 $(LDLIBS)
 
-$(BIN)/bench-expert-pool: hip/bench_expert_pool.cpp $(BIN)/obj/fp4_moe.o $(BIN)/obj/expert_pool.o src/model.cpp src/cpu_moe.cpp src/fakequant.cpp $(CORE_H)
+$(BIN)/bench-expert-pool: bench/bench_expert_pool.cpp $(BIN)/obj/fp4_moe.o $(BIN)/obj/expert_pool.o src/model.cpp src/cpu_moe.cpp src/fakequant.cpp $(CORE_H)
 	@mkdir -p $(BIN)
-	$(CXX) $(CXXFLAGS) $(RT_FLAGS) -O3 -o $@ hip/bench_expert_pool.cpp src/model.cpp src/cpu_moe.cpp src/canon_dot.cpp src/fakequant.cpp \
+	$(CXX) $(CXXFLAGS) $(RT_FLAGS) -O3 -o $@ bench/bench_expert_pool.cpp src/model.cpp src/cpu_moe.cpp src/canon_dot.cpp src/fakequant.cpp \
 	    $(BIN)/obj/fp4_moe.o $(BIN)/obj/expert_pool.o -L$(ROCM)/lib -Wl,-rpath,$(ROCM)/lib -lamdhip64 $(LDLIBS)
 
 $(BIN)/obj/%.o: hip/%.hip hip/kernels.h hip/fp8_gemv.h hip/fp4_moe.h hip/expert_pool.h
@@ -127,25 +129,25 @@ $(BIN)/obj/dspark.o: hip/dspark.cpp hip/rt.h hip/peer.h hip/dspark.h hip/kernels
 	@mkdir -p $(BIN)/obj
 	$(HIPCC) $(HIPFLAGS) -c -o $@ $<
 
-$(BIN)/ds-inspect: src/ds_inspect.cpp src/model.cpp src/model.h
+$(BIN)/ds-inspect: apps/ds_inspect.cpp src/model.cpp src/model.h
 	@mkdir -p $(BIN)
-	$(CXX) $(CXXFLAGS) -o $@ src/ds_inspect.cpp src/model.cpp $(LDLIBS)
+	$(CXX) $(CXXFLAGS) -o $@ apps/ds_inspect.cpp src/model.cpp $(LDLIBS)
 
-$(BIN)/fp8pack: src/fp8pack.cpp src/model.cpp src/model.h src/fakequant.cpp src/fakequant.h
+$(BIN)/fp8pack: apps/fp8pack.cpp src/model.cpp src/model.h src/fakequant.cpp src/fakequant.h
 	@mkdir -p $(BIN)
-	$(CXX) $(CXXFLAGS) -o $@ src/fp8pack.cpp src/model.cpp src/fakequant.cpp $(LDLIBS)
+	$(CXX) $(CXXFLAGS) -o $@ apps/fp8pack.cpp src/model.cpp src/fakequant.cpp $(LDLIBS)
 
-$(BIN)/bench-cpu-moe: src/bench_cpu_moe.cpp $(CORE) $(CORE_H)
+$(BIN)/bench-cpu-moe: bench/bench_cpu_moe.cpp $(CORE) $(CORE_H)
 	@mkdir -p $(BIN)
-	$(CXX) $(CXXFLAGS) -O3 -o $@ src/bench_cpu_moe.cpp $(CORE) $(LDLIBS)
+	$(CXX) $(CXXFLAGS) -O3 -o $@ bench/bench_cpu_moe.cpp $(CORE) $(LDLIBS)
 
-$(BIN)/bench-fp4-decode: src/bench_fp4_decode.cpp src/canon_dot.cpp src/canon_dot.h src/fakequant.cpp src/fakequant.h
+$(BIN)/bench-fp4-decode: bench/bench_fp4_decode.cpp src/canon_dot.cpp src/canon_dot.h src/fakequant.cpp src/fakequant.h
 	@mkdir -p $(BIN)
-	$(CXX) $(CXXFLAGS) -o $@ src/bench_fp4_decode.cpp src/canon_dot.cpp src/fakequant.cpp $(LDLIBS)
+	$(CXX) $(CXXFLAGS) -o $@ bench/bench_fp4_decode.cpp src/canon_dot.cpp src/fakequant.cpp $(LDLIBS)
 
-$(BIN)/test-fakequant: src/test_fakequant.cpp src/fakequant.cpp src/fakequant.h
+$(BIN)/test-fakequant: tests/test_fakequant.cpp src/fakequant.cpp src/fakequant.h
 	@mkdir -p $(BIN)
-	$(CXX) $(CXXFLAGS) -o $@ src/test_fakequant.cpp src/fakequant.cpp $(LDLIBS)
+	$(CXX) $(CXXFLAGS) -o $@ tests/test_fakequant.cpp src/fakequant.cpp $(LDLIBS)
 
 # the fork's own llama.cpp pipeline: the "second opinion" for the reference
 $(BIN)/llama-logits: ref/llama_logits.cpp

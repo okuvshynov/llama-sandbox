@@ -243,15 +243,20 @@ V4.1-Pro (engram on SSD is easy; experts barely fit in two machines' RAM).
 
 ## 9. Code map
 
+Libraries and programs are apart (README step 139): `src/` is the CPU-side library and `hip/`
+the GPU runtime library, neither has a `main`; `apps/` has the programs one runs, `tests/` the
+test programs, `bench/` the benchmarks. `scripts/` has the tools still in use; a script written
+for one step lies with its results.
+
 | path | what |
 |---|---|
-| `src/ds_completion.cpp` | the CLI, top to bottom: the options (`Args`, `parse_args`), the record (`write_record`: `--record` writes a run as one JSON object, `docs/record.md`), the two generation loops (`generate_spec`, `generate_plain`), then `run`: load, the turns, the summaries |
+| `apps/ds_completion.cpp` | the CLI, top to bottom: the options (`Args`, `parse_args`), the record (`write_record`: `--record` writes a run as one JSON object, `docs/record.md`), the two generation loops (`generate_spec`, `generate_plain`), then `run`: load, the turns, the summaries |
 | `src/model.{h,cpp}` | GGUF loading (zero-copy mmap), the model's schema and hyperparameters |
 | `src/forward.{h,cpp}` | the CPU reference path (ggml graphs), used by tests and `bin/ds-completion` |
 | `src/cpu_moe.{h,cpp}` | the exact AVX-512 routed-expert kernel |
 | `src/fakequant.{h,cpp}` | the reference's fp8/fp4 rounding |
-| `src/fp8pack.cpp` | lossless fp8 repack of the dense weights |
-| `src/ds_test.cpp` | per-layer and end-to-end tests against the goldens |
+| `apps/fp8pack.cpp` | lossless fp8 repack of the dense weights |
+| `tests/ds_test.cpp` | per-layer and end-to-end tests against the goldens |
 | `hip/rt.{h,cpp}` | the GPU runtime: state, layer order, the expert split |
 | `hip/rt_peer.cpp` | the runtime as one half of a model on two machines: the front's messages, the back's `serve` (`hip/peer.h`: the protocol) |
 | `hip/rt_trace.cpp` | the runtime's observability: the startup memory ledger, `--profile`'s groups, `--trace` (`hip/rt_internal.h`: the helpers the runtime's files share) |
@@ -261,7 +266,7 @@ V4.1-Pro (engram on SSD is easy; experts barely fit in two machines' RAM).
 | `hip/expert_pool.{h,hip}` | expert slots per die, placement reading and assignment |
 | `hip/dspark.{h,cpp}` | the DSpark draft (3 layers, Markov and confidence heads) |
 | `hip/peer.h` | two machines: the messages between the front and the back half (TCP) |
-| `hip/bench_*.cpp`, `src/bench_*.cpp` | benchmarks of each kernel |
+| `bench/bench_*` | benchmarks of each kernel and of the loader, CPU and GPU (the Makefile knows which need `HIP=1`) |
 | `ref/` | the Python reference, golden export, weight checks, logits comparison |
 | `scripts/` | the tools still in use ([scripts/README.md](scripts/README.md)): the runner of a matrix of runs (`run_matrix.py`) and the reader of their records (`records.py`; README steps 128-129), the chat launcher (`chat.sh`), the held-out measurement (`spec-measure.sh`) and the two-machine one (`split-measure.sh`), the trace tools, `route_stats.py`. A script written for one step lies with its results under `results/` (README step 130) |
 | `placements/` | ranked expert placements (`study30.txt` is the default) |

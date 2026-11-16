@@ -116,7 +116,7 @@ with its results and the rows below name it there; `scripts/` has the tools stil
 Diagnostic switches read from the environment (each explained at its `getenv` and in the step
 that used it; none changes the output): `DS_EARLY_ROWS`,
 `DS_ATTN_CHECK` (`hip/rt.cpp`), `DS_DRAFT_PROFILE`, `DS_DRAFT_ROUTE_LOG` (`hip/dspark.cpp`),
-`DS_DRAFT_TOKEN_LOG` (`src/ds_completion.cpp`), `DS_DRAFT_KEEP`, `DS_DRAFT_KEEP_RESIDENT` (`hip/dspark.cpp`, steps 124-125; with the placement they change what is loaded and so the speed, never the output), `DS_FP8_PAD`, `DS_FP8_VIRT`,
+`DS_DRAFT_TOKEN_LOG` (`apps/ds_completion.cpp`), `DS_DRAFT_KEEP`, `DS_DRAFT_KEEP_RESIDENT` (`hip/dspark.cpp`, steps 124-125; with the placement they change what is loaded and so the speed, never the output), `DS_FP8_PAD`, `DS_FP8_VIRT`,
 `DS_STALL_SPLIT` (`hip/fp8_gemv.*`), `DS_F32_PAD` (`hip/kernels.hip`). A `DS_*` name next to a
 `git apply results/...patch` below exists only with that patch applied.
 
@@ -241,7 +241,7 @@ Unless stated: sclk 2, 16 CPU threads (32 before README step 18), the study30 pl
 | 113 | `trace/two-machines/` (collected again) | the command of step 112; the session check: `scripts/chat.sh --think --effort 75 --cache-wait -n 45 < results/chat/think/th45.q`, and the same questions to a front (`--layers 0-19 --remote HOST:7001 --spec --think --effort 75 -i -n 45`) |
 | 114 | - (no results file) | the checks named in README step 114: the held-out command of `scripts/spec-measure.sh` per prompt, with `--profile`, the session of step 113, `--spec` against plain without `--canon`, `--prefill-chunk 512` against `7` on a long prompt, `PROMPTS="cpp-matrix summary-json" scripts/split-measure.sh` |
 | 115 | `record/first.txt`, `record/fast.txt` | the command in each file's header; `first.txt`: twice in a row (run 1 cold: the model out of the page cache; any run after a reboot) |
-| 116 | `record/sclk.txt` | the reader: a directory of made-up `card<N>/device/{vendor,power_dpm_force_performance_level,pp_dpm_sclk}` files and a three-line program printing `json_array(gpu_sclk(dir))` from `src/record.h`; the run: the command of `record/fast.txt` with `--record`, while a loop prints the starred line of each card's `pp_dpm_sclk` every 0.1 s |
+| 116 | `record/sclk.txt` | the reader: a directory of made-up `card<N>/device/{vendor,power_dpm_force_performance_level,pp_dpm_sclk}` files and a three-line program printing `json_array(gpu_sclk(dir))` from `apps/record.h`; the run: the command of `record/fast.txt` with `--record`, while a loop prints the starred line of each card's `pp_dpm_sclk` every 0.1 s |
 | 117 | `record/read-bytes.txt` | the two commands in the file with `--record`; the evicted file: `python3 -c "import os,sys; fd=os.open(sys.argv[1],os.O_RDONLY); os.posix_fadvise(fd,0,0,os.POSIX_FADV_DONTNEED)" ~/llms/ds-1017-fp8/dense-fp8.gguf`; the cold prompts need the engram table out of the page cache (after a reboot, before the model is read through) |
 | 118 | `record/spec.txt` | the three commands named in the file, each with `--record` |
 | 119 | `record/experts.txt`, `record/example.json` (its header: `record/README.txt`) | the three commands named in `experts.txt`, each with `--record`; `example.json` is the third one's record |
@@ -251,7 +251,7 @@ Unless stated: sclk 2, 16 CPU threads (32 before README step 18), the study30 pl
 | 123 | `draft-pool/in-pool.txt` | the command in the file with a build of 566de25 and with this one; the ids: each token log without its time columns (`awk -F'\|' '{split($1,a," "); print a[1], a[2], "\|" $2 "\|" $3}'`), compared with `cmp`; then the command of `record/fast.txt` |
 | 124 | `draft-pool/keep/` (`summary.txt`, `table.txt`, per configuration each prompt's `.keep` set and record) | `results/draft-pool/draft-keep-sweep.sh` (needs step 87's `decode-next/draft-route/*.log`: `*.log` is not in git; made with `DS_DRAFT_ROUTE_LOG` and the held-out command), then `results/draft-pool/draft_keep_table.py` |
 | 125 | `draft-pool/leave-out/` (`summary.txt`, `table.txt`, the records) | `results/draft-pool/draft-leave-out.sh` (needs step 124's `draft-pool/keep/loo-seen/*.keep`), then `results/draft-pool/draft_leave_out_table.py`; left out against masked: the first command of `draft-pool/in-pool.txt` with `DS_DRAFT_KEEP=results/draft-pool/keep/loo-seen/geometry.keep`, with and without `DS_DRAFT_KEEP_RESIDENT=1`, and `DS_DRAFT_ROUTE_LOG` |
-| 126 | `record/output-hash.txt` | the five commands in the file; the recomputation: FNV-1a 64 (`src/record.h`) over the third `\|` field of each `DS_DRAFT_TOKEN_LOG` line, after the first printed id and without the last id |
+| 126 | `record/output-hash.txt` | the five commands in the file; the recomputation: FNV-1a 64 (`apps/record.h`) over the third `\|` field of each `DS_DRAFT_TOKEN_LOG` line, after the first printed id and without the last id |
 | 127 | `record/label.txt` | the commands in the file; the scripts' count by kind: read from each file's header, `git log --oneline -- scripts/<file>` for its commits |
 | 128 | `record/reader.txt` | the commands in the file (`scripts/records.py` over `draft-pool/leave-out/*.json`; step 126's three records are made by the commands of `record/output-hash.txt`) |
 | 129 | `record/runner/` (`leave-out.matrix`, `leave-out/` with its `matrix.txt` and 8 records, `runner.txt`) | `scripts/run_matrix.py results/record/runner/leave-out.matrix --prompts tcp-udp,geometry --out <a new directory>` (needs step 124's `draft-pool/keep/loo-seen/*.keep`), then the `scripts/records.py` command in `runner.txt` |
@@ -264,6 +264,7 @@ Unless stated: sclk 2, 16 CPU threads (32 before README step 18), the study30 pl
 | 136 | `cleanup/rt-split-trace.txt` | the commands in the file with a build of 6425e03 and with this one |
 | 137 | `cleanup/rt-split-peer.txt` | the three commands in the file (the back first; the front once the back prints "waiting for the front"), with a build of 35561d0 and with this one |
 | 138 | `cleanup/heldout.txt`, `cleanup/heldout/` (its `matrix.txt`, 16 records), `record/reference/heldout-output.tsv` | `scripts/run_matrix.py results/cleanup/heldout.matrix --keep-out --out <a new directory>`, `cmp` of each `.out` with `cache-test/plain-canon-static/<prompt>.out`, then the two `scripts/records.py` commands in `heldout.txt` |
+| 139 | `cleanup/layout.txt` | `touch apps/* tests/* bench/*`, `make`, `make HIP=1`; `scripts/run_matrix.py results/cleanup/heldout.matrix --reps 1 --out <a new directory>`, each record against `record/reference/heldout-output.tsv`; the `scripts/records.py` command of the file |
 
 ## 7. Open items (to confirm)
 

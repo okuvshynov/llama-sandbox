@@ -4327,7 +4327,7 @@ the driver moves the level with the load, and the level at any one moment says n
 the run. Read once, as the run starts, before the load. It is not read again at the end: a
 setting that changed and changed back would look unchanged, so "the same at both ends" would
 promise more than it checks. A file that cannot be read gives `"unknown"`. The record's helpers
-moved to `src/record.h`.
+moved to `apps/record.h`.
 
 **A correction to step 115.** Its results files and text said "sclk 1". The cards were on auto:
 the machine had rebooted two hours earlier, which resets the setting, and 1 was the starred
@@ -4901,7 +4901,7 @@ sweeps were not run again (hours of GPU time each); what they need beyond the pa
 
 A cleanup round begins: the same speed and the same observability, code that is easier to
 read. A survey first. The main program was one function of 664 lines (`run()` in
-`src/ds_completion.cpp`): options, load, prompt, the speculative loop, the plain loop, five
+`apps/ds_completion.cpp`): options, load, prompt, the speculative loop, the plain loop, five
 logs and the record, interleaved. `hip/rt.cpp` is 2,297 lines. About 200 lines belong to
 studies that were not adopted (`DS_DRAFT_KEEP`, the router lookahead, `--load-test`, the second
 draft block, `DS_EARLY_ROWS`, `DS_ATTN_CHECK`), spread through the hot paths as conditions. The
@@ -4947,7 +4947,7 @@ but for its times and the cache's counters; the same kinds of stderr lines; the 
 loop's three logs the same but for their time columns; shadow mode's report the same numbers.
 The fastest settings twice: 54.57 and 54.60 t/s before, 54.62 and 54.48 after.
 
-`src/ds_completion.cpp`, top to bottom, is now: the tokenizer helpers, the crash handler,
+`apps/ds_completion.cpp`, top to bottom, is now: the tokenizer helpers, the crash handler,
 `Args` and `parse_args`, `write_record`, `Turn` and the two loops, `run` (load, the session's
 turns, the summaries), `main`.
 
@@ -5091,3 +5091,28 @@ A mistake on the way, kept for the record: the first start of this run never ran
 the runner had a wrong indent, the command ended with `echo` and so reported success, and it
 was announced as running without its output being read. Since then: the dry run first, chained
 with `&&` to the real run, and the exit code that is reported is the runner's.
+
+## Step 139: libraries and programs apart: `apps/`, `tests/`, `bench/`
+
+`src/` and `hip/` each mixed the code the engine is made of with programs that have a `main`:
+the CLI, two tools, three tests, twelve benchmarks. Now:
+
+| directory | holds |
+|---|---|
+| `src/` | the CPU-side library: the model's loading, the CPU forward, the CPU's experts, the canonical dot product, the fake quantization |
+| `hip/` | the GPU runtime library: the runtime, the draft, the expert pool, loader and cache, the kernels |
+| `apps/` | the programs one runs: `ds_completion.cpp` (with `record.h`, which only it uses), `ds_inspect.cpp`, `fp8pack.cpp` |
+| `tests/` | `ds_test.cpp`, `test_fakequant.cpp`, `test_topk.cpp` |
+| `bench/` | the twelve `bench_*` programs, CPU and GPU together (the Makefile knows which need `HIP=1`) |
+
+No file of `src/` or `hip/` has a `main` now, and the three new directories have nothing else.
+No `#include` changed (the compile flags already named both library directories); the
+Makefile's paths did, and the mentions in the documents (results files' headers and the
+prompt fixtures not, as in step 130). The binaries keep their names and places.
+
+**Checked** (`results/cleanup/layout.txt`; sclk 6): all 25 programs of both builds rebuilt (the
+first `make` rebuilt none: a moved file keeps its time; the moved sources were touched and the
+binaries' times checked); `test-fakequant` passes and a program from each new directory runs;
+the eight held-out prompts once with the fastest settings: **all eight match the reference
+values of step 138** (prompt and output hashes, the table's first use), speeds within 0.8% of
+step 138's.

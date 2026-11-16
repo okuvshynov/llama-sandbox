@@ -8,7 +8,7 @@ When a newer DeepSeek model (Flash or full) is quantized with the merged code, w
 ## What ds-completion takes from llama.cpp
 
 - **The tokenizer:** `llama_model_load_from_file` with `vocab_only`, `llama_tokenize`,
-  `llama_token_to_piece` (`src/ds_completion.cpp`).
+  `llama_token_to_piece` (`apps/ds_completion.cpp`).
 - **GGUF reading and ggml tensor metadata** (`src/model.cpp`): every tensor's type, shape, data
   pointer (the mmap) and row strides, computed by ggml from the tensor's type.
 - **ggml's CPU ops**, for the CPU-only path (`src/forward.cpp`) and the reference checks.
