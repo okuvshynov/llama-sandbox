@@ -1,0 +1,17 @@
+# --record-label (README step 127): the caller's names for a run, written back as "label".
+# commit c349966 + this change, 2026-11-16. Every expert on the CPU (no --rt), so no clock level applies.
+# bin/ds-completion -m $M -p "What are the differences between TCP and UDP, and when would you choose each?" --chat -n 8 --record FILE ...
+#
+# ... --record-label config=out,prompt=tcp-udp --record-label 'rep=2,note=a "quoted" = sign,empty='
+  "label": {"config": "out", "prompt": "tcp-udp", "rep": "2", "note": "a \"quoted\" = sign", "empty": ""},
+  "output": {"tokens": 8, "hash": "fnv1a64:a1764b118ba4e0cd"},
+# ... (no --record-label)
+  "label": {},
+  "output": {"tokens": 8, "hash": "fnv1a64:a1764b118ba4e0cd"},
+# The same bytes printed with and without the label.
+#
+# Refused before the model loads, exit code 2 (-p hello -n 1):
+#   --record-label a=b                                  --record-label needs --record
+#   --record F --record-label nokey                     --record-label: key=value[,key=value...], every key once; got nokey
+#   --record F --record-label a=1,a=2                   ... got a=1,a=2
+#   --record F --record-label a=1 --record-label a=2    ... got a=2

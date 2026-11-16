@@ -4760,3 +4760,35 @@ the record's for both speculative runs, the end-of-sequence id left out.
 It is a hash of tokens, not of logits: two runs with it equal chose the same tokens, their
 logits may differ (the argmax absorbs small differences). A logits checksum is still to come.
 No check uses the field yet.
+
+## Step 127: a label in the record, and what the scripts are
+
+**The scripts, sorted.** `scripts/` has 43 files. By what they are for: 2 launchers (`chat.sh`,
+`split-measure.sh`), 13 sweeps (prompts x configurations, numbers scraped from stderr, a
+table), 2 gates (a sweep that ends in pass or fail), 5 table makers, 6 log analysers, 6
+simulators, 4 trace tools, 5 helpers and shims. 31 of the 43 have one commit: written for a
+step, never changed. Five are named in more than two rows of REPRODUCE.md (`spec-measure.sh`
+in 28). So the directory is a few tools among ~35 pieces of evidence, and no name says which.
+
+**The plan agreed** (not done here): sort by lifetime, not by topic. What is still used stays
+in `scripts/`; what belongs to one step is filed with that step's results. The sweeps, gates
+and table makers are one program written twenty times; going forward two small tools on top of
+`--record` replace the pattern: one that runs prompts x configurations x repeats, each run
+writing a record, and one that reads records, groups them, and prints means with the spread of
+the repeats (a gate: the same tool with a condition, e.g. one `output.hash` per prompt). Old
+sweeps are not rewritten. The order: the label (this step), the reader, the runner, then the
+filing.
+
+**The label.** The reader must know which run a record is. Steps 124-125 put that in file
+names. Now:
+
+    --record run.json --record-label config=out,prompt=geometry --record-label rep=2
+    "label": {"config": "out", "prompt": "geometry", "rep": "2"},
+
+`key=value` pairs, comma-separated, the option repeatable; written back as strings in the
+order given, `{}` without the option. The program never reads them: a prompt's name or a
+configuration's belongs to whoever starts the run. Refused before the load (exit code 2): a
+part without `=`, a key given twice, a label without `--record`. A value cannot hold a comma.
+
+**Checked** (`results/record/label.txt`): the label as given, quotes escaped; the same output
+and `output.hash` with and without it; the three refusals.

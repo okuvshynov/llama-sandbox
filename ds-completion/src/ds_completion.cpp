@@ -1,7 +1,7 @@
 // ds-completion: DeepSeek-V4.1-Flash text completion.
 //
 //   ds-completion -m <model-00001-of-000NN.gguf> (-p "prompt" | -f prompt.txt) [--chat | --think [--effort 75]] [-n 128]
-//                 [-t 16] [--no-quant] [--max-ctx 4096] [--record run.json]
+//                 [-t 16] [--no-quant] [--max-ctx 4096] [--record run.json [--record-label k=v,...]]
 //                 [--rt <dense-fp8.gguf> [--gpu D] [--placement file [--moe-dies 0,1,2,3] [--load-test R [--load-pinned]] [--cache-loads R [--cache-period N] [--cache-window N] [--cache-min N] [--cache-wait]]] [--canon] [--profile]]
 //
 // The prompt is fed as one chunk (prefill), then one token per step, greedy. --chat wraps the
@@ -148,6 +148,7 @@ static int run(int argc, char** argv) {
   [[maybe_unused]] int spec_n = 0;
   [[maybe_unused]] std::string spec_log_path;
   std::string record_path;
+  std::vector<std::pair<std::string, std::string>> record_label;
   for (int i = 1; i < argc; i++) {
     std::string a = argv[i];
     auto next = [&] { if (i + 1 >= argc) { fprintf(stderr, "missing value for %s\n", a.c_str()); exit(2); } return argv[++i]; };
@@ -214,6 +215,10 @@ static int run(int argc, char** argv) {
     else if (a == "--prefill-chunk") prefill_chunk = atoi(next());  // runtime: prompt tokens per forward
     else if (a == "--no-overlap") prefill_overlap = false;  // runtime: prompt chunks without the CPU/GPU overlap
     else if (a == "--record") record_path = next();  // the run as one JSON object (docs/record.md)
+    else if (a == "--record-label") {  // key=value[,key=value...]: the caller's names for the run, written back
+      const std::string l = next();
+      if (!label_add(l, record_label)) { fprintf(stderr, "--record-label: key=value[,key=value...], every key once; got %s\n", l.c_str()); return 2; }
+    }
     else { fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
   }
   if (interactive && (mode == "raw" || rt_path.empty())) {
@@ -228,6 +233,7 @@ static int run(int argc, char** argv) {
   // --record describes one prompt and its generation: not a session, a back or a --teacher run.
   // Opened now, written after the generation: a run that ends early leaves it empty.
   FILE* record = nullptr;
+  if (record_path.empty() && !record_label.empty()) { fprintf(stderr, "--record-label needs --record\n"); return 2; }
   if (!record_path.empty()) {
     if (interactive || serve_port || teacher) { fprintf(stderr, "--record: not with -i, --serve or --teacher\n"); return 2; }
     record = fopen(record_path.c_str(), "w");
@@ -696,6 +702,7 @@ static int run(int argc, char** argv) {
             toks.size(), t_pp, toks.size() / t_pp, n_gen, t_tg, n_gen > 0 ? n_gen / t_tg : 0.0);
     if (record) {  // docs/record.md, schema 1
       fprintf(record, "{\n  \"schema\": 1,\n");
+      fprintf(record, "  \"label\": %s,\n", label_json(record_label).c_str());
       fprintf(record, "  \"args\": {\"mode\": %s, \"effort\": %d, \"n\": %d, \"threads\": %d, \"runtime\": %s, \"canon\": %s, \"spec\": %s,\n"
                       "           \"placement\": %s, \"cache_loads\": %g, \"cache_period\": %d, \"cache_window\": %d, \"cache_min\": %d,\n"
                       "           \"cache_wait\": %s, \"spec_n\": %d,\n"

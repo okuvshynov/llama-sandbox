@@ -178,7 +178,9 @@ Options:
   the load, the prompt and the generation (0: nothing waited for the disk), with `--spec` the
   speculative loop's totals (steps, drafts accepted, steps by drafts verified, draft and verify
   time), the routed experts' uses on GPUs and on the CPU, the experts placed per die and the
-  cache's totals, load time, prompt and generation t/s. A first version, to grow
+  cache's totals, a hash of the printed token ids, load time, prompt and generation t/s.
+  `--record-label key=value[,key=value...]` (repeatable): names for the run, written back as
+  `label` and never read by the program. A first version, to grow
   ([docs/record.md](docs/record.md), README steps 115-119). One prompt only (not with `-i`, `--serve`, `--teacher`); a run that does not
   finish leaves the file empty.
 - `--no-quant` (CPU path only): without the reference's fp8/fp4 rounding (a comparison).

@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <fstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <unistd.h>  // environ
@@ -86,6 +87,31 @@ inline std::string env_ds_json() {
   std::sort(kv.begin(), kv.end());
   std::string o = "{";
   for (size_t i = 0; i < kv.size(); i++) o += (i ? ", " : "") + kv[i];
+  return o + "}";
+}
+
+// --record-label: "key=value[,key=value...]" added to `label` (key, value pairs in the order
+// given). The names a run goes by for whoever started it (its configuration, the prompt's name,
+// the repeat): the program writes them back and never reads them. false: a part without '=',
+// an empty key, or a key given twice.
+inline bool label_add(const std::string& arg, std::vector<std::pair<std::string, std::string>>& label) {
+  size_t i = 0;
+  while (i <= arg.size()) {
+    const size_t end = std::min(arg.find(',', i), arg.size());
+    const std::string part = arg.substr(i, end - i);
+    const size_t eq = part.find('=');
+    if (eq == std::string::npos || eq == 0) return false;
+    for (const auto& kv : label)
+      if (kv.first == part.substr(0, eq)) return false;
+    label.emplace_back(part.substr(0, eq), part.substr(eq + 1));
+    i = end + 1;
+  }
+  return true;
+}
+
+inline std::string label_json(const std::vector<std::pair<std::string, std::string>>& label) {
+  std::string o = "{";
+  for (size_t i = 0; i < label.size(); i++) o += (i ? ", " : "") + json_string(label[i].first) + ": " + json_string(label[i].second);
   return o + "}";
 }
 

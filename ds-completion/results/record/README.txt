@@ -16,4 +16,5 @@
 #   knobs.txt       step 120: the tuning knobs among the arguments (example.json is from before them)
 #   timing-options.txt  step 121: the options and DS_* switches that perturb timing, and what two of them cost
 #   loads-by-die.txt    step 122: the cache's loads per die; step 86's rule switched off on purpose
+#   label.txt           step 127: --record-label, as written back, and its refusals
 #   output-hash.txt     step 126: the hash of the printed token ids, on three paths, recomputed from a token log

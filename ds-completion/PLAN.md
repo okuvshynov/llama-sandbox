@@ -524,6 +524,9 @@ home die): GPU share +0.1-0.6 points, speed -0.7% over 8 prompts (+1.1% .. -2.9%
 Memory on the home die does not limit speed now: no draft-expert cache, no 2-bit draft for its slots.
 Step 126: the record's first value, `output.hash` over the printed token ids (from the case study of
 steps 123-125: every output comparison there was a `cmp` outside the record).
+Step 127: `--record-label` (the caller's names for a run). The scripts sorted by kind (43: 13 sweeps, 2
+gates, 5 table makers, ...; 31 with one commit). Next: a reader of records (group, mean, spread, a
+condition), then a runner (prompts x configurations x repeats), then file each step's scripts with its results.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front

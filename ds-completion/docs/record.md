@@ -1,6 +1,6 @@
 # `--record`: a run as one record
 
-**Status (2026-11-16, README steps 115-122, 126):** the idea, and a first minimal `--record` in
+**Status (2026-11-16, README steps 115-122, 126-127):** the idea, and a first minimal `--record` in
 `ds-completion`. No test uses it yet and no existing script changed. The record is meant to grow
 field by field, each addition a small change; the testing procedure follows once the record has
 shown what it can see.
@@ -103,6 +103,11 @@ as the program wrote it, the fastest single-machine settings (`results/record/ex
 - `env.ds` (step 121): every environment variable named `DS_*` with its value, `{}` if none:
   the experiment switches. A record with one set, or with `profile` on, is not a clean timing
   (`--profile` -8%, `DS_FP8_PAD=0` -7.5% on the example's run).
+- `label` (step 127; not in the example above): `--record-label key=value[,key=value...]`, the
+  option repeatable: the names a run goes by for whoever started it (configuration, prompt
+  name, repeat), as strings in the order given; `{}` without the option. The program writes
+  them back and never reads them. A key twice, a part without `=`, or a label without
+  `--record` is refused before the load.
 - `prompt.hash`: FNV-1a, 64 bits, over the prompt's token ids after the chat template, each id
   as four bytes, least significant first. Two runs with the same hash ran the same tokens,
   whatever text or options produced them. A prompt's name belongs to whoever starts the run; the
@@ -244,6 +249,8 @@ verified different numbers of drafts.
 **One claim it could not support:** that the home die's new slots hold experts a prompt seldom
 needs. The record has expert uses on GPUs and on the CPU, not per die.
 
-In the order taken: the output hash (done), the drafted ids' hash, a label and a tool that
-tabulates records with their spread, the draft's state and uses per die, the binary's and the
-input files' identity, memory per die and verify time by drafts verified.
+In the order taken: the output hash (done, step 126); a label (done, step 127); a tool that
+reads records (groups, means, the spread of repeats, a condition) and one that runs a matrix of
+them (README step 127 has the plan for the scripts); the drafted ids' hash; the draft's state
+and uses per die; the binary's and the input files' identity; memory per die and verify time
+by drafts verified.
