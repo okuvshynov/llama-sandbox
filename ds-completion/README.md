@@ -5032,3 +5032,20 @@ fastest settings three times 54.52 / 54.90 / 54.61 t/s before and 54.53 / 54.61 
 (means 54.68 and 54.57, inside the ~1% spread of repeats).
 
 Next: the two-machine code the same way, then the constructor in parts.
+
+## Step 137: `hip/rt.cpp` split, part 2: the two-machine code into `hip/rt_peer.cpp`
+
+The same move as step 136 for the model in two halves (step 111): the front's connection and
+its messages, the back's `serve`, and the stream's two copies to and from the host go to
+`hip/rt_peer.cpp` (142 lines), unchanged. `rt.cpp` is 1,735 lines: construction and the forward.
+
+**Checked on one machine** (`results/cleanup/rt-split-peer.txt`; sclk 6): the two halves as two
+processes over localhost, every expert on the CPU so that both fit, in every pairing of the old
+and the new build (old-old, new-new, new front with old back, old front with new back), and
+new-new traced. All five print the whole model's bytes (one output hash in the six records)
+and end with exit code 0; old-old and new-new write the same kinds of stderr lines on both
+sides. The mixed pairings say the new build speaks the old protocol in both roles.
+
+**Not checked:** the speed on two machines. The second machine was not touched (it needs this
+commit built; `scripts/split-measure.sh` then measures). The moved functions run a few times
+per step.

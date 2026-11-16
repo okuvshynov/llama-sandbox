@@ -253,6 +253,7 @@ V4.1-Pro (engram on SSD is easy; experts barely fit in two machines' RAM).
 | `src/fp8pack.cpp` | lossless fp8 repack of the dense weights |
 | `src/ds_test.cpp` | per-layer and end-to-end tests against the goldens |
 | `hip/rt.{h,cpp}` | the GPU runtime: state, layer order, the expert split |
+| `hip/rt_peer.cpp` | the runtime as one half of a model on two machines: the front's messages, the back's `serve` (`hip/peer.h`: the protocol) |
 | `hip/rt_trace.cpp` | the runtime's observability: the startup memory ledger, `--profile`'s groups, `--trace` (`hip/rt_internal.h`: the helpers the runtime's files share) |
 | `hip/kernels.{h,hip}` | the runtime's kernels (norms, attention, indexer, hyper-connections, router, dispatch) |
 | `hip/fp8_gemv.{h,hip}` | exact fp8 x fp8 GEMV |

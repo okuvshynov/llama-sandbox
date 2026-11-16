@@ -550,6 +550,9 @@ hidden-state dump stays: `ds-test` and `ref/dspark_check.py` use it. Next: `DS_D
 Step 136: `DS_DRAFT_KEEP` and the hidden-state dump stay for now. `hip/rt.cpp` part 1: the trace, the
 profile's groups and the memory ledger into `hip/rt_trace.cpp` (+ `hip/rt_internal.h`); speed unchanged.
 Next: the two-machine code into its own file, then the constructor in parts.
+Step 137: the two-machine code into `hip/rt_peer.cpp`; both halves as two processes on one machine, old
+and new builds in every pairing: the whole model's output. Two-machine speed not measured. Next: the
+constructor in parts.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front

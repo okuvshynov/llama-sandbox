@@ -1,0 +1,18 @@
+# hip/rt.cpp split, part 2 (README step 137): the two-machine code into hip/rt_peer.cpp.
+# Before ("old"): the build of commit 35561d0. After ("new"): 35561d0 + this change. sclk 6, 2026-11-16.
+# The two halves as two processes on ONE machine over localhost, every expert on the CPU (no --placement) so that both fit:
+#   back:   ds-completion -m $M --rt $F8 --canon --layers 20-39 --dspark $D --serve PORT
+#   front:  ds-completion -m $M --rt $F8 --canon --layers 0-19 --remote 127.0.0.1:PORT --spec -p P --chat -n 60 --record F
+#   whole:  ds-completion -m $M --rt $F8 --canon --dspark $D --spec -p P --chat -n 60 --record F      (one process, the new build)
+# P = "What are the differences between TCP and UDP, and when would you choose each?"
+#
+#   front  back   exit codes   output vs whole   output hash        generation t/s
+#   whole                      -                 8dd1a12da98111bd
+#   old    old    0 0          same              8dd1a12da98111bd   15.63
+#   new    new    0 0          same              8dd1a12da98111bd   15.63
+#   new    old    0 0          same              8dd1a12da98111bd   15.66
+#   old    new    0 0          same              8dd1a12da98111bd   15.95
+#   new    new    0 0          same              8dd1a12da98111bd   15.21   (both with --trace; a trace was written)
+# old-old and new-new: the same kinds of '#' lines on the back's stderr (19) and on the front's (22).
+# The back's last line, new-new: "# peer: the front left after 63 messages; 7.0 MB received, 0.5 MB sent; 2.52 s in this range's work".
+# Not measured: the speed on two machines (the second machine was not touched); these t/s are two processes sharing one machine's CPU.
