@@ -250,7 +250,8 @@ verified different numbers of drafts.
 needs. The record has expert uses on GPUs and on the CPU, not per die.
 
 In the order taken: the output hash (done, step 126); a label (done, step 127); a tool that
-reads records (groups, means, the spread of repeats, a condition) and one that runs a matrix of
-them (README step 127 has the plan for the scripts); the drafted ids' hash; the draft's state
+reads records (done, step 128: `scripts/records.py`, groups, means, the spread of repeats, a
+comparison that prints only differences outside the spread, a condition) and one that runs a
+matrix of them (README step 127 has the plan for the scripts); the drafted ids' hash; the draft's state
 and uses per die; the binary's and the input files' identity; memory per die and verify time
 by drafts verified.

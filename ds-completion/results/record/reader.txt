@@ -1,0 +1,41 @@
+# scripts/records.py (README step 128) on step 125's 40 records (results/draft-pool/leave-out/*.json; written
+# before --record-label and output.hash, so the label comes from the file names and the condition is on the prompt's hash).
+# commit 74d2022 + this change, 2026-11-16; the records: sclk 6, 2026-11-16 (their summary.txt).
+#
+# scripts/records.py results/draft-pool/leave-out/*.json --name-label '/(?P<config>[a-z]+)-(?P<prompt>[^/]+)-(?P<rep>\d)\.json$' \
+#     --by prompt,config --show counters.gen_tps,spec.steps,experts.placed.0 --vs config=all --same prompt.hash --within prompt     (exit code 0)
+prompt        config    runs  counters.gen_tps  spread           vs all  spec.steps  spread            vs all  experts.placed.0  spread  vs all
+cpp-matrix    all          2              54.7    0.2%                           66    0.0%                                 802    0.0%
+geometry      all          2             54.72    0.3%                           85    0.0%                                 802    0.0%
+ja-email      all          2             37.04    0.3%                          170    0.0%                                 802    0.0%
+py-lru        all          2             46.49    0.5%                          100    0.0%                                 802    0.0%
+sql-report    all          2              47.1    0.4%                           77    0.0%                                 802    0.0%
+summary-json  all          2             44.76    0.1%                           28    0.0%                                 802    0.0%
+tcp-udp       all          2             38.96    0.8%                          144    0.0%                                 802    0.0%
+zh-travel     all          2             34.26    0.5%                          199    0.0%                                 802    0.0%
+cpp-matrix    out          2             53.58    5.1%  ~ (spread 5.1%)          71   14.1%  ~ (spread 14.1%)               940    0.0%  +17.2%
+geometry      out          2             53.12    1.6%            -2.9%          93    2.2%             +9.4%               944    0.0%  +17.7%
+ja-email      out          2             37.19    0.1%            +0.4%       168.5    0.6%             -0.9%               950    0.0%  +18.5%
+py-lru        out          2             46.68    1.1%  ~ (spread 1.1%)       100.5    1.0%   ~ (spread 1.0%)               943    0.0%  +17.6%
+sql-report    out          2             46.69    1.0%  ~ (spread 1.0%)          76    2.6%   ~ (spread 2.6%)               943    0.0%  +17.6%
+summary-json  out          2             44.82    0.5%  ~ (spread 0.5%)          28    0.0%                 =               942    0.0%  +17.5%
+tcp-udp       out          2             39.38    0.1%            +1.1%         144    0.0%                 =               941    0.0%  +17.3%
+zh-travel     out          2             33.56    0.1%            -2.0%         205    0.0%             +3.0%               947    0.0%  +18.1%
+cpp-matrix    resident     1             54.57                  -0.2% ?          66                         =               802               =
+geometry      resident     1             53.13                  -2.9% ?          93                   +9.4% ?               802               =
+ja-email      resident     1             37.24                  +0.5% ?         168                   -1.2% ?               802               =
+py-lru        resident     1             46.53                  +0.1% ?         100                         =               802               =
+sql-report    resident     1             46.43                  -1.4% ?          76                   -1.3% ?               802               =
+summary-json  resident     1             44.19                  -1.3% ?          28                         =               802               =
+tcp-udp       resident     1             38.91                  -0.1% ?         144                         =               802               =
+zh-travel     resident     1             33.53                  -2.1% ?         205                   +3.0% ?               802               =
+# vs all: a difference of the means, printed if larger than the spread of both groups' repeats; ~: inside it; ?: a side has one run, no spread; =: equal
+# --same prompt.hash within prompt: holds for all 8 (40 runs)
+
+# The condition, on step 126's three records of one prompt (the CPU path is not --canon and prints other text):
+# scripts/records.py h-cpu.json h-plain.json h-spec.json --name-label 'h-(?P<config>\w+)\.json' --show output.tokens --same output.hash --within ''
+#   --same output.hash: all the runs: "fnv1a64:23d4401c77fe3496" in 1 runs (e.g. h-cpu.json); "fnv1a64:29b8836ab745322e" in 2 runs (e.g. h-plain.json)
+#   # --same output.hash within all the runs: FAILED for 1 of 1                          (exit code 1)
+# without h-cpu.json: holds for all 1 (2 runs), exit code 0.
+# --same output.hash on step 125's records (they have no "output"): null in 2 runs, FAILED for 8 of 8, exit code 1.
+# An empty file among the arguments: "did not finish (empty record): <file>", the table of the others, exit code 1.

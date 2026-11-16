@@ -4792,3 +4792,36 @@ part without `=`, a key given twice, a label without `--record`. A value cannot 
 
 **Checked** (`results/record/label.txt`): the label as given, quotes escaped; the same output
 and `output.hash` with and without it; the three refusals.
+
+## Step 128: a reader of records (`scripts/records.py`)
+
+The first of the two tools of step 127. It reads `--record` files and nothing else:
+
+    scripts/records.py FILE.json... --by prompt,config --show counters.gen_tps,spec.steps \
+        --vs config=all --same output.hash --within prompt
+
+- **Groups** by label keys (`--by`); the runs of a group are repeats of each other.
+- **Fields** (`--show`): a path into the record (`experts.placed.0`), or a ratio of two
+  (`spec.accepted/spec.steps`): the record holds totals. Per group the mean and, with repeats,
+  the spread, (max - min) / mean.
+- **A comparison** (`--vs config=all`): each group against the one that differs only in that
+  key. A difference is printed only if it is larger than the spread of both groups' repeats;
+  inside it the tool prints `~`, and `?` beside a difference when a side has one run and so no
+  spread. This is the rule from step 125's table, which printed every difference, now in the tool.
+- **A condition** (`--same output.hash --within prompt`): one value among the runs that agree on
+  those keys; exit code 1 if not, or if a run has no such field. A gate is this.
+- An empty record (a run that did not finish) is reported and the exit code is 1.
+- `--name-label REGEX`: the label from the file's path, for records older than step 127.
+
+**Tried on step 125's 40 records** (`results/record/reader.txt`): one command gives that step's
+table (the same means: 54.70 against 53.58 t/s on cpp-matrix, 802 against 940 experts) and
+says more than the table did. Of the eight speed differences it prints four (tcp-udp +1.1%,
+ja-email +0.4%, geometry -2.9%, zh-travel -2.0%) and calls four inside the spread, cpp-matrix's
+-2.0% among them (its two `out` runs are 5.1% apart: the odd run). Every difference of the
+`resident` runs carries `?`: one run each. **The condition** fails as it should on step 126's
+three records (the CPU path prints other text), holds without the CPU one, and fails on
+records that have no `output`.
+
+Two repeats give a low estimate of the spread (tcp-udp's `out` runs are 0.1% apart, and +1.1%
+is printed): the tool says so, and a difference just outside is not yet a result. Not built
+yet: the runner, and a spread taken over all the groups instead of each pair.

@@ -527,6 +527,9 @@ steps 123-125: every output comparison there was a `cmp` outside the record).
 Step 127: `--record-label` (the caller's names for a run). The scripts sorted by kind (43: 13 sweeps, 2
 gates, 5 table makers, ...; 31 with one commit). Next: a reader of records (group, mean, spread, a
 condition), then a runner (prompts x configurations x repeats), then file each step's scripts with its results.
+Step 128: the reader, `scripts/records.py` (groups by label, means and the spread of repeats, `--vs` prints
+only differences outside the spread, `--same` is a gate). On step 125's records: four of eight speed
+differences are inside the spread. Next: the runner.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front

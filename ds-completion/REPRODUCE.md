@@ -251,6 +251,7 @@ Unless stated: sclk 2, 16 CPU threads (32 before README step 18), the study30 pl
 | 125 | `draft-pool/leave-out/` (`summary.txt`, `table.txt`, the records) | `scripts/draft-leave-out.sh` (needs step 124's `draft-pool/keep/loo-seen/*.keep`), then `scripts/draft_leave_out_table.py`; left out against masked: the first command of `draft-pool/in-pool.txt` with `DS_DRAFT_KEEP=results/draft-pool/keep/loo-seen/geometry.keep`, with and without `DS_DRAFT_KEEP_RESIDENT=1`, and `DS_DRAFT_ROUTE_LOG` |
 | 126 | `record/output-hash.txt` | the five commands in the file; the recomputation: FNV-1a 64 (`src/record.h`) over the third `\|` field of each `DS_DRAFT_TOKEN_LOG` line, after the first printed id and without the last id |
 | 127 | `record/label.txt` | the commands in the file; the scripts' count by kind: read from each file's header, `git log --oneline -- scripts/<file>` for its commits |
+| 128 | `record/reader.txt` | the commands in the file (`scripts/records.py` over `draft-pool/leave-out/*.json`; step 126's three records are made by the commands of `record/output-hash.txt`) |
 
 ## 7. Open items (to confirm)
 
