@@ -1,0 +1,11 @@
+# The router lookahead's study removed (README step 135): DS_ROUTE_AHEAD, DS_ROUTE_LOG, Runtime::ra_*, ExpertCache::uses.
+# Before: the build of commit 8798740 (the last with it). After: 8798740 + this change. sclk 6, 2026-11-16. Each command with both builds.
+# P = "What are the differences between TCP and UDP, and when would you choose each?"; PC = cpp-matrix of results/spec-heldout/prompts.txt.
+# Every run: --rt $F8 --canon --placement placements/study30.txt --record F.
+#
+#   plain  -p P --chat -n 32 --log-routing F                          stdout and output hash same; the routing log the same 74,272 bytes; 23.95 / 23.93 t/s
+#   prof   -p PC --chat -n 120 --dspark $D --spec --spec-n 5          stdout and output hash same; 26 steps, 96 accepted both; verify 2684.6 / 2681.7 ms;
+#          --cache-loads 800 --cache-period 8 --cache-wait --profile  the same kinds of '#' lines (66), the "prefetch prediction" line (step 52) among them; 41.16 / 41.20 t/s
+#   fast   -p PC --chat -n 300 --dspark $D --spec --cache-loads 800   stdout and output hash same; 66 steps, 233 accepted in all six runs;
+#          --cache-period 8 --cache-wait, three times                 verify 4905.3 4885.4 4944.7 / 4892.4 4896.3 4919.7 ms; 54.71 54.91 54.32 / 54.85 54.80 54.57 t/s
+# The new build with DS_ROUTE_AHEAD=4: no "router lookahead" report.

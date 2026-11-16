@@ -114,7 +114,7 @@ with its results and the rows below name it there; `scripts/` has the tools stil
 (`scripts/README.md`). A header in an older results file may still say `scripts/<name>`.
 
 Diagnostic switches read from the environment (each explained at its `getenv` and in the step
-that used it; none changes the output): `DS_ROUTE_LOG`, `DS_ROUTE_AHEAD`, `DS_EARLY_ROWS`,
+that used it; none changes the output): `DS_EARLY_ROWS`,
 `DS_ATTN_CHECK` (`hip/rt.cpp`), `DS_DRAFT_PROFILE`, `DS_DRAFT_ROUTE_LOG` (`hip/dspark.cpp`),
 `DS_DRAFT_TOKEN_LOG` (`src/ds_completion.cpp`), `DS_DRAFT_KEEP`, `DS_DRAFT_KEEP_RESIDENT` (`hip/dspark.cpp`, steps 124-125; with the placement they change what is loaded and so the speed, never the output), `DS_FP8_PAD`, `DS_FP8_VIRT`,
 `DS_STALL_SPLIT` (`hip/fp8_gemv.*`), `DS_F32_PAD` (`hip/kernels.hip`). A `DS_*` name next to a
@@ -188,7 +188,7 @@ Unless stated: sclk 2, 16 CPU threads (32 before README step 18), the study30 pl
 | 61 | (none: a reading of `hip/dspark.cpp`) | the draft's loader: `fp8(...)` for its dense matrices, `fp4_upload(...)` for its experts |
 | 62 | the load rate in TIMING.md: `loads started` and `generation:` in `spec-measure-sclk6-cacheloads800cacheperiod8-head/*.err` | (from the files) |
 | 62 | `head-lds.txt`, `spec-measure-sclk6-cacheloads800cacheperiod8-head/` | `bin-hip/bench-kernels --bitwise`; the variants: `gemv_head_launch<R, WAVES>` in `hip/kernels.hip`; `DS_DRAFT_PROFILE=1 bin-hip/ds-completion ...` (the draft's parts); `CACHE="--cache-loads 800 --cache-period 8" scripts/spec-measure.sh` (copied) |
-| 63 | `route-ahead/` (`summary.txt`, `pooled.txt`, per prompt `.err`) | `results/route-ahead/route-ahead.sh 4` (`DS_ROUTE_AHEAD=4 DS_ROUTE_LOG=...`; logs in `data/route-ahead/`, ~185 MB); `pooled.txt`: the per-prompt tables weighted by their counts |
+| 63 | `route-ahead/` (`summary.txt`, `pooled.txt`, per prompt `.err`) | with a build of commit 8798740 (the switches were removed in step 135): `results/route-ahead/route-ahead.sh 4` (`DS_ROUTE_AHEAD=4 DS_ROUTE_LOG=...`; logs in `data/route-ahead/`, ~185 MB); `pooled.txt`: the per-prompt tables weighted by their counts |
 | 64 | `route-ahead/prefetch-sim.txt` | `~/venvs/ds-ref/bin/python results/route-ahead/prefetch_sim.py` on `data/route-ahead/*.bin` (from step 63's run) |
 | 65 | `decode-next/fp8-multi.txt`, `fp8-lds64.patch`, `host-lag.txt` | `bin-hip/bench-fp8 $F8 --ms 1,2,3,4,6 [--gemm \| --sweep]` (the 8-wave variant: `git apply results/decode-next/fp8-lds64.patch`, `DS_FP8_LDS64=8`); the lag: the command in `host-lag.txt` (`--trace` prints it) |
 | 66 | `attn-batch/stage1.txt`, `spec-measure-sclk6-cacheloads800cacheperiod8-ring/` | `results/prefill/prefill-gate.sh`-style runs, a 20,000-byte prompt against a build of 67453f6, `CACHE="--cache-loads 800 --cache-period 8" scripts/spec-measure.sh` (commands in the file; the spec run copied) |
@@ -260,6 +260,7 @@ Unless stated: sclk 2, 16 CPU threads (32 before README step 18), the study30 pl
 | 132 | `cleanup/run-split-2.txt` | the commands in the file with a build of 60433e8 and with this one |
 | 133 | `cleanup/study-draft2.txt` | the commands in the file with a build of 012bf44 and with this one |
 | 134 | `cleanup/study-load-test.txt` | the commands in the file with a build of def1a2a and with this one |
+| 135 | `cleanup/study-route-ahead.txt` | the commands in the file with a build of 8798740 and with this one |
 
 ## 7. Open items (to confirm)
 

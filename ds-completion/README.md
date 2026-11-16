@@ -4985,3 +4985,26 @@ and a speculative one without the cache, the fastest settings three times, the c
 experts placed per die, 3,621-3,627 loads published in both builds, 55.05 / 54.99 / 55.02 t/s
 before and 54.99 / 54.95 / 54.59 after, and in the trace one cache-load span per load published
 (3,679 and 3,675). `--load-test` is now an unknown argument.
+
+## Step 135: an unadopted study out: the router lookahead (step 63)
+
+Step 63 asked how well a later layer's router, run on an earlier layer's input, predicts the
+experts that layer will choose, as the basis of a prefetch; the prefetch simulated to a few
+percent and was not built. Its instrument was the largest leftover: `DS_ROUTE_AHEAD` and
+`DS_ROUTE_LOG`, a branch in every layer's routing that ran up to 8 further routers, a
+comparison at each step's end and a report: 174 lines of `hip/rt.cpp` and `hip/rt.h`, and an
+accessor on the cache only it used. All removed. `results/route-ahead/` keeps the results, the
+script and the simulator; the last commit with the switches is `8798740`.
+
+**Checked** old build against new (`results/cleanup/study-route-ahead.txt`; sclk 6): a plain
+run's `--log-routing` file the same bytes; a speculative run with the cache and `--profile`
+the same output, counts and kinds of stderr lines (step 52's prefetch-prediction line, which
+stays, among them); the fastest settings three times the same hash and counts, 54.71 / 54.91 /
+54.32 t/s before and 54.85 / 54.80 / 54.57 after.
+
+**Not removed, after a second look:** the draft's hidden-state dump (`draft_log_hidden`). It
+is not a leftover: `ds-test` writes it and `ref/dspark_check.py` compares it layer by layer
+with the reference, the check a new draft or checkpoint would need. A search of the engine's
+files alone had found no caller; the search now covers `src/`, `hip/`, `ref/`, `scripts/` and
+`results/`. Of the switches removed in steps 133-135, only their own filed study scripts name
+them.

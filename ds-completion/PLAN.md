@@ -545,6 +545,8 @@ the last commit with it: 012bf44. Next: `--load-test`.
 Step 134: `--load-test` (step 30) out: the options, the spare slots, the loader's test mode; the last
 commit with it: def1a2a. Next: the router lookahead (step 63), the draft's unused hidden-state logs,
 `DS_DRAFT_KEEP`. Kept as checks: `DS_ATTN_CHECK`, `DS_EARLY_ROWS`.
+Step 135: the router lookahead (step 63) out: 174 lines; the last commit with it: 8798740. The draft's
+hidden-state dump stays: `ds-test` and `ref/dspark_check.py` use it. Next: `DS_DRAFT_KEEP`.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front
