@@ -14,3 +14,4 @@
 #   spec.txt        step 118: the speculative loop's totals
 #   experts.txt     step 119: the routed experts' uses, placement and cache totals
 #   knobs.txt       step 120: the tuning knobs among the arguments (example.json is from before them)
+#   timing-options.txt  step 121: the options and DS_* switches that perturb timing, and what two of them cost

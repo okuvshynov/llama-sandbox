@@ -508,6 +508,9 @@ Step 119: the routed experts in the record (uses on GPUs and on the CPU, experts
 cache's rebalances and loads).
 Step 120: the tuning knobs among the record's arguments (`cache_window`, `cache_min`, `cache_wait`,
 `spec_n`), defaults written as values.
+Step 121: the options and switches that perturb timing in the record (`profile`, `trace`, `spec_log`,
+`log_routing`, every `DS_*` variable); `--profile` -8.0%, `DS_FP8_PAD=0` -7.5% on cpp-matrix, clean
+runs within ~1%.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front

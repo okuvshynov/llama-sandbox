@@ -4492,3 +4492,42 @@ with a placement and no cache).
 **Checked** (`results/record/knobs.txt`): a run without any of them records the defaults; a run
 with `--cache-period 8 --cache-window 128 --cache-min 3 --cache-wait --spec-n 4` records those;
 both print the same bytes as before.
+
+## Step 121: the options and switches that perturb timing, in the record
+
+A record of a run with `--profile`, or with an experiment switch set in the environment, is not
+a clean timing, and nothing in it said so. Now:
+
+- `args` has `profile`, `trace`, `spec_log` and `log_routing`: on or off (not their files' names).
+- `env` has `ds`: every environment variable whose name starts with `DS_`, with its value, by
+  name; `{}` when none is set. The program reads twelve of them (REPRODUCE.md lists them:
+  `DS_FP8_PAD`, `DS_STALL_SPLIT`, the logs of the studies, ...). All of that prefix are written,
+  read or not, so a misspelt switch is in the record too; the record cannot say it was ignored.
+
+**Checked** (`results/record/timing-options.txt`; sclk 6): a short run with nothing on records
+four `false` and `{}`; with everything on, four `true` and `{"DS_FP8_PAD": "0", "DS_MISSPELT":
+"a \"b\"", "DS_STALL_SPLIT": "0"}`. The same output both times.
+
+**What two of them cost,** the fastest single-machine settings on cpp-matrix, every output the
+stored one's bytes:
+
+| run | t/s | read during generation |
+|---|---|---|
+| clean | 55.11 | 0 |
+| `DS_FP8_PAD=0` | 50.69 | 741 KB |
+| `--profile` | 50.33 | 0 |
+| clean | 54.81 | 0 |
+| `DS_FP8_PAD=0` | 50.60 | 0 |
+
+- **Clean runs repeat within ~1%:** six of them today at sclk 6, 54.55-55.11 t/s (mean 54.73).
+- **`--profile`: -8.0%** (one run). A profiled run is for its breakdown, not for its speed.
+- **`DS_FP8_PAD=0`: -7.5%** (two runs). Step 101 measured the padding at +2.4%, at 42.5 t/s;
+  why it is worth three times that now was not looked into (candidates: step 104's kernel reads
+  the same matrices in fewer, wider launches; the draft's time rose too, 514 -> 547 ms).
+- The first `DS_FP8_PAD=0` run read 741 KB from storage: it took 65 verify steps where the clean
+  runs take 66, so it verified other drafts and needed engram rows no run had fetched. Its
+  repeat read nothing and ran at the same speed: reads of that size do not show here (step
+  117's 72 MB did).
+
+This is the first of the faults put in on purpose (docs/record.md): a slowdown of known origin,
+and the record shows both that the run was slower and why.

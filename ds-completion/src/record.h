@@ -1,11 +1,14 @@
 // What ds-completion --record writes about a run beyond its own variables (docs/record.md).
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <fstream>
 #include <string>
 #include <vector>
+
+#include <unistd.h>  // environ
 
 // The prompt's identity is its token ids, after the chat template: FNV-1a, 64 bits, over each
 // id's four bytes, least significant first.
@@ -67,6 +70,23 @@ inline long long io_read_bytes() {
   while (f >> key >> v)
     if (key == "read_bytes:") return v;
   return -1;
+}
+
+// The environment's DS_* variables as a JSON object, by name: the experiment switches the
+// kernels and the runtime read (REPRODUCE.md lists them), e.g. {"DS_FP8_PAD": "0"}. Every
+// variable of that prefix is written, read by the program or not: a misspelt switch shows too.
+inline std::string env_ds_json() {
+  std::vector<std::string> kv;
+  for (char** e = environ; e && *e; e++) {
+    const std::string s = *e;
+    const size_t eq = s.find('=');
+    if (s.compare(0, 3, "DS_") != 0 || eq == std::string::npos) continue;
+    kv.push_back(json_string(s.substr(0, eq)) + ": " + json_string(s.substr(eq + 1)));
+  }
+  std::sort(kv.begin(), kv.end());
+  std::string o = "{";
+  for (size_t i = 0; i < kv.size(); i++) o += (i ? ", " : "") + kv[i];
+  return o + "}";
 }
 
 // a list of JSON values as a JSON array

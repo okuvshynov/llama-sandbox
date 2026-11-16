@@ -1,6 +1,6 @@
 # `--record`: a run as one record
 
-**Status (2026-11-15, README steps 115-120):** the idea, and a first minimal `--record` in
+**Status (2026-11-15, README steps 115-121):** the idea, and a first minimal `--record` in
 `ds-completion`. No test uses it yet and no existing script changed. The record is meant to grow
 field by field, each addition a small change; the testing procedure follows once the record has
 shown what it can see.
@@ -97,8 +97,12 @@ as the program wrote it, the fastest single-machine settings (`results/record/ex
 - `args`: fourteen of the options, not all of them yet, as they took effect: an option not
   given has its default (never a missing key), and `n` is the limit after `--max-ctx` capped it.
   `spec_n` 0 (the default): the number of drafts verified is chosen per step. Since step 120
-  with the knobs a sweep varies: `cache_window`, `cache_min`, `cache_wait`, `spec_n`; the example
-  above is from before that.
+  with the knobs a sweep varies: `cache_window`, `cache_min`, `cache_wait`, `spec_n`. Since step
+  121 with the options that add work to a run, on or off: `profile`, `trace`, `spec_log`,
+  `log_routing`. The example above is from before both.
+- `env.ds` (step 121): every environment variable named `DS_*` with its value, `{}` if none:
+  the experiment switches. A record with one set, or with `profile` on, is not a clean timing
+  (`--profile` -8%, `DS_FP8_PAD=0` -7.5% on the example's run).
 - `prompt.hash`: FNV-1a, 64 bits, over the prompt's token ids after the chat template, each id
   as four bytes, least significant first. Two runs with the same hash ran the same tokens,
   whatever text or options produced them. A prompt's name belongs to whoever starts the run; the
@@ -171,8 +175,10 @@ A record is committed when something in the repository points at it; otherwise i
 
 In the order I would take them; the order is not decided.
 
-1. The rest of the configuration as it took effect: every option, the `DS_*` switches, the commit
-   the binary was built from, the input files' sizes and dates. (The GPU clock setting: done,
+1. The rest of the configuration as it took effect: the `DS_*` switches and the options that
+   perturb timing are done (step 121), the tuning knobs too (step 120). Left: the draft's file,
+   the remaining options, the commit the binary was built from, the host, the input files'
+   sizes and dates. (The GPU clock setting: done,
    step 116.)
 2. Proof that a requested feature ran: done with steps 118-119 (`spec.steps`, `experts.placed`,
    `experts.cache.loads_published`). A check must still compare them with the arguments. A feature that silently did not apply looks like "no
@@ -190,6 +196,7 @@ In the order I would take them; the order is not decided.
    used per die. A check that never reaches a path cannot fail on it.
 
 Then, before any test script: **break things on purpose and see whether the records show it.**
+(Begun in step 121: `DS_FP8_PAD=0` and `--profile` each show as ~8% and are named in the record.)
 Slowdowns with a known size need no code change (`DS_FP8_PAD=0`, README step 101;
 `DS_STALL_SPLIT=0`, step 102; `-t 32`, step 18; a lower clock level; part of the model evicted
 from the page cache). Bugs should hide on rare paths: a reordered sum in one kernel (logits

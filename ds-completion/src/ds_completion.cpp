@@ -698,13 +698,17 @@ static int run(int argc, char** argv) {
       fprintf(record, "{\n  \"schema\": 1,\n");
       fprintf(record, "  \"args\": {\"mode\": %s, \"effort\": %d, \"n\": %d, \"threads\": %d, \"runtime\": %s, \"canon\": %s, \"spec\": %s,\n"
                       "           \"placement\": %s, \"cache_loads\": %g, \"cache_period\": %d, \"cache_window\": %d, \"cache_min\": %d,\n"
-                      "           \"cache_wait\": %s, \"spec_n\": %d},\n",
+                      "           \"cache_wait\": %s, \"spec_n\": %d,\n"
+                      "           \"profile\": %s, \"trace\": %s, \"spec_log\": %s, \"log_routing\": %s},\n",
               json_string(mode).c_str(), effort, n_predict, opt.n_threads, rt_path.empty() ? "false" : "true", canon ? "true" : "false",
               spec ? "true" : "false", json_string(placement).c_str(), cache_loads, cache_period, cache_window, cache_min,
-              cache_wait ? "true" : "false", spec_n);  // as they took effect: an option not given has its default
+              cache_wait ? "true" : "false", spec_n,  // as they took effect: an option not given has its default
+              // the options that add work to a run (a record with one of them on is not a clean timing): on or off
+              profile ? "true" : "false", trace_path.empty() ? "false" : "true", spec_log_path.empty() ? "false" : "true",
+              route_log.empty() ? "false" : "true");
       fprintf(record, "  \"prompt\": {\"tokens\": %zu, \"hash\": \"fnv1a64:%016llx\"},\n", toks.size(),
               (unsigned long long)fnv1a64_ids(toks));
-      fprintf(record, "  \"env\": {\"gpu_sclk\": %s},\n", json_array(sclk).c_str());
+      fprintf(record, "  \"env\": {\"gpu_sclk\": %s, \"ds\": %s},\n", json_array(sclk).c_str(), env_ds_json().c_str());
       auto read = [&](int i) { return rd[i] < 0 || rd[i + 1] < 0 ? std::string("null") : std::to_string(rd[i + 1] - rd[i]); };
       fprintf(record, "  \"read_bytes\": {\"load\": %s, \"prompt\": %s, \"gen\": %s},\n", read(0).c_str(), read(1).c_str(), read(2).c_str());
       if (spec) {  // totals of the speculative loop; "verified": steps by the number of drafts verified, from 0
