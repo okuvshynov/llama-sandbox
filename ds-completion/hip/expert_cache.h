@@ -59,7 +59,10 @@ class ExpertCache {
   // (ties: most recently used); read-only (README step 52's prefetch prediction)
   std::vector<int> top_nonresident(int L, int n) const;
   int uses(int L, int e) const { return count[(size_t)L * n_expert + e]; }  // in the window (README step 63)
-  struct Stats { long loads_started = 0, loads_published = 0, rebalances = 0, swaps_planned = 0; };
+  struct Stats {
+    long loads_started = 0, loads_published = 0, rebalances = 0, swaps_planned = 0;
+    std::vector<long> started_by_die;  // loads_started per die (index into pools); 0 on the fixed die
+  };
   Stats stats() const { return st; }
 
  private:

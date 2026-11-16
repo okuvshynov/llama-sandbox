@@ -1,6 +1,6 @@
 # `--record`: a run as one record
 
-**Status (2026-11-15, README steps 115-121):** the idea, and a first minimal `--record` in
+**Status (2026-11-15, README steps 115-122):** the idea, and a first minimal `--record` in
 `ds-completion`. No test uses it yet and no existing script changed. The record is meant to grow
 field by field, each addition a small change; the testing procedure follows once the record has
 shown what it can see.
@@ -123,7 +123,9 @@ as the program wrote it, the fastest single-machine settings (`results/record/ex
 - `experts` (step 119; `null` on the CPU path): `gpu_uses` and `cpu_uses`, routed-expert uses
   by where they ran over the whole run (rejected drafts included); `dies` and `placed`, the dies
   that hold experts and how many each held after startup; `cache`, the adaptive cache's totals
-  (`null` without `--cache-loads`).
+  (`null` without `--cache-loads`). Since step 122 with `loads_started_by_die`, in the order of
+  `dies`: the home die takes no loads (README step 86), so its place holds 0. With that rule
+  switched off on purpose it held 13% of the loads and the run was 8% slower.
 - `counters`: the numbers of the `# loaded in ...` and `# prompt: ... generation: ...` lines.
 
 The file is opened before the model loads and written after the generation. A run that fails or
@@ -196,7 +198,9 @@ In the order I would take them; the order is not decided.
    used per die. A check that never reaches a path cannot fail on it.
 
 Then, before any test script: **break things on purpose and see whether the records show it.**
-(Begun in step 121: `DS_FP8_PAD=0` and `--profile` each show as ~8% and are named in the record.)
+(Begun in step 121: `DS_FP8_PAD=0` and `--profile` each show as ~8% and are named in the record.
+Step 122: a one-line change that lets the cache load into the home die again shows as loads on
+that die, -8.1%, and the time in `draft_ms` and `verify_ms`.)
 Slowdowns with a known size need no code change (`DS_FP8_PAD=0`, README step 101;
 `DS_STALL_SPLIT=0`, step 102; `-t 32`, step 18; a lower clock level; part of the model evicted
 from the page cache). Bugs should hide on rare paths: a reordered sum in one kernel (logits

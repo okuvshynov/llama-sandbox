@@ -24,6 +24,7 @@ ExpertCache::ExpertCache(const Model& m, std::vector<ExpertPool*> pools_, std::v
   count.assign(n_pairs, 0);
   last_use.assign(n_pairs, -1);
   last_tick = std::chrono::steady_clock::now();
+  st.started_by_die.assign(n_dies, 0);
   loader.reset(new ExpertLoader(m, pools, true));  // direct loads once the tensors are registered
   if (o.wait && !loader->wait_direct()) throw std::runtime_error("expert cache: registering the expert tensors failed");
 }
@@ -112,7 +113,10 @@ void ExpertCache::step(int M) {
     table_dirty = false;
   }
   // 4. only now may the victims' slots be overwritten
-  for (const ExpertLoader::Request& r : start) loader->submit(r);
+  for (const ExpertLoader::Request& r : start) {
+    loader->submit(r);
+    st.started_by_die[r.die]++;
+  }
   st.loads_started += (long)start.size();
 }
 

@@ -727,9 +727,13 @@ static int run(int argc, char** argv) {
         for (int n : es.placed) pv.push_back(std::to_string(n));
         fprintf(record, "  \"experts\": {\"gpu_uses\": %ld, \"cpu_uses\": %ld, \"dies\": %s, \"placed\": %s,\n               \"cache\": ",
                 rt->total_gpu_experts, rt->total_cpu_experts, json_array(dv).c_str(), json_array(pv).c_str());
-        if (es.has_cache)
-          fprintf(record, "{\"rebalances\": %ld, \"swaps_planned\": %ld, \"loads_started\": %ld, \"loads_published\": %ld}},\n",
-                  es.cache.rebalances, es.cache.swaps_planned, es.cache.loads_started, es.cache.loads_published);
+        if (es.has_cache) {  // loads_started_by_die: in the order of "dies"; the home die takes none (README step 86)
+          std::vector<std::string> lv;
+          for (long n : es.cache.started_by_die) lv.push_back(std::to_string(n));
+          fprintf(record, "{\"rebalances\": %ld, \"swaps_planned\": %ld, \"loads_started\": %ld, \"loads_published\": %ld,\n"
+                          "                         \"loads_started_by_die\": %s}},\n",
+                  es.cache.rebalances, es.cache.swaps_planned, es.cache.loads_started, es.cache.loads_published, json_array(lv).c_str());
+        }
         else
           fprintf(record, "null},\n");
       } else

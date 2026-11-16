@@ -4531,3 +4531,46 @@ stored one's bytes:
 
 This is the first of the faults put in on purpose (docs/record.md): a slowdown of known origin,
 and the record shows both that the run was slower and why.
+
+## Step 122: the cache's loads per die in the record; step 86's rule switched off on purpose
+
+**A review of step 86 first** (the person's question: what exactly was happening there). The
+cache loaded experts into every die. Die 0 also runs the dense part and the draft, and a draft
+that overlapped a load into die 0 took 14-18 ms instead of 8 (36 of 36 slow drafts, none of the
+fast ones). Since step 86 the cache picks no victim on the home die, so nothing is loaded there.
+What the review found:
+
+- The cause is known by correlation and by removing it, not as a mechanism: why a load on a
+  low-priority stream doubles the die's small kernels was not looked into (two guesses, the
+  host and the unpack kernel, had been ruled out).
+- "The loads had also slowed die 0's own dense work" was an inference from +8.7% held-out
+  against +4-5% in the traces.
+- The price is a home die whose ~800 slots (13%) never adapt. In step 86's own held-out runs the
+  share of expert uses on GPUs fell on 7 of 9 prompts, by up to 0.6 points (cpp-matrix 86.0 ->
+  85.5%, geometry 86.8 -> 86.2%).
+- Nothing outside a `--trace` showed that the rule holds.
+
+**The field.** `experts.cache` gains `loads_started_by_die`: the loads started per die, in the
+order of `experts.dies` (the cache counts them in its statistics). The home die's place holds 0.
+
+**The rule switched off on purpose** (`results/record/loads-by-die.txt`; a second binary with
+one line changed so that no die is fixed, not kept; sclk 6; the fastest settings on cpp-matrix;
+every output the stored one's bytes; nothing read from storage):
+
+| | this build | this build | fault | fault |
+|---|---|---|---|---|
+| `loads_started_by_die` | `[0, 1197, 1219, 1270]` | `[0, 1200, 1213, 1273]` | `[486, 1045, 1024, 1095]` | `[492, 1046, 1038, 1093]` |
+| t/s | 54.48 | 54.64 | 49.85 | 50.47 |
+| `draft_ms` | 515.5 | 514.8 | 779.2 | 762.3 |
+| `verify_ms` | 4,928.6 | 4,914.0 | 5,119.3 | 5,063.1 |
+| uses on GPUs | 85.7% | 85.7% | 85.8% | 85.8% |
+
+- **The record shows the fault three ways:** 13% of the loads on the home die, -8.1% in speed,
+  and where the time went.
+- **Step 86's rule is worth 8% today** (it measured +8.7% then, at 37.6 t/s).
+- **Both halves of step 86's explanation are now measured.** The drafts: +50%, 7.8 -> 11.8 ms
+  each. And die 0's own work: the verify steps take 3.5% longer (~2.6 ms each) with no more
+  expert uses on the CPU, which is the part that was an inference. Of the ~480 ms the faulty
+  runs lose, ~255 are the drafts and ~170 the verify steps.
+- **The price of the rule is small here:** with every die adapting, 0.1 points more of the
+  uses ran on GPUs.

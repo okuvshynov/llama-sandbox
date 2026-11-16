@@ -1,0 +1,53 @@
+# The cache's loads per die in the record, and step 86's rule switched off on purpose (README step 122).
+# Commit 87db845+changes (this change), sclk 6, 2026-11-15.
+# The fastest single-machine settings (the command of results/record/fast.txt), cpp-matrix, 300 tokens, four runs
+# in this order. Every output: the same bytes as results/cache-test/plain-canon-static/cpp-matrix.out.
+# Of each record "read_bytes", "spec", "experts" and "counters"; in all four "ds": {} and "gpu_sclk": [6, 6, 6, 6].
+#
+# The fault (a second binary, not kept): in hip/rt.cpp, where the runtime names the cache's fixed die,
+#   -      if (dies[i].dev == opt.gpu) home_die = (int)i;
+#   +      if (false && dies[i].dev == opt.gpu) home_die = (int)i;  // FAULT: every die adapts
+# so the home die's experts can be evicted and loaded into again, as before step 86.
+
+== this change's build
+  "args": {"mode": "chat", "effort": 75, "n": 300, "threads": 16, "runtime": true, "canon": true, "spec": true,
+  "read_bytes": {"load": 0, "prompt": 0, "gen": 0},
+  "spec": {"steps": 66, "plain_steps": 0, "accepted": 233, "verified": [0, 3, 7, 12, 10, 34], "draft_ms": 515.5, "verify_ms": 4928.6},
+  "experts": {"gpu_uses": 72804, "cpu_uses": 12156, "dies": [0, 1, 2, 3], "placed": [801, 1765, 1765, 1765],
+               "cache": {"rebalances": 32, "swaps_planned": 3860, "loads_started": 3686, "loads_published": 3621,
+                         "loads_started_by_die": [0, 1197, 1219, 1270]}},
+  "counters": {"load_s": 116.589, "prompt_s": 0.6159, "prompt_tps": 40.593, "gen_tokens": 300, "gen_s": 5.5064, "gen_tps": 54.482}
+
+== with the fault
+  "args": {"mode": "chat", "effort": 75, "n": 300, "threads": 16, "runtime": true, "canon": true, "spec": true,
+  "read_bytes": {"load": 0, "prompt": 0, "gen": 0},
+  "spec": {"steps": 66, "plain_steps": 0, "accepted": 233, "verified": [0, 3, 6, 12, 11, 34], "draft_ms": 779.2, "verify_ms": 5119.3},
+  "experts": {"gpu_uses": 73325, "cpu_uses": 12115, "dies": [0, 1, 2, 3], "placed": [801, 1765, 1765, 1765],
+               "cache": {"rebalances": 31, "swaps_planned": 3727, "loads_started": 3650, "loads_published": 3650,
+                         "loads_started_by_die": [486, 1045, 1024, 1095]}},
+  "counters": {"load_s": 116.514, "prompt_s": 0.5987, "prompt_tps": 41.758, "gen_tokens": 300, "gen_s": 6.0182, "gen_tps": 49.849}
+
+== with the fault, again
+  "args": {"mode": "chat", "effort": 75, "n": 300, "threads": 16, "runtime": true, "canon": true, "spec": true,
+  "read_bytes": {"load": 0, "prompt": 0, "gen": 0},
+  "spec": {"steps": 65, "plain_steps": 0, "accepted": 234, "verified": [0, 3, 6, 10, 12, 34], "draft_ms": 762.3, "verify_ms": 5063.1},
+  "experts": {"gpu_uses": 72689, "cpu_uses": 12031, "dies": [0, 1, 2, 3], "placed": [801, 1765, 1765, 1765],
+               "cache": {"rebalances": 31, "swaps_planned": 3734, "loads_started": 3669, "loads_published": 3604,
+                         "loads_started_by_die": [492, 1046, 1038, 1093]}},
+  "counters": {"load_s": 116.760, "prompt_s": 0.6275, "prompt_tps": 39.840, "gen_tokens": 300, "gen_s": 5.9437, "gen_tps": 50.474}
+
+== this change's build, again
+  "args": {"mode": "chat", "effort": 75, "n": 300, "threads": 16, "runtime": true, "canon": true, "spec": true,
+  "read_bytes": {"load": 0, "prompt": 0, "gen": 0},
+  "spec": {"steps": 66, "plain_steps": 0, "accepted": 233, "verified": [0, 3, 7, 12, 10, 34], "draft_ms": 514.8, "verify_ms": 4914.0},
+  "experts": {"gpu_uses": 72795, "cpu_uses": 12165, "dies": [0, 1, 2, 3], "placed": [801, 1765, 1765, 1765],
+               "cache": {"rebalances": 32, "swaps_planned": 3856, "loads_started": 3686, "loads_published": 3621,
+                         "loads_started_by_die": [0, 1200, 1213, 1273]}},
+  "counters": {"load_s": 116.475, "prompt_s": 0.6211, "prompt_tps": 40.250, "gen_tokens": 300, "gen_s": 5.4910, "gen_tps": 54.635}
+
+# loads_started_by_die (dies 0, 1, 2, 3): [0, 1197, 1219, 1270] and [0, 1200, 1213, 1273] against
+# [486, 1045, 1024, 1095] and [492, 1046, 1038, 1093] with the fault: 13% of the loads on the home die.
+# t/s: 54.48, 54.64 against 49.85, 50.47 (-8.1% between the means).
+# draft_ms: 515.5, 514.8 against 779.2, 762.3 (+50%: 7.8 -> 11.8 ms per draft).
+# verify_ms: 4,928.6, 4,914.0 against 5,119.3, 5,063.1 (+3.5%: ~2.6 ms per verify step), with no more uses on the
+# CPU (12,156 and 12,165 against 12,115 and 12,031).

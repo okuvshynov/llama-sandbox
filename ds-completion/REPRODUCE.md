@@ -245,6 +245,7 @@ Unless stated: sclk 2, 16 CPU threads (32 before README step 18), the study30 pl
 | 119 | `record/experts.txt`, `record/example.json` (its header: `record/README.txt`) | the three commands named in `experts.txt`, each with `--record`; `example.json` is the third one's record |
 | 120 | `record/knobs.txt` | the command in the file's header, without and with the knobs it names |
 | 121 | `record/timing-options.txt` | the two commands in the file with `--record`, plain and with the switches and options it names |
+| 122 | `record/loads-by-die.txt` | the command of `record/fast.txt` with `--record`, with this build and with a build that has the one-line change in the file's header |
 
 ## 7. Open items (to confirm)
 
