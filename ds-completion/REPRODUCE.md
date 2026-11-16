@@ -267,6 +267,7 @@ Unless stated: sclk 2, 16 CPU threads (32 before README step 18), the study30 pl
 | 139 | `cleanup/layout.txt` | `touch apps/* tests/* bench/*`, `make`, `make HIP=1`; `scripts/run_matrix.py results/cleanup/heldout.matrix --reps 1 --out <a new directory>`, each record against `record/reference/heldout-output.tsv`; the `scripts/records.py` command of the file |
 | 140 | `rocprof/first-run.txt` | `sudo apt install rocprofiler-sdk6.3.4`, then the three commands in the file; its tables from the `*_stats.csv` files and `k_kernel_trace.csv` as `docs/rocprof.md` describes (the traces themselves, ~160 MB, are not kept) |
 | 141 | `rocprof/counters.txt` | `sudo apt install hsa-amd-aqlprofile6.3.4`; the probe and the four model runs as the file gives them; the table: per kernel the mean `Counter_Value` of `p_counter_collection.csv` over the launches from the first `gemv_partial_kernel<unsigned short, ...>` on |
+| 142 | `rocprof/calibration.txt` | the five commands in the file; per tensor the median `Counter_Value` of the `fp8_gemv_kernel` launches with its instance and grid size |
 
 ## 7. Open items (to confirm)
 

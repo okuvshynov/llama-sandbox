@@ -136,14 +136,24 @@ Example (`results/rocprof/counters.txt`; generation only, mean over a kernel's l
 | `canon_down_kernel` | 31.9% | 0.1% | 43.9% | 6,761 | 22.3% |
 | `quant_act_kernel` | 2.0% | 0.2% | 32.6% | 37 | 1.5% |
 
-How to read them: a percentage is of the time the die was active during that launch, so for
-a kernel of a few microseconds it is mostly the launch around it (`quant_act`: 2% and 1.5%).
-`FetchSize` is what the kernel read from video memory; against the size of its weights it
-says whether it reads them once. A low `L2CacheHit` with a large `FetchSize` is a kernel
-streaming weights (the fp8 kernels); `MemUnitStalled` near zero says the memory unit is busy
-but not held up. The exact definitions are the expressions in
-`/opt/rocm-6.3.4/share/rocprofiler-sdk/counter_defs.yaml`; we have not checked any of these
-values against a kernel whose behaviour we know, so read them as relative until one is.
+How to read them, after a check against kernels whose reads are known (`bench-fp8`, one byte
+per weight; `results/rocprof/calibration.txt`, README step 142):
+
+- **`FetchSize` is exact:** the bytes read from video memory in KB of 1,024. Eight fp8
+  tensors from 2.5 to 150 MB each read their weights once plus 0.1-0.4% (activations,
+  scales). Against the size of a kernel's weights it says whether it reads them once: the
+  model's `fp8_gemv_kernel<8,1,1>` at 41,024 KB is `attn_q_b` (40,960 KB), once.
+- **`TCC_MISS_sum` counts 64-byte lines** (misses x 64 bytes = `FetchSize` to 0.3%), and
+  `L2CacheHit` is hits / (hits + misses). A kernel streaming weights it reads once sits at
+  3-18%.
+- **`MemUnitBusy` and the other "share of time" counters are not comparable between kernels
+  of different length:** the same kernel on the same kind of data read 11.7% at 7 us and 91%
+  at 209 us. The share is of an interval with a fixed part around the kernel, so for a
+  kernel of a few microseconds it is mostly that part (`quant_act`: 2%). Compare them only
+  between runs of one kernel at one size.
+- The definitions are the expressions in
+  `/opt/rocm-6.3.4/share/rocprofiler-sdk/counter_defs.yaml`. The instruction counters
+  (`VALUInsts`, `VFetchInsts`) are not checked.
 
 ## Not tried yet
 

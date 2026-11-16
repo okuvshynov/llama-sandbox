@@ -5155,3 +5155,21 @@ read 18.8 MB (`<64>`) and 41.0 MB (`<8>`) per launch with the memory unit busy 4
 the time and stalled 1.5-2.3%, cache hits 13% and 3%; the two expert kernels read 13.8 and
 6.8 MB per launch, memory unit busy 32-36%, cache hits 41-44%. None of the values is checked
 against a kernel of known behaviour yet: relative for now. `docs/rocprof.md` has the how-to.
+
+## Step 142: the counters against kernels whose reads are known
+
+Step 141's values were unchecked. `bench-fp8` gives the check: fp8 weights are one byte each,
+so a call on a K x N tensor must read K x N bytes once. Eight tensors of one layer, 2.5 to 150
+MB, each under four counter sets (`results/rocprof/calibration.txt`; sclk 6).
+
+**`FetchSize` is exact:** every tensor reads its weights plus 0.10-0.38% (attn_q_b: 41,023.9
+KB against 40,960; engram_kv: 153,759.6 against 153,600). A cache miss is one 64-byte line:
+misses x 64 bytes equals `FetchSize` to 0.3%, and `L2CacheHit` is hits / (hits + misses).
+This settles step 141's doubt: the model's `fp8_gemv_kernel<8,1,1>` at 41,024 KB per launch
+is attn_q_b read once.
+
+**`MemUnitBusy` is not comparable between kernels of different length:** on the same kernel
+and the same kind of data it reads 11.7% at 7 us per call and 91% at 209 us, growing with the
+call's time. The share is of an interval that has a fixed part around the kernel. So step
+141's column of busy shares ranks kernels by length more than by behaviour; the bytes and the
+hit rate are the columns to use. The instruction counters are still unchecked.

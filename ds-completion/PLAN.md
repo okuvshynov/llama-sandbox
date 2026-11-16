@@ -561,6 +561,8 @@ Step 140: `rocprofv3` (rocprofiler-sdk 6.3.4) works on our binary: per-kernel de
 copies; -21% to -26% speed, same output. `docs/rocprof.md`. ~2,200 launches per generated token.
 Step 141: its hardware counters work (with `hsa-amd-aqlprofile6.3.4`): few per run, 4-7 t/s, same output;
 a first per-kernel table (memory unit busy, cache hits, kilobytes fetched). Values not yet checked against a known kernel.
+Step 142: checked on `bench-fp8`: `FetchSize` exact (weights + 0.1-0.4%), a miss = one 64-byte line; the
+"share of time" counters grow with a kernel's length and do not compare between kernels.
 constructor in parts.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits

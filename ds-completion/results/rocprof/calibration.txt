@@ -1,0 +1,23 @@
+# rocprofv3 counters against kernels whose reads are known (README step 142; docs/rocprof.md). Commit 99fcc4a, sclk 6, 2026-11-16.
+# bench-fp8 runs fp8_gemv on real fp8 weights, one byte per weight: a call must read K x N bytes of weights once.
+#   plain:  bin-hip/bench-fp8 $F8 --layer 3 --ms 1 --reps 50
+#   each set S of: FetchSize | L2CacheHit | MemUnitBusy MemUnitStalled | TCC_HIT_sum TCC_MISS_sum
+#           timeout 900 rocprofv3 --pmc S -d D -o p --output-format csv -- bin-hip/bench-fp8 $F8 --layer 3 --ms 1 --reps 50
+# Per tensor (matched by the kernel instance and its grid size; 61 launches each), the median over the launches of p_counter_collection.csv.
+# us: the plain run's time per call. weights = K*N/1024.
+#
+# tensor          kernel   K     N      us   weights KB  FetchSize KB  over    TCC_MISS  x64/1024 KB  TCC_HIT  L2CacheHit  MemUnitBusy  Stalled
+# attn_kv         <64>   5120    512    7.1      2,560      2,569.7   +0.38%    41,147      2,571.7     7,069     14.7%       11.7%      0.1%
+# attn_q_a        <64>   5120   1280   12.1      6,400      6,414.4   +0.22%   102,709      6,419.3     9,443      8.5%       37.5%      0.5%
+# ffn_gate_shexp  <64>   5120   2304   20.3     11,520     11,541.2   +0.18%   184,804     11,550.3    20,786     10.1%       46.9%      0.9%
+# ffn_down_shexp  <16>   2304   5120   19.5     11,520     11,536.9   +0.15%   184,908     11,556.8     6,139      3.2%       50.4%      0.6%
+# attn_output_a   <64>   4096   8192   48.0     32,768     32,838.6   +0.22%   525,925     32,870.3    82,313     13.5%       64.9%      3.1%
+# attn_q_b        <8>    1280  32768   65.0     40,960     41,023.9   +0.16%   658,442     41,152.6    19,840      3.0%       78.5%      2.3%
+# attn_output_b   <64>   8192   5120   60.9     40,960     41,011.8   +0.13%   656,509     41,031.8   149,524     18.3%       77.3%      2.5%
+# engram_kv       <64>   6144  25600  208.6    153,600    153,759.6   +0.10%  2,461,760   153,860.0   552,522     18.3%       91.0%      5.1%
+#
+# FetchSize is the bytes read, in KB of 1,024: the weights once, plus 0.1-0.4% (the activations and scales). A miss is one 64-byte line:
+# misses x 64 bytes = FetchSize to 0.3%. L2CacheHit = hits / (hits + misses) (attn_kv: 7,069 / 48,216 = 14.7%).
+# MemUnitBusy grows with the kernel's time (11.7% at 7 us, 91% at 209 us): the share is of an interval that holds a fixed part around
+# the kernel, so it is not comparable between kernels of different length.
+# The model's run of step 141: fp8_gemv_kernel<8,1,1> 41,024.4 KB per launch = attn_q_b read once.
