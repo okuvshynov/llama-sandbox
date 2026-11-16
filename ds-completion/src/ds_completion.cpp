@@ -307,6 +307,268 @@ static bool write_record(FILE* record, const Args& args, const RecordRun& r, [[m
   return fclose(record) == 0;
 }
 
+// What one turn's generation did (a run without -i is one turn).
+struct Turn {
+  int n_gen = 0;             // tokens printed
+  bool hit_eos = false;
+  std::vector<int32_t> gen;  // the generated ids (the plain loop also keeps the end-of-sequence id that ended it)
+  // shadow mode (--dspark without --spec): after every generated token, the draft's guesses for the
+  // tokens after it; compared with what the main model then generates (nothing is skipped or verified)
+  std::vector<std::vector<int32_t>> drafts;
+  std::vector<std::vector<float>> confs;
+  double draft_ms = 0;
+  // --spec: verify steps, drafts accepted, the time in verify steps, the steps by drafts verified,
+  // the steps without a draft
+  long spec_steps = 0, spec_accepted = 0;
+  double verify_ms = 0;
+  std::vector<long> spec_hist;
+  long spec_plain = 0;
+};
+
+#ifdef DS_RUNTIME
+// --spec: generation by speculative decoding. logits: the prompt's last; first: a session's first turn
+// (its logs are opened anew); pending: what was printed but not yet run through the model.
+static void generate_spec(Runtime* rt, const Args& args, const llama_vocab* vocab, int eos, const std::vector<float>& logits, bool first,
+                          std::vector<int32_t>& pending, Turn& turn) {
+  // speculative decoding (greedy): draft from the anchor (the last emitted token, not yet run),
+  // verify [anchor, drafts], keep the matching prefix plus the main model's own next token;
+  // prints exactly what plain greedy decoding prints
+  int32_t anchor = (int32_t)(std::max_element(logits.begin(), logits.end()) - logits.begin());
+  auto emit = [&](int32_t t) {  // false: stop
+    if (t == eos) turn.hit_eos = true;
+    if (t == eos || turn.n_gen >= args.n_predict) return false;
+    std::string p = piece(vocab, t);
+    fwrite(p.data(), 1, p.size(), stdout);
+    fflush(stdout);
+    turn.gen.push_back(t);
+    turn.n_gen++;
+    return turn.n_gen < args.n_predict;
+  };
+  const char* log_mode = first ? "w" : "a";  // a session's later turns add to the logs
+  FILE* spec_log = args.spec_log_path.empty() ? nullptr : fopen(args.spec_log_path.c_str(), log_mode);
+  // README step 92: per verify step the draft's token ids and the ids it emitted (a study of the
+  // draft's head over part of the vocabulary: results/decode-next/draft_vocab_sim.py)
+  FILE* tok_log = getenv("DS_DRAFT_TOKEN_LOG") ? fopen(getenv("DS_DRAFT_TOKEN_LOG"), log_mode) : nullptr;
+  if (tok_log) fprintf(tok_log, "# n_verified accepted verify_ms draft_ms | drafted ids (all of the block; none on a plain step) | emitted ids\n");
+  // README step 107: a second draft block in shadow (nothing uses it): from the first block's last
+  // token, at its true positions with the window 5 positions behind (gap), and as if it followed
+  // the window directly (shift). Per drafted step: the anchor's index in the generated tokens,
+  // the block, the two second blocks with their confidences; at the end every generated id.
+  FILE* d2_log = getenv("DS_DRAFT2_LOG") ? fopen(getenv("DS_DRAFT2_LOG"), log_mode) : nullptr;
+  if (d2_log) fprintf(d2_log, "# anchor index, drafts the rule verified | block 1: ids ; conf | gap: ids ; conf | shift: ids ; conf  (last line: G, every generated id)\n");
+  if (spec_log) fprintf(spec_log, "# n_verified accepted verify_ms draft_ms conf[0..block)\n");
+  // Draft length per step (unless --spec-n): the confidence head's sigmoid is the chance a draft
+  // is accepted given the earlier ones were (calibrated: results/spec-conf/spec_conf.py, README step 25);
+  // verify the n in 0..5 with the most expected tokens per ms, (1 + p0 + p0 p1 + ...) /
+  // (draft + verify(n)); n = 0 is a plain step. Verify cost: a line a + b n, fitted by weighted
+  // least squares to this run's steps (weights decay by 0.97 per step, ~30 steps) plus a weak
+  // fixed prior, 52 + 28 n ms (sclk 2, study30) at n = 0..5 with a total weight of 3 steps.
+  // A line, not one average per n: every step then updates the cost of every n, including
+  // those the rule has not tried lately (with a good expert cache the per-token cost is lower).
+  const int n_max = rt->draft_block();
+  struct Fit { double w = 0, n = 0, t = 0, nn = 0, nt = 0; } obs, prior;
+  for (int n = 0; n <= n_max; n++) {
+    const double w = 3.0 / (n_max + 1), t = 52.0 + 28.0 * n;
+    prior.w += w; prior.n += w * n; prior.t += w * t; prior.nn += w * n * n; prior.nt += w * n * t;
+  }
+  std::vector<double> verify_cost(n_max + 1);
+  auto refit = [&] {
+    const Fit f{obs.w + prior.w, obs.n + prior.n, obs.t + prior.t, obs.nn + prior.nn, obs.nt + prior.nt};
+    const double b = (f.w * f.nt - f.n * f.t) / (f.w * f.nn - f.n * f.n), a = (f.t - b * f.n) / f.w;
+    for (int n = 0; n <= n_max; n++) verify_cost[n] = a + b * n;
+  };
+  refit();
+  double draft_cost = 12.0;
+  std::vector<long> n_hist(verify_cost.size(), 0);
+  auto choose_n = [&](const std::vector<float>& conf) {
+    int best_n = 0;
+    double best = -1, run = 1, expect = 1;
+    for (int n = 0; n < (int)verify_cost.size(); n++) {
+      if (n > 0) {
+        run *= 1.0 / (1.0 + std::exp(-(double)conf[n - 1]));
+        expect += run;
+      }
+      const double rate = expect / (draft_cost + verify_cost[n]);
+      if (rate > best) { best = rate; best_n = n; }
+    }
+    return best_n;
+  };
+  // Backoff: after a step that chose n = 0, the next 1, 2, 4, .. (at most 8) steps are plain,
+  // without drafting at all (the 12 ms draft would likely be wasted again); any step that
+  // verifies a draft resets it. The draft's window is fed by every committed position either
+  // way.
+  int backoff = 0, skip = 0;
+  long plain_steps = 0;
+  if (emit(anchor)) {
+    Clock::time_point t_emit, td_start;
+    bool have_t_emit = false;
+    for (;;) {
+      DraftResult d;
+      double dms = 0;
+      int n_verify = 0;
+      td_start = Clock::now();
+      if (skip > 0) {
+        skip--;
+        plain_steps++;
+        d.ids = {anchor};
+      } else {
+        auto td = Clock::now();
+        d = rt->draft(anchor);
+        dms = std::chrono::duration<double, std::milli>(Clock::now() - td).count();
+        turn.draft_ms += dms;
+        draft_cost += 0.1 * (dms - draft_cost);
+        n_verify = args.spec_n > 0 ? args.spec_n : choose_n(d.conf);
+        if (d2_log) {
+          fprintf(d2_log, "%d %d |", turn.n_gen - 1, n_verify);
+          for (size_t i = 1; i < d.ids.size(); i++) fprintf(d2_log, " %d", d.ids[i]);
+          fprintf(d2_log, " ;");
+          for (float c : d.conf) fprintf(d2_log, " %.3f", c);
+          for (int gap : {(int)d.ids.size() - 1, 0}) {
+            const DraftResult d2 = rt->draft_shadow(d.ids.back(), gap);
+            fprintf(d2_log, " |");
+            for (size_t i = 1; i < d2.ids.size(); i++) fprintf(d2_log, " %d", d2.ids[i]);
+            fprintf(d2_log, " ;");
+            for (float c : d2.conf) fprintf(d2_log, " %.3f", c);
+          }
+          fprintf(d2_log, "\n");
+        }
+        if (args.spec_n == 0) {
+          backoff = n_verify == 0 ? std::min(backoff == 0 ? 1 : 2 * backoff, 8) : 0;
+          skip = backoff;
+        }
+      }
+      std::vector<int32_t> chunk(d.ids.begin(), d.ids.end());  // [anchor, drafts]
+      if ((int)chunk.size() > n_verify + 1) chunk.resize(n_verify + 1);  // verify only the first n drafts
+      const int room = args.opt.max_ctx - rt->n_past();
+      if ((int)chunk.size() > room) chunk.resize(std::max(room, 1));
+      auto tv = Clock::now();
+      if (have_t_emit) rt->trace_host("after commit: emit the tokens", t_emit, td_start, 3);  // README step 86
+      const std::vector<int32_t> next = rt->verify(chunk);
+      const auto tv1 = Clock::now();
+      const double vms = std::chrono::duration<double, std::milli>(tv1 - tv).count();
+      turn.verify_ms += vms;
+      int k = 0;
+      while (k + 1 < (int)chunk.size() && chunk[k + 1] == next[k]) k++;
+      {
+        const double nv = chunk.size() - 1;
+        obs = {0.97 * obs.w + 1, 0.97 * obs.n + nv, 0.97 * obs.t + vms, 0.97 * obs.nn + nv * nv, 0.97 * obs.nt + nv * vms};
+        refit();
+      }
+      n_hist[chunk.size() - 1]++;
+      if (args.profile) {
+        fprintf(stderr, "\n# verify %d tokens: %.1f ms (cpu experts %.1f; experts gpu %d cpu %d); GPU timeline:", (int)chunk.size(),
+                rt->last.total_ms, rt->last.cpu_moe_ms, rt->last.gpu_experts, rt->last.cpu_experts);
+        for (auto& [g, ms] : rt->last_groups) fprintf(stderr, " %s %.1f", g.c_str(), ms);
+      }
+      if (spec_log && !d.conf.empty()) {
+        fprintf(spec_log, "%d %d %.2f %.2f", (int)chunk.size() - 1, k, vms, dms);
+        for (float c : d.conf) fprintf(spec_log, " %.4f", c);
+        fprintf(spec_log, "\n");
+      }
+      if (tok_log) {
+        fprintf(tok_log, "%d %d %.2f %.2f |", (int)chunk.size() - 1, k, vms, dms);
+        for (size_t i = 1; i < d.ids.size(); i++) fprintf(tok_log, " %d", d.ids[i]);
+        fprintf(tok_log, " |");
+        for (int i = 0; i <= k; i++) fprintf(tok_log, " %d", next[i]);
+        fprintf(tok_log, "\n");
+      }
+      rt->trace_host("after verify: draft rule, logs", tv1, Clock::now(), 3);
+      // the context keeps exactly what is printed: accepted drafts only up to an end of sequence
+      // among them and up to -n's limit (the output is the same; an -i session continues from it)
+      int keep = std::min(k, args.n_predict - turn.n_gen - 1);
+      for (int i = 0; i < keep; i++)
+        if (next[i] == eos) keep = i;
+      rt->commit(keep + 1);
+      t_emit = Clock::now();
+      have_t_emit = true;
+      turn.spec_steps++;
+      turn.spec_accepted += k;
+      bool go = true;
+      for (int i = 0; i <= keep && go; i++) go = emit(next[i]);
+      if (!go) break;
+      anchor = next[keep];
+    }
+  }
+  if (!turn.hit_eos && !turn.gen.empty()) pending = {turn.gen.back()};  // stopped by -n: printed, not yet run
+  if (spec_log) fclose(spec_log);
+  if (tok_log) fclose(tok_log);
+  if (d2_log) {
+    fprintf(d2_log, "G");
+    for (int32_t t : turn.gen) fprintf(d2_log, " %d", t);
+    fprintf(d2_log, "\n");
+    fclose(d2_log);
+  }
+  turn.spec_hist = n_hist;
+  turn.spec_plain = plain_steps;
+  fprintf(stderr, "\n# drafts verified per step:");
+  for (size_t n = 0; n < n_hist.size(); n++) fprintf(stderr, " %zu: %ld", n, n_hist[n]);
+  fprintf(stderr, " (of the 0s, %ld plain steps without a draft); verify cost fit %.1f + %.1f n ms", plain_steps,
+          verify_cost[0], verify_cost[1] - verify_cost[0]);
+}
+#endif
+
+// Plain greedy generation, a token per step: on the runtime (with a draft loaded, in shadow mode),
+// or on the CPU engine.
+static void generate_plain([[maybe_unused]] Runtime* rt, Engine* eng, const Args& args, const llama_vocab* vocab, int eos, std::vector<float>& logits,
+                           std::vector<int32_t>& pending, Turn& turn) {
+  for (; turn.n_gen < args.n_predict; turn.n_gen++) {
+    const int32_t next = (int32_t)(std::max_element(logits.begin(), logits.end()) - logits.begin());
+    turn.gen.push_back(next);
+    if (next == eos) break;
+    std::string p = piece(vocab, next);
+    fwrite(p.data(), 1, p.size(), stdout);
+    fflush(stdout);
+    if (turn.n_gen + 1 == args.n_predict) { turn.n_gen++; pending = {next}; break; }
+#ifdef DS_RUNTIME
+    if (rt && rt->has_draft()) {
+      auto td = Clock::now();
+      DraftResult d = rt->draft(next);
+      turn.draft_ms += std::chrono::duration<double, std::milli>(Clock::now() - td).count();
+      turn.drafts.emplace_back(d.ids.begin() + 1, d.ids.end());
+      turn.confs.push_back(d.conf);
+    }
+    if (rt) {
+      logits = rt->decode(next);
+      if (args.profile) {
+        fprintf(stderr, "\n# step %d: %.1f ms (cpu experts %.1f, waiting for the GPU %.1f; experts gpu %d cpu %d); GPU timeline:",
+                turn.n_gen, rt->last.total_ms, rt->last.cpu_moe_ms, rt->last.wait_ms, rt->last.gpu_experts, rt->last.cpu_experts);
+        for (auto& [g, ms] : rt->last_groups) fprintf(stderr, " %s %.1f", g.c_str(), ms);
+      }
+      continue;
+    }
+#endif
+    logits = eng->forward({next});
+  }
+}
+
+// Shadow mode's result: how many of each draft's tokens the main model then generated.
+static void report_shadow(const Turn& turn) {
+  if (turn.drafts.empty()) return;
+  // draft g (anchor = gen[g]) guesses gen[g + 1 ..]; its accepted length = the matching prefix
+  const int B = (int)turn.drafts[0].size();
+  std::vector<int> hist(B + 1, 0);
+  long n = 0, acc_sum = 0;
+  std::vector<long> pos_ok(B, 0), pos_n(B, 0);
+  for (size_t g = 0; g < turn.drafts.size(); g++) {
+    if (g + B >= turn.gen.size()) break;  // only drafts whose whole block can be checked
+    int a = 0;
+    while (a < B && turn.drafts[g][a] == turn.gen[g + 1 + a]) a++;
+    hist[a]++;
+    acc_sum += a;
+    n++;
+    for (int k = 0; k < B; k++) { pos_n[k]++; pos_ok[k] += turn.drafts[g][k] == turn.gen[g + 1 + k]; }
+  }
+  if (n > 0) {
+    fprintf(stderr, "# dspark shadow: %ld drafts of %d; accepted prefix mean %.2f -> %.2f tokens per main step; %.1f ms per draft\n",
+            n, B, (double)acc_sum / n, 1.0 + (double)acc_sum / n, turn.draft_ms / turn.drafts.size());
+    fprintf(stderr, "#   accepted 0..%d:", B);
+    for (int a = 0; a <= B; a++) fprintf(stderr, " %d", hist[a]);
+    fprintf(stderr, "\n#   per position correct:");
+    for (int k = 0; k < B; k++) fprintf(stderr, " %.0f%%", 100.0 * pos_ok[k] / pos_n[k]);
+    fprintf(stderr, "\n");
+  }
+}
+
 static int run(int argc, char** argv) {
   AfterMain after_main;
   {
@@ -525,269 +787,32 @@ static int run(int argc, char** argv) {
 #endif
     const double t_pp = std::chrono::duration<double>(Clock::now() - t1).count();
     if (record) rd[2] = io_read_bytes();
-    int n_gen = 0;
-    [[maybe_unused]] bool hit_eos = false;
     auto t2 = Clock::now();
-    std::string out;
-    // shadow mode (--dspark): after every generated token, the draft's guesses for the tokens after
-    // it; compared with what the main model then generates (nothing is skipped or verified)
-    std::vector<int32_t> gen;
-    std::vector<std::vector<int32_t>> drafts;
-    std::vector<std::vector<float>> confs;
-    [[maybe_unused]] double draft_ms = 0;
-    [[maybe_unused]] long spec_steps = 0, spec_accepted = 0;
-    // for --record: the time in verify steps, the steps by drafts verified, the steps without a draft
-    [[maybe_unused]] double verify_ms = 0;
-    std::vector<long> spec_hist;
-    long spec_plain = 0;
+    Turn turn;
 #ifdef DS_RUNTIME
-    if (args.spec) {
-      // speculative decoding (greedy): draft from the anchor (the last emitted token, not yet run),
-      // verify [anchor, drafts], keep the matching prefix plus the main model's own next token;
-      // prints exactly what plain greedy decoding prints
-      int32_t anchor = (int32_t)(std::max_element(logits.begin(), logits.end()) - logits.begin());
-      auto emit = [&](int32_t t) {  // false: stop
-        if (t == eos) hit_eos = true;
-        if (t == eos || n_gen >= args.n_predict) return false;
-        std::string p = piece(vocab, t);
-        fwrite(p.data(), 1, p.size(), stdout);
-        fflush(stdout);
-        gen.push_back(t);
-        n_gen++;
-        return n_gen < args.n_predict;
-      };
-      const char* log_mode = first ? "w" : "a";  // a session's later turns add to the logs
-      FILE* spec_log = args.spec_log_path.empty() ? nullptr : fopen(args.spec_log_path.c_str(), log_mode);
-      // README step 92: per verify step the draft's token ids and the ids it emitted (a study of the
-      // draft's head over part of the vocabulary: results/decode-next/draft_vocab_sim.py)
-      FILE* tok_log = getenv("DS_DRAFT_TOKEN_LOG") ? fopen(getenv("DS_DRAFT_TOKEN_LOG"), log_mode) : nullptr;
-      if (tok_log) fprintf(tok_log, "# n_verified accepted verify_ms draft_ms | drafted ids (all of the block; none on a plain step) | emitted ids\n");
-      // README step 107: a second draft block in shadow (nothing uses it): from the first block's last
-      // token, at its true positions with the window 5 positions behind (gap), and as if it followed
-      // the window directly (shift). Per drafted step: the anchor's index in the generated tokens,
-      // the block, the two second blocks with their confidences; at the end every generated id.
-      FILE* d2_log = getenv("DS_DRAFT2_LOG") ? fopen(getenv("DS_DRAFT2_LOG"), log_mode) : nullptr;
-      if (d2_log) fprintf(d2_log, "# anchor index, drafts the rule verified | block 1: ids ; conf | gap: ids ; conf | shift: ids ; conf  (last line: G, every generated id)\n");
-      if (spec_log) fprintf(spec_log, "# n_verified accepted verify_ms draft_ms conf[0..block)\n");
-      // Draft length per step (unless --spec-n): the confidence head's sigmoid is the chance a draft
-      // is accepted given the earlier ones were (calibrated: results/spec-conf/spec_conf.py, README step 25);
-      // verify the n in 0..5 with the most expected tokens per ms, (1 + p0 + p0 p1 + ...) /
-      // (draft + verify(n)); n = 0 is a plain step. Verify cost: a line a + b n, fitted by weighted
-      // least squares to this run's steps (weights decay by 0.97 per step, ~30 steps) plus a weak
-      // fixed prior, 52 + 28 n ms (sclk 2, study30) at n = 0..5 with a total weight of 3 steps.
-      // A line, not one average per n: every step then updates the cost of every n, including
-      // those the rule has not tried lately (with a good expert cache the per-token cost is lower).
-      const int n_max = rt->draft_block();
-      struct Fit { double w = 0, n = 0, t = 0, nn = 0, nt = 0; } obs, prior;
-      for (int n = 0; n <= n_max; n++) {
-        const double w = 3.0 / (n_max + 1), t = 52.0 + 28.0 * n;
-        prior.w += w; prior.n += w * n; prior.t += w * t; prior.nn += w * n * n; prior.nt += w * n * t;
-      }
-      std::vector<double> verify_cost(n_max + 1);
-      auto refit = [&] {
-        const Fit f{obs.w + prior.w, obs.n + prior.n, obs.t + prior.t, obs.nn + prior.nn, obs.nt + prior.nt};
-        const double b = (f.w * f.nt - f.n * f.t) / (f.w * f.nn - f.n * f.n), a = (f.t - b * f.n) / f.w;
-        for (int n = 0; n <= n_max; n++) verify_cost[n] = a + b * n;
-      };
-      refit();
-      double draft_cost = 12.0;
-      std::vector<long> n_hist(verify_cost.size(), 0);
-      auto choose_n = [&](const std::vector<float>& conf) {
-        int best_n = 0;
-        double best = -1, run = 1, expect = 1;
-        for (int n = 0; n < (int)verify_cost.size(); n++) {
-          if (n > 0) {
-            run *= 1.0 / (1.0 + std::exp(-(double)conf[n - 1]));
-            expect += run;
-          }
-          const double rate = expect / (draft_cost + verify_cost[n]);
-          if (rate > best) { best = rate; best_n = n; }
-        }
-        return best_n;
-      };
-      // Backoff: after a step that chose n = 0, the next 1, 2, 4, .. (at most 8) steps are plain,
-      // without drafting at all (the 12 ms draft would likely be wasted again); any step that
-      // verifies a draft resets it. The draft's window is fed by every committed position either
-      // way.
-      int backoff = 0, skip = 0;
-      long plain_steps = 0;
-      if (emit(anchor)) {
-        Clock::time_point t_emit, td_start;
-        bool have_t_emit = false;
-        for (;;) {
-          DraftResult d;
-          double dms = 0;
-          int n_verify = 0;
-          td_start = Clock::now();
-          if (skip > 0) {
-            skip--;
-            plain_steps++;
-            d.ids = {anchor};
-          } else {
-            auto td = Clock::now();
-            d = rt->draft(anchor);
-            dms = std::chrono::duration<double, std::milli>(Clock::now() - td).count();
-            draft_ms += dms;
-            draft_cost += 0.1 * (dms - draft_cost);
-            n_verify = args.spec_n > 0 ? args.spec_n : choose_n(d.conf);
-            if (d2_log) {
-              fprintf(d2_log, "%d %d |", n_gen - 1, n_verify);
-              for (size_t i = 1; i < d.ids.size(); i++) fprintf(d2_log, " %d", d.ids[i]);
-              fprintf(d2_log, " ;");
-              for (float c : d.conf) fprintf(d2_log, " %.3f", c);
-              for (int gap : {(int)d.ids.size() - 1, 0}) {
-                const DraftResult d2 = rt->draft_shadow(d.ids.back(), gap);
-                fprintf(d2_log, " |");
-                for (size_t i = 1; i < d2.ids.size(); i++) fprintf(d2_log, " %d", d2.ids[i]);
-                fprintf(d2_log, " ;");
-                for (float c : d2.conf) fprintf(d2_log, " %.3f", c);
-              }
-              fprintf(d2_log, "\n");
-            }
-            if (args.spec_n == 0) {
-              backoff = n_verify == 0 ? std::min(backoff == 0 ? 1 : 2 * backoff, 8) : 0;
-              skip = backoff;
-            }
-          }
-          std::vector<int32_t> chunk(d.ids.begin(), d.ids.end());  // [anchor, drafts]
-          if ((int)chunk.size() > n_verify + 1) chunk.resize(n_verify + 1);  // verify only the first n drafts
-          const int room = args.opt.max_ctx - rt->n_past();
-          if ((int)chunk.size() > room) chunk.resize(std::max(room, 1));
-          auto tv = Clock::now();
-          if (have_t_emit) rt->trace_host("after commit: emit the tokens", t_emit, td_start, 3);  // README step 86
-          const std::vector<int32_t> next = rt->verify(chunk);
-          const auto tv1 = Clock::now();
-          const double vms = std::chrono::duration<double, std::milli>(tv1 - tv).count();
-          verify_ms += vms;
-          int k = 0;
-          while (k + 1 < (int)chunk.size() && chunk[k + 1] == next[k]) k++;
-          {
-            const double nv = chunk.size() - 1;
-            obs = {0.97 * obs.w + 1, 0.97 * obs.n + nv, 0.97 * obs.t + vms, 0.97 * obs.nn + nv * nv, 0.97 * obs.nt + nv * vms};
-            refit();
-          }
-          n_hist[chunk.size() - 1]++;
-          if (args.profile) {
-            fprintf(stderr, "\n# verify %d tokens: %.1f ms (cpu experts %.1f; experts gpu %d cpu %d); GPU timeline:", (int)chunk.size(),
-                    rt->last.total_ms, rt->last.cpu_moe_ms, rt->last.gpu_experts, rt->last.cpu_experts);
-            for (auto& [g, ms] : rt->last_groups) fprintf(stderr, " %s %.1f", g.c_str(), ms);
-          }
-          if (spec_log && !d.conf.empty()) {
-            fprintf(spec_log, "%d %d %.2f %.2f", (int)chunk.size() - 1, k, vms, dms);
-            for (float c : d.conf) fprintf(spec_log, " %.4f", c);
-            fprintf(spec_log, "\n");
-          }
-          if (tok_log) {
-            fprintf(tok_log, "%d %d %.2f %.2f |", (int)chunk.size() - 1, k, vms, dms);
-            for (size_t i = 1; i < d.ids.size(); i++) fprintf(tok_log, " %d", d.ids[i]);
-            fprintf(tok_log, " |");
-            for (int i = 0; i <= k; i++) fprintf(tok_log, " %d", next[i]);
-            fprintf(tok_log, "\n");
-          }
-          rt->trace_host("after verify: draft rule, logs", tv1, Clock::now(), 3);
-          // the context keeps exactly what is printed: accepted drafts only up to an end of sequence
-          // among them and up to -n's limit (the output is the same; an -i session continues from it)
-          int keep = std::min(k, args.n_predict - n_gen - 1);
-          for (int i = 0; i < keep; i++)
-            if (next[i] == eos) keep = i;
-          rt->commit(keep + 1);
-          t_emit = Clock::now();
-          have_t_emit = true;
-          spec_steps++;
-          spec_accepted += k;
-          bool go = true;
-          for (int i = 0; i <= keep && go; i++) go = emit(next[i]);
-          if (!go) break;
-          anchor = next[keep];
-        }
-      }
-      if (!hit_eos && !gen.empty()) pending = {gen.back()};  // stopped by -n: printed, not yet run
-      if (spec_log) fclose(spec_log);
-      if (tok_log) fclose(tok_log);
-      if (d2_log) {
-        fprintf(d2_log, "G");
-        for (int32_t t : gen) fprintf(d2_log, " %d", t);
-        fprintf(d2_log, "\n");
-        fclose(d2_log);
-      }
-      spec_hist = n_hist;
-      spec_plain = plain_steps;
-      fprintf(stderr, "\n# drafts verified per step:");
-      for (size_t n = 0; n < n_hist.size(); n++) fprintf(stderr, " %zu: %ld", n, n_hist[n]);
-      fprintf(stderr, " (of the 0s, %ld plain steps without a draft); verify cost fit %.1f + %.1f n ms", plain_steps,
-              verify_cost[0], verify_cost[1] - verify_cost[0]);
-    }
+    if (args.spec) generate_spec(rt.get(), args, vocab, eos, logits, first, pending, turn);
+    else generate_plain(rt.get(), eng.get(), args, vocab, eos, logits, pending, turn);
+#else
+    generate_plain(nullptr, eng.get(), args, vocab, eos, logits, pending, turn);
 #endif
-    for (; !args.spec && n_gen < args.n_predict; n_gen++) {
-      const int32_t next = (int32_t)(std::max_element(logits.begin(), logits.end()) - logits.begin());
-      gen.push_back(next);
-      if (next == eos) break;
-      std::string p = piece(vocab, next);
-      fwrite(p.data(), 1, p.size(), stdout);
-      fflush(stdout);
-      if (n_gen + 1 == args.n_predict) { n_gen++; pending = {next}; break; }
-#ifdef DS_RUNTIME
-      if (rt && rt->has_draft()) {
-        auto td = Clock::now();
-        DraftResult d = rt->draft(next);
-        draft_ms += std::chrono::duration<double, std::milli>(Clock::now() - td).count();
-        drafts.emplace_back(d.ids.begin() + 1, d.ids.end());
-        confs.push_back(d.conf);
-      }
-      if (rt) {
-        logits = rt->decode(next);
-        if (args.profile) {
-          fprintf(stderr, "\n# step %d: %.1f ms (cpu experts %.1f, waiting for the GPU %.1f; experts gpu %d cpu %d); GPU timeline:",
-                  n_gen, rt->last.total_ms, rt->last.cpu_moe_ms, rt->last.wait_ms, rt->last.gpu_experts, rt->last.cpu_experts);
-          for (auto& [g, ms] : rt->last_groups) fprintf(stderr, " %s %.1f", g.c_str(), ms);
-        }
-        continue;
-      }
-#endif
-      logits = eng->forward({next});
-    }
     const double t_tg = std::chrono::duration<double>(Clock::now() - t2).count();
     if (record) rd[3] = io_read_bytes();
-    if (spec_steps)
+    if (turn.spec_steps)
       fprintf(stderr, "\n# speculative: %ld verify steps, %.2f drafts accepted per step, %.2f tokens per step; draft %.1f ms per step\n",
-              spec_steps, (double)spec_accepted / spec_steps, (double)n_gen / spec_steps, draft_ms / spec_steps);
+              turn.spec_steps, (double)turn.spec_accepted / turn.spec_steps, (double)turn.n_gen / turn.spec_steps, turn.draft_ms / turn.spec_steps);
     printf("\n");
     fflush(stdout);
+    report_shadow(turn);
 #ifdef DS_RUNTIME
-    if (!drafts.empty()) {
-      // draft g (anchor = gen[g]) guesses gen[g + 1 ..]; its accepted length = the matching prefix
-      const int B = (int)drafts[0].size();
-      std::vector<int> hist(B + 1, 0);
-      long n = 0, acc_sum = 0;
-      std::vector<long> pos_ok(B, 0), pos_n(B, 0);
-      for (size_t g = 0; g < drafts.size(); g++) {
-        if (g + B >= gen.size()) break;  // only drafts whose whole block can be checked
-        int a = 0;
-        while (a < B && drafts[g][a] == gen[g + 1 + a]) a++;
-        hist[a]++;
-        acc_sum += a;
-        n++;
-        for (int k = 0; k < B; k++) { pos_n[k]++; pos_ok[k] += drafts[g][k] == gen[g + 1 + k]; }
-      }
-      if (n > 0) {
-        fprintf(stderr, "# dspark shadow: %ld drafts of %d; accepted prefix mean %.2f -> %.2f tokens per main step; %.1f ms per draft\n",
-                n, B, (double)acc_sum / n, 1.0 + (double)acc_sum / n, draft_ms / drafts.size());
-        fprintf(stderr, "#   accepted 0..%d:", B);
-        for (int a = 0; a <= B; a++) fprintf(stderr, " %d", hist[a]);
-        fprintf(stderr, "\n#   per position correct:");
-        for (int k = 0; k < B; k++) fprintf(stderr, " %.0f%%", 100.0 * pos_ok[k] / pos_n[k]);
-        fprintf(stderr, "\n");
-      }
-    }
     if (rt && rt->total_gpu_experts + rt->total_cpu_experts > 0)
       fprintf(stderr, "# routed experts: %.1f%% on GPUs (%ld of %ld)\n",
               100.0 * rt->total_gpu_experts / (rt->total_gpu_experts + rt->total_cpu_experts), rt->total_gpu_experts,
               rt->total_gpu_experts + rt->total_cpu_experts);
 #endif
     fprintf(stderr, "# prompt: %zu tokens in %.2f s = %.2f t/s; generation: %d tokens in %.2f s = %.2f t/s\n",
-            toks.size(), t_pp, toks.size() / t_pp, n_gen, t_tg, n_gen > 0 ? n_gen / t_tg : 0.0);
+            toks.size(), t_pp, toks.size() / t_pp, turn.n_gen, t_tg, turn.n_gen > 0 ? turn.n_gen / t_tg : 0.0);
     if (record) {
-      const RecordRun r{toks, sclk, rd, t_load, t_pp, t_tg, n_gen, gen, spec_steps, spec_plain, spec_accepted, spec_hist, draft_ms, verify_ms};
+      const RecordRun r{toks, sclk, rd, t_load, t_pp, t_tg, turn.n_gen, turn.gen, turn.spec_steps, turn.spec_plain, turn.spec_accepted, turn.spec_hist, turn.draft_ms, turn.verify_ms};
 #ifdef DS_RUNTIME
       const Runtime* rtp = rt.get();
 #else
@@ -798,8 +823,8 @@ static int run(int argc, char** argv) {
     }
     if (!args.interactive) break;
     {  // --think: what the next turn keeps of this reply
-      auto it = std::find(gen.begin(), gen.end(), think_end);
-      answer.assign(it == gen.end() ? it : it + 1, gen.end());
+      auto it = std::find(turn.gen.begin(), turn.gen.end(), think_end);
+      answer.assign(it == turn.gen.end() ? it : it + 1, turn.gen.end());
       if (!answer.empty() && answer.back() == eos) answer.pop_back();
     }
   }

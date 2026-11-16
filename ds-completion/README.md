@@ -4924,3 +4924,29 @@ drafting, speculative with `--profile`, the fastest settings, a two-turn `--thin
 of lines on stderr; speeds agree within 1% (54.56 and 54.52 t/s on the fastest settings). The
 record's expert counters differ in the fastest run as they do between any two runs: the cache
 follows time.
+
+## Step 132: `run()` split, part 2: the two generation loops
+
+The second half of step 131's first item. Out of `run()`, again moved and not changed:
+
+- `struct Turn`: what one turn's generation did: the tokens printed, the generated ids, the
+  shadow drafts, the speculative totals;
+- `generate_spec()`: the speculative loop with its draft-length rule and its logs;
+- `generate_plain()`: a token per step, on the runtime (in shadow mode with a draft loaded) or
+  on the CPU engine;
+- `report_shadow()`: shadow mode's statistics.
+
+`run()` is 268 lines (664 before step 131). Its generation part now reads: start the clock,
+one of the two loops, stop the clock, the summaries, the record. One unused local went
+(`std::string out`).
+
+**Checked** old build against new (`results/cleanup/run-split-2.txt`; sclk 6), eleven kinds of
+run: the seven of step 131, two that end by themselves (CPU and speculative), a plain run with
+`--profile`, a plain two-turn session. Every stdout is the same bytes; every record the same
+but for its times and the cache's counters; the same kinds of stderr lines; the speculative
+loop's three logs the same but for their time columns; shadow mode's report the same numbers.
+The fastest settings twice: 54.57 and 54.60 t/s before, 54.62 and 54.48 after.
+
+`src/ds_completion.cpp`, top to bottom, is now: the tokenizer helpers, the crash handler,
+`Args` and `parse_args`, `write_record`, `Turn` and the two loops, `run` (load, the session's
+turns, the summaries), `main`.

@@ -538,6 +538,8 @@ measurements: a matrix file beside its results, read with `scripts/records.py`.
 Step 131: cleanup, part 1: `run()` split: `Args` + `parse_args()`, `write_record()`; behaviour unchanged
 (old against new on 8 usage errors and 7 kinds of run). Next: the two generation loops as functions; then
 the unadopted studies removed one per commit; `hip/rt.cpp` last. The kernels are not touched.
+Step 132: part 2: `Turn`, `generate_spec()`, `generate_plain()`, `report_shadow()`; `run()` 268 lines (was
+664); eleven kinds of run the same old against new. Next: the unadopted studies, one per commit.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front

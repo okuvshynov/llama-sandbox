@@ -257,6 +257,7 @@ Unless stated: sclk 2, 16 CPU threads (32 before README step 18), the study30 pl
 | 129 | `record/runner/` (`leave-out.matrix`, `leave-out/` with its `matrix.txt` and 8 records, `runner.txt`) | `scripts/run_matrix.py results/record/runner/leave-out.matrix --prompts tcp-udp,geometry --out <a new directory>` (needs step 124's `draft-pool/keep/loo-seen/*.keep`), then the `scripts/records.py` command in `runner.txt` |
 | 130 | (no results file: scripts moved) | `git show --stat` of the step's commit lists every move; the checks: `bash -n` on each `.sh`, `python3 -m py_compile` on each `.py`, `python3 results/draft-pool/draft_keep_table.py \| diff - <(tail -n +4 results/draft-pool/keep/table.txt)` and the same for `draft_leave_out_table.py` (`tail -n +2`, `leave-out/table.txt`) |
 | 131 | `cleanup/run-split-1.txt` | the commands in the file with a build of e4a04ca and with this one; the records compared without their times |
+| 132 | `cleanup/run-split-2.txt` | the commands in the file with a build of 60433e8 and with this one |
 
 ## 7. Open items (to confirm)
 
