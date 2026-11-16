@@ -4825,3 +4825,48 @@ records that have no `output`.
 Two repeats give a low estimate of the spread (tcp-udp's `out` runs are 0.1% apart, and +1.1%
 is printed): the tool says so, and a difference just outside is not yet a result. Not built
 yet: the runner, and a spread taken over all the groups instead of each pair.
+
+## Step 129: a runner of records (`scripts/run_matrix.py`)
+
+The second tool of step 127. It starts `ds-completion` over prompts x configurations x repeats,
+each run writing a record with its label, and does nothing else: no number is read from
+stderr, and `scripts/records.py` (step 128) does the reading. A sweep is a text file:
+
+    set M  ~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf
+    set F8 ~/llms/ds-1017-fp8/dense-fp8.gguf
+    set D  ~/llms/dspark/dspark-DeepSeek-V4.1-Flash-1017-BF16.gguf
+    prompts results/spec-heldout/prompts.txt
+    out results/record/runner/leave-out
+    reps 2
+    base --rt $F8 --placement placements/study30.txt --dspark $D --spec --canon
+    base --cache-loads 800 --cache-period 8 --cache-wait
+    config all
+    config out DS_DRAFT_KEEP=results/draft-pool/keep/loo-seen/{prompt}.keep
+
+(`results/record/runner/leave-out.matrix`: step 125's comparison, which took a 63-line script
+and a 32-line table maker.) A configuration is a name, environment variables, arguments;
+`{prompt}` is the prompt's name. The runs go repeat by repeat, prompt by prompt, the
+configurations in turn, so a drift of the machine falls on all alike. A run's record is
+`CONFIG-PROMPT-REP.json` with the same three names as its label; its stdout is dropped (the
+record has the output's hash), its stderr kept only if it failed or left no record. The
+directory gets `matrix.txt`: the `#` header and a copy of the matrix. `--dry-run` prints the
+commands; a directory that has records is refused, or `--resume` makes only the missing runs.
+
+**Tried** (`results/record/runner/`; sclk 6): two of step 125's prompts, 8 runs, then
+
+    scripts/records.py results/record/runner/leave-out/*.json --by prompt,config \
+        --show counters.gen_tps,spec.steps,experts.placed.0 --vs config=all --same output.hash --within prompt
+
+| prompt | all | out | reader | step 125 |
+|---|---|---|---|---|
+| tcp-udp | 39.17 t/s, 144 steps | 39.59, 144 | +1.1% | +1.1% |
+| geometry | 55.38 t/s, 85 steps | 53.47, 93 | -3.4% | -2.9% |
+
+The same result as step 125 by another route, and the condition holds: one `output.hash` per
+prompt over its four runs, which step 125 checked with `cmp` against stored files. A
+configuration with an unknown option is reported as failed with its stderr kept (exit code 1);
+`--resume` then skips the finished run.
+
+**With this the pattern is replaced going forward:** a sweep is a matrix file, its table and
+its gate one `records.py` command, and both files of evidence are small. Left from step 127's
+plan: file the old one-step scripts with their results.

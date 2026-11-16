@@ -1,0 +1,12 @@
+# Step 125's measurement as a matrix (README step 129): every draft expert loaded, against the
+# pairs the other seven prompts never chose left out; the fastest single-machine settings.
+set M  ~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf
+set F8 ~/llms/ds-1017-fp8/dense-fp8.gguf
+set D  ~/llms/dspark/dspark-DeepSeek-V4.1-Flash-1017-BF16.gguf
+prompts results/spec-heldout/prompts.txt
+out results/record/runner/leave-out
+reps 2
+base --rt $F8 --placement placements/study30.txt --dspark $D --spec --canon
+base --cache-loads 800 --cache-period 8 --cache-wait
+config all
+config out DS_DRAFT_KEEP=results/draft-pool/keep/loo-seen/{prompt}.keep

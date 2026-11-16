@@ -530,6 +530,9 @@ condition), then a runner (prompts x configurations x repeats), then file each s
 Step 128: the reader, `scripts/records.py` (groups by label, means and the spread of repeats, `--vs` prints
 only differences outside the spread, `--same` is a gate). On step 125's records: four of eight speed
 differences are inside the spread. Next: the runner.
+Step 129: the runner, `scripts/run_matrix.py` (a matrix file: prompts, base arguments, configurations,
+repeats; a labelled record per run). Step 125's comparison again from a 12-line file: the same result.
+Next: file each old step's scripts with its results.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front

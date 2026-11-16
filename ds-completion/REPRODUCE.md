@@ -252,6 +252,7 @@ Unless stated: sclk 2, 16 CPU threads (32 before README step 18), the study30 pl
 | 126 | `record/output-hash.txt` | the five commands in the file; the recomputation: FNV-1a 64 (`src/record.h`) over the third `\|` field of each `DS_DRAFT_TOKEN_LOG` line, after the first printed id and without the last id |
 | 127 | `record/label.txt` | the commands in the file; the scripts' count by kind: read from each file's header, `git log --oneline -- scripts/<file>` for its commits |
 | 128 | `record/reader.txt` | the commands in the file (`scripts/records.py` over `draft-pool/leave-out/*.json`; step 126's three records are made by the commands of `record/output-hash.txt`) |
+| 129 | `record/runner/` (`leave-out.matrix`, `leave-out/` with its `matrix.txt` and 8 records, `runner.txt`) | `scripts/run_matrix.py results/record/runner/leave-out.matrix --prompts tcp-udp,geometry --out <a new directory>` (needs step 124's `draft-pool/keep/loo-seen/*.keep`), then the `scripts/records.py` command in `runner.txt` |
 
 ## 7. Open items (to confirm)
 

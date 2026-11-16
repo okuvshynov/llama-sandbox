@@ -1,0 +1,40 @@
+# scripts/run_matrix.py (README step 129): step 125's comparison for two prompts, run from leave-out.matrix, read with scripts/records.py.
+# commit 3ad1e87 + the runner, sclk 6, 2026-11-16. The records: leave-out/ (its matrix.txt has the run's own header).
+#
+# scripts/run_matrix.py results/record/runner/leave-out.matrix --prompts tcp-udp,geometry          (exit code 0)
+#   [1/8] running all tcp-udp 1 ...
+#       300 tokens, 39.08 t/s
+#   [2/8] running out tcp-udp 1 ...
+#       300 tokens, 39.50 t/s
+#   [3/8] running all geometry 1 ...
+#       345 tokens, 55.40 t/s
+#   [4/8] running out geometry 1 ...
+#       345 tokens, 53.42 t/s
+#   [5/8] running all tcp-udp 2 ...
+#       300 tokens, 39.26 t/s
+#   [6/8] running out tcp-udp 2 ...
+#       300 tokens, 39.68 t/s
+#   [7/8] running all geometry 2 ...
+#       345 tokens, 55.36 t/s
+#   [8/8] running out geometry 2 ...
+#       345 tokens, 53.53 t/s
+#   # 8 runs, 0 failed; records in results/record/runner/leave-out/
+#
+# scripts/records.py results/record/runner/leave-out/*.json --by prompt,config \
+#     --show counters.gen_tps,spec.steps,experts.placed.0,output.hash --vs config=all --same output.hash --within prompt     (exit code 0)
+prompt    config  runs  counters.gen_tps  spread  vs all  spec.steps  spread  vs all  experts.placed.0  spread  vs all               output.hash  spread  vs all
+geometry  all        2             55.38    0.1%                  85    0.0%                       802    0.0%          fnv1a64:39009bbaad3bdfec
+tcp-udp   all        2             39.17    0.5%                 144    0.0%                       802    0.0%          fnv1a64:e84010b498310b61
+geometry  out        2             53.47    0.2%   -3.4%          93    0.0%   +9.4%               944    0.0%  +17.7%  fnv1a64:39009bbaad3bdfec
+tcp-udp   out        2             39.59    0.4%   +1.1%         144    0.0%       =               941    0.0%  +17.3%  fnv1a64:e84010b498310b61
+# vs all: a difference of the means, printed if larger than the spread of both groups' repeats; ~: inside it; ?: a side has one run, no spread; =: equal
+# --same output.hash within prompt: holds for all 2 (8 runs)
+
+# Step 125 (draft-leave-out.sh, the same two prompts): tcp-udp 38.97 -> 39.38 t/s, +1.1%; geometry 54.72 -> 53.12, -2.9%; steps 144 -> 144 and 85 -> 93.
+#
+# The runner's handling of a failed run, on the CPU path (bin/ds-completion, -n 2, one prompt; a configuration "broken" with --no-such-option):
+#   [2/2] running broken tcp-udp 1 ...
+#       FAILED: exit code 2, no record; stderr kept: <out>/broken-tcp-udp-1.err        (the file: "unknown argument --no-such-option")
+#   # 2 runs, 1 failed; records in <out>/                                               (exit code 1)
+# started again: "<out> has records already: another --out, or --resume to make only the missing runs";
+# with --resume: "[1/2] ok tcp-udp 1: has a record, skipped", then the broken one again.
