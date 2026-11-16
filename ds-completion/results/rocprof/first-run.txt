@@ -1,0 +1,73 @@
+# rocprofv3 on a short plain run (README step 140; docs/rocprof.md). Commit a11bf10, sclk 6, 2026-11-16; rocprofiler-sdk6.3.4 0.5.0.
+# One run of each; all of rocprofv3's numbers cover the whole process (startup, the 20-token prompt, 64 generated tokens).
+# RUN = bin-hip/ds-completion -m $M -p "What are the differences between TCP and UDP, and when would you choose each?" --chat -n 64
+#       --rt $F8 --canon --placement placements/study30.txt --record F
+#   base     RUN                                                                                24.25 t/s, wall 17.2 s
+#   kernel   rocprofv3 --kernel-trace --stats -S -d D -o k --output-format csv -- RUN            19.28 t/s, wall 18.4 s, stdout the same bytes
+#   runtime  rocprofv3 --runtime-trace --stats -S -d D -o r --output-format csv pftrace -- RUN   17.96 t/s, wall 31.4 s, stdout the same bytes
+#
+# k_kernel_stats.csv: 39 kernels, 167441 launches, 2.88 s on the devices (four dies at once)
+#   kernel                                    launches    avg us    min us    max us   share
+#   void fp8_gemv_kernel<64, 1, 1>               15488      30.6       6.9     211.4   16.5%
+#   canon_gate_up_kernel                         10560      44.7       3.7     536.6   16.4%
+#   unpack_blocks_kernel                         19569      21.7      17.9      74.9   14.7%
+#   canon_down_kernel                            10560      22.4       4.2     366.9    8.2%
+#   void fp8_gemv_kernel<8, 1, 1>                 2560      67.2      64.6      72.2    6.0%
+#   void gemv_partial_kernel<unsigned short,        64    1925.6    1892.0    1945.8    4.3%
+#   attn_partial_kernel                           2720      40.5      35.8     104.6    3.8%
+#   hc_split_kernel                               5280      16.1      15.0      20.3    3.0%
+#   void gemv_partial_m_kernel<float, 4, 1,       8710       8.7       4.6      54.7    2.6%
+#   quant_act_kernel                             15972       4.7       2.7      17.4    2.6%
+#   void fp8_gemm_kernel<64, 2, 8, 1>              484     153.0      26.7     994.7    2.6%
+#   void router_kernel<6, 6>                      2640      21.5      15.7      29.8    2.0%
+#   split_sum_m_kernel                            8636       6.5       3.7      14.9    2.0%
+#   void fp8_gemv_kernel<16, 1, 1>                2560      19.9      17.4      32.3    1.8%
+#   canon_act_kernel                             10560       4.8       2.9      22.6    1.8%
+#   hc_pre_kernel                                 5344       8.7       6.1      14.6    1.6%
+#   canon_quant_kernel                           10560       4.0       3.0      10.7    1.5%
+#   moe_dispatch_kernel                           2640      11.6      10.2      17.1    1.1%
+#   rope_kernel                                   5692       4.8       2.9      12.0    0.9%
+#   hc_post_kernel                                5280       4.6       3.5       7.8    0.8%
+#   attn_combine_kernel                           2720       8.8       5.6      62.1    0.8%
+#   rms_norm_kernel                               3116       7.2       3.5      18.1    0.8%
+#   kv_finish_kernel                              2640       7.9       6.1      13.6    0.7%
+#   copy16_kernel                                 2246       8.7       5.6      17.4    0.7%
+#   moe_combine_kernel                            2640       7.3       5.9      18.2    0.7%
+#   __amd_rocclr_copyBuffer                       3633       4.2       2.4      12.6    0.5%
+#   swiglu_kernel                                 2640       5.1       3.2      13.6    0.5%
+#   void fp8_gemm_kernel<8, 2, 16, 3>               80     144.7     142.7     149.0    0.4%
+#   void gemv_partial_m_kernel<float, 4, 8,        254      19.5      11.8      43.2    0.2%
+#   void fp8_gemm_kernel<16, 2, 16, 3>              80      61.5      59.8     105.9    0.2%
+#   void fq4_kernel<32, false>                     206      10.7       9.8      16.0    0.1%
+#   __amd_rocclr_fillBufferAligned                 119      17.8       3.5     397.4    0.1%
+#   engram_kernel                                  166      11.1      10.2      11.7    0.1%
+#   void fq4_kernel<16, true>                      206       7.5       6.6       8.2    0.1%
+#   void gemv_partial_m_kernel<float, 4, 2,        134       8.9       5.3      15.5    0.0%
+#   split_sum_kernel                               270       4.4       2.4      12.0    0.0%
+#   void gemv_partial_kernel<float, 4>             206       4.7       3.2       5.3    0.0%
+#   compress_pool_kernel                           123       4.7       3.2       9.9    0.0%
+#   repeat_kernel                                   83       3.4       2.9       5.3    0.0%
+#
+# k_kernel_trace.csv:
+#   launches per die (Agent_Id 1-4): 119876 15855 15855 15855
+#   launches before the first output-head launch: 27562; between consecutive head launches (64 of them): min 2197, median 2209, max 2242
+#
+# r_hip_api_stats.csv (the times include the profiler: counts only are to be used):
+#   call                                 calls    avg us   total s
+#   hipMemcpy                           1215    1438.0      1.75
+#   hipLaunchKernel                   163689       8.5      1.39
+#   hipMemcpyAsync                     50448      23.4      1.18
+#   hipStreamCreateWithFlags               7  135924.8      0.95
+#   hipEventSynchronize                22209      26.5      0.59
+#   hipEventRecord                     38105      14.3      0.54
+#   hipStreamWaitEvent                 23808      10.8      0.26
+#   hipHostMalloc                         14    7853.7      0.11
+#   hipStreamCreate                        4   22469.6      0.09
+#   hipMalloc                            688      87.0      0.06
+#   hipFree                              692      41.7      0.03
+#   hipSetDevice                       16552       1.6      0.03
+#
+# r_memory_copy_stats.csv:
+#   MEMORY_COPY_HOST_TO_DEVICE     37276 copies,   16.47 s, avg    441.9 us
+#   MEMORY_COPY_DEVICE_TO_HOST     10765 copies,    0.08 s, avg      7.5 us
+# Files of the runtime run: hip_api_trace 27 MB, kernel_trace 31 MB, memory_copy_trace 4 MB, results.pftrace 95 MB (not kept).

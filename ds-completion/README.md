@@ -5116,3 +5116,24 @@ binaries' times checked); `test-fakequant` passes and a program from each new di
 the eight held-out prompts once with the fastest settings: **all eight match the reference
 values of step 138** (prompt and output hashes, the table's first use), speeds within 0.8% of
 step 138's.
+
+## Step 140: a vendor profiler for the GPU side: `rocprofv3`
+
+`perf` covers the CPU side; for HIP the machine had only ROCm 5.7.1's profilers, which do not
+fit the 6.3.4 runtime the engine loads. The person installed `rocprofiler-sdk6.3.4`; its
+`rocprofv3` attaches to our binary as built (the runtime already links the hook).
+
+**Tried** on a 64-token plain run (`results/rocprof/first-run.txt`; sclk 6, one run each):
+the output's bytes do not change; generation 24.25 t/s without it, 19.28 with `--kernel-trace`
+(-21%), 17.96 with `--runtime-trace` (-26%). So it ranks and counts; it does not measure speed.
+
+What it adds to `--profile` and `--trace` is the time each kernel runs on the device. Over the
+whole process: 39 kernels, 167,441 launches, 2.88 s on the devices; `fp8_gemv_kernel<64,1,1>`
+16.5%, `canon_gate_up_kernel` 16.4%, `unpack_blocks_kernel` 14.7%, `canon_down_kernel` 8.2%.
+From the launches' timestamps: **2,197-2,242 launches per generated token** (step 49's count
+was ~2,450), 27,562 before the first token; the home die takes 119,876 of them and each other
+die 15,855. Host-side times include the profiler (`hipLaunchKernel` 8.5 us against 2.2-2.5 us
+in step 49): of the HIP calls only the counts are usable.
+
+`docs/rocprof.md`: how to run it, the files, the timeline, how to read the numbers. Not tried:
+hardware counters (`--pmc`), and the timeline in a viewer.

@@ -557,6 +557,8 @@ the stored ones' bytes, speed 44.75 -> 44.70 t/s (inside the spread). First refe
 `results/record/reference/heldout-output.tsv`.
 Step 139: programs out of the library directories: `apps/` (the CLI, `ds-inspect`, `fp8pack`), `tests/`,
 `bench/`; `src/` and `hip/` are libraries only. All programs rebuilt; the held-out set matches the reference values.
+Step 140: `rocprofv3` (rocprofiler-sdk 6.3.4) works on our binary: per-kernel device time, HIP call counts,
+copies; -21% to -26% speed, same output. `docs/rocprof.md`. ~2,200 launches per generated token.
 constructor in parts.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits

@@ -265,6 +265,7 @@ Unless stated: sclk 2, 16 CPU threads (32 before README step 18), the study30 pl
 | 137 | `cleanup/rt-split-peer.txt` | the three commands in the file (the back first; the front once the back prints "waiting for the front"), with a build of 35561d0 and with this one |
 | 138 | `cleanup/heldout.txt`, `cleanup/heldout/` (its `matrix.txt`, 16 records), `record/reference/heldout-output.tsv` | `scripts/run_matrix.py results/cleanup/heldout.matrix --keep-out --out <a new directory>`, `cmp` of each `.out` with `cache-test/plain-canon-static/<prompt>.out`, then the two `scripts/records.py` commands in `heldout.txt` |
 | 139 | `cleanup/layout.txt` | `touch apps/* tests/* bench/*`, `make`, `make HIP=1`; `scripts/run_matrix.py results/cleanup/heldout.matrix --reps 1 --out <a new directory>`, each record against `record/reference/heldout-output.tsv`; the `scripts/records.py` command of the file |
+| 140 | `rocprof/first-run.txt` | `sudo apt install rocprofiler-sdk6.3.4`, then the three commands in the file; its tables from the `*_stats.csv` files and `k_kernel_trace.csv` as `docs/rocprof.md` describes (the traces themselves, ~160 MB, are not kept) |
 
 ## 7. Open items (to confirm)
 
