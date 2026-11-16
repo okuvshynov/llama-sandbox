@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "args": {"mode": "chat", "effort": 75, "n": 300, "threads": 16, "runtime": true, "canon": true, "spec": true,
+           "placement": "placements/study30.txt", "cache_loads": 0, "cache_period": 16, "cache_window": 256, "cache_min": 2,
+           "cache_wait": false, "spec_n": 5,
+           "profile": false, "trace": false, "spec_log": false, "log_routing": false},
+  "prompt": {"tokens": 31, "hash": "fnv1a64:5955aaff776b79ee"},
+  "env": {"gpu_sclk": [6, 6, 6, 6], "ds": {"DS_DRAFT_KEEP": "results/draft-pool/keep/loo-144/ja-email.keep"}},
+  "read_bytes": {"load": 0, "prompt": 0, "gen": 39903232},
+  "spec": {"steps": 173, "plain_steps": 0, "accepted": 126, "verified": [0, 0, 0, 0, 0, 173], "draft_ms": 1321.7, "verify_ms": 31822.5},
+  "experts": {"gpu_uses": 109284, "cpu_uses": 147276, "dies": [0, 1, 2, 3], "placed": [802, 1765, 1765, 1765],
+               "cache": null},
+  "counters": {"load_s": 12.479, "prompt_s": 0.8019, "prompt_tps": 38.659, "gen_tokens": 300, "gen_s": 33.2137, "gen_tps": 9.032}
+}

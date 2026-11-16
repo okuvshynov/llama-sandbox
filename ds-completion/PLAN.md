@@ -516,6 +516,9 @@ switched off on purpose: 13% of the loads there, -8.1%, drafts +50%, verify step
 Step 123: the draft's 384 experts in slots of the home die's pool (the same bytes, kernels, memory and
 speed; drafted ids identical). Next: leaving some out (a router mask for the ones not resident; how
 the resident set changes without loads into the home die during a run).
+Step 124: fewer draft experts measured with a router mask (`DS_DRAFT_KEEP`), nothing left out yet: the
+142 pairs other prompts never chose cost +1.5% steps; a set of 96 chosen for the prompt +1.4%, of 48
++4.6%; a set of 192 chosen without it +11.6% (ja-email halves). Next: leave the unchosen out for real.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front

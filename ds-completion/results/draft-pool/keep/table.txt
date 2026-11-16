@@ -1,0 +1,12 @@
+# scripts/draft_keep_table.py over summary.txt (README step 124). Per prompt: drafts accepted per verify step, of 5 verified.
+# kept: (layer, expert) pairs the draft's router may choose, of 384, mean over the prompts. cold runs: those that read from
+# storage during generation (their t/s in summary.txt is not comparable; the counts here do not depend on it).
+config     kept     tcp-udp     py-lru cpp-matrix sql-report   geometry  zh-travel   ja-email summary-js   accepted  steps  tokens/step  steps vs all  outputs  cold runs
+all         384       2.000      3.041      3.902      3.254      3.613      1.315      1.534      3.125       1592    653        3.438         +0.0%     same          8
+loo-seen    242       2.000      3.041      3.902      3.137      3.272      1.280      1.534      3.125       1582    663        3.386         +1.5%     same          5
+loo-192     192       1.970      3.096      3.823      3.137      2.888      1.246      0.728      3.125       1516    729        3.080        +11.6%     same          8
+loo-144     144       1.804      2.987      3.600      2.872      2.681      1.135      0.728      2.960       1487    758        2.962        +16.1%     same          8
+loo-96       96       1.727      2.737      3.095      2.512      2.531      1.076      0.661      3.304       1453    796        2.825        +21.9%     same          8
+own-144     136       2.000      2.987      3.902      3.254      3.613      1.333      1.513      3.125       1591    654        3.433         +0.2%     same          5
+own-96       96       1.941      2.833      3.902      2.974      3.613      1.333      1.534      3.304       1583    662        3.391         +1.4%     same          7
+own-48       48       1.752      2.833      3.677      3.027      3.380      1.280      1.471      3.125       1567    683        3.294         +4.6%     same          8

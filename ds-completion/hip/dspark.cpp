@@ -115,6 +115,32 @@ DSpark::DSpark(Runtime& r, const std::string& path, bool experts_in_pool) : rt(r
     return (const float*)upload(T(name, GGML_TYPE_F32, ne), n * 4);
   };
 
+  // DS_DRAFT_KEEP=FILE (a study, README step 124): lines "layer expert", the draft experts its
+  // router may choose; every other one gets a bias of -1e30. k_router picks the top k of scores +
+  // bias and takes the weights from the scores alone, so the kept experts' weights are as before.
+  // The output cannot change (the main model verifies); how often drafts are accepted can.
+  std::vector<std::vector<char>> keep;
+  if (const char* kp = getenv("DS_DRAFT_KEEP")) {
+    keep.assign(n_layer, std::vector<char>(n_expert, 0));
+    FILE* kf = fopen(kp, "r");
+    if (!kf) throw std::runtime_error(std::string("DS_DRAFT_KEEP: cannot read ") + kp);
+    char line[256];
+    while (fgets(line, sizeof line, kf)) {
+      int l, e;
+      if (line[0] == '#' || sscanf(line, "%d %d", &l, &e) != 2) continue;
+      if (l < 0 || l >= n_layer || e < 0 || e >= n_expert) throw std::runtime_error(std::string("DS_DRAFT_KEEP: pair out of range in ") + kp);
+      keep[l][e] = 1;
+    }
+    fclose(kf);
+    fprintf(stderr, "# dspark: DS_DRAFT_KEEP: the router may choose");
+    for (int l = 0; l < n_layer; l++) {
+      const int n = (int)std::count(keep[l].begin(), keep[l].end(), 1);
+      if (n < n_used) throw std::runtime_error("DS_DRAFT_KEEP: a layer keeps fewer experts than the router chooses");
+      fprintf(stderr, " %d", n);
+    }
+    fprintf(stderr, " of %d experts per layer\n", n_expert);
+  }
+
   CHECK(hipSetDevice(rt.opt.gpu));
   hipStream_t up_s;
   CHECK(hipStreamCreate(&up_s));
@@ -138,7 +164,15 @@ DSpark::DSpark(Runtime& r, const std::string& path, bool experts_in_pool) : rt(r
     w.sinks = f32(p + "attn_sinks.weight", {NH});
     w.ffn_norm = f32(p + "ffn_norm.weight", {E});
     w.gate_inp = f32(p + "ffn_gate_inp.weight", {E, n_expert});
-    w.gate_bias = f32(p + "exp_probs_b.bias", {n_expert});
+    if (keep.empty()) {
+      w.gate_bias = f32(p + "exp_probs_b.bias", {n_expert});
+    } else {
+      const float* b = (const float*)T(p + "exp_probs_b.bias", GGML_TYPE_F32, {n_expert});
+      std::vector<float> masked(b, b + n_expert);
+      for (int e = 0; e < n_expert; e++)
+        if (!keep[i][e]) masked[e] = -1e30f;
+      w.gate_bias = (const float*)upload(masked.data(), (size_t)n_expert * 4);
+    }
     const int mix = (2 + HC) * HC;
     w.hc_attn_fn = f32(p + "hc_attn_fn.weight", {E * HC, mix});
     w.hc_attn_base = f32(p + "hc_attn_base.weight", {mix});

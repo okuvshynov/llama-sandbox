@@ -1,0 +1,66 @@
+# scripts/draft-keep-sweep.sh, commit 5fde30b+changes, sclk 6, 2026-11-15T23:23:07-05:00
+# config name: kept pairs per draft layer | verify steps, drafts accepted (of 5 per step), accepted per step | generation t/s | output vs results/cache-test/plain-canon-static
+all tcp-udp: 128 128 128 | 100 200 2.000 | 21.42 | same, read 120664064 bytes in generation
+all py-lru: 128 128 128 | 74 225 3.041 | 26.33 | same, read 85524480 bytes in generation
+all cpp-matrix: 128 128 128 | 61 238 3.902 | 31.76 | same, read 2158592 bytes in generation
+all sql-report: 128 128 128 | 71 231 3.254 | 27.56 | same, read 11853824 bytes in generation
+all geometry: 128 128 128 | 75 271 3.613 | 29.89 | same, read 82923520 bytes in generation
+all zh-travel: 128 128 128 | 130 171 1.315 | 12.21 | same, read 162955264 bytes in generation
+all ja-email: 128 128 128 | 118 181 1.534 | 12.92 | same, read 125767680 bytes in generation
+all summary-json: 128 128 128 | 24 75 3.125 | 26.02 | same, read 21209088 bytes in generation
+loo-seen tcp-udp: 108 81 56 | 100 200 2.000 | 25.14 | same, read 139264 bytes in generation
+loo-seen py-lru: 109 81 53 | 74 225 3.041 | 30.22 | same
+loo-seen cpp-matrix: 109 81 56 | 61 238 3.902 | 32.21 | same
+loo-seen sql-report: 108 79 56 | 73 229 3.137 | 27.30 | same, read 3084288 bytes in generation
+loo-seen geometry: 109 78 55 | 81 265 3.272 | 30.63 | same, read 12451840 bytes in generation
+loo-seen zh-travel: 109 81 49 | 132 169 1.280 | 12.66 | same, read 40718336 bytes in generation
+loo-seen ja-email: 107 76 53 | 118 181 1.534 | 14.35 | same, read 2269184 bytes in generation
+loo-seen summary-json: 108 80 56 | 24 75 3.125 | 29.31 | same
+loo-192 tcp-udp: 89 62 41 | 101 199 1.970 | 24.45 | same, read 8015872 bytes in generation
+loo-192 py-lru: 90 61 41 | 73 226 3.096 | 30.37 | same, read 487424 bytes in generation
+loo-192 cpp-matrix: 91 59 42 | 62 237 3.823 | 31.56 | same, read 1789952 bytes in generation
+loo-192 sql-report: 91 59 42 | 73 229 3.137 | 26.96 | same, read 7188480 bytes in generation
+loo-192 geometry: 93 58 41 | 89 257 2.888 | 27.65 | same, read 20475904 bytes in generation
+loo-192 zh-travel: 93 61 38 | 134 167 1.246 | 12.74 | same, read 17846272 bytes in generation
+loo-192 ja-email: 90 61 41 | 173 126 0.728 | 8.64 | same, read 121614336 bytes in generation
+loo-192 summary-json: 90 61 41 | 24 75 3.125 | 28.88 | same, read 831488 bytes in generation
+loo-144 tcp-udp: 59 50 35 | 107 193 1.804 | 22.41 | same, read 18653184 bytes in generation
+loo-144 py-lru: 58 49 37 | 75 224 2.987 | 28.73 | same, read 9834496 bytes in generation
+loo-144 cpp-matrix: 58 48 38 | 65 234 3.600 | 29.96 | same, read 8204288 bytes in generation
+loo-144 sql-report: 58 49 37 | 78 224 2.872 | 24.93 | same, read 13340672 bytes in generation
+loo-144 geometry: 58 51 35 | 94 252 2.681 | 26.37 | same, read 14176256 bytes in generation
+loo-144 zh-travel: 58 53 33 | 141 160 1.135 | 12.06 | same, read 35942400 bytes in generation
+loo-144 ja-email: 57 50 37 | 173 126 0.728 | 9.03 | same, read 39903232 bytes in generation
+loo-144 summary-json: 60 47 37 | 25 74 2.960 | 27.67 | same, read 2379776 bytes in generation
+loo-96 tcp-udp: 40 29 27 | 110 190 1.727 | 21.01 | same, read 27734016 bytes in generation
+loo-96 py-lru: 41 29 26 | 80 219 2.737 | 26.62 | same, read 16367616 bytes in generation
+loo-96 cpp-matrix: 41 29 26 | 74 229 3.095 | 25.92 | same, read 12288000 bytes in generation
+loo-96 sql-report: 41 29 26 | 86 216 2.512 | 22.54 | same, read 15224832 bytes in generation
+loo-96 geometry: 43 31 22 | 98 248 2.531 | 24.75 | same, read 26685440 bytes in generation
+loo-96 zh-travel: 43 29 24 | 145 156 1.076 | 11.55 | same, read 38035456 bytes in generation
+loo-96 ja-email: 39 31 26 | 180 119 0.661 | 8.58 | same, read 76857344 bytes in generation
+loo-96 summary-json: 40 30 26 | 23 76 3.304 | 29.40 | same, read 3563520 bytes in generation
+own-144 tcp-udp: 81 38 25 | 100 200 2.000 | 24.67 | same, read 552960 bytes in generation
+own-144 py-lru: 69 48 27 | 75 224 2.987 | 29.14 | same, read 1736704 bytes in generation
+own-144 cpp-matrix: 73 49 22 | 61 238 3.902 | 32.26 | same, read 405504 bytes in generation
+own-144 sql-report: 72 49 23 | 71 231 3.254 | 28.43 | same, read 217088 bytes in generation
+own-144 geometry: 78 39 27 | 75 271 3.613 | 34.06 | same
+own-144 zh-travel: 67 33 24 | 129 172 1.333 | 13.77 | same
+own-144 ja-email: 63 40 26 | 119 180 1.513 | 14.18 | same, read 630784 bytes in generation
+own-144 summary-json: 57 36 21 | 24 75 3.125 | 28.92 | same
+own-96 tcp-udp: 47 26 23 | 102 198 1.941 | 24.09 | same, read 4833280 bytes in generation
+own-96 py-lru: 40 36 20 | 78 221 2.833 | 27.62 | same, read 4169728 bytes in generation
+own-96 cpp-matrix: 42 37 17 | 61 238 3.902 | 31.97 | same, read 950272 bytes in generation
+own-96 sql-report: 41 35 20 | 76 226 2.974 | 26.56 | same, read 2965504 bytes in generation
+own-96 geometry: 45 29 22 | 75 271 3.613 | 33.85 | same, read 1937408 bytes in generation
+own-96 zh-travel: 52 27 17 | 129 172 1.333 | 13.56 | same, read 2621440 bytes in generation
+own-96 ja-email: 51 27 18 | 118 181 1.534 | 14.33 | same, read 1187840 bytes in generation
+own-96 summary-json: 48 30 18 | 23 76 3.304 | 30.92 | same
+own-48 tcp-udp: 21 13 14 | 109 191 1.752 | 21.98 | same, read 14700544 bytes in generation
+own-48 py-lru: 19 17 12 | 78 221 2.833 | 27.95 | same, read 12865536 bytes in generation
+own-48 cpp-matrix: 17 20 11 | 65 239 3.677 | 29.77 | same, read 4280320 bytes in generation
+own-48 sql-report: 19 15 14 | 75 227 3.027 | 26.63 | same, read 6561792 bytes in generation
+own-48 geometry: 18 16 14 | 79 267 3.380 | 31.81 | same, read 5025792 bytes in generation
+own-48 zh-travel: 22 15 11 | 132 169 1.280 | 13.26 | same, read 12746752 bytes in generation
+own-48 ja-email: 22 15 11 | 121 178 1.471 | 13.82 | same, read 14143488 bytes in generation
+own-48 summary-json: 20 16 12 | 24 75 3.125 | 28.92 | same, read 1519616 bytes in generation

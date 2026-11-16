@@ -4617,3 +4617,62 @@ that is not resident means: the draft has no CPU path; masking such experts in i
 let it choose among the resident ones, which cannot change the output, only how often drafts
 are accepted. And how the resident set follows the prompt: loads into the home die during a
 run are what step 86 removed, 8% in step 122's measurement.
+
+## Step 124: fewer draft experts, measured before any is left out
+
+Step 123 made the draft's experts slots. Leaving some out would give their memory to the main
+model; two ways were on the table: keep fewer of them, or requantize all of them to ~2 bits.
+Keeping fewer was tried first, as a measurement of what the draft loses.
+
+**The switch** (a study, like the other `DS_*` ones): `DS_DRAFT_KEEP=FILE` lists the (layer,
+expert) pairs the draft's router may choose; every other expert gets a bias of -1e30 at load.
+`k_router` picks the top 3 of scores + bias and takes the weights from the scores alone, so the
+kept experts act as before. Every expert stays loaded: this measures the loss only.
+`scripts/draft_keep.py N LOG...` writes such a file from step 87's routing logs: the N most
+chosen pairs, the three layers ranked together.
+
+**The sweep** (`scripts/draft-keep-sweep.sh`, `results/draft-pool/keep/`; sclk 6): the 8 held-out
+prompts, study30, `--canon`, no cache, `--spec-n 5`. With every draft verified, the drafts
+accepted per step measure the draft alone and do not depend on timing. Sets chosen without the
+prompt (`loo`: from the other seven prompts' logs) and sets chosen for it (`own`: from its own
+log, the best of their size). All 64 outputs are the stored ones' bytes.
+
+| set | kept of 384 | drafts accepted | verify steps | tokens per step | steps |
+|---|---|---|---|---|---|
+| all | 384 | 1,592 | 653 | 3.44 | |
+| loo-seen: every pair the others chose | 242 | 1,582 | 663 | 3.39 | +1.5% |
+| loo-192 | 192 | 1,516 | 729 | 3.08 | +11.6% |
+| loo-144 | 144 | 1,487 | 758 | 2.96 | +16.1% |
+| loo-96 | 96 | 1,453 | 796 | 2.83 | +21.9% |
+| own-144 | 136 | 1,591 | 654 | 3.43 | +0.2% |
+| own-96 | 96 | 1,583 | 662 | 3.39 | +1.4% |
+| own-48 | 48 | 1,567 | 683 | 3.29 | +4.6% |
+
+(Steps and accepted drafts are one number: a step emits its accepted drafts and one token, and
+the tokens are the same in every run. Per prompt: `results/draft-pool/keep/table.txt`.)
+
+- **A third of the draft's experts can go at once:** the 142 pairs that seven other prompts
+  never chose cost 1.5% more steps, nothing on 5 of the 8 prompts (geometry loses most, 3.61 ->
+  3.27 accepted per step).
+- **Below that a set chosen without the prompt fails on the prompt it does not know.** At 192,
+  ja-email's accepted drafts halve (1.53 -> 0.73) and geometry falls to 2.89: the set holds 77%
+  and 67% of the choices their own logs made, 95% of cpp-matrix's. Seven prompts of 300 tokens
+  are a small sample to choose from; ja-email is the only Japanese one.
+- **A set chosen for the prompt can be very small:** 96 of 384 cost 1.4% more steps, 48 cost
+  4.6%. The draft's experts are concentrated per prompt, as step 87 said; this is what that is
+  worth in accepted drafts.
+- The `own` sets are an upper bound, not a method: they come from the same text's earlier run.
+- Small effects go both ways (summary-json accepts more with 96 than with all; it has 24 steps).
+
+**Not measured here:** speed. Most runs read from storage during generation (verifying 5
+drafts at every step fetches engram rows no earlier run had; the records say which), so their
+t/s are not comparable, and the experts were not left out, so no slot was gained.
+
+**What it says about the two ways:** keeping fewer is cheap where the set fits the prompt (a
+quarter of the memory for 1.4% more steps) and expensive where it does not. So the question
+moves from "how many" to "how is the set chosen": the 142 never chosen are free now; beyond
+that the set has to follow the prompt, without loads into the home die during a run (step 86).
+Requantizing was not tried.
+
+**Next:** leave the unchosen ones out for real (the draft's slots compacted, an id -> slot table
+after its router) and measure end to end what ~140 more main-model slots on the home die give.

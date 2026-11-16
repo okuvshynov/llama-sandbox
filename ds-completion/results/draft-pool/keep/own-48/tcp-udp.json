@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "args": {"mode": "chat", "effort": 75, "n": 300, "threads": 16, "runtime": true, "canon": true, "spec": true,
+           "placement": "placements/study30.txt", "cache_loads": 0, "cache_period": 16, "cache_window": 256, "cache_min": 2,
+           "cache_wait": false, "spec_n": 5,
+           "profile": false, "trace": false, "spec_log": false, "log_routing": false},
+  "prompt": {"tokens": 20, "hash": "fnv1a64:ca691ad07d0dd8ee"},
+  "env": {"gpu_sclk": [6, 6, 6, 6], "ds": {"DS_DRAFT_KEEP": "results/draft-pool/keep/own-48/tcp-udp.keep"}},
+  "read_bytes": {"load": 0, "prompt": 0, "gen": 14700544},
+  "spec": {"steps": 109, "plain_steps": 0, "accepted": 191, "verified": [0, 0, 0, 0, 0, 109], "draft_ms": 832.1, "verify_ms": 12754.7},
+  "experts": {"gpu_uses": 114497, "cpu_uses": 47263, "dies": [0, 1, 2, 3], "placed": [802, 1765, 1765, 1765],
+               "cache": null},
+  "counters": {"load_s": 12.505, "prompt_s": 0.5337, "prompt_tps": 37.474, "gen_tokens": 300, "gen_s": 13.6510, "gen_tps": 21.976}
+}

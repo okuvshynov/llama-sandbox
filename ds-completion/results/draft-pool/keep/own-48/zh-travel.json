@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "args": {"mode": "chat", "effort": 75, "n": 300, "threads": 16, "runtime": true, "canon": true, "spec": true,
+           "placement": "placements/study30.txt", "cache_loads": 0, "cache_period": 16, "cache_window": 256, "cache_min": 2,
+           "cache_wait": false, "spec_n": 5,
+           "profile": false, "trace": false, "spec_log": false, "log_routing": false},
+  "prompt": {"tokens": 17, "hash": "fnv1a64:5b47625f5035c82d"},
+  "env": {"gpu_sclk": [6, 6, 6, 6], "ds": {"DS_DRAFT_KEEP": "results/draft-pool/keep/own-48/zh-travel.keep"}},
+  "read_bytes": {"load": 0, "prompt": 0, "gen": 12746752},
+  "spec": {"steps": 132, "plain_steps": 0, "accepted": 169, "verified": [0, 0, 0, 0, 0, 132], "draft_ms": 1009.1, "verify_ms": 21539.0},
+  "experts": {"gpu_uses": 98470, "cpu_uses": 95690, "dies": [0, 1, 2, 3], "placed": [802, 1765, 1765, 1765],
+               "cache": null},
+  "counters": {"load_s": 12.545, "prompt_s": 0.5885, "prompt_tps": 28.886, "gen_tokens": 300, "gen_s": 22.6242, "gen_tps": 13.260}
+}
