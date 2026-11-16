@@ -1,6 +1,6 @@
 # `--record`: a run as one record
 
-**Status (2026-11-15, README steps 115-122):** the idea, and a first minimal `--record` in
+**Status (2026-11-16, README steps 115-122, 126):** the idea, and a first minimal `--record` in
 `ds-completion`. No test uses it yet and no existing script changed. The record is meant to grow
 field by field, each addition a small change; the testing procedure follows once the record has
 shown what it can see.
@@ -126,6 +126,10 @@ as the program wrote it, the fastest single-machine settings (`results/record/ex
   (`null` without `--cache-loads`). Since step 122 with `loads_started_by_die`, in the order of
   `dies`: the home die takes no loads (README step 86), so its place holds 0. With that rule
   switched off on purpose it held 13% of the loads and the run was 8% slower.
+- `output` (step 126; not in the example above), the first of the values:
+  `{"tokens": 300, "hash": "fnv1a64:..."}`, the prompt's hash over the ids of the tokens the run
+  printed, in order, without the end-of-sequence id that ends a run. Equal hashes: the same
+  tokens were chosen; the logits may still differ.
 - `counters`: the numbers of the `# loaded in ...` and `# prompt: ... generation: ...` lines.
 
 The file is opened before the model loads and written after the generation. A run that fails or
@@ -190,7 +194,8 @@ In the order I would take them; the order is not decided.
    file is cached when a run starts, which says whether the machine is ready, not what a run read.
 4. The counters the engine already prints: done (speculation in step 118, experts and the cache
    in step 119).
-5. Values: a hash of the emitted token ids, then of the logits. On the speculative path the
+5. Values: a hash of the emitted token ids: done (step 126, `output`). Then the drafted ids
+   (see the case study below), then the logits. On the speculative path the
    logits stay on the GPU (README step 88), so a checksum would be computed there, next to the
    argmax, and its cost measured with the record itself. Its definition (which positions, which
    bits, in what order) must be fixed before any golden is stored.
@@ -207,3 +212,38 @@ from the page cache). Bugs should hide on rare paths: a reordered sum in one ker
 change, tokens do not), a fault only in 6-token verify steps, only for one die's experts, only
 after a cache eviction, in `commit`'s rollback, only past the 128-token window. Every one that
 escapes names a missing field or a missing prompt.
+
+## A case study: steps 123-125 (the draft's experts in the pool, fewer of them, left out)
+
+Three steps done with the record as it was after step 122, 116 runs. What it gave, and what
+had to be done around it.
+
+**It gave:** cold runs (`read_bytes` named the first sweep's and one odd run of step 125);
+proof that the treatment applied (`experts.placed` 802 -> 944); step 124's whole result
+(`spec.steps`, `spec.accepted`); the switch in every record (`env.ds`).
+
+**Done outside it:**
+
+| needed | how it was done | missing |
+|---|---|---|
+| the output is the same (104 runs) | `cmp` with stored files | a hash of the printed ids: step 126 |
+| the draft is the same | `DS_DRAFT_TOKEN_LOG`, `awk` to drop the times, `cmp` | a hash of the drafted ids |
+| left out equals masked | `cmp` of two routing logs | the same, or a hash of the draft's routing |
+| did the switch apply? | `grep` for a sentence on stderr | the draft's state: its file, where its experts are, how many are loaded |
+| which prompt, configuration, repeat | file names | a label given by whoever starts the run |
+| which of three binaries | by hand | the commit or the binary's hash |
+| which keep set | `env.ds` has its path only | a hash of each input file |
+| memory moved from the draft to the slots | stderr's startup table | the memory per die |
+
+**On the checking side:** no tool reads records. Two scripts wrote a text summary from them
+and two more parsed it with regular expressions, which is the scraping the record was to end.
+The spread of repeated runs was quoted from memory (~1%), not computed, and most of step 125's
+per-prompt differences are inside it. A table printed verify time per step where the steps
+verified different numbers of drafts.
+
+**One claim it could not support:** that the home die's new slots hold experts a prompt seldom
+needs. The record has expert uses on GPUs and on the CPU, not per die.
+
+In the order taken: the output hash (done), the drafted ids' hash, a label and a tool that
+tabulates records with their spread, the draft's state and uses per die, the binary's and the
+input files' identity, memory per die and verify time by drafts verified.

@@ -249,6 +249,7 @@ Unless stated: sclk 2, 16 CPU threads (32 before README step 18), the study30 pl
 | 123 | `draft-pool/in-pool.txt` | the command in the file with a build of 566de25 and with this one; the ids: each token log without its time columns (`awk -F'\|' '{split($1,a," "); print a[1], a[2], "\|" $2 "\|" $3}'`), compared with `cmp`; then the command of `record/fast.txt` |
 | 124 | `draft-pool/keep/` (`summary.txt`, `table.txt`, per configuration each prompt's `.keep` set and record) | `scripts/draft-keep-sweep.sh` (needs step 87's `decode-next/draft-route/*.log`: `*.log` is not in git; made with `DS_DRAFT_ROUTE_LOG` and the held-out command), then `scripts/draft_keep_table.py` |
 | 125 | `draft-pool/leave-out/` (`summary.txt`, `table.txt`, the records) | `scripts/draft-leave-out.sh` (needs step 124's `draft-pool/keep/loo-seen/*.keep`), then `scripts/draft_leave_out_table.py`; left out against masked: the first command of `draft-pool/in-pool.txt` with `DS_DRAFT_KEEP=results/draft-pool/keep/loo-seen/geometry.keep`, with and without `DS_DRAFT_KEEP_RESIDENT=1`, and `DS_DRAFT_ROUTE_LOG` |
+| 126 | `record/output-hash.txt` | the five commands in the file; the recomputation: FNV-1a 64 (`src/record.h`) over the third `\|` field of each `DS_DRAFT_TOKEN_LOG` line, after the first printed id and without the last id |
 
 ## 7. Open items (to confirm)
 

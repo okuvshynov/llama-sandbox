@@ -522,6 +522,8 @@ Step 124: fewer draft experts measured with a router mask (`DS_DRAFT_KEEP`), not
 Step 125: left out for real (`k_remap_ids`, the freed slots to the main model: 802 -> ~944 experts on the
 home die): GPU share +0.1-0.6 points, speed -0.7% over 8 prompts (+1.1% .. -2.9%). Not the default.
 Memory on the home die does not limit speed now: no draft-expert cache, no 2-bit draft for its slots.
+Step 126: the record's first value, `output.hash` over the printed token ids (from the case study of
+steps 123-125: every output comparison there was a `cmp` outside the record).
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front

@@ -1,0 +1,21 @@
+# The record's output hash (README step 126): "output": {"tokens", "hash"}, FNV-1a 64 over the printed token ids.
+# commit 7bf1ee5 + this change, sclk 6, 2026-11-16.
+# -p "What are the differences between TCP and UDP, and when would you choose each?" --chat --record FILE, with:
+#   cpu      bin/ds-completion -n 32                                  (no --rt: every expert on the CPU, not --canon)
+#   plain    bin-hip/ds-completion -n 32 --rt $F8 --canon
+#   plain33  bin-hip/ds-completion -n 33 --rt $F8 --canon
+#   spec     bin-hip/ds-completion -n 32 --rt $F8 --canon --placement placements/study30.txt --dspark $D --spec   (DS_DRAFT_TOKEN_LOG)
+#   eos      as spec with -n 2000: the run ends by itself                                                          (DS_DRAFT_TOKEN_LOG)
+cpu   "output": {"tokens": 32, "hash": "fnv1a64:23d4401c77fe3496"},
+plain   "output": {"tokens": 32, "hash": "fnv1a64:29b8836ab745322e"},
+plain33   "output": {"tokens": 33, "hash": "fnv1a64:ca037a04a081e54a"},
+spec   "output": {"tokens": 32, "hash": "fnv1a64:29b8836ab745322e"},
+eos   "output": {"tokens": 579, "hash": "fnv1a64:8bc3d2716bdfcad8"},
+#
+# plain and spec: the same bytes printed, the same hash. plain33: one token more, another hash.
+# cpu: other bytes printed (from byte 35) and another hash: without --canon the output depends on where an
+#   expert runs (NUMERICS.md); --canon is one of the inputs that may change the output (docs/record.md).
+# Recomputed outside the program from the token logs (Python, the same FNV-1a): a log holds every printed id
+#   but the first, and after the last the id that ended the run. spec: of all ids 0..199999 as the first, only
+#   5 gives the record's hash. eos: [5] + the log's 579 ids without the last (1, end of sequence) = 579 ids,
+#   hash 8bc3d2716bdfcad8: the record's. So the hash covers the printed ids, without the end-of-sequence id.

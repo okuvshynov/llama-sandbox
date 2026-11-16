@@ -4728,3 +4728,35 @@ follows measured times.)
 What this rules out is the motive: memory on the home die is not what limits speed now, so
 neither a draft-expert cache nor a 2-bit draft would pay through slots. Requantizing could
 still pay through a faster draft (its experts are 1.7 of ~8 ms), which is a different question.
+
+## Step 126: the record's first value: a hash of the printed token ids
+
+Steps 123-125 were used as a test of `--record` (docs/record.md, "A case study"). The record
+carried the measurements, but every "the output is the same" in them, 104 runs, was a `cmp`
+against a stored file, outside the record. So the first of the record's *values*:
+
+    "output": {"tokens": 300, "hash": "fnv1a64:..."},
+
+The prompt's hash again (FNV-1a, 64 bits, each id as four bytes), over the ids of the tokens
+the run printed, in order. Not the end-of-sequence id that ends a run: the plain loop keeps
+that id and the speculative loop does not, and the hash must not depend on the loop.
+
+**Checked** (`results/record/output-hash.txt`; sclk 6), one prompt:
+
+| run | tokens | hash |
+|---|---|---|
+| GPU runtime, `--canon`, plain, `-n 32` | 32 | `29b8836ab745322e` |
+| the same with the placement and `--spec` | 32 | `29b8836ab745322e` |
+| plain, `-n 33` | 33 | `ca037a04a081e54a` |
+| the CPU path (not `--canon`), `-n 32` | 32 | `23d4401c77fe3496` |
+| `--spec`, `-n 2000`: ends by itself | 579 | `8bc3d2716bdfcad8` |
+
+Plain and speculative print the same bytes and have one hash; a token more, another. The CPU
+path prints other text from byte 35 and has another hash: without `--canon` the output depends
+on where an expert runs, which is why `--canon` is among the inputs that may change the output.
+And the hash was recomputed outside the program, from `DS_DRAFT_TOKEN_LOG`'s emitted ids: it is
+the record's for both speculative runs, the end-of-sequence id left out.
+
+It is a hash of tokens, not of logits: two runs with it equal chose the same tokens, their
+logits may differ (the argmax absorbs small differences). A logits checksum is still to come.
+No check uses the field yet.

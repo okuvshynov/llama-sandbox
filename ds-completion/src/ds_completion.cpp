@@ -739,6 +739,11 @@ static int run(int argc, char** argv) {
       } else
 #endif
         fprintf(record, "  \"experts\": null,\n");
+      {  // the generation as values: the ids printed, in order (not the end-of-sequence id that stopped it)
+        const std::vector<int32_t> printed(gen.begin(), gen.begin() + std::min((size_t)n_gen, gen.size()));
+        fprintf(record, "  \"output\": {\"tokens\": %zu, \"hash\": \"fnv1a64:%016llx\"},\n", printed.size(),
+                (unsigned long long)fnv1a64_ids(printed));
+      }
       fprintf(record, "  \"counters\": {\"load_s\": %.3f, \"prompt_s\": %.4f, \"prompt_tps\": %.3f, \"gen_tokens\": %d, \"gen_s\": %.4f, \"gen_tps\": %.3f}\n}\n",
               t_load, t_pp, toks.size() / t_pp, n_gen, t_tg, n_gen > 0 ? n_gen / t_tg : 0.0);
       if (fclose(record) != 0) { fprintf(stderr, "cannot write %s\n", record_path.c_str()); return 1; }
