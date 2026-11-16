@@ -1,0 +1,51 @@
+# The GPU clock setting in the record (README step 116). Commit 06325c3+changes (this change), 2026-11-15.
+# sclk: every card on auto (power_dpm_force_performance_level; the machine had rebooted 2 h before, which resets it).
+#
+# 1. The reader (gpu_sclk in src/record.h) on a copy of the sysfs files with six made-up cards:
+#    manual at level 6, auto, another vendor, no mode file, manual with no starred line, manual at level 0
+#      [6, "auto", "unknown", "unknown", 0]        (the other vendor's card is left out)
+#    and on this machine: ["auto", "auto", "auto", "auto"]
+#
+# 2. The fastest single-machine settings again (the command of results/record/fast.txt), with the
+#    starred line of each card's pp_dpm_sclk sampled every 0.1 s from the start of the process to its end
+#    (~125 s, of which ~120 s is the load and the wait for the cache's registration, ~6 s the run).
+#    Output: the same bytes as results/cache-test/plain-canon-static/cpp-matrix.out.
+
+{
+  "schema": 1,
+  "args": {"mode": "chat", "effort": 75, "n": 300, "threads": 16, "runtime": true, "canon": true, "spec": true,
+           "placement": "placements/study30.txt", "cache_loads": 800, "cache_period": 8},
+  "prompt": {"tokens": 25, "hash": "fnv1a64:32138dd9ac19a294"},
+  "env": {"gpu_sclk": ["auto", "auto", "auto", "auto"]},
+  "counters": {"load_s": 120.088, "prompt_s": 0.5988, "prompt_tps": 41.752, "gen_tokens": 300, "gen_s": 5.4493, "gen_tps": 55.053}
+}
+# expert cache: up to 800 loads/s, rebalance every 8 tokens over the last 256
+# loaded in 120.1 s; prompt 25 tokens; fake-quant on; 16 threads
+# drafts verified per step: 0: 0 1: 3 2: 7 3: 11 4: 11 5: 34 (of the 0s, 0 plain steps without a draft); verify cost fit 67.6 + 2.2 n ms
+# speculative: 66 verify steps, 3.53 drafts accepted per step, 4.55 tokens per step; draft 7.6 ms per step
+# routed experts: 85.7% on GPUs (73022 of 85200)
+# prompt: 25 tokens in 0.60 s = 41.75 t/s; generation: 300 tokens in 5.45 s = 55.05 t/s
+# expert cache: 32 rebalances, 3870 swaps planned, 3692 loads started, 3627 published
+
+# samples per card and level (count, card, level):
+    903 card0 1: 1000Mhz *
+     75 card0 5: 1540Mhz *
+      1 card0 6: 1608Mhz *
+     74 card0 8: 1730Mhz *
+    753 card1 1: 1000Mhz *
+    241 card1 5: 1540Mhz *
+      2 card1 6: 1608Mhz *
+      3 card1 7: 1674Mhz *
+     53 card1 8: 1730Mhz *
+    820 card2 1: 1000Mhz *
+    169 card2 5: 1540Mhz *
+      2 card2 6: 1608Mhz *
+     61 card2 8: 1730Mhz *
+    838 card3 1: 1000Mhz *
+    140 card3 5: 1540Mhz *
+     74 card3 8: 1730Mhz *
+
+# On auto the level moves during a run: every card was seen at levels 1, 5 and 8.
+# 55.05 t/s here against 47.70 in results/record/fast.txt: the same command and the same clock mode, 2 runs.
+# Not explained. The page cache held 291 GB before the first run and 300 GB after the second (of ~488 GB of
+# model files): part of the model was not cached in either, and the record cannot say what each run read.

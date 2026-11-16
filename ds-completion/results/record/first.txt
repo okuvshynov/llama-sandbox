@@ -1,5 +1,6 @@
 # bin-hip/ds-completion -m $M --rt $F8 -p "What are the differences between TCP and UDP, and when would you choose each?" --chat -n 32 --record FILE
-# twice in a row; commit 11e9e74+changes (the --record change itself), sclk 1, 2026-11-15
+# twice in a row; commit 11e9e74+changes (the --record change itself), sclk auto, 2026-11-15
+# (This header first said "sclk 1": the level read while idle. The cards were on auto; README step 116.)
 # Before run 1 the page cache held 0.65 GB (/proc/meminfo Cached): the model was read from disk.
 # Both runs printed the same 32 tokens. The records, then each run's stderr lines they repeat.
 

@@ -1,8 +1,9 @@
 # bin-hip/ds-completion -m $M -p "<the cpp-matrix prompt of results/spec-heldout/prompts.txt>" --chat -n 300 --rt $F8 --placement placements/study30.txt --dspark $D --spec --canon --cache-loads 800 --cache-period 8 --cache-wait --record FILE
 # the fastest single-machine settings (QUICKSTART.md), as scripts/spec-measure.sh runs them, without --spec-log
-# commit 11e9e74+changes (the --record change itself), sclk 1, 2026-11-15; page cache warm
+# commit 11e9e74+changes (the --record change itself), sclk auto, 2026-11-15; the CPU experts' pages in the page cache (291 GB of it filled)
 # Output: the same bytes as results/cache-test/plain-canon-static/cpp-matrix.out.
-# sclk 1, not the held-out history's 6 (54.86 t/s on this prompt in README step 114): the speed is not comparable.
+# (This header first said "sclk 1", the level read while idle, and put the speed down to it. The cards were on
+# auto, and the same command gave 55.05 t/s an hour later: results/record/sclk.txt, README step 116.)
 # The record, then the stderr lines it repeats and the ones it does not hold yet.
 
 {

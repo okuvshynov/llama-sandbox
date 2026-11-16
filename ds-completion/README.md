@@ -4300,14 +4300,14 @@ bits), and the load time and prompt / generation speeds of the `# ...` lines. On
 the generation, so a run that does not finish leaves it empty. No hash of the output yet, no
 script changed, no test uses it.
 
-**Checked** (`results/record/first.txt`; sclk 1): the same prompt twice. Both records parse, carry
+**Checked** (`results/record/first.txt`; sclk auto, not the 1 this step first said: step 116): the same prompt twice. Both records parse, carry
 the same prompt hash and repeat the stderr lines' numbers; the outputs are the same bytes;
 `--record` with `-i` exits with 2 and an unwritable path with 1, both before the load. The CPU
 build compiles with it (not run).
 
 **The fastest single-machine settings, recorded once** (`results/record/fast.txt`; cpp-matrix, 300
-tokens): 47.7 t/s at sclk 1 (54.86 at sclk 6 in step 114), the output the stored one's bytes. The
-record holds neither the clock level nor the speculation and cache numbers stderr prints (68
+tokens): 47.7 t/s (54.86 at sclk 6 in step 114; here the cards were on auto, and step 116's repeat gave 55.05), the output the stored one's bytes. The
+record holds neither the clock setting nor the speculation and cache numbers stderr prints (68
 verify steps, 4.41 tokens per step, 85.7% of expert uses on GPUs): the next fields.
 
 **Seen on the way:** the page cache was empty before the first run. Load 92.7 s against 4.0 s,
@@ -4317,3 +4317,39 @@ fields.
 
 **Not measured:** the option's cost. It adds one hash of the prompt's ids before the load and one
 file write after the generation, nothing inside a step.
+
+## Step 116: the GPU clock setting in the record; step 115's "sclk 1" was auto
+
+**The field.** `--record` now writes `"env": {"gpu_sclk": [...]}`: one value per AMD card, in
+card order. A card whose level is fixed (`power_dpm_force_performance_level` = `manual`) gives
+its level, 0-8; any other mode gives the mode's name, so a card on auto reads `"auto"`. On auto
+the driver moves the level with the load, and the level at any one moment says nothing about
+the run. Read once, as the run starts, before the load. It is not read again at the end: a
+setting that changed and changed back would look unchanged, so "the same at both ends" would
+promise more than it checks. A file that cannot be read gives `"unknown"`. The record's helpers
+moved to `src/record.h`.
+
+**A correction to step 115.** Its results files and text said "sclk 1". The cards were on auto:
+the machine had rebooted two hours earlier, which resets the setting, and 1 was the starred
+level of `pp_dpm_sclk` read while the GPUs idled. The headers and the step's text are corrected
+in place, each with a note. The scripts' headers read the level the same way
+(`grep '\*' .../pp_dpm_sclk`, nine scripts): after a reboot they too would name an idle level.
+Not changed here.
+
+**Checked** (`results/record/sclk.txt`):
+- The reader on a copy of the sysfs files with six made-up cards (fixed at 6, auto, another
+  vendor, no mode file, fixed with no starred line, fixed at 0): `[6, "auto", "unknown",
+  "unknown", 0]`. The fixed-level case was not run on the real cards (setting it needs root).
+- On this machine a short run records `["auto", "auto", "auto", "auto"]`; its output and prompt
+  hash are step 115's.
+- Does auto move during a run? The fastest single-machine settings again, each card's level
+  sampled every 0.1 s: every card was seen at levels 1, 5 and 8. So one number could not have
+  described the run.
+
+**Not explained:** that run gave 55.05 t/s, step 115's 47.70, with the same command and the
+same clock mode; the output is the stored one's bytes both times. Two runs. Step 115 put its
+47.7 down to "sclk 1 against 6": the clock was not at 1, and the clock mode does not separate
+the two runs. A candidate, not checked: storage reads during generation. The page cache held
+291 GB before the first run and 300 GB after the second, of ~488 GB of model files, so part of
+the model was uncached in both (the engram table is read as the tokens need it). Bytes read
+from storage per phase, the next field planned, would say what each run read.

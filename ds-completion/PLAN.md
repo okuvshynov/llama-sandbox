@@ -498,6 +498,8 @@ Step 113: review round 1 (error paths, checks between the halves, the launcher; 
 Step 114: review round 2 (the runtime, kernels and loaders; what it left open is listed in the README's step).
 Step 115: testing from here on: a run as one record (`--record`, a first minimal version; the idea
 and the next small steps in `docs/record.md`). No test changed yet.
+Step 116: the GPU clock setting in the record (a level, or "auto": after a reboot the cards are on
+auto and the level moves during a run).
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front

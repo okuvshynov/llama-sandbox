@@ -10,7 +10,7 @@
 // otherwise the prompt is raw text after BOS. -f reads the prompt from a file.
 // Only the tokenizer comes from libllama (vocab-only load).
 // --record FILE: the run as one JSON object (docs/record.md): a few of its arguments, the prompt's
-// token count and hash, and the times the "# ..." lines on stderr report.
+// token count and hash, the GPU clock setting, and the times the "# ..." lines on stderr report.
 // Without --rt: everything on the CPU through the ggml Engine (forward.cpp), the prompt as one
 // chunk. --rt <dense-fp8.gguf> (bin-hip build): every token through the own runtime (hip/rt.h:
 // dense part on GPU D in exact fp8, routed experts on the CPU or, with --placement, partly on
@@ -20,6 +20,7 @@
 #include "fatal.h"
 #include "forward.h"
 #include "llama.h"
+#include "record.h"
 #ifdef DS_RUNTIME
 #include "rt.h"
 #endif
@@ -51,25 +52,6 @@ static std::vector<int32_t> tokenize(const llama_vocab* v, const std::string& te
   }
   t.resize(n);
   return std::vector<int32_t>(t.begin(), t.end());
-}
-
-// --record (docs/record.md). The prompt's identity is its token ids, after the chat template:
-// FNV-1a, 64 bits, over each id's four bytes, least significant first.
-static uint64_t fnv1a64_ids(const std::vector<int32_t>& ids) {
-  uint64_t h = 0xcbf29ce484222325ull;
-  for (int32_t id : ids)
-    for (int b = 0; b < 4; b++) h = (h ^ (((uint32_t)id >> (8 * b)) & 0xff)) * 0x100000001b3ull;
-  return h;
-}
-
-static std::string json_string(const std::string& s) {
-  std::string o = "\"";
-  for (unsigned char c : s) {
-    if (c == '"' || c == '\\') { o += '\\'; o += (char)c; }
-    else if (c < 0x20) { char b[8]; snprintf(b, sizeof b, "\\u%04x", c); o += b; }
-    else o += (char)c;
-  }
-  return o + "\"";
 }
 
 static std::string piece(const llama_vocab* v, int32_t tok) {
@@ -249,6 +231,7 @@ static int run(int argc, char** argv) {
     record = fopen(record_path.c_str(), "w");
     if (!record) { fprintf(stderr, "cannot write %s\n", record_path.c_str()); return 1; }
   }
+  const std::vector<std::string> sclk = record ? gpu_sclk() : std::vector<std::string>();  // as the run starts
 
   // tokenizer only
   llama_log_set([](ggml_log_level, const char*, void*) {}, nullptr);
@@ -705,6 +688,7 @@ static int run(int argc, char** argv) {
               spec ? "true" : "false", json_string(placement).c_str(), cache_loads, cache_period);
       fprintf(record, "  \"prompt\": {\"tokens\": %zu, \"hash\": \"fnv1a64:%016llx\"},\n", toks.size(),
               (unsigned long long)fnv1a64_ids(toks));
+      fprintf(record, "  \"env\": {\"gpu_sclk\": %s},\n", json_array(sclk).c_str());
       fprintf(record, "  \"counters\": {\"load_s\": %.3f, \"prompt_s\": %.4f, \"prompt_tps\": %.3f, \"gen_tokens\": %d, \"gen_s\": %.4f, \"gen_tps\": %.3f}\n}\n",
               t_load, t_pp, toks.size() / t_pp, n_gen, t_tg, n_gen > 0 ? n_gen / t_tg : 0.0);
       if (fclose(record) != 0) { fprintf(stderr, "cannot write %s\n", record_path.c_str()); return 1; }

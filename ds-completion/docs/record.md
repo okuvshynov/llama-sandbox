@@ -1,6 +1,6 @@
 # `--record`: a run as one record
 
-**Status (2026-11-15, README step 115):** the idea, and a first minimal `--record` in
+**Status (2026-11-15, README steps 115-116):** the idea, and a first minimal `--record` in
 `ds-completion`. No test uses it yet and no existing script changed. The record is meant to grow
 field by field, each addition a small change; the testing procedure follows once the record has
 shown what it can see.
@@ -84,7 +84,8 @@ Decided in the discussion this document comes from:
   "args": {"mode": "chat", "effort": 75, "n": 32, "threads": 16, "runtime": true, "canon": false, "spec": false,
            "placement": "", "cache_loads": 0, "cache_period": 16},
   "prompt": {"tokens": 20, "hash": "fnv1a64:ca691ad07d0dd8ee"},
-  "counters": {"load_s": 4.003, "prompt_s": 0.9777, "prompt_tps": 20.457, "gen_tokens": 32, "gen_s": 2.2036, "gen_tps": 14.522}
+  "env": {"gpu_sclk": ["auto", "auto", "auto", "auto"]},
+  "counters": {"load_s": 4.003, "prompt_s": 0.9494, "prompt_tps": 21.066, "gen_tokens": 32, "gen_s": 2.2336, "gen_tps": 14.326}
 }
 ```
 
@@ -94,6 +95,10 @@ Decided in the discussion this document comes from:
   as four bytes, least significant first. Two runs with the same hash ran the same tokens,
   whatever text or options produced them. A prompt's name belongs to whoever starts the run; the
   engine does not know it.
+- `env.gpu_sclk` (step 116): the GPU clock setting, one value per AMD card: the level (0-8)
+  where it is fixed, `"auto"` (or another mode's name) where the driver moves it with the load,
+  `"unknown"` if it could not be read. As it was when the run started; a setting changed by
+  hand during a run is not seen. After a reboot every card is on auto.
 - `counters`: the numbers of the `# loaded in ...` and `# prompt: ... generation: ...` lines.
 
 The file is opened before the model loads and written after the generation. A run that fails or
@@ -103,7 +108,7 @@ directory is reported in the first second, not after the load.
 ## The first two records
 
 The same 20-token prompt twice in a row, 32 tokens generated, every expert on the CPU
-(`results/record/first.txt`; sclk 1). The page cache happened to be empty before the first run:
+(`results/record/first.txt`; the cards on auto). The page cache happened to be empty before the first run:
 
 | | run 1 (cold) | run 2 (warm) |
 |---|---|---|
@@ -119,8 +124,11 @@ has to know is unusual. Item 3 below is for that.
 
 A third record, of the fastest single-machine settings (`results/record/fast.txt`: cpp-matrix,
 300 tokens, placement, draft, `--canon`, the cache at 800 loads/s): 47.7 t/s, the output the
-stored one's bytes. Step 114 measured 54.86 t/s on this prompt; the difference is the GPU clock
-(level 1 here, 6 there), which the record does not hold. Neither does it hold what stderr
+stored one's bytes. Step 114 measured 54.86 t/s on this prompt at clock level 6. Here the cards
+were on auto, which this record did not hold (step 116 added it), and the same command an hour
+later gave 55.05 t/s (`results/record/sclk.txt`): a 15% spread between two runs that no field
+explains yet. On auto each card was seen at levels 1, 5 and 8 within one run. Neither does the
+record hold what stderr
 printed next to it: 68 verify steps, 4.41 tokens per step, 85.7% of expert uses on GPUs, 3,663
 cache loads. And tokens per step was 4.55 and 4.62 in two earlier runs of this prompt: the draft
 length follows measured times, so the steps of two runs differ while their outputs do not.
@@ -142,7 +150,8 @@ A record is committed when something in the repository points at it; otherwise i
 In the order I would take them; the order is not decided.
 
 1. The rest of the configuration as it took effect: every option, the `DS_*` switches, the commit
-   the binary was built from, the input files' sizes and dates, the GPU clock level.
+   the binary was built from, the input files' sizes and dates. (The GPU clock setting: done,
+   step 116.)
 2. Proof that a requested feature ran: drafts made with `--spec`, loads with `--cache-loads`,
    slots filled with `--placement`. A feature that silently did not apply looks like "no
    difference".
