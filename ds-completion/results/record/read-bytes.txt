@@ -1,0 +1,76 @@
+# Bytes read from storage per phase in the record (README step 117). Commit 1b75940+changes (this change), 2026-11-15.
+# sclk 6 on every card (set by hand before these runs; each record says so). The page cache held ~300 GB of the
+# ~488 GB of model files: the machine had rebooted that afternoon and the model was not read through
+# (the CPU's experts and the dense weights cached, most of the 189 GB engram table not).
+# Each record without its "schema" and "args" lines.
+#
+# 0. Can the counter see what the engine does? A 64 MiB file on the model's filesystem, python:
+#      mmap, file evicted (posix_fadvise DONTNEED)   read_bytes +64.0 MiB   major faults +1
+#      mmap, cached                                  read_bytes  +0.0 MiB   major faults +0
+#      pread, evicted                                read_bytes +64.0 MiB   major faults +0
+#      pread, cached                                 read_bytes  +0.0 MiB
+#      mmap, evicted, read by another thread         read_bytes +64.0 MiB (the process's counter)
+#
+# 1. Short runs, every expert on the CPU:
+#    bin-hip/ds-completion -m $M --rt $F8 -p PROMPT --chat -n 32 --record FILE
+
+== the prompt of results/record/first.txt, twice
+  "prompt": {"tokens": 20, "hash": "fnv1a64:ca691ad07d0dd8ee"},
+  "env": {"gpu_sclk": [6, 6, 6, 6]},
+  "read_bytes": {"load": 0, "prompt": 0, "gen": 0},
+  "counters": {"load_s": 4.009, "prompt_s": 0.9276, "prompt_tps": 21.562, "gen_tokens": 32, "gen_s": 2.1989, "gen_tps": 14.552}
+  "prompt": {"tokens": 20, "hash": "fnv1a64:ca691ad07d0dd8ee"},
+  "env": {"gpu_sclk": [6, 6, 6, 6]},
+  "read_bytes": {"load": 0, "prompt": 0, "gen": 0},
+  "counters": {"load_s": 4.016, "prompt_s": 0.9298, "prompt_tps": 21.510, "gen_tokens": 32, "gen_s": 2.2085, "gen_tps": 14.490}
+
+== the same prompt after dense-fp8.gguf (6,843,437,120 bytes) was evicted from the page cache; the same output
+  "prompt": {"tokens": 20, "hash": "fnv1a64:ca691ad07d0dd8ee"},
+  "env": {"gpu_sclk": [6, 6, 6, 6]},
+  "read_bytes": {"load": 6843441152, "prompt": 0, "gen": 0},
+  "counters": {"load_s": 6.578, "prompt_s": 0.9434, "prompt_tps": 21.201, "gen_tokens": 32, "gen_s": 2.2146, "gen_tps": 14.449}
+
+== "Describe how a marine chronometer solved the longitude problem for eighteenth century navigators.", not run before
+  "prompt": {"tokens": 20, "hash": "fnv1a64:aeb9655e2a1dbb1f"},
+  "env": {"gpu_sclk": [6, 6, 6, 6]},
+  "read_bytes": {"load": 0, "prompt": 5091328, "gen": 7307264},
+  "counters": {"load_s": 4.030, "prompt_s": 1.0759, "prompt_tps": 18.589, "gen_tokens": 32, "gen_s": 2.3068, "gen_tps": 13.872}
+
+== that prompt again; the same output
+  "prompt": {"tokens": 20, "hash": "fnv1a64:aeb9655e2a1dbb1f"},
+  "env": {"gpu_sclk": [6, 6, 6, 6]},
+  "read_bytes": {"load": 0, "prompt": 0, "gen": 0},
+  "counters": {"load_s": 4.206, "prompt_s": 0.9867, "prompt_tps": 20.269, "gen_tokens": 32, "gen_s": 2.2013, "gen_tps": 14.537}
+
+# 2. The fastest single-machine settings (the command of results/record/fast.txt), 300 tokens.
+#    Every output: the same bytes as results/cache-test/plain-canon-static/<name>.out.
+
+== cpp-matrix (run three times since the reboot)
+  "prompt": {"tokens": 25, "hash": "fnv1a64:32138dd9ac19a294"},
+  "env": {"gpu_sclk": [6, 6, 6, 6]},
+  "read_bytes": {"load": 0, "prompt": 0, "gen": 0},
+  "counters": {"load_s": 116.473, "prompt_s": 0.6239, "prompt_tps": 40.072, "gen_tokens": 300, "gen_s": 5.4929, "gen_tps": 54.616}
+# speculative: 66 verify steps, 3.53 drafts accepted per step, 4.55 tokens per step; draft 7.8 ms per step
+# routed experts: 85.7% on GPUs (72792 of 84960)
+
+== sql-report, not run since the reboot
+  "prompt": {"tokens": 49, "hash": "fnv1a64:3cef864372fb529c"},
+  "env": {"gpu_sclk": [6, 6, 6, 6]},
+  "read_bytes": {"load": 0, "prompt": 11489280, "gen": 72409088},
+  "counters": {"load_s": 116.713, "prompt_s": 1.2937, "prompt_tps": 37.875, "gen_tokens": 300, "gen_s": 7.2878, "gen_tps": 41.165}
+# speculative: 79 verify steps, 2.82 drafts accepted per step, 3.80 tokens per step; draft 7.9 ms per step
+# routed experts: 82.3% on GPUs (80980 of 98400)
+
+== sql-report again
+  "prompt": {"tokens": 49, "hash": "fnv1a64:3cef864372fb529c"},
+  "env": {"gpu_sclk": [6, 6, 6, 6]},
+  "read_bytes": {"load": 0, "prompt": 0, "gen": 835584},
+  "counters": {"load_s": 116.496, "prompt_s": 1.1520, "prompt_tps": 42.536, "gen_tokens": 300, "gen_s": 6.4143, "gen_tps": 46.770}
+# speculative: 77 verify steps, 2.92 drafts accepted per step, 3.90 tokens per step; draft 7.8 ms per step
+# routed experts: 82.0% on GPUs (80289 of 97920)
+
+# sql-report: 41.17 t/s with 72 MB read during the generation, 46.77 with 0.8 MB (46.63 in the held-out run of
+# step 104, results/spec-measure-sclk6-cacheloads800cacheperiod8-virt/). One pair.
+# cpp-matrix at a fixed level 6: 54.62 t/s (54.86 in step 114); the record says [6, 6, 6, 6], the case step 116
+# had only tried on made-up files. An earlier run of it the same evening, level sampled every 0.1 s: 6 in all
+# 1,029 samples of every card, 54.55 t/s.

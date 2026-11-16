@@ -1,6 +1,6 @@
 # `--record`: a run as one record
 
-**Status (2026-11-15, README steps 115-116):** the idea, and a first minimal `--record` in
+**Status (2026-11-15, README steps 115-117):** the idea, and a first minimal `--record` in
 `ds-completion`. No test uses it yet and no existing script changed. The record is meant to grow
 field by field, each addition a small change; the testing procedure follows once the record has
 shown what it can see.
@@ -81,11 +81,12 @@ Decided in the discussion this document comes from:
 ```json
 {
   "schema": 1,
-  "args": {"mode": "chat", "effort": 75, "n": 32, "threads": 16, "runtime": true, "canon": false, "spec": false,
-           "placement": "", "cache_loads": 0, "cache_period": 16},
-  "prompt": {"tokens": 20, "hash": "fnv1a64:ca691ad07d0dd8ee"},
-  "env": {"gpu_sclk": ["auto", "auto", "auto", "auto"]},
-  "counters": {"load_s": 4.003, "prompt_s": 0.9494, "prompt_tps": 21.066, "gen_tokens": 32, "gen_s": 2.2336, "gen_tps": 14.326}
+  "args": {"mode": "chat", "effort": 75, "n": 300, "threads": 16, "runtime": true, "canon": true, "spec": true,
+           "placement": "placements/study30.txt", "cache_loads": 800, "cache_period": 8},
+  "prompt": {"tokens": 49, "hash": "fnv1a64:3cef864372fb529c"},
+  "env": {"gpu_sclk": [6, 6, 6, 6]},
+  "read_bytes": {"load": 0, "prompt": 11489280, "gen": 72409088},
+  "counters": {"load_s": 116.713, "prompt_s": 1.2937, "prompt_tps": 37.875, "gen_tokens": 300, "gen_s": 7.2878, "gen_tps": 41.165}
 }
 ```
 
@@ -99,6 +100,11 @@ Decided in the discussion this document comes from:
   where it is fixed, `"auto"` (or another mode's name) where the driver moves it with the load,
   `"unknown"` if it could not be read. As it was when the run started; a setting changed by
   hand during a run is not seen. After a reboot every card is on auto.
+- `read_bytes` (step 117): what the process had fetched from storage in each phase
+  (`/proc/self/io`): this process only, all its threads, only reads that reached the disk. 0: the
+  phase did not wait for storage. In the example the generation read 72 MB: the prompt had not
+  been run since a reboot, its engram rows came from the disk, and the run was 12% slower than
+  its repeat. `null`: not available.
 - `counters`: the numbers of the `# loaded in ...` and `# prompt: ... generation: ...` lines.
 
 The file is opened before the model loads and written after the generation. A run that fails or
@@ -127,7 +133,8 @@ A third record, of the fastest single-machine settings (`results/record/fast.txt
 stored one's bytes. Step 114 measured 54.86 t/s on this prompt at clock level 6. Here the cards
 were on auto, which this record did not hold (step 116 added it), and the same command an hour
 later gave 55.05 t/s (`results/record/sclk.txt`): a 15% spread between two runs that no field
-explains yet. On auto each card was seen at levels 1, 5 and 8 within one run. Neither does the
+explained then. Step 117's field gives a likely cause, after the fact: the first run of a text
+after a reboot reads its engram rows from the disk. On auto each card was seen at levels 1, 5 and 8 within one run. Neither does the
 record hold what stderr
 printed next to it: 68 verify steps, 4.41 tokens per step, 85.7% of expert uses on GPUs, 3,663
 cache loads. And tokens per step was 4.55 and 4.62 in two earlier runs of this prompt: the draft
@@ -155,8 +162,9 @@ In the order I would take them; the order is not decided.
 2. Proof that a requested feature ran: drafts made with `--spec`, loads with `--cache-loads`,
    slots filled with `--placement`. A feature that silently did not apply looks like "no
    difference".
-3. Cold runs: bytes read from storage and major page faults per phase (load, prompt,
-   generation), so a check can set a cold run aside by itself.
+3. Cold runs: done (step 117), as bytes read from storage per phase; major page faults do not
+   measure it (one fault for 64 MiB). Still open on the machine's side: how much of each model
+   file is cached when a run starts, which says whether the machine is ready, not what a run read.
 4. The counters the engine already prints: verify steps, drafts accepted, tokens per step, the
    share of experts on GPUs.
 5. Values: a hash of the emitted token ids, then of the logits. On the speculative path the

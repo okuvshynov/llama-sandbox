@@ -10,7 +10,8 @@
 // otherwise the prompt is raw text after BOS. -f reads the prompt from a file.
 // Only the tokenizer comes from libllama (vocab-only load).
 // --record FILE: the run as one JSON object (docs/record.md): a few of its arguments, the prompt's
-// token count and hash, the GPU clock setting, and the times the "# ..." lines on stderr report.
+// token count and hash, the GPU clock setting, the bytes read from storage per phase, and the
+// times the "# ..." lines on stderr report.
 // Without --rt: everything on the CPU through the ggml Engine (forward.cpp), the prompt as one
 // chunk. --rt <dense-fp8.gguf> (bin-hip build): every token through the own runtime (hip/rt.h:
 // dense part on GPU D in exact fp8, routed experts on the CPU or, with --placement, partly on
@@ -232,6 +233,8 @@ static int run(int argc, char** argv) {
     if (!record) { fprintf(stderr, "cannot write %s\n", record_path.c_str()); return 1; }
   }
   const std::vector<std::string> sclk = record ? gpu_sclk() : std::vector<std::string>();  // as the run starts
+  // storage reads per phase (record.h): the counter at the start, after the load, the prompt, the generation
+  long long rd[4] = {record ? io_read_bytes() : -1, -1, -1, -1};
 
   // tokenizer only
   llama_log_set([](ggml_log_level, const char*, void*) {}, nullptr);
@@ -321,6 +324,7 @@ static int run(int argc, char** argv) {
 #endif
   if (rt_path.empty()) eng.reset(new Engine(m, opt));
   const double t_load = std::chrono::duration<double>(Clock::now() - t0).count();
+  if (record) rd[1] = io_read_bytes();
   fprintf(stderr, "# loaded in %.1f s; prompt %zu tokens; fake-quant %s; %d threads\n", t_load, toks.size(),
           opt.exact_quant ? "on" : "off", opt.n_threads);
 
@@ -427,6 +431,7 @@ static int run(int argc, char** argv) {
     std::vector<float> logits = eng->forward(toks);
 #endif
     const double t_pp = std::chrono::duration<double>(Clock::now() - t1).count();
+    if (record) rd[2] = io_read_bytes();
     int n_gen = 0;
     [[maybe_unused]] bool hit_eos = false;
     auto t2 = Clock::now();
@@ -642,6 +647,7 @@ static int run(int argc, char** argv) {
       logits = eng->forward({next});
     }
     const double t_tg = std::chrono::duration<double>(Clock::now() - t2).count();
+    if (record) rd[3] = io_read_bytes();
     if (spec_steps)
       fprintf(stderr, "\n# speculative: %ld verify steps, %.2f drafts accepted per step, %.2f tokens per step; draft %.1f ms per step\n",
               spec_steps, (double)spec_accepted / spec_steps, (double)n_gen / spec_steps, draft_ms / spec_steps);
@@ -689,6 +695,8 @@ static int run(int argc, char** argv) {
       fprintf(record, "  \"prompt\": {\"tokens\": %zu, \"hash\": \"fnv1a64:%016llx\"},\n", toks.size(),
               (unsigned long long)fnv1a64_ids(toks));
       fprintf(record, "  \"env\": {\"gpu_sclk\": %s},\n", json_array(sclk).c_str());
+      auto read = [&](int i) { return rd[i] < 0 || rd[i + 1] < 0 ? std::string("null") : std::to_string(rd[i + 1] - rd[i]); };
+      fprintf(record, "  \"read_bytes\": {\"load\": %s, \"prompt\": %s, \"gen\": %s},\n", read(0).c_str(), read(1).c_str(), read(2).c_str());
       fprintf(record, "  \"counters\": {\"load_s\": %.3f, \"prompt_s\": %.4f, \"prompt_tps\": %.3f, \"gen_tokens\": %d, \"gen_s\": %.4f, \"gen_tps\": %.3f}\n}\n",
               t_load, t_pp, toks.size() / t_pp, n_gen, t_tg, n_gen > 0 ? n_gen / t_tg : 0.0);
       if (fclose(record) != 0) { fprintf(stderr, "cannot write %s\n", record_path.c_str()); return 1; }

@@ -57,6 +57,18 @@ inline std::vector<std::string> gpu_sclk(const std::string& root = "/sys/class/d
   return r;
 }
 
+// Bytes this process has had fetched from storage so far (/proc/self/io, read_bytes): reads of
+// file pages that were not in the page cache, by any of its threads, through the model's mmap or
+// pread alike; a read served from the page cache adds nothing. -1: not available.
+inline long long io_read_bytes() {
+  std::ifstream f("/proc/self/io");
+  std::string key;
+  long long v;
+  while (f >> key >> v)
+    if (key == "read_bytes:") return v;
+  return -1;
+}
+
 // a list of JSON values as a JSON array
 inline std::string json_array(const std::vector<std::string>& v) {
   std::string o = "[";

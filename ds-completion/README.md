@@ -4353,3 +4353,54 @@ the two runs. A candidate, not checked: storage reads during generation. The pag
 291 GB before the first run and 300 GB after the second, of ~488 GB of model files, so part of
 the model was uncached in both (the engram table is read as the tokens need it). Bytes read
 from storage per phase, the next field planned, would say what each run read.
+
+## Step 117: bytes read from storage per phase in the record; a new prompt reads the engram table from disk
+
+**The field.** `--record` now writes `"read_bytes": {"load": .., "prompt": .., "gen": ..}`: what
+the process had fetched from storage during the load, the prompt and the generation
+(`/proc/self/io`, `read_bytes`, read at the four boundaries; `null` if the file is not there).
+It counts this process only, all its threads, and only reads that reached the disk: a read
+served from the page cache adds nothing. So zero means "this phase did not wait for storage",
+which is the question for a timing. It does not say how much of the model is cached: a run that
+does not touch the uncached part reads nothing.
+
+**Why not major page faults:** tried first on a 64 MiB file on the model's filesystem. Evicted
+and read through a mapping, `read_bytes` grew by 64.0 MiB and the major faults by 1 (readahead
+brings the rest); through `pread` 64.0 MiB and 0 faults; cached, 0 either way; read by another
+thread, the process's counter still has it.
+
+**Checked** (`results/record/read-bytes.txt`; sclk 6, every record says `[6, 6, 6, 6]`):
+
+| run (32 tokens, experts on the CPU) | load | prompt | generation | |
+|---|---|---|---|---|
+| the usual prompt, twice | 0 | 0 | 0 | |
+| after the fp8 file (6,843,437,120 bytes) was evicted | 6,843,441,152 | 0 | 0 | load 6.6 s against 4.0; the file plus one page |
+| a prompt not run before | 0 | 5.1 MB | 7.3 MB | prompt 18.6 t/s, generation 13.9 |
+| that prompt again | 0 | 0 | 0 | 20.3 and 14.5 t/s |
+
+**What it showed: a new prompt reads from the disk while it generates.** The page cache held
+~300 GB of the ~488 GB of model files (a reboot that afternoon; the model was not read through
+afterwards): the CPU's experts, which the load maps, and the dense weights. Most of the 189 GB
+engram table was not in it, and its rows are read as the tokens need them. With the fastest
+settings (300 tokens):
+
+| prompt | read during generation | t/s |
+|---|---|---|
+| cpp-matrix (run three times since the reboot) | 0 | 54.62 |
+| sql-report, not run since the reboot | 72 MB | 41.17 |
+| sql-report again | 0.8 MB | 46.77 (46.63 in step 104's held-out run) |
+
+12% for 72 MB, one pair. The second run still read 0.8 MB: its rejected drafts were not the
+first run's (3.90 tokens per step against 3.80), and a draft's tokens fetch rows too.
+
+**Step 116's 47.70 t/s:** that was the first run of cpp-matrix after the reboot, 13% under the
+three since (55.05, 54.55, 54.62). It was made before this field existed, so its reads were not
+recorded; cold engram rows fit its size and its place, and nothing else found does.
+
+**Step 116's fixed level, on the real cards:** set to 6 by hand before these runs. The record
+says `[6, 6, 6, 6]`, and sampled every 0.1 s through one run every card was at 6 in all 1,029
+samples.
+
+**For measurements:** QUICKSTART's `cat ~/llms/UD-Q8_K_XL/*.gguf > /dev/null` after a reboot
+matters for more than the first run: until the engram table is cached, every new text is slow
+once. A check on records can now drop a run whose `read_bytes.gen` is not 0 by itself.
