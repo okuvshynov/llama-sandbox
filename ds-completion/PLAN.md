@@ -563,6 +563,9 @@ Step 141: its hardware counters work (with `hsa-amd-aqlprofile6.3.4`): few per r
 a first per-kernel table (memory unit busy, cache hits, kilobytes fetched). Values not yet checked against a known kernel.
 Step 142: checked on `bench-fp8`: `FetchSize` exact (weights + 0.1-0.4%), a miss = one 64-byte line; the
 "share of time" counters grow with a kernel's length and do not compare between kernels.
+Step 143: from the kernel trace, the home die runs a kernel 50% of a (traced, plain) step; gaps between
+back-to-back launches sum to 0.9 ms/token (the bound for fusion); the idle time is the wait for the CPU's
+experts (17.7 ms) and a 176 us gap per layer not yet named (6.5 ms). Next: the same on the fastest settings.
 constructor in parts.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits

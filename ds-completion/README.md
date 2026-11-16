@@ -5173,3 +5173,32 @@ and the same kind of data it reads 11.7% at 7 us per call and 91% at 209 us, gro
 call's time. The share is of an interval that has a fixed part around the kernel. So step
 141's column of busy shares ranks kernels by length more than by behaviour; the bytes and the
 hit rate are the columns to use. The instruction counters are still unchecked.
+
+## Step 143: how busy each die is in generation, and what fusing launches could give
+
+The question behind fusing kernels (steps 49, 99): is a die idle between its launches? Step
+140's kernel trace has every launch's start and end on the device, so the answer needs no new
+run: `results/rocprof/busy.py` takes the window from the first to the last output-head launch
+and, per die, the time a kernel is running (`results/rocprof/busy.txt`; a plain run, traced:
+52.7 ms per token where the untraced run takes 41.2, so the gaps hold the profiler's cost too).
+
+| die | launches per token | a kernel running | share of the traced step |
+|---|---|---|---|
+| home (dense part, its experts) | 1,740 | 26.2 ms | 49.8% |
+| each other die (experts) | 160 | 2.7-2.8 ms | 5.1-5.3% |
+
+**The home die's idle time is not between back-to-back launches.** Of its 1,740 launches per
+token only 194 follow an idle gap, and the 111 gaps under 20 us sum to 0.92 ms per token: what
+removing every launch boundary could give at most, about 2% of a step. Step 99's fusion
+gaining nothing agrees with this.
+
+**It is two waits per layer:** 35 gaps per token of 506 us before `copy16_kernel`, the copy of
+the CPU's expert rows (step 84), 17.7 ms per token: the die waits for the CPU's experts, as
+`--trace` shows from the host as `ffn.wait_for_cpu_experts`; and 37 gaps of 176 us between
+the die's own expert kernel and the next `quant_act_kernel`, 6.5 ms per token, not yet matched
+to a span of our trace. The other dies run 5% of the time: on this placement their experts
+are a small part of the step.
+
+So on a plain step the GPU-side lever is not launches; it is the same one as before, the wait
+for the CPU's experts, now seen from the device. Not done: the same on the fastest settings
+(speculation and the cache change both the rows per launch and the CPU's share).

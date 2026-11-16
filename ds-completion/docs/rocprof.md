@@ -102,6 +102,13 @@ clocks differ.
   `scripts/trace_critpath.py` say what the step waits for. Use rocprofv3 to rank and to count,
   then measure a change with the ordinary runs.
 
+## A die's busy share
+
+`results/rocprof/busy.py DIR/NAME_kernel_trace.csv` (README step 143): per die, over the
+generation, the time a kernel is running, the idle gaps by length, and for the home die
+between which kernels the long gaps fall. It answers "is the die waiting, and for what" from
+the device's side; the run is traced, so the gaps include the profiler's host cost.
+
 ## Hardware counters (`--pmc`)
 
 One more package, which `rocprofiler-sdk` does not pull in (without it: `undefined symbol:
