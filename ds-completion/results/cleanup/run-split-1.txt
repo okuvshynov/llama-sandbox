@@ -1,0 +1,19 @@
+# run() split, part 1 (README step 131): the options into struct Args + parse_args(), the record into write_record().
+# Before: the build of commit e4a04ca. After: e4a04ca + this change. sclk 6, 2026-11-16. Each command with both builds.
+# P = "What are the differences between TCP and UDP, and when would you choose each?"; PC = cpp-matrix of results/spec-heldout/prompts.txt.
+#
+# Usage errors: the same stderr and exit code (in parentheses) with both:
+#   (no arguments) (2); -p x --nope (2); -p x --think --effort 0 (2); -f /no/such/file (1); -p x --record-label a=b (2);
+#   -i --chat (2); -p x -n (2); bin-hip: -p x --rt $F8 --spec (2; one line apart: "mapped 289 GB of CPU experts in 1.0 s" / "1.1 s")
+#
+# Runs: stdout byte for byte; the record without its times (counters but gen_tokens, spec.draft_ms, spec.verify_ms) and its
+# lines' layout; the kinds of '#' lines on stderr; generation t/s before, after.
+#   cpu      bin/ds-completion -p P --chat -n 8 --record F --record-label k=v                         same; same; -;     3.79  3.81
+#   plain    --rt $F8 --canon -p P --chat -n 32 --record F                                            same; same; -;    13.71 13.73
+#   shadow   plain + --dspark $D --placement placements/study30.txt (drafts measured, not used)       same; same; same; 19.72 19.81
+#   specn    -p PC --chat -n 120 ... --spec --spec-n 5 --profile --record F                           same; same; same; 28.93 29.19
+#   fast     -p PC --chat -n 300 ... --spec --cache-loads 800 --cache-period 8 --cache-wait --record  same; (*);  same; 54.56 54.52
+#   chat     -i --think --effort low -n 200 ... --spec, two turns on stdin                            same; -;    same
+#   teacher  --rt $F8 --canon -p P --chat --teacher                                                   same; -;    same
+# (*) fast: args, label, prompt, env, spec's counts and output equal; experts differs in what follows the cache's timing, as
+#     between any two runs: gpu_uses 72795 / 72778, swaps_planned 3861 / 3848, loads_published 3621 / 3622, loads per die.

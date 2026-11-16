@@ -23,6 +23,10 @@
 #include "forward.h"
 #include "llama.h"
 #include "record.h"
+
+#ifndef DS_RUNTIME
+class Runtime;  // (write_record takes a null one)
+#endif
 #ifdef DS_RUNTIME
 #include "rt.h"
 #endif
@@ -111,6 +115,198 @@ struct AfterMain {
   ~AfterMain() { fatal_phase("after main: static destructors and the libraries' exit"); }
 };
 
+// The command line, as given (parse_args); n_predict is later capped by --max-ctx.
+struct Args {
+  std::string model_path, prompt, mode = "raw", rt_path;
+  int n_predict = 128;
+  int effort = 75;  // --think's reasoning effort (encoding.py's default)
+  Options opt;
+  int gpu = 0;
+  bool profile = false;
+  std::string trace_path;
+  std::string route_log;
+  std::string placement;
+  std::vector<int> moe_dies = {0, 1, 2, 3};
+  double load_test = -1;
+  bool load_pinned = false;
+  bool canon = false;
+  bool max_ctx_set = false;
+  int prefill_chunk = 512;
+  bool prefill_overlap = true;
+  double cache_loads = 0;
+  int cache_period = 16, cache_window = 256, cache_min = 2;
+  bool cache_wait = false;
+  std::string dspark_path;
+  bool spec = false;
+  bool interactive = false;
+  std::vector<int> layers;  // --layers a-b: a range of the model (README step 110)
+  bool teacher = false;
+  int serve_port = 0;  // --serve: the back of two processes (README step 111)
+  std::string remote;  // --remote host:port: the front's back
+  std::string stream_in_path, stream_out_path;
+  int spec_n = 0;
+  std::string spec_log_path;
+  std::string record_path;
+  std::vector<std::pair<std::string, std::string>> record_label;
+};
+
+// -1: go on; else the exit code (2: a usage error, 1: a prompt file that cannot be read)
+static int parse_args(int argc, char** argv, Args& args) {
+  for (int i = 1; i < argc; i++) {
+    std::string a = argv[i];
+    auto next = [&] { if (i + 1 >= argc) { fprintf(stderr, "missing value for %s\n", a.c_str()); exit(2); } return argv[++i]; };
+    if (a == "-m") args.model_path = next();
+    else if (a == "-p") args.prompt = next();
+    else if (a == "-f") {  // the prompt from a text file, as is (trailing newline included)
+      const char* path = next();
+      FILE* f = fopen(path, "rb");
+      if (!f) { fprintf(stderr, "cannot read %s\n", path); return 1; }
+      args.prompt.clear();
+      char buf[65536];
+      for (size_t n; (n = fread(buf, 1, sizeof buf, f)) > 0;) args.prompt.append(buf, n);
+      fclose(f);
+    }
+    else if (a == "--effort") {  // --think: 1-100, or low / high / max (encoding.py: 50 / 75 / 100)
+      const std::string e = next();
+      args.effort = e == "low" ? 50 : e == "high" ? 75 : e == "max" ? 100 : atoi(e.c_str());
+      if (args.effort < 1 || args.effort > 100) { fprintf(stderr, "--effort: 1-100, low, high or max\n"); return 2; }
+    }
+    else if (a == "--chat") args.mode = "chat";
+    else if (a == "--think") args.mode = "think";
+    else if (a == "-i" || a == "--interactive") args.interactive = true;  // runtime, --chat or --think: a session of turns on one context
+    else if (a == "-n") args.n_predict = atoi(next());
+    else if (a == "--layers") {  // runtime: only layers a-b (a range hands its stream to the next: --teacher)
+      int la = 0, lb = 0;
+      if (sscanf(next(), "%d-%d", &la, &lb) != 2 || la < 0 || lb < la) { fprintf(stderr, "--layers a-b\n"); return 2; }
+      for (int L = la; L <= lb; L++) args.layers.push_back(L);
+    }
+    // --teacher: the prompt's tokens through verify + commit in chunks of 5, the greedy next id after
+    // each printed (one per line; a range without the head prints none). --stream-out file: each
+    // token's stream after the range's last layer; --stream-in file: the stream a range starts from
+    else if (a == "--teacher") args.teacher = true;
+    // two processes: the back, `--layers k-39 [--dspark ..] --serve port`, waits for one front,
+    // `--layers 0-(k-1) --remote host:port`, which is used as the whole model would be
+    else if (a == "--serve") args.serve_port = atoi(next());
+    else if (a == "--remote") args.remote = next();
+    else if (a == "--stream-in") args.stream_in_path = next();
+    else if (a == "--stream-out") args.stream_out_path = next();
+    else if (a == "-t") args.opt.n_threads = atoi(next());
+    else if (a == "--gpu") args.gpu = atoi(next());
+    else if (a == "--dspark") args.dspark_path = next();
+    else if (a == "--spec") args.spec = true;
+    else if (a == "--spec-log") args.spec_log_path = next();  // per verify step: n k verify_ms draft_ms conf[0..]
+    else if (a == "--spec-n") args.spec_n = atoi(next());  // fixed drafts verified per step (default: chosen per step)  // drafts verified per step (default: all the draft makes)  // with --rt and --dspark: speculative decoding (greedy, same output)  // runtime: the DSpark draft GGUF (shadow mode: drafts measured, not used)
+    else if (a == "--placement") args.placement = next();  // runtime: routed experts on GPUs (expert_pool.h)
+    else if (a == "--load-test") args.load_test = atof(next());  // runtime: background loads to spare slots (rt.h)
+    else if (a == "--load-pinned") args.load_pinned = true;
+    else if (a == "--canon") args.canon = true;  // runtime: placement-invariant expert numerics (rt.h)
+    else if (a == "--cache-loads") args.cache_loads = atof(next());  // runtime: adaptive expert cache (expert_cache.h)
+    else if (a == "--cache-period") args.cache_period = atoi(next());
+    else if (a == "--cache-window") args.cache_window = atoi(next());
+    else if (a == "--cache-min") args.cache_min = atoi(next());  // runtime: a newcomer's least uses in the window
+    else if (a == "--cache-wait") args.cache_wait = true;
+    else if (a == "--moe-dies") {
+      args.moe_dies.clear();
+      for (char* q = (char*)next(); *q;) { args.moe_dies.push_back((int)strtol(q, &q, 10)); if (*q == ',') q++; }
+    }
+    else if (a == "--profile") args.profile = true;
+    else if (a == "--trace") args.trace_path = next();  // runtime: a Chrome trace of every step (ui.perfetto.dev)
+    else if (a == "--rt") args.rt_path = next();
+    else if (a == "--log-routing") args.route_log = next();  // runtime: every token's experts per layer
+    else if (a == "--no-quant") args.opt.exact_quant = false;
+    else if (a == "--max-ctx") args.max_ctx_set = true, args.opt.max_ctx = atoi(next());
+    else if (a == "--prefill-chunk") args.prefill_chunk = atoi(next());  // runtime: prompt tokens per forward
+    else if (a == "--no-overlap") args.prefill_overlap = false;  // runtime: prompt chunks without the CPU/GPU overlap
+    else if (a == "--record") args.record_path = next();  // the run as one JSON object (docs/record.md)
+    else if (a == "--record-label") {  // key=value[,key=value...]: the caller's names for the run, written back
+      const std::string l = next();
+      if (!label_add(l, args.record_label)) { fprintf(stderr, "--record-label: key=value[,key=value...], every key once; got %s\n", l.c_str()); return 2; }
+    }
+    else { fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
+  }
+  if (args.interactive && (args.mode == "raw" || args.rt_path.empty())) {
+    fprintf(stderr, "-i needs --chat or --think, and --rt\n");
+    return 2;
+  }
+  if (args.model_path.empty() || (args.prompt.empty() && !args.interactive && !args.serve_port)) {
+    fprintf(stderr, "usage: ds-completion -m <model.gguf> (-p \"prompt\" | -f prompt.txt | -i) [--chat|--think [--effort 1-100|low|high|max]] [-n N] [-t N] [--no-quant] [--max-ctx N] [--rt dense-fp8.gguf [--gpu D] [--placement file [--moe-dies 0,1,2,3] [--load-test R [--load-pinned]] [--cache-loads R [--cache-period N] [--cache-window N] [--cache-min N] [--cache-wait]]] [--canon] [--profile]]\n"
+                    "more (--dspark/--spec, --layers/--serve/--remote, --trace, --record, ...): QUICKSTART.md, Options\n");
+    return 2;
+  }
+  return -1;
+}
+
+// What --record writes of a turn beyond the arguments (docs/record.md).
+struct RecordRun {
+  const std::vector<int32_t>& toks;      // the prompt
+  const std::vector<std::string>& sclk;  // the GPU clock setting as the run started
+  const long long* rd;                   // [4] storage reads so far: at the start, after the load, the prompt, the generation
+  double t_load, t_pp, t_tg;             // seconds: the load, the prompt, the generation
+  int n_gen;
+  const std::vector<int32_t>& gen;       // the generated ids (the first n_gen were printed)
+  long spec_steps, spec_plain, spec_accepted;
+  const std::vector<long>& spec_hist;    // verify steps by drafts verified
+  double draft_ms, verify_ms;
+};
+
+// The run as one JSON object (docs/record.md, schema 1), and the file closed. rt: null on the CPU path.
+// false: the file could not be written.
+static bool write_record(FILE* record, const Args& args, const RecordRun& r, [[maybe_unused]] const Runtime* rt) {
+  fprintf(record, "{\n  \"schema\": 1,\n");
+  fprintf(record, "  \"label\": %s,\n", label_json(args.record_label).c_str());
+  fprintf(record, "  \"args\": {\"mode\": %s, \"effort\": %d, \"n\": %d, \"threads\": %d, \"runtime\": %s, \"canon\": %s, \"spec\": %s,\n"
+                  "           \"placement\": %s, \"cache_loads\": %g, \"cache_period\": %d, \"cache_window\": %d, \"cache_min\": %d,\n"
+                  "           \"cache_wait\": %s, \"spec_n\": %d,\n"
+                  "           \"profile\": %s, \"trace\": %s, \"spec_log\": %s, \"log_routing\": %s},\n",
+          json_string(args.mode).c_str(), args.effort, args.n_predict, args.opt.n_threads, args.rt_path.empty() ? "false" : "true", args.canon ? "true" : "false",
+          args.spec ? "true" : "false", json_string(args.placement).c_str(), args.cache_loads, args.cache_period, args.cache_window, args.cache_min,
+          args.cache_wait ? "true" : "false", args.spec_n,  // as they took effect: an option not given has its default
+          // the options that add work to a run (a record with one of them on is not a clean timing): on or off
+          args.profile ? "true" : "false", args.trace_path.empty() ? "false" : "true", args.spec_log_path.empty() ? "false" : "true",
+          args.route_log.empty() ? "false" : "true");
+  fprintf(record, "  \"prompt\": {\"tokens\": %zu, \"hash\": \"fnv1a64:%016llx\"},\n", r.toks.size(),
+          (unsigned long long)fnv1a64_ids(r.toks));
+  fprintf(record, "  \"env\": {\"gpu_sclk\": %s, \"ds\": %s},\n", json_array(r.sclk).c_str(), env_ds_json().c_str());
+  auto read = [&](int i) { return r.rd[i] < 0 || r.rd[i + 1] < 0 ? std::string("null") : std::to_string(r.rd[i + 1] - r.rd[i]); };
+  fprintf(record, "  \"read_bytes\": {\"load\": %s, \"prompt\": %s, \"gen\": %s},\n", read(0).c_str(), read(1).c_str(), read(2).c_str());
+  if (args.spec) {  // totals of the speculative loop; "verified": steps by the number of drafts verified, from 0
+    std::vector<std::string> h;
+    for (long c : r.spec_hist) h.push_back(std::to_string(c));
+    fprintf(record, "  \"spec\": {\"steps\": %ld, \"plain_steps\": %ld, \"accepted\": %ld, \"verified\": %s, \"draft_ms\": %.1f, \"verify_ms\": %.1f},\n",
+            r.spec_steps, r.spec_plain, r.spec_accepted, json_array(h).c_str(), r.draft_ms, r.verify_ms);
+  } else {
+    fprintf(record, "  \"spec\": null,\n");
+  }
+#ifdef DS_RUNTIME
+  if (rt) {  // routed experts: uses by where they ran (prompt, generation and rejected drafts), the placement, the cache
+    const Runtime::ExpertStats es = rt->expert_stats();
+    std::vector<std::string> dv, pv;
+    for (int d : es.dies) dv.push_back(std::to_string(d));
+    for (int n : es.placed) pv.push_back(std::to_string(n));
+    fprintf(record, "  \"experts\": {\"gpu_uses\": %ld, \"cpu_uses\": %ld, \"dies\": %s, \"placed\": %s,\n               \"cache\": ",
+            rt->total_gpu_experts, rt->total_cpu_experts, json_array(dv).c_str(), json_array(pv).c_str());
+    if (es.has_cache) {  // loads_started_by_die: in the order of "dies"; the home die takes none (README step 86)
+      std::vector<std::string> lv;
+      for (long n : es.cache.started_by_die) lv.push_back(std::to_string(n));
+      fprintf(record, "{\"rebalances\": %ld, \"swaps_planned\": %ld, \"loads_started\": %ld, \"loads_published\": %ld,\n"
+                      "                         \"loads_started_by_die\": %s}},\n",
+              es.cache.rebalances, es.cache.swaps_planned, es.cache.loads_started, es.cache.loads_published, json_array(lv).c_str());
+    }
+    else
+      fprintf(record, "null},\n");
+  } else
+#endif
+    fprintf(record, "  \"experts\": null,\n");
+  {  // the generation as values: the ids printed, in order (not the end-of-sequence id that stopped it)
+    const std::vector<int32_t> printed(r.gen.begin(), r.gen.begin() + std::min((size_t)r.n_gen, r.gen.size()));
+    fprintf(record, "  \"output\": {\"tokens\": %zu, \"hash\": \"fnv1a64:%016llx\"},\n", printed.size(),
+            (unsigned long long)fnv1a64_ids(printed));
+  }
+  fprintf(record, "  \"counters\": {\"load_s\": %.3f, \"prompt_s\": %.4f, \"prompt_tps\": %.3f, \"gen_tokens\": %d, \"gen_s\": %.4f, \"gen_tps\": %.3f}\n}\n",
+          r.t_load, r.t_pp, r.toks.size() / r.t_pp, r.n_gen, r.t_tg, r.n_gen > 0 ? r.n_gen / r.t_tg : 0.0);
+  return fclose(record) == 0;
+}
+
 static int run(int argc, char** argv) {
   AfterMain after_main;
   {
@@ -118,126 +314,16 @@ static int run(int argc, char** argv) {
     (void)backtrace(bt, 1);  // its first call loads libgcc (it allocates): not inside the handler, after a corruption
   }
   for (int sig : {SIGABRT, SIGSEGV, SIGBUS, SIGILL, SIGFPE}) signal(sig, on_fatal);
-  std::string model_path, prompt, mode = "raw", rt_path;
-  int n_predict = 128;
-  int effort = 75;  // --think's reasoning effort (encoding.py's default)
-  Options opt;
-  [[maybe_unused]] int gpu = 0;
-  [[maybe_unused]] bool profile = false;
-  [[maybe_unused]] std::string trace_path;
-  std::string route_log;
-  std::string placement;
-  std::vector<int> moe_dies = {0, 1, 2, 3};
-  [[maybe_unused]] double load_test = -1;
-  [[maybe_unused]] bool load_pinned = false;
-  [[maybe_unused]] bool canon = false;
-  bool max_ctx_set = false;
-  [[maybe_unused]] int prefill_chunk = 512;
-  [[maybe_unused]] bool prefill_overlap = true;
-  [[maybe_unused]] double cache_loads = 0;
-  [[maybe_unused]] int cache_period = 16, cache_window = 256, cache_min = 2;
-  [[maybe_unused]] bool cache_wait = false;
-  [[maybe_unused]] std::string dspark_path;
-  bool spec = false;
-  bool interactive = false;
-  std::vector<int> layers;  // --layers a-b: a range of the model (README step 110)
-  [[maybe_unused]] bool teacher = false;
-  [[maybe_unused]] int serve_port = 0;  // --serve: the back of two processes (README step 111)
-  [[maybe_unused]] std::string remote;  // --remote host:port: the front's back
-  [[maybe_unused]] std::string stream_in_path, stream_out_path;
-  [[maybe_unused]] int spec_n = 0;
-  [[maybe_unused]] std::string spec_log_path;
-  std::string record_path;
-  std::vector<std::pair<std::string, std::string>> record_label;
-  for (int i = 1; i < argc; i++) {
-    std::string a = argv[i];
-    auto next = [&] { if (i + 1 >= argc) { fprintf(stderr, "missing value for %s\n", a.c_str()); exit(2); } return argv[++i]; };
-    if (a == "-m") model_path = next();
-    else if (a == "-p") prompt = next();
-    else if (a == "-f") {  // the prompt from a text file, as is (trailing newline included)
-      const char* path = next();
-      FILE* f = fopen(path, "rb");
-      if (!f) { fprintf(stderr, "cannot read %s\n", path); return 1; }
-      prompt.clear();
-      char buf[65536];
-      for (size_t n; (n = fread(buf, 1, sizeof buf, f)) > 0;) prompt.append(buf, n);
-      fclose(f);
-    }
-    else if (a == "--effort") {  // --think: 1-100, or low / high / max (encoding.py: 50 / 75 / 100)
-      const std::string e = next();
-      effort = e == "low" ? 50 : e == "high" ? 75 : e == "max" ? 100 : atoi(e.c_str());
-      if (effort < 1 || effort > 100) { fprintf(stderr, "--effort: 1-100, low, high or max\n"); return 2; }
-    }
-    else if (a == "--chat") mode = "chat";
-    else if (a == "--think") mode = "think";
-    else if (a == "-i" || a == "--interactive") interactive = true;  // runtime, --chat or --think: a session of turns on one context
-    else if (a == "-n") n_predict = atoi(next());
-    else if (a == "--layers") {  // runtime: only layers a-b (a range hands its stream to the next: --teacher)
-      int la = 0, lb = 0;
-      if (sscanf(next(), "%d-%d", &la, &lb) != 2 || la < 0 || lb < la) { fprintf(stderr, "--layers a-b\n"); return 2; }
-      for (int L = la; L <= lb; L++) layers.push_back(L);
-    }
-    // --teacher: the prompt's tokens through verify + commit in chunks of 5, the greedy next id after
-    // each printed (one per line; a range without the head prints none). --stream-out file: each
-    // token's stream after the range's last layer; --stream-in file: the stream a range starts from
-    else if (a == "--teacher") teacher = true;
-    // two processes: the back, `--layers k-39 [--dspark ..] --serve port`, waits for one front,
-    // `--layers 0-(k-1) --remote host:port`, which is used as the whole model would be
-    else if (a == "--serve") serve_port = atoi(next());
-    else if (a == "--remote") remote = next();
-    else if (a == "--stream-in") stream_in_path = next();
-    else if (a == "--stream-out") stream_out_path = next();
-    else if (a == "-t") opt.n_threads = atoi(next());
-    else if (a == "--gpu") gpu = atoi(next());
-    else if (a == "--dspark") dspark_path = next();
-    else if (a == "--spec") spec = true;
-    else if (a == "--spec-log") spec_log_path = next();  // per verify step: n k verify_ms draft_ms conf[0..]
-    else if (a == "--spec-n") spec_n = atoi(next());  // fixed drafts verified per step (default: chosen per step)  // drafts verified per step (default: all the draft makes)  // with --rt and --dspark: speculative decoding (greedy, same output)  // runtime: the DSpark draft GGUF (shadow mode: drafts measured, not used)
-    else if (a == "--placement") placement = next();  // runtime: routed experts on GPUs (expert_pool.h)
-    else if (a == "--load-test") load_test = atof(next());  // runtime: background loads to spare slots (rt.h)
-    else if (a == "--load-pinned") load_pinned = true;
-    else if (a == "--canon") canon = true;  // runtime: placement-invariant expert numerics (rt.h)
-    else if (a == "--cache-loads") cache_loads = atof(next());  // runtime: adaptive expert cache (expert_cache.h)
-    else if (a == "--cache-period") cache_period = atoi(next());
-    else if (a == "--cache-window") cache_window = atoi(next());
-    else if (a == "--cache-min") cache_min = atoi(next());  // runtime: a newcomer's least uses in the window
-    else if (a == "--cache-wait") cache_wait = true;
-    else if (a == "--moe-dies") {
-      moe_dies.clear();
-      for (char* q = (char*)next(); *q;) { moe_dies.push_back((int)strtol(q, &q, 10)); if (*q == ',') q++; }
-    }
-    else if (a == "--profile") profile = true;
-    else if (a == "--trace") trace_path = next();  // runtime: a Chrome trace of every step (ui.perfetto.dev)
-    else if (a == "--rt") rt_path = next();
-    else if (a == "--log-routing") route_log = next();  // runtime: every token's experts per layer
-    else if (a == "--no-quant") opt.exact_quant = false;
-    else if (a == "--max-ctx") max_ctx_set = true, opt.max_ctx = atoi(next());
-    else if (a == "--prefill-chunk") prefill_chunk = atoi(next());  // runtime: prompt tokens per forward
-    else if (a == "--no-overlap") prefill_overlap = false;  // runtime: prompt chunks without the CPU/GPU overlap
-    else if (a == "--record") record_path = next();  // the run as one JSON object (docs/record.md)
-    else if (a == "--record-label") {  // key=value[,key=value...]: the caller's names for the run, written back
-      const std::string l = next();
-      if (!label_add(l, record_label)) { fprintf(stderr, "--record-label: key=value[,key=value...], every key once; got %s\n", l.c_str()); return 2; }
-    }
-    else { fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
-  }
-  if (interactive && (mode == "raw" || rt_path.empty())) {
-    fprintf(stderr, "-i needs --chat or --think, and --rt\n");
-    return 2;
-  }
-  if (model_path.empty() || (prompt.empty() && !interactive && !serve_port)) {
-    fprintf(stderr, "usage: ds-completion -m <model.gguf> (-p \"prompt\" | -f prompt.txt | -i) [--chat|--think [--effort 1-100|low|high|max]] [-n N] [-t N] [--no-quant] [--max-ctx N] [--rt dense-fp8.gguf [--gpu D] [--placement file [--moe-dies 0,1,2,3] [--load-test R [--load-pinned]] [--cache-loads R [--cache-period N] [--cache-window N] [--cache-min N] [--cache-wait]]] [--canon] [--profile]]\n"
-                    "more (--dspark/--spec, --layers/--serve/--remote, --trace, --record, ...): QUICKSTART.md, Options\n");
-    return 2;
-  }
+  Args args;
+  if (const int rc = parse_args(argc, argv, args); rc >= 0) return rc;
   // --record describes one prompt and its generation: not a session, a back or a --teacher run.
   // Opened now, written after the generation: a run that ends early leaves it empty.
   FILE* record = nullptr;
-  if (record_path.empty() && !record_label.empty()) { fprintf(stderr, "--record-label needs --record\n"); return 2; }
-  if (!record_path.empty()) {
-    if (interactive || serve_port || teacher) { fprintf(stderr, "--record: not with -i, --serve or --teacher\n"); return 2; }
-    record = fopen(record_path.c_str(), "w");
-    if (!record) { fprintf(stderr, "cannot write %s\n", record_path.c_str()); return 1; }
+  if (args.record_path.empty() && !args.record_label.empty()) { fprintf(stderr, "--record-label needs --record\n"); return 2; }
+  if (!args.record_path.empty()) {
+    if (args.interactive || args.serve_port || args.teacher) { fprintf(stderr, "--record: not with -i, --serve or --teacher\n"); return 2; }
+    record = fopen(args.record_path.c_str(), "w");
+    if (!record) { fprintf(stderr, "cannot write %s\n", args.record_path.c_str()); return 1; }
   }
   const std::vector<std::string> sclk = record ? gpu_sclk() : std::vector<std::string>();  // as the run starts
   // storage reads per phase (record.h): the counter at the start, after the load, the prompt, the generation
@@ -248,120 +334,120 @@ static int run(int argc, char** argv) {
   llama_backend_init();
   llama_model_params mp = llama_model_default_params();
   mp.vocab_only = true;
-  llama_model* tok_model = llama_model_load_from_file(model_path.c_str(), mp);
-  if (!tok_model) { fprintf(stderr, "cannot load the tokenizer from %s\n", model_path.c_str()); return 1; }
+  llama_model* tok_model = llama_model_load_from_file(args.model_path.c_str(), mp);
+  if (!tok_model) { fprintf(stderr, "cannot load the tokenizer from %s\n", args.model_path.c_str()); return 1; }
   const llama_vocab* vocab = llama_model_get_vocab(tok_model);
 
   const std::string bos = "<｜begin▁of▁sentence｜>";
   // a user turn as encoding.py renders it; the first one carries BOS and, with --think, the effort
   auto turn_text = [&](const std::string& user, bool first) {
     std::string t = first ? bos : "";
-    if (first && mode == "think")
-      t += "<｜System｜>Reasoning Effort: " + std::to_string(effort) +
+    if (first && args.mode == "think")
+      t += "<｜System｜>Reasoning Effort: " + std::to_string(args.effort) +
            " (range 1-100, the higher the value, the more thorough the reasoning)\n\n";
-    return t + "<｜User｜>" + user + "<｜Assistant｜>" + (mode == "think" ? "<think>" : "</think>");
+    return t + "<｜User｜>" + user + "<｜Assistant｜>" + (args.mode == "think" ? "<think>" : "</think>");
   };
-  const std::string text = mode == "raw" ? bos + prompt : turn_text(prompt, true);
+  const std::string text = args.mode == "raw" ? bos + args.prompt : turn_text(args.prompt, true);
   std::vector<int32_t> toks;
-  if (!prompt.empty()) toks = tokenize(vocab, text);  // -i without a prompt: the first turn is read after the load
+  if (!args.prompt.empty()) toks = tokenize(vocab, text);  // -i without a prompt: the first turn is read after the load
   // the GPU runtime defaults to the model's original training context (YaRN extends it 16x, to
   // 1M: --max-ctx); ~6.4 KB per position on the home die (compressed caches, index keys). The CPU
   // path keeps 4096 (it builds dense masks per prompt and stops at 16k: no candidate blocks)
-  if (!rt_path.empty() && !max_ctx_set) opt.max_ctx = 65536;
+  if (!args.rt_path.empty() && !args.max_ctx_set) args.opt.max_ctx = 65536;
 
-  if ((int)toks.size() >= opt.max_ctx) {
-    fprintf(stderr, "prompt is %zu tokens; --max-ctx is %d\n", toks.size(), opt.max_ctx);
+  if ((int)toks.size() >= args.opt.max_ctx) {
+    fprintf(stderr, "prompt is %zu tokens; --max-ctx is %d\n", toks.size(), args.opt.max_ctx);
     return 1;
   }
-  if ((int)toks.size() + n_predict > opt.max_ctx) {
-    n_predict = opt.max_ctx - (int)toks.size();
-    fprintf(stderr, "# generation capped at %d tokens by --max-ctx %d\n", n_predict, opt.max_ctx);
+  if ((int)toks.size() + args.n_predict > args.opt.max_ctx) {
+    args.n_predict = args.opt.max_ctx - (int)toks.size();
+    fprintf(stderr, "# generation capped at %d tokens by --max-ctx %d\n", args.n_predict, args.opt.max_ctx);
   }
   Model m;
   auto t0 = Clock::now();
   try {
-    m.load(model_path, layers);
+    m.load(args.model_path, args.layers);
   } catch (const std::exception& e) {
     fprintf(stderr, "load failed: %s\n", e.what());
     return 1;
   }
   {  // the experts that may run on the CPU: page tables now, not inside decode steps
     auto tm = Clock::now();
-    const size_t n = m.map_experts(opt.n_threads);
+    const size_t n = m.map_experts(args.opt.n_threads);
     fprintf(stderr, "# mapped %.0f GB of CPU experts in %.1f s\n", n / 1e9,
             std::chrono::duration<double>(Clock::now() - tm).count());
   }
   std::unique_ptr<Engine> eng;
 #ifdef DS_RUNTIME
   std::unique_ptr<Runtime> rt;
-  if (!rt_path.empty()) {
-    if (!opt.exact_quant) { fprintf(stderr, "--no-quant is CPU only\n"); return 2; }
+  if (!args.rt_path.empty()) {
+    if (!args.opt.exact_quant) { fprintf(stderr, "--no-quant is CPU only\n"); return 2; }
     RtOptions ro;
-    ro.gpu = gpu;
-    ro.n_threads = opt.n_threads;
-    ro.max_ctx = opt.max_ctx;
-    ro.placement = placement;
-    ro.moe_dies = moe_dies;
-    ro.load_test = load_test;
-    ro.load_pinned = load_pinned;
-    ro.canon = canon;
-    ro.prefill_chunk = prefill_chunk;
-    ro.prefill_overlap = prefill_overlap;
-    ro.cache_loads = cache_loads;
-    ro.cache_period = cache_period;
-    ro.cache_window = cache_window;
-    ro.cache_min = cache_min;
-    ro.cache_wait = cache_wait;
-    ro.dspark = dspark_path;
-    if (spec && dspark_path.empty() && remote.empty()) { fprintf(stderr, "--spec needs --dspark\n"); return 2; }
-    rt.reset(new Runtime(m, ro, rt_path));
-    rt->profile = profile;
-    if (!trace_path.empty()) rt->set_trace(trace_path);  // before connect_peer: its exchanges are the trace's first clock samples
-    if (!route_log.empty()) rt->log_routing(route_log);
-    if (!remote.empty()) {
-      rt->connect_peer(remote);
-      if (spec && !rt->has_draft()) { fprintf(stderr, "--spec: the back has no draft (--dspark there)\n"); return 2; }
+    ro.gpu = args.gpu;
+    ro.n_threads = args.opt.n_threads;
+    ro.max_ctx = args.opt.max_ctx;
+    ro.placement = args.placement;
+    ro.moe_dies = args.moe_dies;
+    ro.load_test = args.load_test;
+    ro.load_pinned = args.load_pinned;
+    ro.canon = args.canon;
+    ro.prefill_chunk = args.prefill_chunk;
+    ro.prefill_overlap = args.prefill_overlap;
+    ro.cache_loads = args.cache_loads;
+    ro.cache_period = args.cache_period;
+    ro.cache_window = args.cache_window;
+    ro.cache_min = args.cache_min;
+    ro.cache_wait = args.cache_wait;
+    ro.dspark = args.dspark_path;
+    if (args.spec && args.dspark_path.empty() && args.remote.empty()) { fprintf(stderr, "--spec needs --dspark\n"); return 2; }
+    rt.reset(new Runtime(m, ro, args.rt_path));
+    rt->profile = args.profile;
+    if (!args.trace_path.empty()) rt->set_trace(args.trace_path);  // before connect_peer: its exchanges are the trace's first clock samples
+    if (!args.route_log.empty()) rt->log_routing(args.route_log);
+    if (!args.remote.empty()) {
+      rt->connect_peer(args.remote);
+      if (args.spec && !rt->has_draft()) { fprintf(stderr, "--spec: the back has no draft (--dspark there)\n"); return 2; }
     }
     // a range alone computes no token: it needs its other half, or the test that stands in for it
-    if (!rt->has_head() && remote.empty() && !teacher) { fprintf(stderr, "--layers without the last layer needs --remote (or --teacher)\n"); return 2; }
-    if (rt->layer0() > 0 && !serve_port && !teacher) { fprintf(stderr, "--layers not from layer 0 needs --serve (or --teacher --stream-in)\n"); return 2; }
+    if (!rt->has_head() && args.remote.empty() && !args.teacher) { fprintf(stderr, "--layers without the last layer needs --remote (or --teacher)\n"); return 2; }
+    if (rt->layer0() > 0 && !args.serve_port && !args.teacher) { fprintf(stderr, "--layers not from layer 0 needs --serve (or --teacher --stream-in)\n"); return 2; }
   }
 #else
-  if (!rt_path.empty()) { fprintf(stderr, "--rt needs the bin-hip build\n"); return 2; }
+  if (!args.rt_path.empty()) { fprintf(stderr, "--rt needs the bin-hip build\n"); return 2; }
 #endif
-  if (rt_path.empty()) eng.reset(new Engine(m, opt));
+  if (args.rt_path.empty()) eng.reset(new Engine(m, args.opt));
   const double t_load = std::chrono::duration<double>(Clock::now() - t0).count();
   if (record) rd[1] = io_read_bytes();
   fprintf(stderr, "# loaded in %.1f s; prompt %zu tokens; fake-quant %s; %d threads\n", t_load, toks.size(),
-          opt.exact_quant ? "on" : "off", opt.n_threads);
+          args.opt.exact_quant ? "on" : "off", args.opt.n_threads);
 
 #ifdef DS_RUNTIME
-  if (serve_port) {  // the back: serves one front, then leaves
+  if (args.serve_port) {  // the back: serves one front, then leaves
     if (!rt) { fprintf(stderr, "--serve needs --rt\n"); return 2; }
-    rt->serve(serve_port);
+    rt->serve(args.serve_port);
     llama_model_free(tok_model);
     llama_backend_free();
     rt.reset();
     return 0;
   }
-  if (teacher) {  // README step 110: a layer range checked against the whole model, token for token
+  if (args.teacher) {  // README step 110: a layer range checked against the whole model, token for token
     if (!rt) { fprintf(stderr, "--teacher needs --rt\n"); return 2; }
     const size_t nh = (size_t)m.hp.n_embd * m.hp.hc_mult, np = m.hp.hc_mult;
     Stream in;
-    if (!stream_in_path.empty()) {
-      FILE* f = fopen(stream_in_path.c_str(), "rb");
-      if (!f) { fprintf(stderr, "cannot read %s\n", stream_in_path.c_str()); return 1; }
+    if (!args.stream_in_path.empty()) {
+      FILE* f = fopen(args.stream_in_path.c_str(), "rb");
+      if (!f) { fprintf(stderr, "cannot read %s\n", args.stream_in_path.c_str()); return 1; }
       in.h.resize(toks.size() * nh);
       in.pre.resize(toks.size() * np);
       for (size_t t = 0; t < toks.size(); t++)  // per token: h, then pre
         if (fread(&in.h[t * nh], 4, nh, f) != nh || fread(&in.pre[t * np], 4, np, f) != np) {
-          fprintf(stderr, "%s holds fewer than %zu tokens\n", stream_in_path.c_str(), toks.size());
+          fprintf(stderr, "%s holds fewer than %zu tokens\n", args.stream_in_path.c_str(), toks.size());
           return 1;
         }
       fclose(f);
       rt->stream_in = &in;
     }
-    FILE* so = stream_out_path.empty() ? nullptr : fopen(stream_out_path.c_str(), "wb");
+    FILE* so = args.stream_out_path.empty() ? nullptr : fopen(args.stream_out_path.c_str(), "wb");
     const auto tt = Clock::now();
     for (size_t i = 0; i < toks.size(); i += 5) {
       const std::vector<int32_t> chunk(toks.begin() + i, toks.begin() + std::min(i + 5, toks.size()));
@@ -395,11 +481,11 @@ static int run(int argc, char** argv) {
   const int32_t think_end = think_end_toks[0];
   std::vector<int32_t> answer;  // --think: the last reply after its </think>
   const int eos = llama_vocab_eos(vocab);
-  [[maybe_unused]] const int n_predict_turn = n_predict;
+  [[maybe_unused]] const int n_predict_turn = args.n_predict;
   std::vector<int32_t> pending;  // printed by the last turn but not yet run through the model (it stopped at -n)
   for ([[maybe_unused]] bool first = true;; first = false) {
 #ifdef DS_RUNTIME
-    if (interactive && (!first || toks.empty())) {
+    if (args.interactive && (!first || toks.empty())) {
       fprintf(stderr, "\n> ");
       char* line = nullptr;
       size_t cap = 0;
@@ -408,7 +494,7 @@ static int run(int argc, char** argv) {
       const std::string user(line ? line : "", len > 0 ? len : 0);
       free(line);
       if (user.empty()) break;  // an empty line or the end of input ends the session
-      if (mode == "think" && !first) {
+      if (args.mode == "think" && !first) {
         rt->rewind();
         toks = {think_end};
         toks.insert(toks.end(), answer.begin(), answer.end());
@@ -419,15 +505,15 @@ static int run(int argc, char** argv) {
       if (!first) toks.push_back(eos);
       const std::vector<int32_t> turn = tokenize(vocab, turn_text(user, first));
       toks.insert(toks.end(), turn.begin(), turn.end());
-      const int room = opt.max_ctx - rt->n_past() - (int)toks.size();
-      if (room < 1) { fprintf(stderr, "# the context is full (--max-ctx %d)\n", opt.max_ctx); break; }
-      n_predict = std::min(n_predict_turn, room);
+      const int room = args.opt.max_ctx - rt->n_past() - (int)toks.size();
+      if (room < 1) { fprintf(stderr, "# the context is full (--max-ctx %d)\n", args.opt.max_ctx); break; }
+      args.n_predict = std::min(n_predict_turn, room);
     }
 #endif
     auto t1 = Clock::now();
 #ifdef DS_RUNTIME
     std::vector<float> logits;
-    if (rt && interactive && mode == "think") {  // the mark: after <｜Assistant｜>, before <think>
+    if (rt && args.interactive && args.mode == "think") {  // the mark: after <｜Assistant｜>, before <think>
       rt->prefill(std::vector<int32_t>(toks.begin(), toks.end() - 1));
       rt->mark();
       logits = rt->prefill({toks.back()});
@@ -455,23 +541,23 @@ static int run(int argc, char** argv) {
     std::vector<long> spec_hist;
     long spec_plain = 0;
 #ifdef DS_RUNTIME
-    if (spec) {
+    if (args.spec) {
       // speculative decoding (greedy): draft from the anchor (the last emitted token, not yet run),
       // verify [anchor, drafts], keep the matching prefix plus the main model's own next token;
       // prints exactly what plain greedy decoding prints
       int32_t anchor = (int32_t)(std::max_element(logits.begin(), logits.end()) - logits.begin());
       auto emit = [&](int32_t t) {  // false: stop
         if (t == eos) hit_eos = true;
-        if (t == eos || n_gen >= n_predict) return false;
+        if (t == eos || n_gen >= args.n_predict) return false;
         std::string p = piece(vocab, t);
         fwrite(p.data(), 1, p.size(), stdout);
         fflush(stdout);
         gen.push_back(t);
         n_gen++;
-        return n_gen < n_predict;
+        return n_gen < args.n_predict;
       };
       const char* log_mode = first ? "w" : "a";  // a session's later turns add to the logs
-      FILE* spec_log = spec_log_path.empty() ? nullptr : fopen(spec_log_path.c_str(), log_mode);
+      FILE* spec_log = args.spec_log_path.empty() ? nullptr : fopen(args.spec_log_path.c_str(), log_mode);
       // README step 92: per verify step the draft's token ids and the ids it emitted (a study of the
       // draft's head over part of the vocabulary: results/decode-next/draft_vocab_sim.py)
       FILE* tok_log = getenv("DS_DRAFT_TOKEN_LOG") ? fopen(getenv("DS_DRAFT_TOKEN_LOG"), log_mode) : nullptr;
@@ -543,7 +629,7 @@ static int run(int argc, char** argv) {
             dms = std::chrono::duration<double, std::milli>(Clock::now() - td).count();
             draft_ms += dms;
             draft_cost += 0.1 * (dms - draft_cost);
-            n_verify = spec_n > 0 ? spec_n : choose_n(d.conf);
+            n_verify = args.spec_n > 0 ? args.spec_n : choose_n(d.conf);
             if (d2_log) {
               fprintf(d2_log, "%d %d |", n_gen - 1, n_verify);
               for (size_t i = 1; i < d.ids.size(); i++) fprintf(d2_log, " %d", d.ids[i]);
@@ -558,14 +644,14 @@ static int run(int argc, char** argv) {
               }
               fprintf(d2_log, "\n");
             }
-            if (spec_n == 0) {
+            if (args.spec_n == 0) {
               backoff = n_verify == 0 ? std::min(backoff == 0 ? 1 : 2 * backoff, 8) : 0;
               skip = backoff;
             }
           }
           std::vector<int32_t> chunk(d.ids.begin(), d.ids.end());  // [anchor, drafts]
           if ((int)chunk.size() > n_verify + 1) chunk.resize(n_verify + 1);  // verify only the first n drafts
-          const int room = opt.max_ctx - rt->n_past();
+          const int room = args.opt.max_ctx - rt->n_past();
           if ((int)chunk.size() > room) chunk.resize(std::max(room, 1));
           auto tv = Clock::now();
           if (have_t_emit) rt->trace_host("after commit: emit the tokens", t_emit, td_start, 3);  // README step 86
@@ -581,7 +667,7 @@ static int run(int argc, char** argv) {
             refit();
           }
           n_hist[chunk.size() - 1]++;
-          if (profile) {
+          if (args.profile) {
             fprintf(stderr, "\n# verify %d tokens: %.1f ms (cpu experts %.1f; experts gpu %d cpu %d); GPU timeline:", (int)chunk.size(),
                     rt->last.total_ms, rt->last.cpu_moe_ms, rt->last.gpu_experts, rt->last.cpu_experts);
             for (auto& [g, ms] : rt->last_groups) fprintf(stderr, " %s %.1f", g.c_str(), ms);
@@ -601,7 +687,7 @@ static int run(int argc, char** argv) {
           rt->trace_host("after verify: draft rule, logs", tv1, Clock::now(), 3);
           // the context keeps exactly what is printed: accepted drafts only up to an end of sequence
           // among them and up to -n's limit (the output is the same; an -i session continues from it)
-          int keep = std::min(k, n_predict - n_gen - 1);
+          int keep = std::min(k, args.n_predict - n_gen - 1);
           for (int i = 0; i < keep; i++)
             if (next[i] == eos) keep = i;
           rt->commit(keep + 1);
@@ -632,14 +718,14 @@ static int run(int argc, char** argv) {
               verify_cost[0], verify_cost[1] - verify_cost[0]);
     }
 #endif
-    for (; !spec && n_gen < n_predict; n_gen++) {
+    for (; !args.spec && n_gen < args.n_predict; n_gen++) {
       const int32_t next = (int32_t)(std::max_element(logits.begin(), logits.end()) - logits.begin());
       gen.push_back(next);
       if (next == eos) break;
       std::string p = piece(vocab, next);
       fwrite(p.data(), 1, p.size(), stdout);
       fflush(stdout);
-      if (n_gen + 1 == n_predict) { n_gen++; pending = {next}; break; }
+      if (n_gen + 1 == args.n_predict) { n_gen++; pending = {next}; break; }
 #ifdef DS_RUNTIME
       if (rt && rt->has_draft()) {
         auto td = Clock::now();
@@ -650,7 +736,7 @@ static int run(int argc, char** argv) {
       }
       if (rt) {
         logits = rt->decode(next);
-        if (profile) {
+        if (args.profile) {
           fprintf(stderr, "\n# step %d: %.1f ms (cpu experts %.1f, waiting for the GPU %.1f; experts gpu %d cpu %d); GPU timeline:",
                   n_gen, rt->last.total_ms, rt->last.cpu_moe_ms, rt->last.wait_ms, rt->last.gpu_experts, rt->last.cpu_experts);
           for (auto& [g, ms] : rt->last_groups) fprintf(stderr, " %s %.1f", g.c_str(), ms);
@@ -700,63 +786,17 @@ static int run(int argc, char** argv) {
 #endif
     fprintf(stderr, "# prompt: %zu tokens in %.2f s = %.2f t/s; generation: %d tokens in %.2f s = %.2f t/s\n",
             toks.size(), t_pp, toks.size() / t_pp, n_gen, t_tg, n_gen > 0 ? n_gen / t_tg : 0.0);
-    if (record) {  // docs/record.md, schema 1
-      fprintf(record, "{\n  \"schema\": 1,\n");
-      fprintf(record, "  \"label\": %s,\n", label_json(record_label).c_str());
-      fprintf(record, "  \"args\": {\"mode\": %s, \"effort\": %d, \"n\": %d, \"threads\": %d, \"runtime\": %s, \"canon\": %s, \"spec\": %s,\n"
-                      "           \"placement\": %s, \"cache_loads\": %g, \"cache_period\": %d, \"cache_window\": %d, \"cache_min\": %d,\n"
-                      "           \"cache_wait\": %s, \"spec_n\": %d,\n"
-                      "           \"profile\": %s, \"trace\": %s, \"spec_log\": %s, \"log_routing\": %s},\n",
-              json_string(mode).c_str(), effort, n_predict, opt.n_threads, rt_path.empty() ? "false" : "true", canon ? "true" : "false",
-              spec ? "true" : "false", json_string(placement).c_str(), cache_loads, cache_period, cache_window, cache_min,
-              cache_wait ? "true" : "false", spec_n,  // as they took effect: an option not given has its default
-              // the options that add work to a run (a record with one of them on is not a clean timing): on or off
-              profile ? "true" : "false", trace_path.empty() ? "false" : "true", spec_log_path.empty() ? "false" : "true",
-              route_log.empty() ? "false" : "true");
-      fprintf(record, "  \"prompt\": {\"tokens\": %zu, \"hash\": \"fnv1a64:%016llx\"},\n", toks.size(),
-              (unsigned long long)fnv1a64_ids(toks));
-      fprintf(record, "  \"env\": {\"gpu_sclk\": %s, \"ds\": %s},\n", json_array(sclk).c_str(), env_ds_json().c_str());
-      auto read = [&](int i) { return rd[i] < 0 || rd[i + 1] < 0 ? std::string("null") : std::to_string(rd[i + 1] - rd[i]); };
-      fprintf(record, "  \"read_bytes\": {\"load\": %s, \"prompt\": %s, \"gen\": %s},\n", read(0).c_str(), read(1).c_str(), read(2).c_str());
-      if (spec) {  // totals of the speculative loop; "verified": steps by the number of drafts verified, from 0
-        std::vector<std::string> h;
-        for (long c : spec_hist) h.push_back(std::to_string(c));
-        fprintf(record, "  \"spec\": {\"steps\": %ld, \"plain_steps\": %ld, \"accepted\": %ld, \"verified\": %s, \"draft_ms\": %.1f, \"verify_ms\": %.1f},\n",
-                spec_steps, spec_plain, spec_accepted, json_array(h).c_str(), draft_ms, verify_ms);
-      } else {
-        fprintf(record, "  \"spec\": null,\n");
-      }
+    if (record) {
+      const RecordRun r{toks, sclk, rd, t_load, t_pp, t_tg, n_gen, gen, spec_steps, spec_plain, spec_accepted, spec_hist, draft_ms, verify_ms};
 #ifdef DS_RUNTIME
-      if (rt) {  // routed experts: uses by where they ran (prompt, generation and rejected drafts), the placement, the cache
-        const Runtime::ExpertStats es = rt->expert_stats();
-        std::vector<std::string> dv, pv;
-        for (int d : es.dies) dv.push_back(std::to_string(d));
-        for (int n : es.placed) pv.push_back(std::to_string(n));
-        fprintf(record, "  \"experts\": {\"gpu_uses\": %ld, \"cpu_uses\": %ld, \"dies\": %s, \"placed\": %s,\n               \"cache\": ",
-                rt->total_gpu_experts, rt->total_cpu_experts, json_array(dv).c_str(), json_array(pv).c_str());
-        if (es.has_cache) {  // loads_started_by_die: in the order of "dies"; the home die takes none (README step 86)
-          std::vector<std::string> lv;
-          for (long n : es.cache.started_by_die) lv.push_back(std::to_string(n));
-          fprintf(record, "{\"rebalances\": %ld, \"swaps_planned\": %ld, \"loads_started\": %ld, \"loads_published\": %ld,\n"
-                          "                         \"loads_started_by_die\": %s}},\n",
-                  es.cache.rebalances, es.cache.swaps_planned, es.cache.loads_started, es.cache.loads_published, json_array(lv).c_str());
-        }
-        else
-          fprintf(record, "null},\n");
-      } else
+      const Runtime* rtp = rt.get();
+#else
+      const Runtime* rtp = nullptr;
 #endif
-        fprintf(record, "  \"experts\": null,\n");
-      {  // the generation as values: the ids printed, in order (not the end-of-sequence id that stopped it)
-        const std::vector<int32_t> printed(gen.begin(), gen.begin() + std::min((size_t)n_gen, gen.size()));
-        fprintf(record, "  \"output\": {\"tokens\": %zu, \"hash\": \"fnv1a64:%016llx\"},\n", printed.size(),
-                (unsigned long long)fnv1a64_ids(printed));
-      }
-      fprintf(record, "  \"counters\": {\"load_s\": %.3f, \"prompt_s\": %.4f, \"prompt_tps\": %.3f, \"gen_tokens\": %d, \"gen_s\": %.4f, \"gen_tps\": %.3f}\n}\n",
-              t_load, t_pp, toks.size() / t_pp, n_gen, t_tg, n_gen > 0 ? n_gen / t_tg : 0.0);
-      if (fclose(record) != 0) { fprintf(stderr, "cannot write %s\n", record_path.c_str()); return 1; }
+      if (!write_record(record, args, r, rtp)) { fprintf(stderr, "cannot write %s\n", args.record_path.c_str()); return 1; }
       record = nullptr;
     }
-    if (!interactive) break;
+    if (!args.interactive) break;
     {  // --think: what the next turn keeps of this reply
       auto it = std::find(gen.begin(), gen.end(), think_end);
       answer.assign(it == gen.end() ? it : it + 1, gen.end());

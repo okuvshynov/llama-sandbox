@@ -535,6 +535,9 @@ repeats; a labelled record per run). Step 125's comparison again from a 12-line 
 Next: file each old step's scripts with its results.
 Step 130: done: 33 one-step scripts moved to their results, 11 stay (`scripts/README.md`). New
 measurements: a matrix file beside its results, read with `scripts/records.py`.
+Step 131: cleanup, part 1: `run()` split: `Args` + `parse_args()`, `write_record()`; behaviour unchanged
+(old against new on 8 usage errors and 7 kinds of run). Next: the two generation loops as functions; then
+the unadopted studies removed one per commit; `hip/rt.cpp` last. The kernels are not touched.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front

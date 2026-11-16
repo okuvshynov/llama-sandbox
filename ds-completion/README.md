@@ -4896,3 +4896,31 @@ reference's Python); `draft_keep_table.py`, `draft_leave_out_table.py` and `draf
 write their stored files again byte for byte from the new place, and `heldout_history.py`
 rewrote `history.tsv` with only its own name changed in the header. **Not checked:** the moved
 sweeps were not run again (hours of GPU time each); what they need beyond the path is unchanged.
+
+## Step 131: `run()` split, part 1: the options and the record out of it
+
+A cleanup round begins: the same speed and the same observability, code that is easier to
+read. A survey first. The main program was one function of 664 lines (`run()` in
+`src/ds_completion.cpp`): options, load, prompt, the speculative loop, the plain loop, five
+logs and the record, interleaved. `hip/rt.cpp` is 2,297 lines. About 200 lines belong to
+studies that were not adopted (`DS_DRAFT_KEEP`, the router lookahead, `--load-test`, the second
+draft block, `DS_EARLY_ROWS`, `DS_ATTN_CHECK`), spread through the hot paths as conditions. The
+order agreed: split `run()`; remove the unadopted studies one per commit (each keeps its README
+step and its commit); `rt.cpp` last. The kernels and their A/B switches stay as they are.
+
+**This step moves code and changes none:**
+
+- `struct Args`: the 37 option variables that were `run()`'s first locals;
+- `parse_args()`: the option loop and the usage checks;
+- `write_record()`, with a small `RecordRun` of what a turn measured: the JSON.
+
+`run()` is 505 lines; the two loops are next. The renaming was done by a script that leaves
+strings and comments alone (`"# prompt: ..."` stays, the variable `prompt` becomes `args.prompt`).
+
+**Checked** old build against new (`results/cleanup/run-split-1.txt`; sclk 6): eight usage
+errors give the same message and exit code; seven kinds of run (the CPU path, plain, shadow
+drafting, speculative with `--profile`, the fastest settings, a two-turn `--think` session,
+`--teacher`) print the same bytes, write the same record but for its times, and the same kinds
+of lines on stderr; speeds agree within 1% (54.56 and 54.52 t/s on the fastest settings). The
+record's expert counters differ in the fastest run as they do between any two runs: the cache
+follows time.
