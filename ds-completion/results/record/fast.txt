@@ -1,0 +1,22 @@
+# bin-hip/ds-completion -m $M -p "<the cpp-matrix prompt of results/spec-heldout/prompts.txt>" --chat -n 300 --rt $F8 --placement placements/study30.txt --dspark $D --spec --canon --cache-loads 800 --cache-period 8 --cache-wait --record FILE
+# the fastest single-machine settings (QUICKSTART.md), as scripts/spec-measure.sh runs them, without --spec-log
+# commit 11e9e74+changes (the --record change itself), sclk 1, 2026-11-15; page cache warm
+# Output: the same bytes as results/cache-test/plain-canon-static/cpp-matrix.out.
+# sclk 1, not the held-out history's 6 (54.86 t/s on this prompt in README step 114): the speed is not comparable.
+# The record, then the stderr lines it repeats and the ones it does not hold yet.
+
+{
+  "schema": 1,
+  "args": {"mode": "chat", "effort": 75, "n": 300, "threads": 16, "runtime": true, "canon": true, "spec": true,
+           "placement": "placements/study30.txt", "cache_loads": 800, "cache_period": 8},
+  "prompt": {"tokens": 25, "hash": "fnv1a64:32138dd9ac19a294"},
+  "counters": {"load_s": 127.376, "prompt_s": 0.7166, "prompt_tps": 34.887, "gen_tokens": 300, "gen_s": 6.2887, "gen_tps": 47.705}
+}
+# mapped 289 GB of CPU experts in 1.1 s
+# expert cache: up to 800 loads/s, rebalance every 8 tokens over the last 256
+# loaded in 127.4 s; prompt 25 tokens; fake-quant on; 16 threads
+# drafts verified per step: 0: 0 1: 6 2: 9 3: 9 4: 12 5: 32 (of the 0s, 0 plain steps without a draft); verify cost fit 62.7 + 5.6 n ms
+# speculative: 68 verify steps, 3.47 drafts accepted per step, 4.41 tokens per step; draft 7.9 ms per step
+# routed experts: 85.7% on GPUs (72418 of 84480)
+# prompt: 25 tokens in 0.72 s = 34.89 t/s; generation: 300 tokens in 6.29 s = 47.70 t/s
+# expert cache: 31 rebalances, 3771 swaps planned, 3663 loads started, 3597 published

@@ -496,6 +496,8 @@ part of each is one die; the chat launcher and a server on two machines.
 Step 112: one trace of both machines (clocks aligned to ~1 us); the documents cover both setups.
 Step 113: review round 1 (error paths, checks between the halves, the launcher; the documents).
 Step 114: review round 2 (the runtime, kernels and loaders; what it left open is listed in the README's step).
+Step 115: testing from here on: a run as one record (`--record`, a first minimal version; the idea
+and the next small steps in `docs/record.md`). No test changed yet.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front

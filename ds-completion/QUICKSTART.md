@@ -171,6 +171,10 @@ Options:
   at R loads/s in the background, as the cache would (README step 30); output unchanged.
 
 - `--log-routing FILE`: the router's choices per token and layer (the routing studies).
+- `--record FILE`: the run as one JSON object: a few of its options, the prompt's token count and
+  hash, load time, prompt and generation t/s. A first version, to grow ([docs/record.md](docs/record.md),
+  README step 115). One prompt only (not with `-i`, `--serve`, `--teacher`); a run that does not
+  finish leaves the file empty.
 - `--no-quant` (CPU path only): without the reference's fp8/fp4 rounding (a comparison).
 
 Without `--rt` (or with `bin/ds-completion`) everything runs on the CPU.

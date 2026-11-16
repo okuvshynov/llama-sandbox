@@ -1,0 +1,28 @@
+# bin-hip/ds-completion -m $M --rt $F8 -p "What are the differences between TCP and UDP, and when would you choose each?" --chat -n 32 --record FILE
+# twice in a row; commit 11e9e74+changes (the --record change itself), sclk 1, 2026-11-15
+# Before run 1 the page cache held 0.65 GB (/proc/meminfo Cached): the model was read from disk.
+# Both runs printed the same 32 tokens. The records, then each run's stderr lines they repeat.
+
+== run 1 (cold page cache)
+{
+  "schema": 1,
+  "args": {"mode": "chat", "effort": 75, "n": 32, "threads": 16, "runtime": true, "canon": false, "spec": false,
+           "placement": "", "cache_loads": 0, "cache_period": 16},
+  "prompt": {"tokens": 20, "hash": "fnv1a64:ca691ad07d0dd8ee"},
+  "counters": {"load_s": 92.699, "prompt_s": 1.0535, "prompt_tps": 18.984, "gen_tokens": 32, "gen_s": 2.3329, "gen_tps": 13.717}
+}
+# mapped 289 GB of CPU experts in 80.9 s
+# loaded in 92.7 s; prompt 20 tokens; fake-quant on; 16 threads
+# prompt: 20 tokens in 1.05 s = 18.98 t/s; generation: 32 tokens in 2.33 s = 13.72 t/s
+
+== run 2 (12 s later, warm)
+{
+  "schema": 1,
+  "args": {"mode": "chat", "effort": 75, "n": 32, "threads": 16, "runtime": true, "canon": false, "spec": false,
+           "placement": "", "cache_loads": 0, "cache_period": 16},
+  "prompt": {"tokens": 20, "hash": "fnv1a64:ca691ad07d0dd8ee"},
+  "counters": {"load_s": 4.003, "prompt_s": 0.9777, "prompt_tps": 20.457, "gen_tokens": 32, "gen_s": 2.2036, "gen_tps": 14.522}
+}
+# mapped 289 GB of CPU experts in 1.1 s
+# loaded in 4.0 s; prompt 20 tokens; fake-quant on; 16 threads
+# prompt: 20 tokens in 0.98 s = 20.46 t/s; generation: 32 tokens in 2.20 s = 14.52 t/s

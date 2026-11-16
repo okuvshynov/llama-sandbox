@@ -1,7 +1,7 @@
 // ds-completion: DeepSeek-V4.1-Flash text completion.
 //
 //   ds-completion -m <model-00001-of-000NN.gguf> (-p "prompt" | -f prompt.txt) [--chat | --think [--effort 75]] [-n 128]
-//                 [-t 16] [--no-quant] [--max-ctx 4096]
+//                 [-t 16] [--no-quant] [--max-ctx 4096] [--record run.json]
 //                 [--rt <dense-fp8.gguf> [--gpu D] [--placement file [--moe-dies 0,1,2,3] [--load-test R [--load-pinned]] [--cache-loads R [--cache-period N] [--cache-window N] [--cache-min N] [--cache-wait]]] [--canon] [--profile]]
 //
 // The prompt is fed as one chunk (prefill), then one token per step, greedy. --chat wraps the
@@ -9,6 +9,8 @@
 // strings encoding/encoding.py produces; --effort is its reasoning effort, 1-100, default 75);
 // otherwise the prompt is raw text after BOS. -f reads the prompt from a file.
 // Only the tokenizer comes from libllama (vocab-only load).
+// --record FILE: the run as one JSON object (docs/record.md): a few of its arguments, the prompt's
+// token count and hash, and the times the "# ..." lines on stderr report.
 // Without --rt: everything on the CPU through the ggml Engine (forward.cpp), the prompt as one
 // chunk. --rt <dense-fp8.gguf> (bin-hip build): every token through the own runtime (hip/rt.h:
 // dense part on GPU D in exact fp8, routed experts on the CPU or, with --placement, partly on
@@ -49,6 +51,25 @@ static std::vector<int32_t> tokenize(const llama_vocab* v, const std::string& te
   }
   t.resize(n);
   return std::vector<int32_t>(t.begin(), t.end());
+}
+
+// --record (docs/record.md). The prompt's identity is its token ids, after the chat template:
+// FNV-1a, 64 bits, over each id's four bytes, least significant first.
+static uint64_t fnv1a64_ids(const std::vector<int32_t>& ids) {
+  uint64_t h = 0xcbf29ce484222325ull;
+  for (int32_t id : ids)
+    for (int b = 0; b < 4; b++) h = (h ^ (((uint32_t)id >> (8 * b)) & 0xff)) * 0x100000001b3ull;
+  return h;
+}
+
+static std::string json_string(const std::string& s) {
+  std::string o = "\"";
+  for (unsigned char c : s) {
+    if (c == '"' || c == '\\') { o += '\\'; o += (char)c; }
+    else if (c < 0x20) { char b[8]; snprintf(b, sizeof b, "\\u%04x", c); o += b; }
+    else o += (char)c;
+  }
+  return o + "\"";
 }
 
 static std::string piece(const llama_vocab* v, int32_t tok) {
@@ -142,6 +163,7 @@ static int run(int argc, char** argv) {
   [[maybe_unused]] std::string stream_in_path, stream_out_path;
   [[maybe_unused]] int spec_n = 0;
   [[maybe_unused]] std::string spec_log_path;
+  std::string record_path;
   for (int i = 1; i < argc; i++) {
     std::string a = argv[i];
     auto next = [&] { if (i + 1 >= argc) { fprintf(stderr, "missing value for %s\n", a.c_str()); exit(2); } return argv[++i]; };
@@ -207,6 +229,7 @@ static int run(int argc, char** argv) {
     else if (a == "--max-ctx") max_ctx_set = true, opt.max_ctx = atoi(next());
     else if (a == "--prefill-chunk") prefill_chunk = atoi(next());  // runtime: prompt tokens per forward
     else if (a == "--no-overlap") prefill_overlap = false;  // runtime: prompt chunks without the CPU/GPU overlap
+    else if (a == "--record") record_path = next();  // the run as one JSON object (docs/record.md)
     else { fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
   }
   if (interactive && (mode == "raw" || rt_path.empty())) {
@@ -215,8 +238,16 @@ static int run(int argc, char** argv) {
   }
   if (model_path.empty() || (prompt.empty() && !interactive && !serve_port)) {
     fprintf(stderr, "usage: ds-completion -m <model.gguf> (-p \"prompt\" | -f prompt.txt | -i) [--chat|--think [--effort 1-100|low|high|max]] [-n N] [-t N] [--no-quant] [--max-ctx N] [--rt dense-fp8.gguf [--gpu D] [--placement file [--moe-dies 0,1,2,3] [--load-test R [--load-pinned]] [--cache-loads R [--cache-period N] [--cache-window N] [--cache-min N] [--cache-wait]]] [--canon] [--profile]]\n"
-                    "more (--dspark/--spec, --layers/--serve/--remote, --trace, ...): QUICKSTART.md, Options\n");
+                    "more (--dspark/--spec, --layers/--serve/--remote, --trace, --record, ...): QUICKSTART.md, Options\n");
     return 2;
+  }
+  // --record describes one prompt and its generation: not a session, a back or a --teacher run.
+  // Opened now, written after the generation: a run that ends early leaves it empty.
+  FILE* record = nullptr;
+  if (!record_path.empty()) {
+    if (interactive || serve_port || teacher) { fprintf(stderr, "--record: not with -i, --serve or --teacher\n"); return 2; }
+    record = fopen(record_path.c_str(), "w");
+    if (!record) { fprintf(stderr, "cannot write %s\n", record_path.c_str()); return 1; }
   }
 
   // tokenizer only
@@ -666,6 +697,19 @@ static int run(int argc, char** argv) {
 #endif
     fprintf(stderr, "# prompt: %zu tokens in %.2f s = %.2f t/s; generation: %d tokens in %.2f s = %.2f t/s\n",
             toks.size(), t_pp, toks.size() / t_pp, n_gen, t_tg, n_gen > 0 ? n_gen / t_tg : 0.0);
+    if (record) {  // docs/record.md, schema 1
+      fprintf(record, "{\n  \"schema\": 1,\n");
+      fprintf(record, "  \"args\": {\"mode\": %s, \"effort\": %d, \"n\": %d, \"threads\": %d, \"runtime\": %s, \"canon\": %s, \"spec\": %s,\n"
+                      "           \"placement\": %s, \"cache_loads\": %g, \"cache_period\": %d},\n",
+              json_string(mode).c_str(), effort, n_predict, opt.n_threads, rt_path.empty() ? "false" : "true", canon ? "true" : "false",
+              spec ? "true" : "false", json_string(placement).c_str(), cache_loads, cache_period);
+      fprintf(record, "  \"prompt\": {\"tokens\": %zu, \"hash\": \"fnv1a64:%016llx\"},\n", toks.size(),
+              (unsigned long long)fnv1a64_ids(toks));
+      fprintf(record, "  \"counters\": {\"load_s\": %.3f, \"prompt_s\": %.4f, \"prompt_tps\": %.3f, \"gen_tokens\": %d, \"gen_s\": %.4f, \"gen_tps\": %.3f}\n}\n",
+              t_load, t_pp, toks.size() / t_pp, n_gen, t_tg, n_gen > 0 ? n_gen / t_tg : 0.0);
+      if (fclose(record) != 0) { fprintf(stderr, "cannot write %s\n", record_path.c_str()); return 1; }
+      record = nullptr;
+    }
     if (!interactive) break;
     {  // --think: what the next turn keeps of this reply
       auto it = std::find(gen.begin(), gen.end(), think_end);

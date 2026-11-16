@@ -49,6 +49,8 @@ sandbox's CLAUDE.md.)
 
 ## Tools
 
+(Since step 115: `--record FILE` on `ds-completion` writes a run as one JSON object; `docs/record.md`.)
+
 ```bash
 make                                      # links the fork's CPU ggml (static)
 M=~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf
@@ -4280,3 +4282,38 @@ with `--profile` the same output; the 3-turn thinking session the saved bytes; t
   manifest is the only guard). NaN logits would become an out-of-range expert id.
 - A trace is held in memory until exit; the destructor leaves a few events and buffers unfreed.
 - The compilers' contraction modes (above). The `*.log` files outside git.
+
+## Step 115: testing from here on: a run as one record (`--record`, a first version)
+
+The project's checks are ~60 scripts and programs, each written for one step; the gate scripts
+repeat one loop (prompts x configurations, numbers read off stderr with `grep`, outputs compared
+with `cmp`). For the changes expected next (small performance work, refactoring, other draft
+modules, parameter tuning, a new checkpoint) the plan is one primitive instead: a run writes what
+went in (arguments, environment) and what came out (values that must repeat, counters that
+vary) as one record, and a test is a run plus a check of its record. The idea, its scope and the
+next steps: [docs/record.md](docs/record.md).
+
+**This step is only the start of it:** `ds-completion --record FILE` writes one JSON object with
+ten of the options as parsed, the prompt's token count and a hash of its token ids (FNV-1a, 64
+bits), and the load time and prompt / generation speeds of the `# ...` lines. One prompt only
+(refused with `-i`, `--serve`, `--teacher`). The file is opened before the load and written after
+the generation, so a run that does not finish leaves it empty. No hash of the output yet, no
+script changed, no test uses it.
+
+**Checked** (`results/record/first.txt`; sclk 1): the same prompt twice. Both records parse, carry
+the same prompt hash and repeat the stderr lines' numbers; the outputs are the same bytes;
+`--record` with `-i` exits with 2 and an unwritable path with 1, both before the load. The CPU
+build compiles with it (not run).
+
+**The fastest single-machine settings, recorded once** (`results/record/fast.txt`; cpp-matrix, 300
+tokens): 47.7 t/s at sclk 1 (54.86 at sclk 6 in step 114), the output the stored one's bytes. The
+record holds neither the clock level nor the speculation and cache numbers stderr prints (68
+verify steps, 4.41 tokens per step, 85.7% of expert uses on GPUs): the next fields.
+
+**Seen on the way:** the page cache was empty before the first run. Load 92.7 s against 4.0 s,
+and generation 13.72 against 14.52 t/s after it (one pair). The record shows a cold run only
+through a load time one has to recognise: bytes read from storage per phase are among the next
+fields.
+
+**Not measured:** the option's cost. It adds one hash of the prompt's ids before the load and one
+file write after the generation, nothing inside a step.

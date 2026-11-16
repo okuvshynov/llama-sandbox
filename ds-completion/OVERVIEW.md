@@ -245,7 +245,7 @@ V4.1-Pro (engram on SSD is easy; experts barely fit in two machines' RAM).
 
 | path | what |
 |---|---|
-| `src/ds_completion.cpp` | the CLI |
+| `src/ds_completion.cpp` | the CLI; `--record` writes a run as one JSON object (`docs/record.md`) |
 | `src/model.{h,cpp}` | GGUF loading (zero-copy mmap), the model's schema and hyperparameters |
 | `src/forward.{h,cpp}` | the CPU reference path (ggml graphs), used by tests and `bin/ds-completion` |
 | `src/cpu_moe.{h,cpp}` | the exact AVX-512 routed-expert kernel |
