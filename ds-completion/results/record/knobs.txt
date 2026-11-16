@@ -1,0 +1,14 @@
+# The tuning knobs among the record's arguments (README step 120). Commit de4e523+changes (this change), sclk 6, 2026-11-15.
+# bin-hip/ds-completion -m $M --rt $F8 -p "<the prompt of results/record/first.txt>" --chat -n 32 [KNOBS] --record FILE
+# Both runs printed the same bytes as before. The "args" lines of each record.
+
+== no knob given: the defaults
+  "args": {"mode": "chat", "effort": 75, "n": 32, "threads": 16, "runtime": true, "canon": false, "spec": false,
+           "placement": "", "cache_loads": 0, "cache_period": 16, "cache_window": 256, "cache_min": 2,
+           "cache_wait": false, "spec_n": 0},
+
+== --cache-period 8 --cache-window 128 --cache-min 3 --cache-wait --spec-n 4
+== (without --cache-loads and --spec they do nothing here: the run is the first one's; this checks that the values arrive)
+  "args": {"mode": "chat", "effort": 75, "n": 32, "threads": 16, "runtime": true, "canon": false, "spec": false,
+           "placement": "", "cache_loads": 0, "cache_period": 8, "cache_window": 128, "cache_min": 3,
+           "cache_wait": true, "spec_n": 4},

@@ -697,9 +697,11 @@ static int run(int argc, char** argv) {
     if (record) {  // docs/record.md, schema 1
       fprintf(record, "{\n  \"schema\": 1,\n");
       fprintf(record, "  \"args\": {\"mode\": %s, \"effort\": %d, \"n\": %d, \"threads\": %d, \"runtime\": %s, \"canon\": %s, \"spec\": %s,\n"
-                      "           \"placement\": %s, \"cache_loads\": %g, \"cache_period\": %d},\n",
+                      "           \"placement\": %s, \"cache_loads\": %g, \"cache_period\": %d, \"cache_window\": %d, \"cache_min\": %d,\n"
+                      "           \"cache_wait\": %s, \"spec_n\": %d},\n",
               json_string(mode).c_str(), effort, n_predict, opt.n_threads, rt_path.empty() ? "false" : "true", canon ? "true" : "false",
-              spec ? "true" : "false", json_string(placement).c_str(), cache_loads, cache_period);
+              spec ? "true" : "false", json_string(placement).c_str(), cache_loads, cache_period, cache_window, cache_min,
+              cache_wait ? "true" : "false", spec_n);  // as they took effect: an option not given has its default
       fprintf(record, "  \"prompt\": {\"tokens\": %zu, \"hash\": \"fnv1a64:%016llx\"},\n", toks.size(),
               (unsigned long long)fnv1a64_ids(toks));
       fprintf(record, "  \"env\": {\"gpu_sclk\": %s},\n", json_array(sclk).c_str());

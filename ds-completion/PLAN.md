@@ -506,6 +506,8 @@ Step 118: the speculative loop's totals in the record (steps, drafts accepted, t
 verified, draft and verify time).
 Step 119: the routed experts in the record (uses on GPUs and on the CPU, experts placed per die, the
 cache's rebalances and loads).
+Step 120: the tuning knobs among the record's arguments (`cache_window`, `cache_min`, `cache_wait`,
+`spec_n`), defaults written as values.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front

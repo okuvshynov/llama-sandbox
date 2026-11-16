@@ -4471,3 +4471,24 @@ since JSON holds no comment).
 
 **Proof that the features ran** is now in the record for all three: `spec.steps`, `placed`, and
 `cache.loads_published` (a cache that never got to load would show 0 next to `"cache_loads": 800`).
+
+## Step 120: the tuning knobs among the record's arguments
+
+`args` gains the four settings a tuning sweep varies and the record did not hold:
+`cache_window`, `cache_min`, `cache_wait` and `spec_n` (next to `cache_loads` and
+`cache_period`, there since step 115). Two runs of a sweep over them had identical `args`.
+
+**Arguments are written as they took effect:** an option that was not given has its default in
+the record (`"cache_window": 256`, `"cache_min": 2`, `"cache_wait": false`), not a missing key.
+Every record then has the same keys, and a default that changes in the code shows as a changed
+value. `"spec_n": 0` is the default too, and means the number of drafts verified is chosen per
+step; 1-5 fixes it. The values are there whether or not the feature is on: with
+`"cache_loads": 0` the cache settings were not used.
+
+`cache_wait` matters for reading a record's `load_s`: with it the load waits for the experts'
+memory to be registered (~117 s in the runs of steps 118-119, against 10-14 s for their runs
+with a placement and no cache).
+
+**Checked** (`results/record/knobs.txt`): a run without any of them records the defaults; a run
+with `--cache-period 8 --cache-window 128 --cache-min 3 --cache-wait --spec-n 4` records those;
+both print the same bytes as before.

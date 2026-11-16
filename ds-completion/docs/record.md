@@ -1,6 +1,6 @@
 # `--record`: a run as one record
 
-**Status (2026-11-15, README steps 115-119):** the idea, and a first minimal `--record` in
+**Status (2026-11-15, README steps 115-120):** the idea, and a first minimal `--record` in
 `ds-completion`. No test uses it yet and no existing script changed. The record is meant to grow
 field by field, each addition a small change; the testing procedure follows once the record has
 shown what it can see.
@@ -94,8 +94,11 @@ as the program wrote it, the fastest single-machine settings (`results/record/ex
 }
 ```
 
-- `args`: ten of the options as parsed, not all of them yet. `n` is the limit after
-  `--max-ctx` capped it.
+- `args`: fourteen of the options, not all of them yet, as they took effect: an option not
+  given has its default (never a missing key), and `n` is the limit after `--max-ctx` capped it.
+  `spec_n` 0 (the default): the number of drafts verified is chosen per step. Since step 120
+  with the knobs a sweep varies: `cache_window`, `cache_min`, `cache_wait`, `spec_n`; the example
+  above is from before that.
 - `prompt.hash`: FNV-1a, 64 bits, over the prompt's token ids after the chat template, each id
   as four bytes, least significant first. Two runs with the same hash ran the same tokens,
   whatever text or options produced them. A prompt's name belongs to whoever starts the run; the
