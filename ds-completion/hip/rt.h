@@ -23,6 +23,7 @@
 #include "kernels.h"
 #include "model.h"
 
+#include <functional>
 #include <hip/hip_runtime.h>
 
 #include <map>
@@ -76,6 +77,10 @@ class Runtime {
   // the prompt: all but its last token in chunks of up to kChunk (forward_chunk, no head), then
   // decode() for the last; its logits
   std::vector<float> prefill(const std::vector<int32_t>& tokens);
+  // Asked before every prompt chunk: true ends prefill() there, which then returns no logits
+  // (a cancelled request, README step 154). The sequence is left after the chunks that ran, so
+  // the caller must rewind() before anything else.
+  std::function<bool()> prefill_stop;
 
   // teacher-forced single layer (tests): begin_step(token), then run_layer for L = 0.. in
   // order (consumers read what their source layer wrote), then end_step(). Inputs and taps as

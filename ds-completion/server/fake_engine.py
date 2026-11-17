@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
 """A stand-in for `ds-completion --requests` (docs/requests.md) for server/test_server.py:
 no model. It answers the i-th request with the i-th entry of a JSON file, a list of
-{"text": ..., "stop": "eos"|"length", "delay": seconds}, and appends every request it gets
+{"text": ..., "stop": "eos"|"length", "delay": seconds} (SIGUSR1 during the delay cancels the
+reply, as the engine does), and appends every request it gets
 (header and prompt) to a log file as one JSON line.
 
   fake_engine.py REPLIES.json REQUESTS.log --requests
 """
 import json
+import signal
 import sys
 import time
+
+cancel = []
+signal.signal(signal.SIGUSR1, lambda *a: cancel.append(1))
 
 replies = json.load(open(sys.argv[1], encoding='utf-8'))
 log = open(sys.argv[2], 'a', encoding='utf-8')
@@ -32,7 +37,14 @@ while True:
         continue
     out.write(b'prompt tokens=%d n=%s\n' % (len(prompt) // 4, f['n'].encode()))
     out.flush()
-    time.sleep(r.get('delay', 0))
+    del cancel[:]
+    t_end = time.time() + r.get('delay', 0)
+    while time.time() < t_end and not cancel:
+        time.sleep(0.05)
+    if cancel:  # SIGUSR1 during the "generation": as the engine, the reply ends there
+        out.write(f'end stop=cancel prompt_tokens={len(prompt) // 4} gen_tokens=0 prompt_s=0.1000 gen_s=0.5000\n'.encode())
+        out.flush()
+        continue
     data = r['text'].encode('utf-8')
     n = 0
     for k in range(0, len(data), 3):  # 3 bytes a "token": cuts UTF-8 characters, as real tokens can

@@ -331,9 +331,14 @@ static bool write_record(FILE* record, const Args& args, const RecordRun& r, [[m
 }
 
 // What one turn's generation did (a run without -i is one turn).
+// --requests: SIGUSR1 stops the request being generated (docs/requests.md, README step 154).
+// Set by the handler, read by the two generation loops between steps, cleared as a request is read.
+static volatile sig_atomic_t g_cancel = 0;
+
 struct Turn {
   int n_gen = 0;             // tokens printed
   bool hit_eos = false;
+  bool cancelled = false;    // stopped by g_cancel
   std::vector<int32_t> gen;  // the generated ids (the plain loop also keeps the end-of-sequence id that ended it)
   // shadow mode (--dspark without --spec): after every generated token, the draft's guesses for the
   // tokens after it; compared with what the main model then generates (nothing is skipped or verified)
@@ -420,10 +425,16 @@ static void generate_spec(Runtime* rt, const Args& args, const llama_vocab* voca
   // way.
   int backoff = 0, skip = 0;
   long plain_steps = 0;
-  if (emit(anchor)) {
+  if (g_cancel) {
+    turn.cancelled = true;
+  } else if (emit(anchor)) {
     Clock::time_point t_emit, td_start;
     bool have_t_emit = false;
     for (;;) {
+      if (g_cancel) {  // between steps: everything printed is committed but the anchor
+        turn.cancelled = true;
+        break;
+      }
       DraftResult d;
       double dms = 0;
       int n_verify = 0;
@@ -525,6 +536,10 @@ static void generate_spec(Runtime* rt, const Args& args, const llama_vocab* voca
 static void generate_plain([[maybe_unused]] Runtime* rt, Engine* eng, const Args& args, const llama_vocab* vocab, int eos, std::vector<float>& logits,
                            uint64_t pos, std::vector<int32_t>& pending, Turn& turn) {
   for (; turn.n_gen < args.n_predict; turn.n_gen++, pos++) {
+    if (g_cancel) {
+      turn.cancelled = true;
+      break;
+    }
     const int32_t next = sample_token(logits.data(), (int)logits.size(), args.sampler, pos);
     turn.gen.push_back(next);
     if (next == eos) break;
@@ -759,6 +774,8 @@ static int run(int argc, char** argv) {
   std::vector<int32_t> pending;  // printed by the last turn but not yet run through the model (it stopped at -n)
 #ifdef DS_RUNTIME
   if (args.requests) {  // the empty context, to return to before every request
+    signal(SIGUSR1, [](int) { g_cancel = 1; });
+    rt->prefill_stop = [] { return g_cancel != 0; };
     rt->mark();
     view.mode = ThinkView::Ids;
     fprintf(stderr, "# ready for requests on stdin (docs/requests.md)\n");
@@ -825,6 +842,7 @@ static int run(int argc, char** argv) {
         fflush(stdout);
         continue;
       }
+      g_cancel = 0;  // a signal that came after the last request ended was for that one
       first = n_requests++ == 0;  // (the logs are opened by the first request that runs)
       rt->rewind();
       pending.clear();
@@ -878,7 +896,8 @@ static int run(int argc, char** argv) {
     turn.view = &view;
     view.begin(args.mode == "think");
 #ifdef DS_RUNTIME
-    if (args.spec) generate_spec(rt.get(), args, vocab, eos, logits, first, pending, turn);
+    if (logits.empty()) turn.cancelled = true;  // --requests: the prompt was stopped between its chunks
+    else if (args.spec) generate_spec(rt.get(), args, vocab, eos, logits, first, pending, turn);
     else generate_plain(rt.get(), eng.get(), args, vocab, eos, logits, rt ? rt->n_past() : toks.size(), pending, turn);
 #else
     generate_plain(nullptr, eng.get(), args, vocab, eos, logits, toks.size(), pending, turn);
@@ -891,7 +910,8 @@ static int run(int argc, char** argv) {
     view.end();  // (after the lines above: the loop's last stderr line is ended by them)
     if (args.requests) {
       const bool ended = turn.hit_eos || (!turn.gen.empty() && turn.gen.back() == eos && (int)turn.gen.size() > turn.n_gen);
-      printf("end stop=%s prompt_tokens=%zu gen_tokens=%d prompt_s=%.4f gen_s=%.4f\n", ended ? "eos" : "length", toks.size(), turn.n_gen, t_pp, t_tg);
+      printf("end stop=%s prompt_tokens=%zu gen_tokens=%d prompt_s=%.4f gen_s=%.4f\n", turn.cancelled ? "cancel" : ended ? "eos" : "length", toks.size(),
+             turn.n_gen, t_pp, t_tg);
     } else {
       printf("\n");
     }

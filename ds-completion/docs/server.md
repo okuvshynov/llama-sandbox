@@ -65,7 +65,12 @@ while the engine works, and then all the message's events at once (`message_star
 ## One request at a time
 
 Requests that arrive while the engine is busy wait for it (a stream gets pings meanwhile).
-If a client leaves, its request still runs to its end: the engine's protocol has no cancel.
+
+If a client closes its connection before its reply (a timeout, Ctrl-C), the request is
+cancelled: the server checks every waiting connection once a second and sends the engine its
+cancel signal (`docs/requests.md`); the engine stops within a step, or within a prompt chunk.
+A request that was still waiting for the engine is dropped when its turn comes. The log has a
+line for both. Stopping the server cancels a running request the same way.
 
 ## Other paths
 

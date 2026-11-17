@@ -1665,6 +1665,10 @@ std::vector<float> Runtime::prefill(const std::vector<int32_t>& tokens) {
   std::map<std::string, double> groups;
   int chunks = 0;
   for (size_t i = 0; i + 1 < tokens.size();) {
+    if (prefill_stop && prefill_stop()) {  // (README step 154) the caller rewinds
+      in_prefill = false;
+      return {};
+    }
     const size_t n = std::min<size_t>(std::clamp(opt.prefill_chunk, 1, kChunk), tokens.size() - 1 - i);
     prefill_chunk(std::vector<int32_t>(tokens.begin() + i, tokens.begin() + i + n));
     i += n;

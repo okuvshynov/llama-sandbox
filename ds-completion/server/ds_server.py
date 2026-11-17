@@ -23,6 +23,9 @@ import importlib.util
 import itertools
 import json
 import os
+import select
+import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -54,6 +57,8 @@ class Engine:
 
     def __init__(self, cmd):
         self.lock = threading.Lock()
+        self.state = threading.Lock()  # guards `active`
+        self.active = None             # the token of the request the engine is working on
         self.proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
         t0 = time.time()
         line = self.proc.stdout.readline().decode().strip()
@@ -61,38 +66,61 @@ class Engine:
             raise RuntimeError(f'the engine did not say "ready" (got {line!r}, exit code {self.proc.poll()})')
         log(f'the engine is ready after {time.time() - t0:.0f} s')
 
-    def generate(self, prompt, n, temp, top_p, seed, on_start=None, on_token=None):
+    def cancel(self, token):
+        """Stop the request `token` if the engine is working on it (SIGUSR1: docs/requests.md);
+        if it is still waiting for the engine, it is cancelled when its turn comes."""
+        with self.state:
+            token['cancel'] = True
+            if self.active is token:
+                self.proc.send_signal(signal.SIGUSR1)
+
+    def generate(self, prompt, n, temp, top_p, seed, on_start=None, on_token=None, token=None):
         """-> (the reply's text as bytes, the end line's fields). Raises BadRequest on an
         engine "error" line, RuntimeError if the engine is gone. on_start(prompt_tokens) is
-        called when the engine has accepted the request, on_token() after every token."""
+        called when the engine has accepted the request, on_token() after every token.
+        token: a dict naming this request for cancel(); a cancelled reply ends with stop=cancel."""
         body = prompt.encode('utf-8')
         head = f'gen n={n} temp={temp!r} top_p={top_p!r} seed={seed} bytes={len(body)}\n'
         with self.lock:
+            with self.state:
+                if token is not None and token.get('cancel'):  # cancelled while it waited
+                    return b'', {'stop': 'cancel', 'prompt_tokens': '0', 'gen_tokens': '0', 'prompt_s': '0', 'gen_s': '0'}
+                try:
+                    self.proc.stdin.write(head.encode() + body)
+                    self.proc.stdin.flush()
+                except OSError as e:
+                    raise RuntimeError(f'the engine is gone ({e})')
+                self.active = token
             try:
-                self.proc.stdin.write(head.encode() + body)
-                self.proc.stdin.flush()
-            except OSError as e:
-                raise RuntimeError(f'the engine is gone ({e})')
-            out = b''
-            while True:
-                w = self.proc.stdout.readline().decode().split()
-                if not w:
-                    raise RuntimeError(f'the engine is gone (exit code {self.proc.poll()})')
-                if w[0] == 'error':
-                    raise BadRequest(' '.join(w[1:]))
-                if w[0] == 'prompt':
-                    if on_start:
-                        on_start(int(dict(f.split('=') for f in w[1:])['tokens']))
-                elif w[0] == 'tok':
-                    if len(w) > 2:
-                        out += bytes.fromhex(w[2])
-                    if on_token:
-                        on_token()
-                elif w[0] == 'end':
-                    return out, dict(f.split('=') for f in w[1:])
+                return self.read_reply(on_start, on_token)
+            finally:
+                with self.state:  # (after the reply's end line: a signal can no longer be for this request)
+                    self.active = None
+
+    def read_reply(self, on_start, on_token):
+        out = b''
+        while True:
+            w = self.proc.stdout.readline().decode().split()
+            if not w:
+                raise RuntimeError(f'the engine is gone (exit code {self.proc.poll()})')
+            if w[0] == 'error':
+                raise BadRequest(' '.join(w[1:]))
+            if w[0] == 'prompt':
+                if on_start:
+                    on_start(int(dict(f.split('=') for f in w[1:])['tokens']))
+            elif w[0] == 'tok':
+                if len(w) > 2:
+                    out += bytes.fromhex(w[2])
+                if on_token:
+                    on_token()
+            elif w[0] == 'end':
+                return out, dict(f.split('=') for f in w[1:])
 
     def close(self):
         try:
+            with self.state:
+                if self.active is not None:
+                    self.proc.send_signal(signal.SIGUSR1)
             self.proc.stdin.close()
             self.proc.wait(timeout=120)
         except Exception:
@@ -269,6 +297,7 @@ class Handler(BaseHTTPRequestHandler):
         mid = f'msg_{s.started:x}{number:06d}'
         ids = itertools.count(1)
         result = {'tokens': 0}
+        token = {}
         t0 = time.time()
 
         def on_token():
@@ -278,7 +307,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 result['out'], result['end'] = s.engine.generate(prompt, n, float(temp), float(top_p), seed,
                                                                  on_start=lambda tokens: result.update(t_start=time.time(), prompt_tokens=tokens),
-                                                                 on_token=on_token)
+                                                                 on_token=on_token, token=token)
             except BadRequest as e:
                 result['bad'] = str(e)
             except Exception as e:
@@ -292,20 +321,25 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header('Cache-Control', 'no-cache')
             self.end_headers()
         gone = False
-        t_said = time.time()
+        t_said = t_ping = time.time()
         while worker.is_alive():
-            worker.join(s.ping)
+            worker.join(min(1.0, s.ping))
+            if worker.is_alive() and not gone and self.client_left():
+                gone = True
+                log(f'request {number}: the client left; cancelling')
+                s.engine.cancel(token)
             if worker.is_alive() and time.time() - t_said >= s.progress:  # a long reply is otherwise silent until its end
                 t_said = time.time()
                 if 't_start' in result:
                     log(f'request {number}: {result["prompt_tokens"]} prompt tokens, {result["tokens"]} tokens so far, {t_said - result["t_start"]:.0f} s since it started')
                 else:
                     log(f'request {number}: waiting for the engine, {t_said - t0:.0f} s')
-            if stream and worker.is_alive() and not gone:
-                try:
-                    self.sse('ping', {'type': 'ping'})
-                except OSError:
-                    gone = True  # the client left; the engine finishes the reply anyway
+            if stream and worker.is_alive() and not gone and time.time() - t_ping >= s.ping:
+                t_ping = time.time()
+                if not self.try_sse('ping', {'type': 'ping'}):
+                    gone = True
+                    log(f'request {number}: the client left; cancelling')
+                    s.engine.cancel(token)
         if 'failed' in result:
             log(f'request {number}: {result["failed"]}')
             if stream:
@@ -318,6 +352,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_error_json(400, 'invalid_request_error', result['bad'])
 
         end = result['end']
+        if end['stop'] == 'cancel':
+            log(f'request {number}: cancelled after {end["gen_tokens"]} tokens, {time.time() - t0:.1f} s after it arrived')
+            return
         text = result['out'].decode('utf-8', errors='replace')
         blocks, stop_reason, note = parse_reply(s.enc, text, mode, end['stop'] == 'eos', lambda p: f'{p}_{s.started:x}{number:06d}{next(ids):02d}')
         message = {'id': mid, 'type': 'message', 'role': 'assistant', 'model': s.model_name, 'content': blocks,
@@ -338,6 +375,18 @@ class Handler(BaseHTTPRequestHandler):
             for name, data in sse_events(message):
                 if not self.try_sse(name, data):
                     break
+
+    def client_left(self):
+        """The client closed its side: the socket is readable and has no bytes (a client that
+        waits for its reply sends nothing more)."""
+        try:
+            if not select.select([self.connection], [], [], 0)[0]:
+                return False
+            return self.connection.recv(1, socket.MSG_PEEK | socket.MSG_DONTWAIT) == b''
+        except (BlockingIOError, InterruptedError):
+            return False
+        except OSError:
+            return True
 
     def sse(self, name, data):
         self.wfile.write(f'event: {name}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n'.encode('utf-8'))

@@ -42,7 +42,20 @@ after the load (about two minutes).
   special tokens included (`</think>`, the tool-call tags), in hex because one token can be a
   part of a UTF-8 character. A token without text has no third field. The end-of-sequence
   token is not sent.
-- `stop=eos`: the model ended the reply; `stop=length`: `n` tokens were generated.
+- `stop=eos`: the model ended the reply; `stop=length`: `n` tokens were generated;
+  `stop=cancel`: the request was cancelled (below).
+
+## Cancelling a request
+
+The signal `SIGUSR1` to the engine stops the request it is generating: the loop ends before
+its next step, and the reply ends with `end stop=cancel` after the tokens made so far. The
+next request starts on an empty context as always.
+
+- During the prompt it takes effect before the next chunk of 512 tokens (up to ~10 s).
+- A signal with no request running does nothing: it is forgotten when the next request is
+  read. So send it only while waiting for a reply's `end`, and read up to that `end` before
+  sending the next request.
+- (Without `--requests` the signal has its default action: it ends the process.)
 
 ## Errors
 

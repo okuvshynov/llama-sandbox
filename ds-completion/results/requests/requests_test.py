@@ -10,7 +10,8 @@ Every reply's token ids must hash to the stored value of a single run of that pr
 greedy: results/record/reference/heldout-output.tsv; temperature 1, top-p 0.95, seed 1:
 results/sampler/spec-heldout/s1-<prompt>-1.json. Also: a prompt again after others, a short
 n (a prefix of the full reply, stop=length), requests with mistakes (an error line, the
-session goes on). Exit code 1 if a check fails.
+session goes on), and cancels by SIGUSR1 (step 154): during a reply, during a prompt, between
+requests. Exit code 1 if a check fails.
 """
 import json
 import os
@@ -129,6 +130,31 @@ def main():
     mode, n, text = prompts['tcp-udp']
     r = request(f'gen n={n} bytes=BYTES', render(mode, text))
     check(r[0] not in ('error', 'closed') and fnv1a64_ids(r[0]) == greedy['tcp-udp'], 'tcp-udp greedy after the errors: the single run\'s reply')
+    # a cancel (README step 154): SIGUSR1 two seconds into a long reply, and again during a prompt
+    import signal
+    import threading
+    mode, n, text = prompts['py-lru']
+    for label, n_req, body, delay in [('a reply of up to 4000 tokens, the signal after 2 s', 4000, render(mode, text), 2.0),
+                                      ('a prompt of ~3000 tokens, the signal after 1 s', 300, render('chat', 'Summarize: ' + 'The quick brown fox jumps over the lazy dog. ' * 300), 1.0)]:
+        t = threading.Timer(delay, lambda: eng.send_signal(signal.SIGUSR1))
+        t0 = time.time()
+        t.start()
+        ids, out, end = request(f'gen n={n_req} bytes=BYTES', body)
+        t.join()
+        check(end['stop'] == 'cancel' and len(ids) < n_req and len(ids) == int(end['gen_tokens']),
+              f'{label}: stop={end["stop"]} after {len(ids)} tokens, {time.time() - t0:.1f} s (prompt {end["prompt_tokens"]} tokens, {float(end["prompt_s"]):.1f} s)')
+        if label.startswith('a reply'):
+            check(ids == full['py-lru', ''][:len(ids)], f'its {len(ids)} tokens are the first of the full reply')
+    for name, how in [('py-lru', ''), ('cpp-matrix', S1)]:
+        mode, n, text = prompts[name]
+        r = request(f'gen n={n} {how} bytes=BYTES', render(mode, text))
+        want = (sampled if how else greedy)[name]
+        check(r[0] not in ('error', 'closed') and fnv1a64_ids(r[0]) == want, f'{name} {"sampled" if how else "greedy"} after the cancels: the single run\'s reply')
+    eng.send_signal(signal.SIGUSR1)  # with no request running: forgotten
+    time.sleep(0.5)
+    mode, n, text = prompts['tcp-udp']
+    r = request(f'gen n={n} bytes=BYTES', render(mode, text))
+    check(r[0] not in ('error', 'closed') and r[2]['stop'] == 'length' and fnv1a64_ids(r[0]) == greedy['tcp-udp'], 'a signal between requests does not touch the next one')
     r = request('generate n=10', '')
     check(r[0] == 'error' and 'closing' in r[1], f'an unknown request line: {r[0]} {r[1]}')
     eng.stdin.close()

@@ -5604,3 +5604,50 @@ Two things found on the way:
 
 Not done: the OpenAI Responses endpoint (the benchmark's other script), tool results in a
 conversation, a reply streamed as it is generated, cancelling a request whose client left.
+
+## Step 154: a request whose client left is cancelled
+
+A request of the benchmark runs for ~19 minutes (step 153), and the engine answers one at a
+time: a client that gave up (a timeout, Ctrl-C) blocked every later request until its reply,
+which nobody would read, was finished.
+
+- **Engine:** in `--requests` mode the signal `SIGUSR1` stops the request being generated.
+  The handler sets a flag; both generation loops read it between steps, and `Runtime::prefill`
+  asks before every prompt chunk (`prefill_stop`). The reply ends with `end stop=cancel` after
+  the tokens made so far. The flag is cleared as the next request is read, so a signal that
+  arrives between requests does nothing. `docs/requests.md`.
+- **Server:** while a request runs or waits, its handler looks once a second whether the
+  client closed the connection (the socket is readable with no bytes), and a failed ping of
+  a stream says the same. Then `Engine.cancel` sends the signal if the engine is working on
+  that request, or marks it so it is dropped when its turn comes. `docs/server.md`.
+
+Why a signal and not a `cancel` line on stdin: the engine's main thread is in the generation
+loop, so reading stdin meanwhile needs a second thread and a queue between them; a flag set by
+a handler needs neither. The price is the rule in `docs/requests.md`: send it only while
+waiting for a reply's `end`.
+
+**Engine test** (`results/requests/requests_test.py`, both loops, 25 checks each, 6 of them
+new):
+
+| | speculative loop | plain loop |
+|---|---|---|
+| the signal 2 s into a reply of up to 4,000 tokens | `stop=cancel` after 56 tokens, 2.0 s | 46 tokens, 2.0 s |
+| those tokens | the first of the full reply | the same |
+| the signal 1 s into a 3,008-token prompt | `stop=cancel`, 0 tokens, after 9.8 s (the first chunk) | 8.5 s |
+| two prompts after the cancels, greedy and sampled | the single runs' replies | the same |
+| a signal between requests, then a prompt | the single run's reply | the same |
+
+The first version checked the flag only in the generation loops: the signal during the prompt
+then waited 40.4 s for the whole prompt. Hence `prefill_stop`.
+
+**Server test** (`server/test_server.py`, fake engine, now 28 checks): two clients leave 60 s
+replies, one plain and one a stream; the request after them is answered 0.5 s later, and the
+log has both cancels.
+
+**With the model** (`results/server/cancel.txt`): `curl --max-time 8` on a reasoning request:
+cancelled after 236 tokens, 8.1 s after it arrived; the same as a stream with `--max-time 12`:
+after 438 tokens; the next request answered in 0.4 s. The progress lines of step 153 are in
+that log too, now from the real engine.
+
+Left: a first request cancelled during its prompt leaves `--spec-log` to be appended, not
+opened anew, by the next one.

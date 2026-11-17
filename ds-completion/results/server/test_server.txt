@@ -1,4 +1,4 @@
-# server/test_server.py (no model, no GPU); commit e753ca2+changes (the HTTP front), 2026-11-17T10:33:33-05:00
+# server/test_server.py (no model, no GPU); commit 499fd12+changes (the cancel), 2026-11-17T10:59:09-05:00
 ok    the prompt: encoding.py's rendering of system + tools + user, effort medium = 62, ends with <think>
 ok    the engine's header: gen n=65536 temp=1.0 top_p=0.95 seed=7 bytes=1439
 ok    thinking + a tool call: blocks ['thinking', 'tool_use'], stop_reason tool_use, the input as sent (non-ASCII included)
@@ -13,6 +13,7 @@ ok    cut inside the answer: stop_reason max_tokens, blocks ['thinking', 'text']
 ok    a broken tool call: no tool_use block, the raw text returned: stop_reason end_turn
 ok    the engine's error line: 400 the prompt is 70000 tokens; --max-ctx is 65536
 ok    the next request is answered
+ok    two clients left 60 s replies (one plain, one a stream): the next request is answered 0.5 s later
 ok    refused, tool_choice any: 400 tool_choice 'any' is not supported: only auto and none
 ok    refused, no max_tokens: 400 max_tokens: a positive integer is required
 ok    refused, an image block: 400 messages[0]: only text blocks are supported (got 'image')
@@ -24,5 +25,6 @@ ok    none of the refused requests reached the engine
 ok    a body that is not JSON: 400
 ok    GET /v1/models names the model
 ok    another path: 404
-ok    the log has progress lines for the slow request: 2, the first: # server: request 3: 345 prompt tokens, 0 tokens so far, 1 s since it started
+ok    the log has the two cancelled requests: ['# server: request 9: cancelled after 0 tokens, 2.0 s after it arrived', '# server: request 10: cancelled after 0 tokens, 2.0 s after it arrived']
+ok    the log has progress lines for the slow request: 6, the first: # server: request 3: 345 prompt tokens, 0 tokens so far, 1 s since it started
 all checks passed

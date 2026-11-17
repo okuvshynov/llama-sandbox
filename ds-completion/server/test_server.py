@@ -42,6 +42,9 @@ REPLIES = [
     {'text': 'r' + enc.thinking_end_token + CALL.replace('</', '<')},                        # 5 a broken tool call
     {'error': 'the prompt is 70000 tokens; --max-ctx is 65536'},                             # 6 the engine refuses
     {'text': 'after the error'},                                                             # 7
+    {'text': 'never sent', 'delay': 60},                                                     # 8 the client leaves: cancelled
+    {'text': 'never sent', 'delay': 60},                                                     # 9 a stream, the same
+    {'text': 'after the cancels'},                                                           # 10
 ]
 
 failed = 0
@@ -141,6 +144,21 @@ def main():
     code, m = post({'max_tokens': 5, 'messages': [{'role': 'user', 'content': 'x'}]})
     check(code == 200 and m['content'][0]['text'] == 'after the error', 'the next request is answered')
 
+    # 8-10: a client that leaves while the engine works (60 s of it): the request is cancelled, the next one answered
+    import socket
+    import time
+    for stream in (False, True):
+        body = json.dumps(dict(bench, stream=stream)).encode()
+        c = socket.create_connection(('127.0.0.1', port))
+        c.sendall(b'POST /v1/messages HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n' % len(body) + body)
+        time.sleep(1.5)
+        c.close()
+    t = time.time()
+    code, m = post({'max_tokens': 5, 'messages': [{'role': 'user', 'content': 'x'}]})
+    dt = time.time() - t
+    check(code == 200 and m['content'][0]['text'] == 'after the cancels' and dt < 10,
+          f'two clients left 60 s replies (one plain, one a stream): the next request is answered {dt:.1f} s later')
+
     # refused before the engine sees them
     n_seen = len(seen())
     for what, body in [
@@ -173,6 +191,8 @@ def main():
 
     srv.terminate()
     srv.wait()
+    cancelled = [l for l in open(os.path.join(tmp, 'server.err'), encoding='utf-8') if ': cancelled after' in l]
+    check(len(cancelled) == 2, f'the log has the two cancelled requests: {[l.strip() for l in cancelled]}')
     said = [l for l in open(os.path.join(tmp, 'server.err'), encoding='utf-8') if 'tokens so far' in l]
     check(len(said) >= 1, f'the log has progress lines for the slow request: {len(said)}, the first: {said[0].strip() if said else None}')
     print('FAILED' if failed else 'all checks passed')

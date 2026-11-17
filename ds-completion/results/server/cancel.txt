@@ -1,0 +1,22 @@
+# A client that leaves, with the real engine (README step 154). By hand, 2026-11-17T10:59:09-05:00, commit 499fd12+changes, sclk 6.
+# The server: server/ds_server.py --port 8089 --progress 5 -- <the engine's command of results/server/endgame.txt>
+# R: {"model":"x","max_tokens":20000,"thinking":{"type":"adaptive"},"output_config":{"effort":"low"},
+#     "messages":[{"role":"user","content":"How many 4-digit numbers with distinct digits have digit sum 20? Work carefully."}]}
+#   curl -s --max-time 8 -H 'content-type: application/json' -d "$R" http://127.0.0.1:8089/v1/messages          (gives up after 8 s)
+#   the same with "stream":true and --max-time 12                                                                (after two pings)
+#   curl ... -d '{"model":"x","max_tokens":50,"temperature":0,"messages":[{"role":"user","content":"Reply with the single word: yes"}]}'
+
+the three clients:
+10:58:08 - 10:58:16  curl exit code 28 (its timeout), nothing received
+10:58:16 - 10:58:28  two ping events, then curl's timeout
+then                 {"content": [{"type": "text", "text": "yes"}], "stop_reason": "end_turn", ...} after 0.4 s
+
+the server's log:
+# server: request 1: 48 prompt tokens, 127 tokens so far, 5 s since it started
+# server: request 1: the client left; cancelling
+# server: request 1: cancelled after 236 tokens, 8.1 s after it arrived
+# server: request 2: 48 prompt tokens, 176 tokens so far, 5 s since it started
+# server: request 2: 48 prompt tokens, 367 tokens so far, 10 s since it started
+# server: request 2: the client left; cancelling
+# server: request 2: cancelled after 438 tokens, 12.0 s after it arrived
+# server: request 3: chat, 11 prompt tokens in 0.2 s, 1 tokens in 0.1 s (6.8 t/s), waited 0.0 s, end_turn: text
