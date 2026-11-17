@@ -104,7 +104,8 @@ clocks differ.
 
 ## A die's busy share
 
-`results/rocprof/busy.py DIR/NAME_kernel_trace.csv` (README step 143): per die, over the
+`results/rocprof/busy.py DIR/NAME_kernel_trace.csv [TOKENS]` (README steps 143-144; TOKENS, the
+number generated, is needed for a speculative run): per die, over the
 generation, the time a kernel is running, the idle gaps by length, and for the home die
 between which kernels the long gaps fall. It answers "is the die waiting, and for what" from
 the device's side; the run is traced, so the gaps include the profiler's host cost.

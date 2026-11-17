@@ -5202,3 +5202,31 @@ are a small part of the step.
 So on a plain step the GPU-side lever is not launches; it is the same one as before, the wait
 for the CPU's experts, now seen from the device. Not done: the same on the fastest settings
 (speculation and the cache change both the rows per launch and the CPU's share).
+
+## Step 144: the dies' busy share on the fastest settings
+
+Step 143 on the configuration that matters: the draft, speculation, the cache
+(`results/rocprof/busy-fast.txt`; cpp-matrix, 300 tokens, sclk 6). `busy.py` takes the token
+count as an argument now: with speculation the head runs per step and for the draft, so its
+launches no longer count tokens. Tracing costs less here, 55.07 -> 49.35 t/s (-10%): a verify
+step has fewer launches per token (475 on the home die against 1,740).
+
+| per token | plain step (143) | fastest settings |
+|---|---|---|
+| the traced step | 52.7 ms | 20.0 ms |
+| home die: a kernel running | 26.2 ms (49.8%) | 10.8 ms (53.8%) |
+| home die: waiting for the CPU's experts | 17.7 ms | 7.2 ms |
+| home die: the 176 us gap after its own experts | 6.5 ms | 1.0 ms |
+| home die: gaps under 20 us | 0.92 ms | 0.17 ms |
+| each other die: a kernel running | 2.7 ms (5%) | 2.8-3.0 ms (14-15%) |
+
+The picture holds. The home die still runs a kernel about half the time; launch boundaries
+are under 1% of a step; and **the wait for the CPU's experts is 36% of the traced step** (7.2
+of 20.0 ms per token; 33 ms of a 92 ms verify step, 926 us per layer that has a CPU expert).
+The 176 us gap is the same length and far rarer per token, since it is per layer and step.
+The other dies run 14-15% of the time, of which the cache's loads (`unpack_blocks`) are 0.24
+ms per token: the dies have room, the limit on what they can take is memory, not time.
+
+So from the device's side too, the largest single item of a fast step is the CPU's experts:
+what the cache, the placement and the second machine all work on. Nothing new to build here;
+the profile agrees with `--trace`.

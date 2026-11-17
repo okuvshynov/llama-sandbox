@@ -1,0 +1,42 @@
+# Each die's busy share on the fastest single-machine settings (README step 144). Commit 6ecad1f + busy.py's TOKENS argument, sclk 6, 2026-11-16.
+# RUN = bin-hip/ds-completion -m $M -p PC --chat -n 300 --rt $F8 --placement placements/study30.txt --dspark $D --spec --canon
+#       --cache-loads 800 --cache-period 8 --cache-wait --record F          (PC = cpp-matrix of results/spec-heldout/prompts.txt)
+#   plain:   RUN                                                                    55.07 t/s, 66 steps, 233 accepted
+#   traced:  rocprofv3 --kernel-trace --stats -d D -o k --output-format csv -- RUN   49.35 t/s (-10%), 65 steps, 234 accepted, stdout the same bytes
+# results/rocprof/busy.py D/k_kernel_trace.csv 300
+#
+# window: output head launch 1 to 326: 300 tokens (given), 6002.7 ms, 20.01 ms per token (50.0 t/s)
+# die  launches/token  queues  sum of kernel time  busy (union)  busy share   idle gaps: count/token  median us  share of idle in gaps<20us
+#   1             475       3          10.80 ms/tok    10.76 ms/tok      53.8%                     41       21.3            1.8%
+#    home die, per token:  kernel                              launches   ms    
+#       attn_partial_kernel                          11.8   1.040
+#       void fp8_gemv_virt_kernel<16, 1, 6>          13.4   0.840
+#       canon_gate_up_kernel                          8.5   0.671
+#       void gemv_head_m_kernel<5, 2, 8>              0.3   0.547
+#       void fp8_gemv_virt_kernel<32, 2, 6>           4.4   0.481
+#       void fp8_gemv_virt_kernel<32, 2, 5>           4.3   0.396
+#       canon_down_kernel                             8.5   0.383
+#       void fp8_gemv_lds_kernel<8, 2, 6>             4.4   0.373
+#       hc_split_kernel                              18.4   0.304
+#       quant_act_kernel                             58.9   0.300
+#   2              45       2           2.99 ms/tok     2.94 ms/tok      14.7%                     19      502.9            0.0%
+#   3              46       2           3.05 ms/tok     2.99 ms/tok      14.9%                     19      861.6            0.0%
+#   4              47       2           2.86 ms/tok     2.80 ms/tok      14.0%                     20      844.2            0.0%
+#    home die gaps      0-5         us:     7.7 per token,   0.03 ms per token
+#    home die gaps      5-20        us:    11.8 per token,   0.14 ms per token
+#    home die gaps     20-100       us:     5.9 per token,   0.29 ms per token
+#    home die gaps    100-1000      us:    12.8 per token,   4.30 ms per token
+#    home die gaps   1000-1000000000 us:     2.8 per token,   4.49 ms per token
+#    home die, gaps of 100 us and more: after kernel -> before kernel: per token, ms per token, mean us
+#       void fp8_gemv_lds_kernel<16, 2 -> copy16_kernel                     4.0    3.72      922
+#       void fp8_gemv_lds_kernel<16, 2 -> copy16_kernel                     1.4    1.52     1092
+#       void fp8_gemv_lds_kernel<16, 2 -> copy16_kernel                     1.4    1.29      946
+#       canon_down_kernel              -> quant_act_kernel                  5.5    0.97      176
+#       void fp8_gemv_lds_kernel<16, 2 -> copy16_kernel                     0.7    0.47      724
+#
+# The home die's gaps of 100 us and more, summed by kind (all pairs, not only the five printed):
+#   before copy16_kernel (the wait for the CPU's experts):  7.8 per token, 7.23 ms per token, mean 926 us
+#   canon_down_kernel -> quant_act_kernel:                  5.5 per token, 0.97 ms per token, mean 176 us
+#   other:                                                  2.2 per token, 0.59 ms per token, mean 264 us
+# Die 2, per token: canon_gate_up 8.5 launches 1.76 ms; canon_down 8.5 launches 0.90 ms; unpack_blocks (the cache's loads) 11.4 launches 0.24 ms.
+# Per verify step (65 steps, 4.6 tokens each): the step 92.3 ms traced; the home die runs a kernel 49.7 ms; it waits for the CPU's experts 33.4 ms.

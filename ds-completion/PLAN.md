@@ -566,6 +566,8 @@ Step 142: checked on `bench-fp8`: `FetchSize` exact (weights + 0.1-0.4%), a miss
 Step 143: from the kernel trace, the home die runs a kernel 50% of a (traced, plain) step; gaps between
 back-to-back launches sum to 0.9 ms/token (the bound for fusion); the idle time is the wait for the CPU's
 experts (17.7 ms) and a 176 us gap per layer not yet named (6.5 ms). Next: the same on the fastest settings.
+Step 144: on the fastest settings the same picture: home die 54% busy, the wait for the CPU's experts 7.2 of
+20.0 ms per token (traced), launch boundaries 0.17 ms; the other dies 14-15% busy.
 constructor in parts.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits

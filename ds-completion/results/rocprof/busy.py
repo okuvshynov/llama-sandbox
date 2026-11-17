@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Each die's busy share during generation, from a rocprofv3 kernel trace (docs/rocprof.md; README step 143).
 
-  results/rocprof/busy.py DIR/NAME_kernel_trace.csv
+  results/rocprof/busy.py DIR/NAME_kernel_trace.csv [TOKENS]
 
-The window is from the first to the last launch of the output head (one per token). Per die: launches,
+The window is from the first to the last launch of the output head: one per token in a plain run.
+With speculation the head runs per step and for the draft, so give TOKENS (the record's
+counters.gen_tokens) and every "per token" is the window's total over TOKENS. Per die: launches,
 the time a kernel is running (the union of the launches' intervals), the idle gaps between them by
 length, and for the home die its kernels and between which kernels the gaps of 100 us and more fall.
 The run was traced, so it is slower than a plain one: the gaps hold the profiler's host cost too.
@@ -14,9 +16,9 @@ for r in csv.DictReader(open(sys.argv[1])):
     rows.append((int(r['Start_Timestamp']), int(r['End_Timestamp']), r['Agent_Id'], r['Queue_Id'], re.sub(r'\(.*', '', r['Kernel_Name'])))
 heads = sorted(s for s, e, a, q, k in rows if 'gemv_partial_kernel<unsigned short' in k)
 t0, t1 = heads[0], heads[-1]
-ntok = len(heads) - 1
+ntok = int(sys.argv[2]) if len(sys.argv) > 2 else len(heads) - 1
 win = (t1 - t0) / 1e6
-print(f'window: output head launch 1 to {len(heads)}: {ntok} tokens, {win:.1f} ms, {win/ntok:.2f} ms per token ({1000*ntok/win:.1f} t/s)')
+print(f'window: output head launch 1 to {len(heads)}: {ntok} tokens' + (' (given)' if len(sys.argv) > 2 else '') + f', {win:.1f} ms, {win/ntok:.2f} ms per token ({1000*ntok/win:.1f} t/s)')
 gen = [r for r in rows if t0 <= r[0] < t1]
 print('die  launches/token  queues  sum of kernel time  busy (union)  busy share   idle gaps: count/token  median us  share of idle in gaps<20us')
 for a in sorted({r[2] for r in gen}):

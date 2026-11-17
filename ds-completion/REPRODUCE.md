@@ -269,6 +269,7 @@ Unless stated: sclk 2, 16 CPU threads (32 before README step 18), the study30 pl
 | 141 | `rocprof/counters.txt` | `sudo apt install hsa-amd-aqlprofile6.3.4`; the probe and the four model runs as the file gives them; the table: per kernel the mean `Counter_Value` of `p_counter_collection.csv` over the launches from the first `gemv_partial_kernel<unsigned short, ...>` on |
 | 142 | `rocprof/calibration.txt` | the five commands in the file; per tensor the median `Counter_Value` of the `fp8_gemv_kernel` launches with its instance and grid size |
 | 143 | `rocprof/busy.txt`, `rocprof/busy.py` | the `--kernel-trace` run of step 140, then `results/rocprof/busy.py D/k_kernel_trace.csv` |
+| 144 | `rocprof/busy-fast.txt` | the two commands in the file, then `results/rocprof/busy.py D/k_kernel_trace.csv 300` (the sums by kind: the gaps of 100 us and more on die 1 grouped by the kernel that follows) |
 
 ## 7. Open items (to confirm)
 
