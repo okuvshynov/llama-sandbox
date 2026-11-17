@@ -5260,3 +5260,50 @@ shorter; it is not measured.
 
 Not tried: the shared expert issued before the loop (expected: nothing, by the argument
 above, except in the layers without a CPU expert); the loop's untraced time from `--trace`.
+
+## Step 146: what a perfect draft-length rule would give (an estimate)
+
+The person's question: the same draft, but a rule with perfect knowledge. It verifies exactly
+as many drafts as will be accepted, and when none will be, it does not draft at all and takes
+a plain step.
+
+**It needs no oracle to be built.** A `--spec-n 5` run verifies the whole block every step, so
+its log has k, the drafts accepted, for every step, and such a step advances k + 1 tokens. An
+oracle verifying exactly k also advances k + 1: it visits the same positions with the same
+drafts. Its run is the n5 run's steps at other costs (`results/spec-oracle/oracle.py`):
+verify(k) from the measured steps of that width on that prompt, the draft 7.8 ms, a plain
+step for k = 0, and the time outside both (0.4-1.0 ms per step).
+
+**Result** (`results/spec-oracle/oracle.txt`; the eight held-out prompts, the fastest settings,
+one run each, sclk 6; t/s):
+
+| prompt | always 5 | the rule today | perfect length, draft always | perfect, no draft at k = 0 |
+|---|---|---|---|---|
+| tcp-udp | 36.08 | 39.03 | 50.30 (+28.9%) | 52.07 (+33.4%) |
+| py-lru | 45.47 | 46.51 | 55.97 (+20.3%) | 56.98 (+22.5%) |
+| cpp-matrix | 53.32 | 54.62 | 58.48 (+7.1%) | 58.93 (+7.9%) |
+| sql-report | 44.12 | 47.23 | 52.66 (+11.5%) | 53.40 (+13.1%) |
+| geometry | 53.75 | 55.18 | 61.27 (+11.0%) | 61.61 (+11.7%) |
+| zh-travel | 28.97 | 34.05 | 43.74 (+28.4%) | 46.30 (+36.0%) |
+| ja-email | 31.70 | 37.08 | 46.41 (+25.2%) | 48.57 (+31.0%) |
+| summary-json | 39.80 | 44.85 | 50.24 (+12.0%) | 50.85 (+13.4%) |
+| mean | 41.65 | 44.82 | 52.39 (+16.9%) | 53.59 (+19.6%) |
+
+- **The rule today is 7.6% above always verifying 5; perfect knowledge would be another
+  ~20%.** Most of it is the length (+16.9%); skipping the draft when nothing will be accepted
+  adds under 3 points, since a draft is 7.8 ms next to a 34-49 ms plain step.
+- **The room is where acceptance is poor:** +29-36% on tcp-udp, zh-travel, ja-email, where
+  half the steps accept 0 or 1 draft; +8-12% on cpp-matrix and geometry, where 5 of 5 is the
+  usual step.
+- It is a bound for rules, not for speculation: the draft and the block of 5 stay.
+
+**How far to trust it.** The step sequence is exact; the costs are a model. Verify time is not
+a line in the width (a line fitted to the adaptive log alone misses the n5 run's mean verify
+by -4.5% to +11%), which is why the table uses the measured mean per width; steps that accept
+little may also be costlier than the mean of their width (harder text, more of the CPU's
+experts), which would make the oracle look better than it is. A few percent either way; the
+size of the gap and its concentration on three prompts do not depend on that.
+
+No rule can reach it: the outcome is not known before the verify. What it says is that the
+confidence head's information, not the step costs, is what limits speculation on the poor
+prompts.

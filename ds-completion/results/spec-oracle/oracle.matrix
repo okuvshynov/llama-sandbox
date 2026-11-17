@@ -1,0 +1,13 @@
+# The data for the perfect-knowledge estimate of the draft-length rule (README step 146): the
+# held-out prompts with the fastest settings, once with the rule ("adaptive") and once always
+# verifying the whole block ("n5": every step then shows how many of the 5 drafts are accepted).
+# Each with --spec-log (a line per step: drafts verified, accepted, verify ms, draft ms).
+set M  ~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf
+set F8 ~/llms/ds-1017-fp8/dense-fp8.gguf
+set D  ~/llms/dspark/dspark-DeepSeek-V4.1-Flash-1017-BF16.gguf
+prompts results/spec-heldout/prompts.txt
+out results/spec-oracle/runs
+base --rt $F8 --placement placements/study30.txt --dspark $D --spec --canon
+base --cache-loads 800 --cache-period 8 --cache-wait
+config adaptive --spec-log results/spec-oracle/runs/adaptive-{prompt}.log
+config n5 --spec-n 5 --spec-log results/spec-oracle/runs/n5-{prompt}.log

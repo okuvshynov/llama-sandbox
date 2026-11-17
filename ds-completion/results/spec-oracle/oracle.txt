@@ -1,0 +1,24 @@
+# A perfect-knowledge estimate for the draft-length rule (README step 146). Commit 4dc0fe8 + this step's files, sclk 6, 2026-11-16.
+# scripts/run_matrix.py results/spec-oracle/oracle.matrix      (16 runs, 0 failed; one output hash per prompt; runs/matrix.txt has the header)
+# results/spec-oracle/oracle.py results/spec-oracle/runs
+# One run per prompt and configuration (the spread of repeats is ~1%, results/cleanup/heldout.txt). The oracle columns are a model:
+# the n5 run's steps at other costs; the check column says how far a line fitted to the adaptive log alone is from the n5 run's mean verify.
+#
+# prompt        k: 0    1    2    3    4    5 | n5 verify: fit from adaptive, measured | t/s: n5  adaptive | length only     | full oracle
+# tcp-udp         26   21   16   13   12   12 |    82.9    74.7 ms (+11.0%)        |  36.08  39.03   |  50.30 (+28.9%) |  52.07 (+33.4%)
+#               costs ms: verify 33.7 42.0 51.3 65.2 67.3 74.7; plain 33.7; draft 7.8; rest 0.56 per step; tokens 300 of 300
+# py-lru          13   12    5    6    5   33 |    84.2    80.5 ms (+4.6%)        |  45.47  46.51   |  55.97 (+20.3%) |  56.98 (+22.5%)
+#               costs ms: verify 35.7 43.7 57.4 65.5 72.0 81.3; plain 36.2; draft 7.8; rest 0.75 per step; tokens 299 of 300
+# cpp-matrix       5    1    7    7    3   38 |    80.5    83.4 ms (-3.5%)        |  53.32  54.62   |  58.48 ( +7.1%) |  58.93 ( +7.9%)
+#               costs ms: verify 48.7 55.4 58.6 74.9 76.3 81.9; plain 48.7; draft 7.8; rest 1.02 per step; tokens 299 of 300
+# sql-report      10    8   10    4    4   35 |    84.4    87.0 ms (-2.9%)        |  44.12  47.23   |  52.66 (+11.5%) |  53.40 (+13.1%)
+#               costs ms: verify 44.4 55.2 63.9 68.9 69.5 86.7; plain 44.4; draft 7.9; rest 0.87 per step; tokens 302 of 300
+# geometry         4    5   13   10    5   38 |    73.3    76.8 ms (-4.5%)        |  53.75  55.18   |  61.27 (+11.0%) |  61.61 (+11.7%)
+#               costs ms: verify 42.7 50.0 54.7 63.8 72.4 75.2; plain 42.7; draft 7.8; rest 0.91 per step; tokens 346 of 345
+# zh-travel       53   28   24   13    4    8 |    76.1    71.4 ms (+6.6%)        |  28.97  34.05   |  43.74 (+28.4%) |  46.30 (+36.0%)
+#               costs ms: verify 33.5 42.1 53.1 58.2 64.2 71.4; plain 34.1; draft 7.8; rest 0.44 per step; tokens 301 of 300
+# ja-email        34   37   19   15    4    9 |    74.7    71.8 ms (+4.1%)        |  31.70  37.08   |  46.41 (+25.2%) |  48.57 (+31.0%)
+#               costs ms: verify 33.9 42.0 52.1 57.6 64.6 71.8; plain 33.3; draft 7.8; rest 0.49 per step; tokens 299 of 300
+# summary-json     3    4    3    2    1   11 |    93.0    93.8 ms (-0.8%)        |  39.80  44.85   |  50.24 (+12.0%) |  50.85 (+13.4%)
+#               costs ms: verify 37.0 48.3 67.3 68.7 75.5 94.6; plain 37.0; draft 7.9; rest 0.84 per step; tokens 99 of 98
+# mean of the prompts                                                               |  41.65  44.82   |  52.39 (+16.9%) |  53.59 (+19.6%)

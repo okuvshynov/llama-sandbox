@@ -572,6 +572,8 @@ Step 145: the 176 us gap named: the host issuing the three other dies' work (91%
 HIP calls) before it issues the shared expert. Idle time of the die, not on the critical path by itself.
 Optimization is paused here (the person, 2026-11-16). Left open: the loop's untraced host time; the shared
 expert issued before the loop; the instruction counters unchecked.
+Step 146: a perfect draft-length rule, estimated from `--spec-n 5` logs: 53.6 t/s against 44.8 on the held-out
+mean (+19.6%; +29-36% on the three poor prompts, +8-12% on the good ones). A bound, not a plan item.
 constructor in parts.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
