@@ -138,6 +138,9 @@ Options:
   gives one output, whatever the placement (with `--canon`) and with or without `--spec`. Not
   with `--spec` on two machines yet. README steps 148-151.
 - neither: the prompt is raw text after BOS.
+- `--requests` (with `--rt`, in place of a prompt): prompts from stdin, one after another, each
+  on an empty context; the reply's tokens as lines on stdout. For a server's front. The
+  protocol: `docs/requests.md`. README step 152.
 - `-n`: max new tokens.
 - `--max-ctx N`: the context's size (default 65,536 with `--rt`; "Limits" below).
 - `--layers a-b` (with `--rt`): only that range of layers ("Two machines" below). A range must

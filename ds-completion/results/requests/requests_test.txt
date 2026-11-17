@@ -1,0 +1,23 @@
+# results/requests/requests_test.py; commit a169a46+changes (--requests), sclk 6, 2026-11-17T10:03:33-05:00
+# engine: bin-hip/ds-completion -m ~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf --rt ~/llms/ds-1017-fp8/dense-fp8.gguf --placement placements/study30.txt --canon --cache-loads 800 --cache-period 8 --cache-wait --requests --dspark ~/llms/dspark/dspark-DeepSeek-V4.1-Flash-1017-BF16.gguf --spec
+# "ready" after 116 s
+ok    tcp-udp      greedy  300 tokens, stop=length fnv1a64:e84010b498310b61 = the single run; 1231 bytes, valid UTF-8; prompt 20 tokens 0.57 s, generation 38.91 t/s
+ok    cpp-matrix   sampled 300 tokens, stop=length fnv1a64:3426536c97f68ad8 = the single run; 1139 bytes, valid UTF-8; prompt 25 tokens 0.53 s, generation 47.94 t/s
+ok    zh-travel    sampled 300 tokens, stop=length fnv1a64:0f178da0c1f4fd5a = the single run; 1029 bytes, valid UTF-8; prompt 17 tokens 0.57 s, generation 34.18 t/s
+ok    tcp-udp      greedy  300 tokens, stop=length fnv1a64:e84010b498310b61 = the single run; 1231 bytes, valid UTF-8; prompt 20 tokens 0.47 s, generation 39.42 t/s
+ok    geometry     sampled 342 tokens, stop=eos    fnv1a64:b3408ba7088ec36e = the single run; 808 bytes, valid UTF-8; prompt 55 tokens 1.06 s, generation 51.23 t/s
+ok    geometry     greedy  345 tokens, stop=eos    fnv1a64:39009bbaad3bdfec = the single run; 818 bytes, valid UTF-8; prompt 55 tokens 0.65 s, generation 59.89 t/s
+ok    summary-json greedy   98 tokens, stop=eos    fnv1a64:963abaf982b15a33 = the single run; 449 bytes, valid UTF-8; prompt 91 tokens 1.79 s, generation 41.42 t/s
+ok    cpp-matrix   sampled 300 tokens, stop=length fnv1a64:3426536c97f68ad8 = the single run; 1139 bytes, valid UTF-8; prompt 25 tokens 0.51 s, generation 48.85 t/s
+ok    py-lru       greedy  300 tokens, stop=length fnv1a64:ccdf68228376b5ca = the single run; 1172 bytes, valid UTF-8; prompt 27 tokens 0.49 s, generation 49.01 t/s
+ok    n=5: the first 5 ids of the full reply, stop=length
+ok    a short reply ends by itself: 1 tokens, stop=eos, text 'yes'
+ok    a think reply carries </think> as text: 21 tokens, stop=eos, its end '+3=5. Must reply with number. \n</think>5'
+ok    "gen n=0 bytes=BYTES" with 1 bytes: error n: 1 or more
+ok    "gen n=10 temp=-1 bytes=BYTES" with 1 bytes: error temp: 0 or more; top_p: above 0, up to 1
+ok    "gen n=10 top_p=0 temp=1 bytes=BYTES" with 1 bytes: error temp: 0 or more; top_p: above 0, up to 1
+ok    "gen n=10 bytes=BYTES" with 0 bytes: error an empty prompt
+ok    tcp-udp greedy after the errors: the single run's reply
+ok    an unknown request line: error unknown request (expected: gen n=N [temp=T] [top_p=P] [seed=S] bytes=B); closing
+ok    the engine exits with code 0 when its input ends
+all checks passed

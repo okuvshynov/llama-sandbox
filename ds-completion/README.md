@@ -5507,3 +5507,45 @@ float (~0.3 ms per draw, other last bits again).
 One run of the 31 (`s2` on cpp-matrix) aborted at exit after writing its record: the abort in
 the library's teardown of step 93 (`malloc_consolidate(): invalid chunk size`). Four reruns of
 the same command exited cleanly with the same output.
+
+## Step 152: a request mode: `--requests`
+
+The engine's side of a server (PLAN item 29: the person's benchmark sends single-turn HTTP
+requests): one process, loaded once, that reads prompts from stdin and writes replies to
+stdout, each request on an empty context. The HTTP front comes next and will be a separate
+program; the protocol between them is `docs/requests.md`.
+
+- **A request** is one header line, `gen n=N [temp=T] [top_p=P] [seed=S] bytes=B`, and `B`
+  bytes of prompt: the whole text with its special tokens written out, as the model's
+  `encoding.py` renders it. The engine adds nothing (no BOS, no template), so tools and system
+  blocks are the front's business.
+- **A reply** is `prompt tokens=.. n=..`, then one line per token as it is generated, `tok <id>
+  <bytes in hex>`, then `end stop=eos|length ...` with the counts and the times. The text
+  includes special tokens (`</think>`, the tool-call tags), which the front needs to parse a
+  reply; hex because a token can be a part of a UTF-8 character.
+- **The empty context:** `Runtime::mark()` right after the load, at position 0, and
+  `rewind()` before every request (step 109's saved point). Nothing new in the runtime. The
+  expert cache is not reset: it carries what the earlier requests used.
+- **The sampler's settings are per request**, greedy by default.
+- A mistake in a request gives an `error` line and the next request is read; a header that
+  cannot be followed ends the engine.
+
+In the code: the request is read at the top of the turn loop in `run` (where `-i` reads its
+line), tokens are printed by a new mode of `ThinkView` (`Ids`), and `piece()` can render
+special tokens.
+
+**Test** (`results/requests/requests_test.py`, `requests_test.txt` with `--spec`,
+`requests_test-plain.txt` without): one engine, 14 generations and 5 bad requests in a row.
+
+- 9 replies (five held-out prompts, greedy and temperature 1 / top-p 0.95 / seed 1, two of
+  them twice, in mixed order, one a `--think` prompt) hash to the stored outputs of single
+  runs: 9 of 9 with the speculative loop and 9 of 9 with the plain one.
+- `n=5` gives the first 5 ids of the full reply and `stop=length`; a one-word reply ends with
+  `stop=eos`; a think reply carries `</think>` as text.
+- Four requests with a bad value give an error each; the prompt after them gives the single
+  run's reply. An unknown request line closes the engine, exit code 0.
+- Speeds are close to single runs' (with speculation 38.9 / 47.9 / 51.2 t/s on tcp-udp,
+  cpp-matrix sampled, geometry sampled; step 151's single runs: 38.9 / 50.8 / 52.0).
+
+Not here: a common prefix kept between requests (the benchmark's prompts share their tools
+block and rules), stop strings, more than one request at a time.

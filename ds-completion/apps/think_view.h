@@ -5,6 +5,7 @@
 //         erased when the answer starts, which goes to stdout alone. If stderr is not a
 //         terminal: as none.
 //   none  not shown; a note on stderr when it ends
+// Ids (--requests, not an option's value): every token as a line "tok <id> <its bytes in hex>".
 // The tokens, the context and the record do not depend on it.
 #pragma once
 
@@ -17,7 +18,7 @@
 #include <string>
 
 struct ThinkView {
-  enum Mode { All, Line, None } mode = All;
+  enum Mode { All, Line, None, Ids } mode = All;
   int32_t think_end = -1;  // the </think> token
   bool thinking = false;   // inside the reasoning of this turn
   long n = 0;              // its tokens so far
@@ -45,6 +46,13 @@ struct ThinkView {
 
   // a generated token and its text
   void token(int32_t id, const std::string& piece) {
+    if (mode == Ids) {
+      printf("tok %d ", id);
+      for (unsigned char c : piece) printf("%02x", c);
+      printf("\n");
+      fflush(stdout);
+      return;
+    }
     if (!thinking) {
       fwrite(piece.data(), 1, piece.size(), stdout);
       fflush(stdout);

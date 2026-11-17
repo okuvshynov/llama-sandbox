@@ -9,6 +9,8 @@
 // strings encoding/encoding.py produces; --effort is its reasoning effort, 1-100, default 75);
 // otherwise the prompt is raw text after BOS. -f reads the prompt from a file.
 // Only the tokenizer comes from libllama (vocab-only load).
+// --requests (with --rt, in place of a prompt): prompts from stdin, each on an empty context,
+// the replies' tokens as lines on stdout (docs/requests.md; README step 152).
 // --record FILE: the run as one JSON object (docs/record.md): a few of its arguments, the prompt's
 // token count and hash, the GPU clock setting, the bytes read from storage per phase, the
 // speculative loop's totals, the routed experts' uses, placement and cache totals, and the times
@@ -24,6 +26,8 @@
 #include "llama.h"
 #include "record.h"
 #include "sampler.h"
+
+#include <sstream>
 #include "think_view.h"
 
 #ifndef DS_RUNTIME
@@ -62,9 +66,10 @@ static std::vector<int32_t> tokenize(const llama_vocab* v, const std::string& te
   return std::vector<int32_t>(t.begin(), t.end());
 }
 
-static std::string piece(const llama_vocab* v, int32_t tok) {
+// special: the text of a special token too (false: it prints as nothing)
+static std::string piece(const llama_vocab* v, int32_t tok, bool special = false) {
   char buf[256];
-  int n = llama_token_to_piece(v, tok, buf, sizeof buf, 0, /*special*/ false);
+  int n = llama_token_to_piece(v, tok, buf, sizeof buf, 0, special);
   return n > 0 ? std::string(buf, n) : std::string();
 }
 
@@ -141,6 +146,7 @@ struct Args {
   std::string dspark_path;
   bool spec = false;
   bool interactive = false;
+  bool requests = false;  // --requests: prompts from stdin, each on an empty context (README step 152)
   std::vector<int> layers;  // --layers a-b: a range of the model (README step 110)
   bool teacher = false;
   int serve_port = 0;  // --serve: the back of two processes (README step 111)
@@ -178,6 +184,7 @@ static int parse_args(int argc, char** argv, Args& args) {
     }
     else if (a == "--chat") args.mode = "chat";
     else if (a == "--think") args.mode = "think";
+    else if (a == "--requests") args.requests = true;  // runtime: requests on stdin, replies on stdout (docs/requests.md)
     else if (a == "-i" || a == "--interactive") args.interactive = true;  // runtime, --chat or --think: a session of turns on one context
     else if (a == "-n") args.n_predict = atoi(next());
     else if (a == "--layers") {  // runtime: only layers a-b (a range hands its stream to the next: --teacher)
@@ -239,8 +246,13 @@ static int parse_args(int argc, char** argv, Args& args) {
     fprintf(stderr, "-i needs --chat or --think, and --rt\n");
     return 2;
   }
-  if (args.model_path.empty() || (args.prompt.empty() && !args.interactive && !args.serve_port)) {
-    fprintf(stderr, "usage: ds-completion -m <model.gguf> (-p \"prompt\" | -f prompt.txt | -i) [--chat|--think [--effort 1-100|low|high|max] [--think-show all|line|none]] [-n N] [--temp T [--top-p P] [--seed S]] [-t N] [--no-quant] [--max-ctx N] [--rt dense-fp8.gguf [--gpu D] [--placement file [--moe-dies 0,1,2,3] [--cache-loads R [--cache-period N] [--cache-window N] [--cache-min N] [--cache-wait]]] [--canon] [--profile]]\n"
+  if (args.requests && (args.rt_path.empty() || args.mode != "raw" || !args.prompt.empty() || args.interactive || args.serve_port || args.teacher ||
+                        !args.record_path.empty() || (!args.layers.empty() && args.remote.empty()))) {
+    fprintf(stderr, "--requests needs --rt; not with -p, -f, -i, --chat, --think, --serve, --teacher, --record or a part of the layers\n");
+    return 2;
+  }
+  if (args.model_path.empty() || (args.prompt.empty() && !args.interactive && !args.serve_port && !args.requests)) {
+    fprintf(stderr, "usage: ds-completion -m <model.gguf> (-p \"prompt\" | -f prompt.txt | -i | --requests) [--chat|--think [--effort 1-100|low|high|max] [--think-show all|line|none]] [-n N] [--temp T [--top-p P] [--seed S]] [-t N] [--no-quant] [--max-ctx N] [--rt dense-fp8.gguf [--gpu D] [--placement file [--moe-dies 0,1,2,3] [--cache-loads R [--cache-period N] [--cache-window N] [--cache-min N] [--cache-wait]]] [--canon] [--profile]]\n"
                     "more (--dspark/--spec, --layers/--serve/--remote, --trace, --record, ...): QUICKSTART.md, Options\n");
     return 2;
   }
@@ -354,7 +366,7 @@ static void generate_spec(Runtime* rt, const Args& args, const llama_vocab* voca
   auto emit = [&](int32_t t) {  // false: stop
     if (t == eos) turn.hit_eos = true;
     if (t == eos || turn.n_gen >= args.n_predict) return false;
-    turn.view->token(t, piece(vocab, t));
+    turn.view->token(t, piece(vocab, t, args.requests));
     turn.gen.push_back(t);
     turn.n_gen++;
     return turn.n_gen < args.n_predict;
@@ -516,7 +528,7 @@ static void generate_plain([[maybe_unused]] Runtime* rt, Engine* eng, const Args
     const int32_t next = sample_token(logits.data(), (int)logits.size(), args.sampler, pos);
     turn.gen.push_back(next);
     if (next == eos) break;
-    turn.view->token(next, piece(vocab, next));
+    turn.view->token(next, piece(vocab, next, args.requests));
     if (turn.n_gen + 1 == args.n_predict) { turn.n_gen++; pending = {next}; break; }
 #ifdef DS_RUNTIME
     if (rt && rt->has_draft()) {
@@ -745,8 +757,82 @@ static int run(int argc, char** argv) {
   const int eos = llama_vocab_eos(vocab);
   [[maybe_unused]] const int n_predict_turn = args.n_predict;
   std::vector<int32_t> pending;  // printed by the last turn but not yet run through the model (it stopped at -n)
+#ifdef DS_RUNTIME
+  if (args.requests) {  // the empty context, to return to before every request
+    rt->mark();
+    view.mode = ThinkView::Ids;
+    fprintf(stderr, "# ready for requests on stdin (docs/requests.md)\n");
+    printf("ready\n");
+    fflush(stdout);
+  }
+#endif
+  [[maybe_unused]] long n_requests = 0;
   for ([[maybe_unused]] bool first = true;; first = false) {
 #ifdef DS_RUNTIME
+    if (args.requests) {
+      // "gen n=N [temp=T] [top_p=P] [seed=S] bytes=B" and then B bytes: the whole prompt as text,
+      // special tokens written out, the first one included. The end of input ends the run.
+      std::string head, err;
+      for (int c; (c = getchar()) != EOF;) {
+        if (c == '\n') {
+          if (head.empty()) continue;  // empty lines between requests
+          break;
+        }
+        head += (char)c;
+      }
+      if (head.empty()) break;
+      long n = -1, bytes = -1;
+      SamplerOptions so;
+      {
+        std::istringstream in(head);
+        std::string w;
+        in >> w;
+        if (w != "gen") err = "unknown request (expected: gen n=N [temp=T] [top_p=P] [seed=S] bytes=B)";
+        while (err.empty() && in >> w) {
+          const size_t eq = w.find('=');
+          const std::string k = w.substr(0, eq), v = eq == std::string::npos ? "" : w.substr(eq + 1);
+          char* end = nullptr;
+          if (k == "n") n = strtol(v.c_str(), &end, 10);
+          else if (k == "bytes") bytes = strtol(v.c_str(), &end, 10);
+          else if (k == "temp") so.temp = strtof(v.c_str(), &end);
+          else if (k == "top_p") so.top_p = strtof(v.c_str(), &end);
+          else if (k == "seed") so.seed = strtoull(v.c_str(), &end, 10);
+          if (!end || end == v.c_str() || *end) err = "bad field " + w;
+        }
+      }
+      if (err.empty() && bytes < 0) {  // without the length the input cannot be followed any further
+        printf("error no bytes= in the request; closing\n");
+        fflush(stdout);
+        break;
+      }
+      std::string text(err.empty() ? bytes : 0, '\0');
+      if (err.empty() && fread(text.data(), 1, bytes, stdin) != (size_t)bytes) break;  // the input ended inside a prompt
+      if (err.empty() && n < 1) err = "n: 1 or more";
+      if (err.empty() && (so.temp < 0 || !(so.top_p > 0 && so.top_p <= 1))) err = "temp: 0 or more; top_p: above 0, up to 1";
+      if (err.empty() && so.temp > 0 && args.spec && !args.remote.empty()) err = "temp above 0 with --spec: not with --remote yet";
+      if (err.empty()) {
+        toks = tokenize(vocab, text);
+        if (toks.empty()) err = "an empty prompt";
+        else if ((int)toks.size() >= args.opt.max_ctx) err = "the prompt is " + std::to_string(toks.size()) + " tokens; --max-ctx is " + std::to_string(args.opt.max_ctx);
+      }
+      if (!err.empty()) {
+        if (bytes < 0) {  // (a request line that was not understood: its length is not known)
+          printf("error %s; closing\n", err.c_str());
+          fflush(stdout);
+          break;
+        }
+        printf("error %s\n", err.c_str());
+        fflush(stdout);
+        continue;
+      }
+      first = n_requests++ == 0;  // (the logs are opened by the first request that runs)
+      rt->rewind();
+      pending.clear();
+      args.sampler = so;
+      args.n_predict = (int)std::min<long>(n, args.opt.max_ctx - (long)toks.size());
+      printf("prompt tokens=%zu n=%d\n", toks.size(), args.n_predict);
+      fflush(stdout);
+    }
     if (args.interactive && (!first || toks.empty())) {
       fprintf(stderr, "\n> ");
       char* line = nullptr;
@@ -803,7 +889,12 @@ static int run(int argc, char** argv) {
       fprintf(stderr, "\n# speculative: %ld verify steps, %.2f drafts accepted per step, %.2f tokens per step; draft %.1f ms per step\n",
               turn.spec_steps, (double)turn.spec_accepted / turn.spec_steps, (double)turn.n_gen / turn.spec_steps, turn.draft_ms / turn.spec_steps);
     view.end();  // (after the lines above: the loop's last stderr line is ended by them)
-    printf("\n");
+    if (args.requests) {
+      const bool ended = turn.hit_eos || (!turn.gen.empty() && turn.gen.back() == eos && (int)turn.gen.size() > turn.n_gen);
+      printf("end stop=%s prompt_tokens=%zu gen_tokens=%d prompt_s=%.4f gen_s=%.4f\n", ended ? "eos" : "length", toks.size(), turn.n_gen, t_pp, t_tg);
+    } else {
+      printf("\n");
+    }
     fflush(stdout);
     report_shadow(turn);
 #ifdef DS_RUNTIME
@@ -824,7 +915,7 @@ static int run(int argc, char** argv) {
       if (!write_record(record, args, r, rtp)) { fprintf(stderr, "cannot write %s\n", args.record_path.c_str()); return 1; }
       record = nullptr;
     }
-    if (!args.interactive) break;
+    if (!args.interactive && !args.requests) break;
     {  // --think: what the next turn keeps of this reply
       auto it = std::find(turn.gen.begin(), turn.gen.end(), think_end);
       answer.assign(it == turn.gen.end() ? it : it + 1, turn.gen.end());

@@ -252,7 +252,7 @@ for one step lies with its results.
 
 | path | what |
 |---|---|
-| `apps/ds_completion.cpp` | the CLI, top to bottom: the options (`Args`, `parse_args`), the record (`write_record`: `--record` writes a run as one JSON object, `docs/record.md`), the two generation loops (`generate_spec`, `generate_plain`), then `run`: load, the turns, the summaries |
+| `apps/ds_completion.cpp` | the CLI, top to bottom: the options (`Args`, `parse_args`), the record (`write_record`: `--record` writes a run as one JSON object, `docs/record.md`), the two generation loops (`generate_spec`, `generate_plain`), then `run`: load, the turns (one prompt, `-i`'s lines or `--requests`' requests), the summaries |
 | `apps/think_view.h` | how a reply is printed: `--think-show`, the reasoning as one moving line or hidden (README step 147) |
 | `src/model.{h,cpp}` | GGUF loading (zero-copy mmap), the model's schema and hyperparameters |
 | `src/forward.{h,cpp}` | the CPU reference path (ggml graphs), used by tests and `bin/ds-completion` |
@@ -264,6 +264,7 @@ for one step lies with its results.
 | `hip/rt.{h,cpp}` | the GPU runtime: state, layer order, the expert split |
 | `hip/rt_peer.cpp` | the runtime as one half of a model on two machines: the front's messages, the back's `serve` (`hip/peer.h`: the protocol) |
 | `hip/rt_trace.cpp` | the runtime's observability: the startup memory ledger, `--profile`'s groups, `--trace` (`hip/rt_internal.h`: the helpers the runtime's files share) |
+| `docs/requests.md` | `--requests`: the protocol between the engine and a server's front (README step 152) |
 | `docs/rocprof.md` | the GPU side under AMD's `rocprofv3`: how to run it, its files, how to read them (README step 140) |
 | `hip/kernels.{h,hip}` | the runtime's kernels (norms, attention, indexer, hyper-connections, router, dispatch) |
 | `hip/fp8_gemv.{h,hip}` | exact fp8 x fp8 GEMV |
