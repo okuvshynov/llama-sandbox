@@ -60,7 +60,7 @@ Features and limits
 | 26 | Context above 4096 with the runtime | done | 65,536 by default, 1M with `--max-ctx`; see "Long context" below (README step 34) |
 | 27 | Candidate-block selection (>16k tokens) | done (runtime) | the reference's layer-20 path, checked against its own function; the CPU path still stops at 16k |
 | 28 | Full 1017 checkpoint | not needed | item 19 runs from the GGUF; exact references read the release by HTTP ranges (README "Which checkpoint") |
-| 29 | Sampling beyond greedy | started | temperature and top-p for a minimal server (the person's benchmark). Step 148: the sampler as a library with its test. Step 149: `--temp`, `--top-p`, `--seed` in the plain loop, one seed one output on any placement. Step 150: the speculative loop samples too (the plain loop's outputs; held-out mean 41.8 t/s against 44.8 greedy, the loss ~4-6 ms per verify step, open; not with `--remote`). Next: a request mode with a context reset, the HTTP front. Greedy loops on some long reasoning (README step 48) |
+| 29 | Sampling beyond greedy | started | temperature and top-p for a minimal server (the person's benchmark). Step 148: the sampler as a library with its test. Step 149: `--temp`, `--top-p`, `--seed` in the plain loop, one seed one output on any placement. Step 150: the speculative loop samples too (the plain loop's outputs; held-out mean 41.8 t/s against 44.8 greedy, not with `--remote`). Step 151: that loss was the draws (~1 ms each and the threads' start); a vector `exp` and draws in turn: 43.1 t/s against 44.9 greedy. Next: a request mode with a context reset, the HTTP front. Greedy loops on some long reasoning (README step 48) |
 
 ## Current cost model (2026-10-27, sclk 2, 16 CPU threads)
 
@@ -583,6 +583,9 @@ placements; not with `--spec` yet.
 Step 150: `--temp` with `--spec`: a draft is accepted if it is the sampler's token at its position; outputs equal
 the plain loop's; held-out mean 44.76 greedy, 41.79 sampled, as many tokens per step. Open: ~4-6 ms per verify step
 (the logits' copy and the draws), sampling on two machines.
+Step 151: the ~4-6 ms were the draws (1 ms each, six threads started per step), not the copy (0.3 ms). Vector `exp`,
+draws in turn up to the first rejected draft: 2.4 ms per step, held-out 43.06 sampled against 44.94 greedy (-4.2%).
+Open: ~0.5 ms per draw, sampling on two machines.
 constructor in parts.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits

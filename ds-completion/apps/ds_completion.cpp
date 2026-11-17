@@ -349,6 +349,7 @@ static void generate_spec(Runtime* rt, const Args& args, const llama_vocab* voca
   // chunk's logits on the host; a draft is accepted if it is that token (README step 150).
   const bool sampling = args.sampler.temp > 0;
   rt->keep_verify_logits = sampling;
+  SamplerScratch scratch;
   int32_t anchor = sample_token(logits.data(), (int)logits.size(), args.sampler, rt->n_past());
   auto emit = [&](int32_t t) {  // false: stop
     if (t == eos) turn.hit_eos = true;
@@ -441,9 +442,12 @@ static void generate_spec(Runtime* rt, const Args& args, const llama_vocab* voca
       std::vector<int32_t> next = rt->verify(chunk);
       if (sampling) {  // (counted in the verify's time: the draft-length rule's cost per token has it)
         const auto ts = Clock::now();
-        #pragma omp parallel for schedule(static, 1)
-        for (int i = 0; i < (int)chunk.size(); i++)
-          next[i] = sample_token(rt->verify_logits(i), (int)logits.size(), args.sampler, p0 + i + 1);
+        // one after another, up to the first draft that is not the sampled token: the rows after
+        // it are not used (README step 151: cheaper than six threads woken for six draws)
+        for (size_t i = 0; i < chunk.size(); i++) {
+          next[i] = sample_token(rt->verify_logits(i), (int)logits.size(), args.sampler, p0 + i + 1, &scratch);
+          if (i + 1 < chunk.size() && next[i] != chunk[i + 1]) break;
+        }
         rt->trace_host("after verify: sample", ts, Clock::now(), 3);
       }
       const auto tv1 = Clock::now();

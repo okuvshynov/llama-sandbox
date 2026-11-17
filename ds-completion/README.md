@@ -5464,3 +5464,46 @@ measured. It is the open item of this step; recovering it would give most of the
 
 A mistake in the announcement: "all 16 held-out prompts, 32 runs". The set has 8 prompts (16 was
 the number of runs in step 138, two repeats); 16 runs were made.
+
+## Step 151: where the sampled step's milliseconds go, and a cheaper draw
+
+Step 150 left ~4-6 ms per verify step unexplained. Measured (`results/sampler/step151/where.txt`,
+one prompt, five drafts every step):
+
+| part | ms per step |
+|---|---|
+| the copy of the logits to the host (6 x 129,280 floats) | 0.3 |
+| the six draws, one thread each | 2.8 without tracing, 4.0 with |
+
+So the draws, not the copy. A draw was ~1.0 ms of arithmetic alone and 1.45 ms with six
+running at once, and starting the threads took ~1.2 ms more. The guesses of step 150 were
+mostly wrong: the 1 MB allocation per draw is ~0.04 ms (reused buffers changed the step by
+0.15 ms), and `OMP_WAIT_POLICY=active` did not help. Inside one draw (`phases.cpp`):
+`std::max_element` 0.22 ms (it is not vectorized), 129,280 scalar `exp` 0.63 ms, the sum 0.13 ms.
+
+Changed:
+
+- **`exp` 8 at a time** (glibc's libmvec, AVX-512; 0.63 -> 0.20 ms) and **the maximum with
+  AVX-512** (the first index of the largest value, as before). A draw: 0.9 -> 0.5 ms in
+  `test-sampler`, the same token on its 4,800 draws against a full sort with the scalar `exp`.
+  The vector `exp` can differ from the scalar one in the last bits, so a build without AVX-512
+  could in principle take another token at a boundary; none seen.
+- **Buffers reused** between draws (`SamplerScratch`, optional).
+- **The speculative loop draws on its own thread, row by row, and stops at the first draft
+  that is not the sampled token.** The rows after it were never used.
+
+Result (`results/sampler/step151/summary.txt`; step 150's 31 runs again):
+
+- 31 of 31 outputs equal to step 150's.
+- The sampling span: 3.8 -> 2.4 ms per step (means, traced runs, `where.txt` section 4).
+- Held-out mean, one run each: greedy 44.94 t/s, sampled 43.06 (-4.2%; step 150: 44.76 and
+  41.79, -6.6%). Greedy moved by +0.4% between the two sets, which is the size of what one run
+  each can show.
+
+What is left is ~0.5 ms per draw times one draw per accepted draft plus one: 2.4 ms of a
+~65 ms step, which is most of the remaining 4%. Not done: the sum in 8 lanes and `exp` in
+float (~0.3 ms per draw, other last bits again).
+
+One run of the 31 (`s2` on cpp-matrix) aborted at exit after writing its record: the abort in
+the library's teardown of step 93 (`malloc_consolidate(): invalid chunk size`). Four reruns of
+the same command exited cleanly with the same output.

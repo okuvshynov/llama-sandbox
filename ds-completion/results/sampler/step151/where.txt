@@ -1,0 +1,37 @@
+# Where a sampled verify step's extra time goes (README step 151). By hand, 2026-11-17T09:48:54-05:00, sclk 6.
+# Runs: step 150's command for cpp-matrix (results/sampler/spec.matrix) with --spec-n 5 (five
+# drafts every step), 300 tokens, 60-65 steps. Sections 1 and 4: with --trace FILE, the spans'
+# durations. Section 2: a temporary patch in generate_spec (a clock around each draw; an
+# environment variable for the serial loop; a SamplerScratch per row), not kept. Section 3:
+# g++ -std=c++17 -O3 -march=native results/sampler/step151/phases.cpp, the parts of one draw.
+
+1. step 150's code (commit a8e646b), greedy against temperature 1, top-p 0.95, seed 1; median ms per step
+   span                                        greedy   sampled
+   tail: the head's wait and the ids to host    2.547     2.847    (sampled: with the copy of 6 x 129,280 logits)
+   after verify: sample                             -     3.985    (six draws, one thread each; mean 3.824)
+   verify 6 tokens                             86.801    86.439    (other texts, so other experts; tracing adds ~10 ms)
+
+2. the draws of step 150's code, timed inside the loop; ms, means over 60 steps
+   variant                                  per step   per draw
+   six threads (as committed)                  2.834   1.44-1.47
+   one thread, six draws in turn               6.183   1.01-1.09
+   six threads, buffers reused                 2.685   1.46-1.49
+   one thread, buffers reused                  5.945   0.97-1.02
+   six threads, OMP_WAIT_POLICY=active         2.897   1.44-1.49
+   So: ~1.0 ms of arithmetic per draw, 1.45 when six run at once, ~1.2 ms to start the
+   threads; the 1 MB allocation per draw is ~0.04 ms. The outputs of all five are the same.
+
+3. the parts of one draw on 129,280 logits, one thread (phases.cpp), ms
+   std::max_element                 0.216
+   scalar exp                       0.628
+   libmvec exp, 8 doubles a call    0.204
+   the sum in the order of the ids  0.129
+   the candidates above the floor   0.067
+   allocate and zero 1 MB           0.038
+
+4. this step's code, the "after verify: sample" span; ms per step
+   run                             steps   median    mean
+   step 150, --spec-n 5               65    3.985   3.824
+   step 151, --spec-n 5               65    3.062   2.466
+   step 151, the draft-length rule    70    2.591   2.350
+   A draw is ~0.5 ms; a step makes one per accepted draft and one more.

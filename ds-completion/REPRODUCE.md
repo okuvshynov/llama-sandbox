@@ -276,6 +276,7 @@ Unless stated: sclk 2, 16 CPU threads (32 before README step 18), the study30 pl
 | 148 | `sampler/test-sampler.txt` | `make bin/test-sampler && bin/test-sampler` (CPU only, a few seconds) |
 | 149 | `sampler/plain.txt`, `sampler/plain/` (records), `sampler/plain.matrix` | `scripts/run_matrix.py results/sampler/plain.matrix --prompts tcp-udp,cpp-matrix,geometry` (18 runs, 14 min), then the `scripts/records.py` command in the file; the repeat by hand as the file says |
 | 150 | `sampler/spec.txt`, `sampler/spec/`, `sampler/spec-heldout/` (records, spec logs), `sampler/spec.matrix`, `sampler/spec-heldout.matrix`, `sampler/spec_summary.py` | `scripts/run_matrix.py results/sampler/spec.matrix --prompts tcp-udp,cpp-matrix,geometry` (15 runs, ~12 min; needs step 149's records), `scripts/run_matrix.py results/sampler/spec-heldout.matrix` (16 runs, ~12 min), then `results/sampler/spec_summary.py` |
+| 151 | `sampler/step151/summary.txt`, `summary.py`, `spec.matrix`, `spec/`, `spec-heldout/` (records, spec logs), `where.txt`, `phases.cpp`, `test-sampler.txt` | `scripts/run_matrix.py results/sampler/step151/spec.matrix --prompts tcp-udp,cpp-matrix,geometry` (15 runs, ~13 min), `scripts/run_matrix.py results/sampler/spec-heldout.matrix --out results/sampler/step151/spec-heldout` (16 runs, ~14 min), then `results/sampler/step151/summary.py` (needs step 150's records); `where.txt`: by hand as its header says (traces with `--trace`, a temporary clock in `generate_spec`, `phases.cpp`); `bin/test-sampler` |
 
 ## 7. Open items (to confirm)
 

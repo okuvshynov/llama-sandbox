@@ -1,0 +1,53 @@
+# sampling: temperature 1, top-p 0.95, seed 2
+# mapped 289 GB of CPU experts in 1.1 s
+# runtime: 6.41 GiB of fp8 weights on GPU 0 (80 matrices with padded rows)
+# runtime: 1.75 GiB of small weights on GPU 0
+# dspark: 3 layers, block 5, 128 experts top-3, targets 37 38 39; 0.5 GB on GPU 0, its routed experts in the expert pool
+# runtime: 6097 experts (39.7% of the loaded layers' pairs) on GPUs (0: 802, 1: 1765, 2: 1765, 3: 1765), loaded in 6.1 s
+# expert loader: 288.8 GB of expert tensors registered in 103.0 s (direct loads from now)
+# expert cache: up to 800 loads/s, rebalance every 8 tokens over the last 256
+# GPU memory (GB; the driver's used memory after each startup phase; expert slot = 18.8 MB):
+#   phase                                                           GPU 0  GPU 1  GPU 2  GPU 3
+#   context, other processes                                         0.22   0.07   0.07   0.07
+#   dense fp8 weights                                                6.88   0.00   0.00   0.00
+#   small weights (rotary, embeddings, head, norms, ...)             1.92   0.00   0.00   0.00
+#   activations and scratch (sized for 512-token chunks)             0.83   0.00   0.00   0.00
+#   sequence state: window, compressed KV, indexer keys (--max-ctx)   0.50   0.00   0.00   0.00
+#   draft (DSpark)                                                   0.79   0.00   0.00   0.00
+#   expert path buffers (per die: scratch, staging)                  0.13   0.32   0.32   0.32
+#   expert slots                                                    22.31  33.20  33.20  33.20
+#   cache and loader staging, the rest                               0.00   0.00   0.00   0.00
+#   free                                                             0.76   0.76   0.76   0.76
+#   total                                                           34.34  34.34  34.34  34.34
+# loaded in 115.6 s; prompt 25 tokens; fake-quant on; 16 threads
+
+# drafts verified per step: 0: 0 1: 4 2: 7 3: 11 4: 12 5: 34 (of the 0s, 0 plain steps without a draft); verify cost fit 61.8 + 4.2 n ms
+# speculative: 68 verify steps, 3.43 drafts accepted per step, 4.41 tokens per step; draft 7.8 ms per step
+# routed experts: 85.9% on GPUs (74622 of 86880)
+# prompt: 25 tokens in 0.60 s = 41.65 t/s; generation: 300 tokens in 5.77 s = 51.97 t/s
+# short forwards: 215 of 8280 (die, layer) results needed a second copy (3 rows per token in the first)
+# expert cache: 32 rebalances, 3895 swaps planned, 3725 loads started, 3670 published
+# expert loader: 4308 pieces unregistered in 0.0 s
+malloc_consolidate(): invalid chunk size
+# fatal signal 6; phase: after main: static destructors and the libraries' exit; thread: ds-completion (the main thread); loads started / finished per die: 0/0 1222/1222 1216/1216 1280/1280
+# backtrace:
+bin-hip/ds-completion(+0x792af)[0x633afcc6b2af]
+/lib/x86_64-linux-gnu/libc.so.6(+0x424b0)[0x7efe7f6424b0]
+/lib/x86_64-linux-gnu/libc.so.6(pthread_kill+0x12c)[0x7efe7f69691c]
+/lib/x86_64-linux-gnu/libc.so.6(raise+0x16)[0x7efe7f642406]
+/lib/x86_64-linux-gnu/libc.so.6(abort+0xd3)[0x7efe7f6287f3]
+/lib/x86_64-linux-gnu/libc.so.6(+0x895c7)[0x7efe7f6895c7]
+/lib/x86_64-linux-gnu/libc.so.6(+0xa0c1c)[0x7efe7f6a0c1c]
+/lib/x86_64-linux-gnu/libc.so.6(+0xa18c8)[0x7efe7f6a18c8]
+/lib/x86_64-linux-gnu/libc.so.6(+0xa2dc0)[0x7efe7f6a2dc0]
+/lib/x86_64-linux-gnu/libc.so.6(free+0x73)[0x7efe7f6a5373]
+/opt/rocm-6.3.4/lib/libhsa-runtime64.so.1(+0x3aa5d)[0x7efe7643aa5d]
+/opt/rocm-6.3.4/lib/libhsa-runtime64.so.1(+0x4699f)[0x7efe7644699f]
+/opt/rocm-6.3.4/lib/libhsa-runtime64.so.1(+0x46c4d)[0x7efe76446c4d]
+/opt/rocm-6.3.4/lib/libhsa-runtime64.so.1(+0x85e1e)[0x7efe76485e1e]
+/opt/rocm-6.3.4/lib/libhsa-runtime64.so.1(+0x8619c)[0x7efe7648619c]
+/opt/rocm-6.3.4/lib/libhsa-runtime64.so.1(+0x61c37)[0x7efe76461c37]
+/opt/rocm-6.3.4/lib/libamdhip64.so.6(+0x3634aa)[0x7efe801634aa]
+/opt/rocm-6.3.4/lib/libamdhip64.so.6(+0x3635ce)[0x7efe801635ce]
+/lib/x86_64-linux-gnu/libc.so.6(__cxa_finalize+0xb6)[0x7efe7f6459e6]
+/opt/rocm-6.3.4/lib/libamdhip64.so.6(+0x84b87)[0x7efe7fe84b87]

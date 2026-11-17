@@ -1,0 +1,19 @@
+# scripts/run_matrix.py results/sampler/step151/spec.matrix --prompts tcp-udp,cpp-matrix,geometry; commit a8e646b+changes, sclk 6 6 6 6, 2026-11-17T08:25:20-05:00
+# 15 runs: 3 prompts x 5 configurations x up to 1 repeats; records: CONFIG-PROMPT-REP.json; read with scripts/records.py
+# The cheaper draw (README step 151): step 150's two sets of runs again.
+#   scripts/run_matrix.py results/sampler/step151/spec.matrix --prompts tcp-udp,cpp-matrix,geometry
+#   scripts/run_matrix.py results/sampler/spec-heldout.matrix --out results/sampler/step151/spec-heldout
+# The outputs must be step 150's (results/sampler/spec/, results/sampler/spec-heldout/).
+set M  ~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf
+set F8 ~/llms/ds-1017-fp8/dense-fp8.gguf
+set D  ~/llms/dspark/dspark-DeepSeek-V4.1-Flash-1017-BF16.gguf
+prompts results/spec-heldout/prompts.txt
+out results/sampler/step151/spec
+base --rt $F8 --placement placements/study30.txt --dspark $D --spec --canon
+base --cache-loads 800 --cache-period 8 --cache-wait
+config greedy  --spec-log results/sampler/step151/spec/greedy-{prompt}.log
+config s1      --spec-log results/sampler/step151/spec/s1-{prompt}.log --temp 1 --top-p 0.95 --seed 1
+# every step verifies all five drafts: another sequence of steps, the same output
+config s1-n5   --spec-log results/sampler/step151/spec/s1-n5-{prompt}.log --temp 1 --top-p 0.95 --seed 1 --spec-n 5
+config s2      --spec-log results/sampler/step151/spec/s2-{prompt}.log --temp 1 --top-p 0.95 --seed 2
+config s1-p1   --spec-log results/sampler/step151/spec/s1-p1-{prompt}.log --temp 1 --seed 1

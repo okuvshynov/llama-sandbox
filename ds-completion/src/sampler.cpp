@@ -4,6 +4,12 @@
 #include <cmath>
 #include <vector>
 
+#if defined(__AVX512F__) && defined(__GLIBC__)
+#include <immintrin.h>
+extern "C" __m512d _ZGVeN8v_exp(__m512d);  // glibc's libmvec: exp of 8 doubles
+#define SAMPLER_VECTOR_EXP 1
+#endif
+
 static uint64_t mix64(uint64_t z) {  // splitmix64's finalizer
   z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
   z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
@@ -15,16 +21,49 @@ double sampler_uniform(uint64_t seed, uint64_t position) {
   return (double)(h >> 11) * 0x1.0p-53;
 }
 
-int32_t sample_token(const float* logits, int n, const SamplerOptions& opt, uint64_t position) {
-  const int32_t best = (int32_t)(std::max_element(logits, logits + n) - logits);
+// the first maximum, as std::max_element (which took 0.2 ms of a draw: it is not vectorized)
+static int32_t first_max(const float* l, int n) {
+#ifdef SAMPLER_VECTOR_EXP
+  if (n >= 16) {
+    __m512 vm = _mm512_loadu_ps(l);
+    int i = 16;
+    for (; i + 16 <= n; i += 16) vm = _mm512_max_ps(vm, _mm512_loadu_ps(l + i));
+    float m = _mm512_reduce_max_ps(vm);
+    for (; i < n; i++) m = std::max(m, l[i]);
+    vm = _mm512_set1_ps(m);
+    for (i = 0; i + 16 <= n; i += 16) {
+      const __mmask16 eq = _mm512_cmpeq_ps_mask(_mm512_loadu_ps(l + i), vm);
+      if (eq) return i + __builtin_ctz(eq);
+    }
+    for (; i < n; i++)
+      if (l[i] == m) return i;
+  }
+#endif
+  return (int32_t)(std::max_element(l, l + n) - l);
+}
+
+int32_t sample_token(const float* logits, int n, const SamplerOptions& opt, uint64_t position, SamplerScratch* scratch) {
+  const int32_t best = first_max(logits, n);
   if (opt.temp <= 0) return best;
   const double inv_t = 1.0 / opt.temp, top = logits[best];
-  std::vector<double> p(n);
-  double total = 0;
-  for (int i = 0; i < n; i++) {
-    p[i] = std::exp(((double)logits[i] - top) * inv_t);  // <= 1; the maximum is exactly 1
-    total += p[i];
+  SamplerScratch own;
+  if (!scratch) scratch = &own;
+  std::vector<double>& p = scratch->p;
+  std::vector<int32_t>& cand = scratch->cand;
+  p.resize(n);
+  int i0 = 0;
+#ifdef SAMPLER_VECTOR_EXP
+  // 129,280 scalar exp calls were ~0.9 ms of a draw's 1.0 ms (README step 151)
+  const __m512d vtop = _mm512_set1_pd(top), vinv = _mm512_set1_pd(inv_t);
+  for (; i0 + 8 <= n; i0 += 8) {
+    const __m512d x = _mm512_mul_pd(_mm512_sub_pd(_mm512_cvtps_pd(_mm256_loadu_ps(logits + i0)), vtop), vinv);
+    _mm512_storeu_pd(p.data() + i0, _ZGVeN8v_exp(x));
   }
+  p[best] = 1;  // exactly, whatever the vector exp gives for 0
+#endif
+  for (int i = i0; i < n; i++) p[i] = std::exp(((double)logits[i] - top) * inv_t);  // <= 1; the maximum is exactly 1
+  double total = 0;
+  for (int i = 0; i < n; i++) total += p[i];  // in the order of the ids
   const double u = sampler_uniform(opt.seed, position);
   if (opt.top_p >= 1) {
     const double target = u * total;
@@ -43,7 +82,7 @@ int32_t sample_token(const float* logits, int n, const SamplerOptions& opt, uint
   // so the tokens above the floor hold more than top_p of the total and the kept set, a prefix
   // of the sorted order, lies inside them.
   const double floor = 0.5 * (1.0 - opt.top_p) * total / n;
-  std::vector<int32_t> cand;
+  cand.clear();
   for (int i = 0; i < n; i++)
     if (p[i] >= floor) cand.push_back(i);
   // ... and of those only as many of the first as the sum needs are sorted: the first 256 by the

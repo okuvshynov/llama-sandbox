@@ -136,7 +136,7 @@ Options:
 - `--temp T [--top-p P] [--seed S]`: sample the next token instead of taking the most likely
   one (the default, `--temp 0`). The model card's settings are `--temp 1 --top-p 0.95`. One seed
   gives one output, whatever the placement (with `--canon`) and with or without `--spec`. Not
-  with `--spec` on two machines yet. README steps 148-150.
+  with `--spec` on two machines yet. README steps 148-151.
 - neither: the prompt is raw text after BOS.
 - `-n`: max new tokens.
 - `--max-ctx N`: the context's size (default 65,536 with `--rt`; "Limits" below).

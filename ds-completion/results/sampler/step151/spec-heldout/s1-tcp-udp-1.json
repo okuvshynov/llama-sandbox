@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "label": {"config": "s1", "prompt": "tcp-udp", "rep": "1"},
+  "args": {"mode": "chat", "effort": 75, "n": 300, "threads": 16, "runtime": true, "canon": true, "spec": true,
+           "placement": "placements/study30.txt", "cache_loads": 800, "cache_period": 8, "cache_window": 256, "cache_min": 2,
+           "cache_wait": true, "spec_n": 0, "temp": 1, "top_p": 0.95, "seed": 1,
+           "profile": false, "trace": false, "spec_log": false, "log_routing": false},
+  "prompt": {"tokens": 20, "hash": "fnv1a64:ca691ad07d0dd8ee"},
+  "env": {"gpu_sclk": [6, 6, 6, 6], "ds": {}},
+  "read_bytes": {"load": 0, "prompt": 0, "gen": 0},
+  "spec": {"steps": 117, "plain_steps": 4, "accepted": 183, "verified": [8, 39, 30, 26, 9, 5], "draft_ms": 878.4, "verify_ms": 6315.9},
+  "experts": {"gpu_uses": 79145, "cpu_uses": 10855, "dies": [0, 1, 2, 3], "placed": [802, 1765, 1765, 1765],
+               "cache": {"rebalances": 39, "swaps_planned": 3139, "loads_started": 3127, "loads_published": 3127,
+                         "loads_started_by_die": [0, 1043, 1018, 1066]}},
+  "output": {"tokens": 300, "hash": "fnv1a64:92a19b9a44f4e8f7"},
+  "counters": {"load_s": 115.707, "prompt_s": 0.5697, "prompt_tps": 35.105, "gen_tokens": 300, "gen_s": 7.2614, "gen_tps": 41.314}
+}
