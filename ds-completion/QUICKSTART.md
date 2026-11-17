@@ -141,6 +141,8 @@ Options:
 - `--requests` (with `--rt`, in place of a prompt): prompts from stdin, one after another, each
   on an empty context; the reply's tokens as lines on stdout. For a server's front. The
   protocol: `docs/requests.md`. README step 152.
+  `server/ds_server.py [--port 8080] -- <this command with --requests>` puts an HTTP server
+  with the Anthropic Messages API in front of it (`docs/server.md`, README step 153).
 - `-n`: max new tokens.
 - `--max-ctx N`: the context's size (default 65,536 with `--rt`; "Limits" below).
 - `--layers a-b` (with `--rt`): only that range of layers ("Two machines" below). A range must

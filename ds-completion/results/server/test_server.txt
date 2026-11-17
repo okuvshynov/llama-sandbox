@@ -1,0 +1,28 @@
+# server/test_server.py (no model, no GPU); commit e753ca2+changes (the HTTP front), 2026-11-17T10:33:33-05:00
+ok    the prompt: encoding.py's rendering of system + tools + user, effort medium = 62, ends with <think>
+ok    the engine's header: gen n=65536 temp=1.0 top_p=0.95 seed=7 bytes=1439
+ok    thinking + a tool call: blocks ['thinking', 'tool_use'], stop_reason tool_use, the input as sent (non-ASCII included)
+ok    the message's fields: usage {'input_tokens': 345, 'output_tokens': 98, 'cache_creation_input_tokens': 0, 'cache_read_input_tokens': 0}
+ok    no thinking, a system prompt, three turns: the prompt is encoding.py's; header gen n=100 temp=0.0 top_p=1.0 seed=3 bytes=166
+ok    a text reply: stop_reason end_turn
+ok    a stream starts with pings while the engine works: 2 pings
+ok    then the events of three blocks: message_start content_block_start content_block_delta content_block_stop content_block_start content_block_delta content_block_stop content_block_start content_block_delta content_block_stop message_delta message_stop
+ok    the events carry the thinking, the text, the tool's input as JSON, stop_reason tool_use
+ok    cut inside the reasoning: stop_reason max_tokens, blocks ['thinking']
+ok    cut inside the answer: stop_reason max_tokens, blocks ['thinking', 'text']
+ok    a broken tool call: no tool_use block, the raw text returned: stop_reason end_turn
+ok    the engine's error line: 400 the prompt is 70000 tokens; --max-ctx is 65536
+ok    the next request is answered
+ok    refused, tool_choice any: 400 tool_choice 'any' is not supported: only auto and none
+ok    refused, no max_tokens: 400 max_tokens: a positive integer is required
+ok    refused, an image block: 400 messages[0]: only text blocks are supported (got 'image')
+ok    refused, a tool_result block: 400 messages[0]: only text blocks are supported (got 'tool_result')
+ok    refused, the last message from the assistant: 400 the last message must be from the user (no prefill of the reply)
+ok    refused, effort "extreme": 400 output_config.effort 'extreme': one of low, medium, high, xhigh, max
+ok    refused, no messages: 400 messages: a non-empty list is required
+ok    none of the refused requests reached the engine
+ok    a body that is not JSON: 400
+ok    GET /v1/models names the model
+ok    another path: 404
+ok    the log has progress lines for the slow request: 2, the first: # server: request 3: 345 prompt tokens, 0 tokens so far, 1 s since it started
+all checks passed

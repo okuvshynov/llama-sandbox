@@ -1,0 +1,36 @@
+# The endgame benchmark's Anthropic script against server/ds_server.py with the real engine (README step 153).
+# By hand, 2026-11-17, commit e753ca2+changes (the HTTP front), sclk 6. One request.
+#
+# The server:
+#   server/ds_server.py --port 8089 --dump DIR -- bin-hip/ds-completion -m $M --rt $F8 --placement placements/study30.txt \
+#     --dspark $D --spec --canon --cache-loads 800 --cache-period 8 --cache-wait --requests
+# The benchmark (~/projects/endgame at f918f5b, not changed; anthropic SDK 0.125.0 and httpx 0.28.1 in a
+# virtual environment: SDK 1.17 and 2.9 refuse the script's httpx.Timeout, they use httpx2):
+#   python endgame_anthropic.py --samples samples/s0.json,samples/s1.json --base-url http://127.0.0.1:8089 \
+#     --api-key none -m ds-flash --reasoning-effort low
+# Samples: results/server/make_samples.py (synthetic; secrets 5139 and 2063).
+# The request, its prompt, the raw reply and the message: endgame-message.json.gz (--dump).
+
+the benchmark's output:
+I: base-url override: http://127.0.0.1:8089
+I: model: ds-flash
+I: [1/1] samples/s0.json : 5139
+I: [1/1] samples/s1.json : 2063
+Result: [1/1] {'n_solved': 1, 'n_continuations': 0, 'n_tokens_in': 1305, 'n_tokens_out': 42960, 'n_tokens_cache_read': 0, 'n_tokens_cache_write': 0, 'attempts': 1, 'served_by': 'deepseek-v4.1-flash-1017', 'stop_reason': 'tool_use', 'guesses': [{'codemaker': 'Green', 'guess': '2063'}, {'codemaker': 'Red', 'guess': '5137'}], 'answers': {'Red': '5139', 'Green': '2063'}}
+
+the server's log:
+# server: the engine is ready after 116 s
+# server: request 1: thinking, 1305 prompt tokens in 23.9 s, 42960 tokens in 1117.0 s (38.5 t/s), waited 0.0 s, tool_use: thinking, tool_use
+
+the engine's lines for the request:
+# speculative: 14443 verify steps, 1.97 drafts accepted per step, 2.97 tokens per step; draft 7.6 ms per step
+# prompt: 1305 tokens in 23.86 s = 54.70 t/s; generation: 42960 tokens in 1116.99 s = 38.46 t/s
+# routed experts: 95.1% on GPUs (11998995 of 12622800)
+
+Read of it:
+- The request (stream, thinking adaptive, effort low = 50, one tool, tool_choice auto) was accepted as sent;
+  the SDK's stream got pings for 19 minutes and then the events; stop_reason tool_use, one make_guesses call.
+- The reply: 107,018 characters, 42,960 tokens: reasoning (985 lines, 693 distinct: not a loop), </think>,
+  then the tool-call block, which encoding.py parsed.
+- 1 of 2 secrets guessed (Green 2063; Red 5137 against 5139).
+- 19 minutes for one request at effort low.

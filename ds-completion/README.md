@@ -5549,3 +5549,58 @@ special tokens.
 
 Not here: a common prefix kept between requests (the benchmark's prompts share their tools
 block and rules), stop strings, more than one request at a time.
+
+## Step 153: an HTTP front: the Anthropic Messages API
+
+`server/ds_server.py` (Python, standard library only; `docs/server.md`) starts the engine with
+`--requests` as a child and serves `POST /v1/messages`. With it the person's benchmark
+(`endgame_anthropic.py`: one user message, one tool, adaptive thinking with an effort,
+streamed) runs against the engine unchanged.
+
+- **Nothing of the model's format is written again.** The server loads the model's own
+  `encoding.py` and calls `encode_messages` for the prompt (system block, tool schemas,
+  reasoning effort, `<think>`) and `parse_message_from_completion_text` for the reply
+  (reasoning, text, the tool-call block). The server converts between the API's JSON and that
+  module's messages.
+- **Effort:** `low` 50, `high` 75, `max` 100 are the model's names; `medium` 62 and `xhigh` 88
+  are placed between them.
+- **Sampling:** temperature 1 and top-p 0.95 unless the request says otherwise, and one seed
+  (`--seed`) for every request, so a repeated request gives the same reply.
+- **A stream** carries pings while the engine works and all the events at the end: a tool call
+  can only be parsed from the complete reply.
+- **One request at a time;** the others wait.
+- **Refused (400):** forced tool use (`tool_choice` `any` / `tool`), tool results and other
+  non-text blocks, a prefilled reply.
+- A cut or malformed reply is returned as far as it can be (reasoning, text), never dropped.
+
+**Test without the model** (`server/test_server.py` with `server/fake_engine.py`, a few
+seconds; `results/server/test_server.txt`): 26 checks. The prompt the engine receives equals
+`encoding.py`'s rendering; a canned reply with reasoning and a tool call becomes `thinking` and
+`tool_use` blocks with the input as sent; the stream's events in order; replies cut inside the
+reasoning and inside the answer; a broken tool call; an engine error; seven kinds of refused
+requests, none of which reach the engine.
+
+**With the model** (`results/server/endgame.txt`): the benchmark's script, unchanged, with
+two synthetic samples (`results/server/make_samples.py`; the person's samples are not here) at
+effort `low`:
+
+| | |
+|---|---|
+| prompt | 1,305 tokens in 23.9 s |
+| reply | 42,960 tokens in 1,117 s (38.5 t/s; 2.97 tokens per verify step) |
+| result | `stop_reason` `tool_use`, one `make_guesses` call, parsed; 1 of 2 secrets guessed |
+
+The reasoning is 107,000 characters and not a loop (693 distinct lines of 985). So one
+request of this benchmark takes ~19 minutes at effort `low` on one machine. The SDK's stream
+held through it on pings.
+
+Two things found on the way:
+
+- **A long request was silent.** For ten minutes neither the server nor the engine printed
+  anything (the mistake CLAUDE.md lists first). The server now logs a line every 30 s with the
+  tokens so far.
+- **The benchmark's script does not start with the current Anthropic SDK** (1.17, 2.9): they
+  use `httpx2` and refuse the script's `httpx.Timeout`. It ran with SDK 0.125.0.
+
+Not done: the OpenAI Responses endpoint (the benchmark's other script), tool results in a
+conversation, a reply streamed as it is generated, cancelling a request whose client left.
