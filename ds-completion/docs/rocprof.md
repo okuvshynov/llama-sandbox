@@ -110,6 +110,11 @@ generation, the time a kernel is running, the idle gaps by length, and for the h
 between which kernels the long gaps fall. It answers "is the die waiting, and for what" from
 the device's side; the run is traced, so the gaps include the profiler's host cost.
 
+`results/rocprof/gap_calls.py DIR/NAME AFTER_KERNEL BEFORE_KERNEL` (README step 145), on a
+`--runtime-trace` run: the HIP calls in progress during the home die's gaps between two
+kernels. A gap filled with HIP calls is the die waiting for the host to issue work; an empty
+one is the host busy elsewhere (the CPU's experts).
+
 ## Hardware counters (`--pmc`)
 
 One more package, which `rocprofiler-sdk` does not pull in (without it: `undefined symbol:

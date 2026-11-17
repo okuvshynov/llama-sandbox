@@ -5230,3 +5230,33 @@ ms per token: the dies have room, the limit on what they can take is memory, not
 So from the device's side too, the largest single item of a fast step is the CPU's experts:
 what the cache, the placement and the second machine all work on. Nothing new to build here;
 the profile agrees with `--trace`.
+
+## Step 145: the gap after the home die's own experts, named: the host issuing the other dies' work
+
+Steps 143-144 left one idle gap of the home die unexplained: ~176 us per layer between its own
+expert kernel (`canon_down_kernel`) and the next `quant_act_kernel`. Step 140's
+`--runtime-trace` run has every HIP call with its times on the same clock as the kernels, so
+`results/rocprof/gap_calls.py` sums the calls in progress during those gaps
+(`results/rocprof/gap-calls.txt`; under this heavier trace the gap is 244 us).
+
+**91% of the gap is the main thread inside HIP calls**, per gap: 8.7 `hipLaunchKernel`, 5.2
+`hipMemcpyAsync`, 3.2 `hipStreamWaitEvent`, 2.9 `hipEventRecord`, 3.0 `hipSetDevice`. Three
+`hipSetDevice` per gap is the signature: it is `moe_launch`'s loop over the three other dies
+(`hip/rt.cpp`: set the device, wait for the staged block, copy it in, the expert kernels, the
+copy back). The shared expert, whose first kernel is that `quant_act`, is issued after the
+loop; the home die has finished its own experts by then and waits for the host.
+
+The control is the other long gap, the wait for the CPU's experts: HIP calls cover 3% of it
+(the host is in the CPU's kernel, not in HIP).
+
+**What it is worth.** The die's idle time here is not the cost: after the shared expert the
+die waits for the CPU's experts anyway (35 of 40 layers), so issuing the shared expert first
+would only move the idle time. What is on the critical path is the host's time in that loop,
+since the CPU's experts start when `moe_launch` returns; the code says so already ("HIP calls
+there would delay the CPU's experts"), and steps 71 and 97 worked on it. New here is the
+size per call under tracing: a copy 16 us, a wait or a record 12-13 us, a launch 7 us. These
+include the profiler (a launch is 2.2-2.5 us without it, step 49), so the untraced loop is
+shorter; it is not measured.
+
+Not tried: the shared expert issued before the loop (expected: nothing, by the argument
+above, except in the layers without a CPU expert); the loop's untraced time from `--trace`.

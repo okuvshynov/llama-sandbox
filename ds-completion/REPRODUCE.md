@@ -270,6 +270,7 @@ Unless stated: sclk 2, 16 CPU threads (32 before README step 18), the study30 pl
 | 142 | `rocprof/calibration.txt` | the five commands in the file; per tensor the median `Counter_Value` of the `fp8_gemv_kernel` launches with its instance and grid size |
 | 143 | `rocprof/busy.txt`, `rocprof/busy.py` | the `--kernel-trace` run of step 140, then `results/rocprof/busy.py D/k_kernel_trace.csv` |
 | 144 | `rocprof/busy-fast.txt` | the two commands in the file, then `results/rocprof/busy.py D/k_kernel_trace.csv 300` (the sums by kind: the gaps of 100 us and more on die 1 grouped by the kernel that follows) |
+| 145 | `rocprof/gap-calls.txt`, `rocprof/gap_calls.py` | the `--runtime-trace` run of step 140, then the two commands in the file |
 
 ## 7. Open items (to confirm)
 

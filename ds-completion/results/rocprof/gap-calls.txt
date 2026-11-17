@@ -1,0 +1,21 @@
+# What the host calls during the home die's gap after its own experts (README step 145). The trace: step 140's --runtime-trace run
+# (commit a11bf10, sclk 6, 2026-11-16; results/rocprof/first-run.txt). The analysis: commit bd5e72b + gap_calls.py.
+# results/rocprof/gap_calls.py D/r canon_down_kernel quant_act_kernel
+# results/rocprof/gap_calls.py D/r 'fp8_gemv_kernel<16, 1, 1>' copy16_kernel
+#
+# canon_down_kernel -> quant_act_kernel: 39.9 gaps per token, mean 244 us, 9.72 ms per token
+# HIP calls in progress cover 91% of the gaps' time; threads: 1
+#   hipMemcpyAsync             5.2 calls per gap,   81.9 us per gap
+#   hipLaunchKernel            8.7 calls per gap,   63.1 us per gap
+#   hipStreamWaitEvent         3.2 calls per gap,   39.4 us per gap
+#   hipEventRecord             2.9 calls per gap,   37.6 us per gap
+#   hipSetDevice               3.0 calls per gap,    0.7 us per gap
+#
+# fp8_gemv_kernel<16, 1, 1> -> copy16_kernel: 35.0 gaps per token, mean 511 us, 17.90 ms per token
+# HIP calls in progress cover 3% of the gaps' time; threads: 1
+#   hipLaunchKernel            1.8 calls per gap,   12.9 us per gap
+#   hipStreamWaitEvent         2.0 calls per gap,    2.2 us per gap
+#   hipMemcpyAsync             0.1 calls per gap,    0.7 us per gap
+#   hipEventRecord             0.0 calls per gap,    0.3 us per gap
+#   hipEventSynchronize        0.0 calls per gap,    0.0 us per gap
+#   hipSetDevice               0.0 calls per gap,    0.0 us per gap
