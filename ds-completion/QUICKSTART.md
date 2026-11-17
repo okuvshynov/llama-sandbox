@@ -129,6 +129,10 @@ Options:
   and `-n 30000` (README steps 108, 109).
 - `--think`: with thinking. `--effort N`: its reasoning effort, 1-100 (default 75), or `low` /
   `high` / `max` (50 / 75 / 100), as the official encoding; the model card's benchmarks use 100.
+- `--think-show all|line|none` (with `--think`): where the reasoning goes. `all` (default): on stdout,
+  before the answer. `line`: one moving line on stderr (a token count and its last characters),
+  erased when the answer starts; stdout has the answer alone. `none`: hidden. `scripts/chat.sh`
+  uses `line`. README step 147.
 - neither: the prompt is raw text after BOS.
 - `-n`: max new tokens.
 - `--max-ctx N`: the context's size (default 65,536 with `--rt`; "Limits" below).

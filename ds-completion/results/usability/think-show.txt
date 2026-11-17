@@ -1,0 +1,21 @@
+# --think-show (README step 147): where a reply's reasoning is printed. Before: the build of commit 0bcb0d2. After: 0bcb0d2 + this change.
+# sclk 6, 2026-11-16.
+# RUN = bin-hip/ds-completion -m $M --rt $F8 --placement placements/study30.txt --dspark $D --spec --canon --cache-loads 800
+#       --cache-period 8 --think -n 600 -p "What is 17 * 23? Answer briefly."
+#
+#   before: RUN                          stdout 58 bytes (reasoning, then "391")
+#   RUN (the default, all)               stdout the same 58 bytes as before; again after the last edit: the same
+#   RUN --think-show none                stdout "391\n" (4 bytes: the end of the full output); stderr "# reasoning: 15 tokens in 0.6 s"
+#   RUN --think-show line, on a terminal of 100 columns (script -qec "stty cols 100; RUN --think-show line 2>&1 >F" T):
+#                                        stdout the same 4 bytes; 15 frames "thinking, N tokens: ..." drawn, the longest 67 columns,
+#                                        the last "thinking, 15 tokens: We need answer briefly. 17*23=391. Need final."; then the line
+#                                        erased and "# reasoning: 15 tokens in 0.6 s"
+#   the output hash in the records of before, all, none: one value (fnv1a64:faf9c5bcefae4691, 17 tokens)
+#   RUN -n 6 --think-show none           stdout "\n"; stderr "# reasoning: 6 tokens in 0.1 s (not finished: the reply ended inside it)"
+#   RUN -i --think-show none, two lines of input ("What is 17 * 23? Answer briefly." / "And half of that?"):
+#                                        stdout "391\n195.5\n"; a reasoning note per turn
+#   RUN --think-show sometimes           exit code 2, "--think-show: all, line or none"
+#
+# The line's cut, without the engine: a program feeding apps/think_view.h 400 pieces of ASCII, Japanese and Greek text with line
+# breaks, on a terminal of 60 columns: 400 frames, the widest 56 columns, none with a line break, the capture valid UTF-8.
+# On a real terminal with scripts/chat.sh --think --effort max: tried by the person.

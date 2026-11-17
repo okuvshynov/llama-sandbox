@@ -23,6 +23,7 @@
 #include "forward.h"
 #include "llama.h"
 #include "record.h"
+#include "think_view.h"
 
 #ifndef DS_RUNTIME
 class Runtime;  // (write_record takes a null one)
@@ -120,6 +121,7 @@ struct Args {
   std::string model_path, prompt, mode = "raw", rt_path;
   int n_predict = 128;
   int effort = 75;  // --think's reasoning effort (encoding.py's default)
+  ThinkView::Mode think_show = ThinkView::All;  // --think-show: where the reasoning is printed (think_view.h)
   Options opt;
   int gpu = 0;
   bool profile = false;
@@ -168,6 +170,9 @@ static int parse_args(int argc, char** argv, Args& args) {
       const std::string e = next();
       args.effort = e == "low" ? 50 : e == "high" ? 75 : e == "max" ? 100 : atoi(e.c_str());
       if (args.effort < 1 || args.effort > 100) { fprintf(stderr, "--effort: 1-100, low, high or max\n"); return 2; }
+    }
+    else if (a == "--think-show") {  // all (default) / line / none
+      if (!ThinkView::parse(next(), args.think_show)) { fprintf(stderr, "--think-show: all, line or none\n"); return 2; }
     }
     else if (a == "--chat") args.mode = "chat";
     else if (a == "--think") args.mode = "think";
@@ -225,7 +230,7 @@ static int parse_args(int argc, char** argv, Args& args) {
     return 2;
   }
   if (args.model_path.empty() || (args.prompt.empty() && !args.interactive && !args.serve_port)) {
-    fprintf(stderr, "usage: ds-completion -m <model.gguf> (-p \"prompt\" | -f prompt.txt | -i) [--chat|--think [--effort 1-100|low|high|max]] [-n N] [-t N] [--no-quant] [--max-ctx N] [--rt dense-fp8.gguf [--gpu D] [--placement file [--moe-dies 0,1,2,3] [--cache-loads R [--cache-period N] [--cache-window N] [--cache-min N] [--cache-wait]]] [--canon] [--profile]]\n"
+    fprintf(stderr, "usage: ds-completion -m <model.gguf> (-p \"prompt\" | -f prompt.txt | -i) [--chat|--think [--effort 1-100|low|high|max] [--think-show all|line|none]] [-n N] [-t N] [--no-quant] [--max-ctx N] [--rt dense-fp8.gguf [--gpu D] [--placement file [--moe-dies 0,1,2,3] [--cache-loads R [--cache-period N] [--cache-window N] [--cache-min N] [--cache-wait]]] [--canon] [--profile]]\n"
                     "more (--dspark/--spec, --layers/--serve/--remote, --trace, --record, ...): QUICKSTART.md, Options\n");
     return 2;
   }
@@ -319,6 +324,7 @@ struct Turn {
   double verify_ms = 0;
   std::vector<long> spec_hist;
   long spec_plain = 0;
+  ThinkView* view = nullptr;  // prints the reply
 };
 
 #ifdef DS_RUNTIME
@@ -333,9 +339,7 @@ static void generate_spec(Runtime* rt, const Args& args, const llama_vocab* voca
   auto emit = [&](int32_t t) {  // false: stop
     if (t == eos) turn.hit_eos = true;
     if (t == eos || turn.n_gen >= args.n_predict) return false;
-    std::string p = piece(vocab, t);
-    fwrite(p.data(), 1, p.size(), stdout);
-    fflush(stdout);
+    turn.view->token(t, piece(vocab, t));
     turn.gen.push_back(t);
     turn.n_gen++;
     return turn.n_gen < args.n_predict;
@@ -485,9 +489,7 @@ static void generate_plain([[maybe_unused]] Runtime* rt, Engine* eng, const Args
     const int32_t next = (int32_t)(std::max_element(logits.begin(), logits.end()) - logits.begin());
     turn.gen.push_back(next);
     if (next == eos) break;
-    std::string p = piece(vocab, next);
-    fwrite(p.data(), 1, p.size(), stdout);
-    fflush(stdout);
+    turn.view->token(next, piece(vocab, next));
     if (turn.n_gen + 1 == args.n_predict) { turn.n_gen++; pending = {next}; break; }
 #ifdef DS_RUNTIME
     if (rt && rt->has_draft()) {
@@ -710,6 +712,9 @@ static int run(int argc, char** argv) {
   if (think_end_toks.size() != 1) { fprintf(stderr, "</think> is not one token in this vocabulary\n"); return 1; }
   const int32_t think_end = think_end_toks[0];
   std::vector<int32_t> answer;  // --think: the last reply after its </think>
+  ThinkView view;
+  view.mode = args.think_show;
+  view.think_end = think_end;
   const int eos = llama_vocab_eos(vocab);
   [[maybe_unused]] const int n_predict_turn = args.n_predict;
   std::vector<int32_t> pending;  // printed by the last turn but not yet run through the model (it stopped at -n)
@@ -757,6 +762,8 @@ static int run(int argc, char** argv) {
     if (record) rd[2] = io_read_bytes();
     auto t2 = Clock::now();
     Turn turn;
+    turn.view = &view;
+    view.begin(args.mode == "think");
 #ifdef DS_RUNTIME
     if (args.spec) generate_spec(rt.get(), args, vocab, eos, logits, first, pending, turn);
     else generate_plain(rt.get(), eng.get(), args, vocab, eos, logits, pending, turn);
@@ -768,6 +775,7 @@ static int run(int argc, char** argv) {
     if (turn.spec_steps)
       fprintf(stderr, "\n# speculative: %ld verify steps, %.2f drafts accepted per step, %.2f tokens per step; draft %.1f ms per step\n",
               turn.spec_steps, (double)turn.spec_accepted / turn.spec_steps, (double)turn.n_gen / turn.spec_steps, turn.draft_ms / turn.spec_steps);
+    view.end();  // (after the lines above: the loop's last stderr line is ended by them)
     printf("\n");
     fflush(stdout);
     report_shadow(turn);

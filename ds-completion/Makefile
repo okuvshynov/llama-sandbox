@@ -50,7 +50,7 @@ $(BIN)/bench-fp8: bench/bench_fp8.cpp hip/fp8_gemv.hip hip/fp8_gemv.h src/fakequ
 	    -L$(FORK)/$(BUILD)/ggml/src -lggml -lggml-cpu -lggml-base -lpthread -ldl
 
 # the CLI: libllama only for the tokenizer (vocab-only load)
-$(BIN)/ds-completion: apps/ds_completion.cpp apps/record.h $(CORE) $(CORE_H) $(RT_OBJ)
+$(BIN)/ds-completion: apps/ds_completion.cpp apps/record.h apps/think_view.h $(CORE) $(CORE_H) $(RT_OBJ)
 	@mkdir -p $(BIN)
 	$(CXX) $(CXXFLAGS) $(RT_FLAGS) -o $@ apps/ds_completion.cpp $(CORE) $(RT_LIBS) $(LLAMA_LIB) $(LDLIBS)
 

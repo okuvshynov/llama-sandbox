@@ -272,6 +272,7 @@ Unless stated: sclk 2, 16 CPU threads (32 before README step 18), the study30 pl
 | 144 | `rocprof/busy-fast.txt` | the two commands in the file, then `results/rocprof/busy.py D/k_kernel_trace.csv 300` (the sums by kind: the gaps of 100 us and more on die 1 grouped by the kernel that follows) |
 | 145 | `rocprof/gap-calls.txt`, `rocprof/gap_calls.py` | the `--runtime-trace` run of step 140, then the two commands in the file |
 | 146 | `spec-oracle/oracle.txt`, `spec-oracle/runs/`, `spec-oracle/oracle.matrix`, `spec-oracle/oracle.py` | `scripts/run_matrix.py results/spec-oracle/oracle.matrix --out <a new directory>` (the matrix names its log files under `results/spec-oracle/runs/`: change both), then `results/spec-oracle/oracle.py <the directory>` |
+| 147 | `usability/think-show.txt` | the commands in the file, with a build of 0bcb0d2 and with this one; the terminal runs through `script -qec "stty cols N; ..." FILE` |
 
 ## 7. Open items (to confirm)
 

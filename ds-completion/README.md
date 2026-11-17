@@ -5307,3 +5307,35 @@ size of the gap and its concentration on three prompts do not depend on that.
 No rule can reach it: the outcome is not known before the verify. What it says is that the
 confidence head's information, not the step costs, is what limits speculation on the poor
 prompts.
+
+## Step 147: usability: the reasoning as one moving line (`--think-show`)
+
+The person's observation: `scripts/chat.sh --think --effort max -n 50000` prints thousands of
+reasoning tokens before the answer, and the answer is then hard to find. Seeing the reasoning
+move is useful; having it on the screen afterwards is not.
+
+`--think-show` says where a reply's reasoning (everything up to the model's `</think>` token)
+goes:
+
+- `all`, the default: on stdout like the answer, as before. Every stored output stays valid.
+- `line`: one line on stderr, redrawn at every token: a count and the reasoning's last
+  characters, cut to the terminal's width (never inside a character; line breaks as spaces).
+  When the reasoning ends the line is erased, a note stays (`# reasoning: N tokens in T s`),
+  and the answer goes to stdout alone. If stderr is not a terminal it behaves as `none`.
+- `none`: only the note.
+
+The tokens, the context, the record and the output hash do not depend on it; a reply that ends
+inside its reasoning (`-n`) says so in the note. `apps/think_view.h` has it, and both
+generation loops print through it. `scripts/chat.sh` passes `--think-show line` (give
+`--think-show all` to it for the old behaviour).
+
+**Checked** (`results/usability/think-show.txt`): the default's stdout is the previous build's
+bytes; `none` and `line` print exactly the end of that output, with one output hash in the
+records; on a terminal of 100 columns the frames are drawn and erased before the answer; the
+cut on a terminal of 60 columns with Japanese and Greek text stays inside the width; a
+two-turn session; a reply cut off inside its reasoning. On a real terminal with a long
+reasoning: the person's own try.
+
+A mistake on the way: the first check ran in the background while the person started a chat
+session, and theirs failed for lack of GPU memory. Since then a test asks whether an engine
+process is running before it starts one, and says so before it starts.
