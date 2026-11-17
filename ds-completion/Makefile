@@ -35,7 +35,7 @@ RT_FLAGS = -DDS_RUNTIME -D__HIP_PLATFORM_AMD__ -Ihip -I$(ROCM)/include
 RT_LIBS  = $(RT_OBJ) -L$(ROCM)/lib -Wl,-rpath,$(ROCM)/lib -lamdhip64
 endif
 
-all: $(BIN)/ds-completion $(BIN)/ds-inspect $(BIN)/ds-test $(BIN)/test-fakequant $(BIN)/llama-logits $(BIN)/fp8pack $(BIN)/bench-cpu-moe $(BIN)/bench-fp4-decode
+all: $(BIN)/ds-completion $(BIN)/ds-inspect $(BIN)/ds-test $(BIN)/test-fakequant $(BIN)/test-sampler $(BIN)/llama-logits $(BIN)/fp8pack $(BIN)/bench-cpu-moe $(BIN)/bench-fp4-decode
 ifeq ($(HIP),1)
 all: $(BIN)/bench-fp8 $(BIN)/bench-kernels $(BIN)/bench-fp4-moe $(BIN)/bench-expert-pool $(BIN)/bench-expert-load $(BIN)/test-topk $(BIN)/bench-register $(BIN)/bench-launch $(BIN)/bench-loader-exit $(BIN)/bench-row-stride $(BIN)/bench-wave-slots
 endif
@@ -144,6 +144,11 @@ $(BIN)/bench-cpu-moe: bench/bench_cpu_moe.cpp $(CORE) $(CORE_H)
 $(BIN)/bench-fp4-decode: bench/bench_fp4_decode.cpp src/canon_dot.cpp src/canon_dot.h src/fakequant.cpp src/fakequant.h
 	@mkdir -p $(BIN)
 	$(CXX) $(CXXFLAGS) -o $@ bench/bench_fp4_decode.cpp src/canon_dot.cpp src/fakequant.cpp $(LDLIBS)
+
+# the sampler alone: no model, no GPU (README step 148)
+$(BIN)/test-sampler: tests/test_sampler.cpp src/sampler.cpp src/sampler.h
+	@mkdir -p $(BIN)
+	$(CXX) $(CXXFLAGS) -o $@ tests/test_sampler.cpp src/sampler.cpp
 
 $(BIN)/test-fakequant: tests/test_fakequant.cpp src/fakequant.cpp src/fakequant.h
 	@mkdir -p $(BIN)

@@ -5339,3 +5339,50 @@ reasoning: the person's own try.
 A mistake on the way: the first check ran in the background while the person started a chat
 session, and theirs failed for lack of GPU memory. Since then a test asks whether an engine
 process is running before it starts one, and says so before it starts.
+
+## Step 148: a sampler (temperature, top-p), as a library with its test
+
+The person's plan: a benchmark of theirs sends single requests to an OpenAI- or
+Anthropic-compatible server, so the engine is to get a minimal server. The engine has the chat
+format and the reasoning effort; it lacks tools in the prompt, the parsing of a reply, a process
+that stays loaded, and a sampler: it is greedy everywhere, and the model card evaluates at
+temperature 1.0 with top-p 0.95 or 1.0. The sampler comes first, as every route needs it. This
+step is the sampler alone; no program uses it yet.
+
+`src/sampler.h`: `sample_token(logits, n, options, position)` with a temperature, top-p and a
+seed.
+
+- **Temperature 0 is greedy** (the first of equal maxima, as the loops do today).
+- **The random number is a function of (seed, position)**, a hash, not the next value of a
+  running generator. The choice at a position then does not depend on how the earlier positions
+  were computed. This is for speculative decoding: with a draft that proposes one token, the
+  exact rule is "sample the main model's token at the position, accept the draft if it is that
+  token", and with position-keyed numbers a seed gives the same output with and without drafts.
+- **top-p** keeps the most probable tokens (equal ones by rising id) until their sum reaches
+  top-p. The whole vocabulary is not sorted: tokens under a floor cannot be in the kept set
+  (together they hold under half of what top-p leaves out), and of the rest only the first 256,
+  then 8 times more, are sorted while the sum is short.
+- Probabilities are computed in double in a fixed order, so equal logits give an equal token.
+
+The reference samples with torch's generator (`inference/model.py: sample`), so a sampled
+output cannot be compared with it byte for byte. The checks are of the distribution instead
+(`bin/test-sampler`, `results/sampler/test-sampler.txt`; no model, no GPU, and the same numbers
+on every run):
+
+| check | result |
+|---|---|
+| the uniform numbers, 1M positions of one seed and 1M seeds of one position | means 0.49996 and 0.49990; chi-square of 16 bins 15.4 and 12.8 (limit 37.7 at p = 0.001) |
+| 8 logits, 400k draws, temperatures 0.5 / 1 / 2, three seeds each | chi-square against softmax 4.4-14.6 (limit 24.3) |
+| top-p 0.9 of {0.5, 0.3, 0.15, 0.04, 0.01} | the two smallest never drawn, the rest renormalized (chi-square 1.3, limit 13.8) |
+| 129,280 logits, top-p 0.5-0.999, three temperatures | the same token as with the whole vocabulary sorted in 4,800 of 4,800 draws |
+| one seed twice; two seeds | equal at 1,000 of 1,000 positions; different at 780 |
+
+What a draw costs on one thread, for a vocabulary of the model's size: 0.9 ms, nearly all of it
+the 129,280 exponentials; top-p adds nothing when a few tokens hold the probability. On "flat"
+test logits whose tail holds most of it (top-p then keeps tens of thousands of tokens, which a
+model does not give) it is 6.3 ms. A plain step takes ~38 ms, so 0.9 ms is ~2% and is left as it
+is until measured in the engine.
+
+Next: `--temp`, `--top-p`, `--seed` in the plain loop; then the logits of every verified
+position out of `verify()` and sampling in the speculative loop, where fewer drafts will be
+accepted than with greedy decoding.

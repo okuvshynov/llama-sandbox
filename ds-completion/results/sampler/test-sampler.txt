@@ -1,0 +1,23 @@
+# bin/test-sampler (make bin/test-sampler; no model, no GPU); commit 11acc93+changes, sclk not relevant (CPU only), 2026-11-17T00:54:09-05:00
+ok    temperature 0: the first of the equal maxima, at any position
+ok    uniform over positions: in [0, 1), mean 0.49996, chi-square of 16 bins 15.37 (limit 37.70)
+ok    uniform over seeds: in [0, 1), mean 0.49990, chi-square of 16 bins 12.84 (limit 37.70)
+ok    uniform: a function of (seed, position), not symmetric in them
+ok    8 logits, temperature 0.5, seed 0: chi-square against softmax 4.37 (limit 24.32)
+ok    8 logits, temperature 0.5, seed 1: chi-square against softmax 6.04 (limit 24.32)
+ok    8 logits, temperature 0.5, seed 123456789: chi-square against softmax 5.15 (limit 24.32)
+ok    8 logits, temperature 1.0, seed 0: chi-square against softmax 7.92 (limit 24.32)
+ok    8 logits, temperature 1.0, seed 1: chi-square against softmax 7.91 (limit 24.32)
+ok    8 logits, temperature 1.0, seed 123456789: chi-square against softmax 6.84 (limit 24.32)
+ok    8 logits, temperature 2.0, seed 0: chi-square against softmax 6.68 (limit 24.32)
+ok    8 logits, temperature 2.0, seed 1: chi-square against softmax 14.57 (limit 24.32)
+ok    8 logits, temperature 2.0, seed 123456789: chi-square against softmax 9.31 (limit 24.32)
+ok    top-p 0.9 of {0.5, 0.3, 0.15, 0.04, 0.01}: the two smallest never (0, 0), the rest renormalized, chi-square 1.34 (limit 13.82)
+ok    top-p 0.3 of the same: always the most probable token
+ok    1000 positions: the same token for the same seed (1000), another for another seed at 780 of them
+ok    129280 logits, top-p: the same token as with the whole vocabulary sorted in 4800 of 4800 draws
+time  129280 peaked logits, temperature 1, top-p 1.00: 0.915 ms per token (one thread; checksum 12016741)
+time  129280 peaked logits, temperature 1, top-p 0.95: 0.915 ms per token (one thread; checksum 11981357)
+time  129280 flat logits, temperature 1, top-p 1.00: 0.897 ms per token (one thread; checksum 11954228)
+time  129280 flat logits, temperature 1, top-p 0.95: 6.295 ms per token (one thread; checksum 13074885)
+all checks passed
