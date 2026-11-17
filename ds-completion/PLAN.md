@@ -60,7 +60,7 @@ Features and limits
 | 26 | Context above 4096 with the runtime | done | 65,536 by default, 1M with `--max-ctx`; see "Long context" below (README step 34) |
 | 27 | Candidate-block selection (>16k tokens) | done (runtime) | the reference's layer-20 path, checked against its own function; the CPU path still stops at 16k |
 | 28 | Full 1017 checkpoint | not needed | item 19 runs from the GGUF; exact references read the release by HTTP ranges (README "Which checkpoint") |
-| 29 | Sampling beyond greedy | started | temperature and top-p for a minimal server (the person's benchmark). Step 148: the sampler as a library with its test. Next: the plain loop, the speculative loop (logits out of `verify()`), a request mode with a context reset, the HTTP front. Greedy loops on some long reasoning (README step 48) |
+| 29 | Sampling beyond greedy | started | temperature and top-p for a minimal server (the person's benchmark). Step 148: the sampler as a library with its test. Step 149: `--temp`, `--top-p`, `--seed` in the plain loop, one seed one output on any placement. Next: the speculative loop (logits out of `verify()`), a request mode with a context reset, the HTTP front. Greedy loops on some long reasoning (README step 48) |
 
 ## Current cost model (2026-10-27, sclk 2, 16 CPU threads)
 
@@ -578,6 +578,8 @@ Step 147 (usability): `--think-show all|line|none`: the reasoning as one moving 
 on stdout; `scripts/chat.sh` uses `line`. The default prints as before.
 Step 148: towards a minimal server: a sampler (temperature, top-p; the random number a hash of seed and position)
 as a library with its test (`src/sampler.h`, `bin/test-sampler`); no program uses it yet.
+Step 149: `--temp`, `--top-p`, `--seed` in the plain loop: greedy unchanged, one seed gives one output on three
+placements; not with `--spec` yet.
 constructor in parts.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits

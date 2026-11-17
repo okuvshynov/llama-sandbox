@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "label": {"config": "greedy", "prompt": "geometry", "rep": "1"},
+  "args": {"mode": "think", "effort": 75, "n": 500, "threads": 16, "runtime": true, "canon": true, "spec": false,
+           "placement": "placements/study30.txt", "cache_loads": 0, "cache_period": 16, "cache_window": 256, "cache_min": 2,
+           "cache_wait": false, "spec_n": 0, "temp": 0, "top_p": 1, "seed": 0,
+           "profile": false, "trace": false, "spec_log": false, "log_routing": false},
+  "prompt": {"tokens": 55, "hash": "fnv1a64:31111264fac1a7a5"},
+  "env": {"gpu_sclk": [6, 6, 6, 6], "ds": {}},
+  "read_bytes": {"load": 0, "prompt": 0, "gen": 0},
+  "spec": null,
+  "experts": {"gpu_uses": 66154, "cpu_uses": 29846, "dies": [0, 1, 2, 3], "placed": [1228, 1765, 1765, 1765],
+               "cache": null},
+  "output": {"tokens": 345, "hash": "fnv1a64:39009bbaad3bdfec"},
+  "counters": {"load_s": 9.720, "prompt_s": 1.1644, "prompt_tps": 47.236, "gen_tokens": 345, "gen_s": 14.0825, "gen_tps": 24.499}
+}

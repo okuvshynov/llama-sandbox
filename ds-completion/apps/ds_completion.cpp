@@ -23,6 +23,7 @@
 #include "forward.h"
 #include "llama.h"
 #include "record.h"
+#include "sampler.h"
 #include "think_view.h"
 
 #ifndef DS_RUNTIME
@@ -121,6 +122,7 @@ struct Args {
   std::string model_path, prompt, mode = "raw", rt_path;
   int n_predict = 128;
   int effort = 75;  // --think's reasoning effort (encoding.py's default)
+  SamplerOptions sampler;  // --temp, --top-p, --seed (sampler.h); the default is greedy
   ThinkView::Mode think_show = ThinkView::All;  // --think-show: where the reasoning is printed (think_view.h)
   Options opt;
   int gpu = 0;
@@ -197,6 +199,9 @@ static int parse_args(int argc, char** argv, Args& args) {
     else if (a == "--gpu") args.gpu = atoi(next());
     else if (a == "--dspark") args.dspark_path = next();
     else if (a == "--spec") args.spec = true;
+    else if (a == "--temp") args.sampler.temp = atof(next());    // 0 (default): greedy
+    else if (a == "--top-p") args.sampler.top_p = atof(next());  // with --temp: the most probable tokens up to this probability
+    else if (a == "--seed") args.sampler.seed = strtoull(next(), nullptr, 10);
     else if (a == "--spec-log") args.spec_log_path = next();  // per verify step: n k verify_ms draft_ms conf[0..]
     else if (a == "--spec-n") args.spec_n = atoi(next());  // fixed drafts verified per step (default: chosen per step)  // drafts verified per step (default: all the draft makes)  // with --rt and --dspark: speculative decoding (greedy, same output)  // runtime: the DSpark draft GGUF (shadow mode: drafts measured, not used)
     else if (a == "--placement") args.placement = next();  // runtime: routed experts on GPUs (expert_pool.h)
@@ -225,12 +230,17 @@ static int parse_args(int argc, char** argv, Args& args) {
     }
     else { fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
   }
+  if (args.sampler.temp < 0 || !(args.sampler.top_p > 0 && args.sampler.top_p <= 1)) { fprintf(stderr, "--temp: 0 or more; --top-p: above 0, up to 1\n"); return 2; }
+  if (args.sampler.temp == 0 && args.sampler.top_p < 1) { fprintf(stderr, "--top-p needs --temp (without it the choice is greedy)\n"); return 2; }
+  if (args.sampler.temp > 0 && args.spec) { fprintf(stderr, "--temp: not with --spec yet (the speculative loop is greedy)\n"); return 2; }
+  if (args.sampler.temp > 0)
+    fprintf(stderr, "# sampling: temperature %g, top-p %g, seed %llu\n", args.sampler.temp, args.sampler.top_p, (unsigned long long)args.sampler.seed);
   if (args.interactive && (args.mode == "raw" || args.rt_path.empty())) {
     fprintf(stderr, "-i needs --chat or --think, and --rt\n");
     return 2;
   }
   if (args.model_path.empty() || (args.prompt.empty() && !args.interactive && !args.serve_port)) {
-    fprintf(stderr, "usage: ds-completion -m <model.gguf> (-p \"prompt\" | -f prompt.txt | -i) [--chat|--think [--effort 1-100|low|high|max] [--think-show all|line|none]] [-n N] [-t N] [--no-quant] [--max-ctx N] [--rt dense-fp8.gguf [--gpu D] [--placement file [--moe-dies 0,1,2,3] [--cache-loads R [--cache-period N] [--cache-window N] [--cache-min N] [--cache-wait]]] [--canon] [--profile]]\n"
+    fprintf(stderr, "usage: ds-completion -m <model.gguf> (-p \"prompt\" | -f prompt.txt | -i) [--chat|--think [--effort 1-100|low|high|max] [--think-show all|line|none]] [-n N] [--temp T [--top-p P] [--seed S]] [-t N] [--no-quant] [--max-ctx N] [--rt dense-fp8.gguf [--gpu D] [--placement file [--moe-dies 0,1,2,3] [--cache-loads R [--cache-period N] [--cache-window N] [--cache-min N] [--cache-wait]]] [--canon] [--profile]]\n"
                     "more (--dspark/--spec, --layers/--serve/--remote, --trace, --record, ...): QUICKSTART.md, Options\n");
     return 2;
   }
@@ -257,11 +267,11 @@ static bool write_record(FILE* record, const Args& args, const RecordRun& r, [[m
   fprintf(record, "  \"label\": %s,\n", label_json(args.record_label).c_str());
   fprintf(record, "  \"args\": {\"mode\": %s, \"effort\": %d, \"n\": %d, \"threads\": %d, \"runtime\": %s, \"canon\": %s, \"spec\": %s,\n"
                   "           \"placement\": %s, \"cache_loads\": %g, \"cache_period\": %d, \"cache_window\": %d, \"cache_min\": %d,\n"
-                  "           \"cache_wait\": %s, \"spec_n\": %d,\n"
+                  "           \"cache_wait\": %s, \"spec_n\": %d, \"temp\": %g, \"top_p\": %g, \"seed\": %llu,\n"
                   "           \"profile\": %s, \"trace\": %s, \"spec_log\": %s, \"log_routing\": %s},\n",
           json_string(args.mode).c_str(), args.effort, args.n_predict, args.opt.n_threads, args.rt_path.empty() ? "false" : "true", args.canon ? "true" : "false",
           args.spec ? "true" : "false", json_string(args.placement).c_str(), args.cache_loads, args.cache_period, args.cache_window, args.cache_min,
-          args.cache_wait ? "true" : "false", args.spec_n,  // as they took effect: an option not given has its default
+          args.cache_wait ? "true" : "false", args.spec_n, args.sampler.temp, args.sampler.top_p, (unsigned long long)args.sampler.seed,  // as they took effect: an option not given has its default
           // the options that add work to a run (a record with one of them on is not a clean timing): on or off
           args.profile ? "true" : "false", args.trace_path.empty() ? "false" : "true", args.spec_log_path.empty() ? "false" : "true",
           args.route_log.empty() ? "false" : "true");
@@ -481,12 +491,13 @@ static void generate_spec(Runtime* rt, const Args& args, const llama_vocab* voca
 }
 #endif
 
-// Plain greedy generation, a token per step: on the runtime (with a draft loaded, in shadow mode),
-// or on the CPU engine.
+// Plain generation, a token per step, greedy or sampled (--temp): on the runtime (with a draft
+// loaded, in shadow mode), or on the CPU engine. pos: the context's length as the loop starts,
+// which is the first generated token's position (the sampler's random number is keyed by it).
 static void generate_plain([[maybe_unused]] Runtime* rt, Engine* eng, const Args& args, const llama_vocab* vocab, int eos, std::vector<float>& logits,
-                           std::vector<int32_t>& pending, Turn& turn) {
-  for (; turn.n_gen < args.n_predict; turn.n_gen++) {
-    const int32_t next = (int32_t)(std::max_element(logits.begin(), logits.end()) - logits.begin());
+                           uint64_t pos, std::vector<int32_t>& pending, Turn& turn) {
+  for (; turn.n_gen < args.n_predict; turn.n_gen++, pos++) {
+    const int32_t next = sample_token(logits.data(), (int)logits.size(), args.sampler, pos);
     turn.gen.push_back(next);
     if (next == eos) break;
     turn.view->token(next, piece(vocab, next));
@@ -766,9 +777,9 @@ static int run(int argc, char** argv) {
     view.begin(args.mode == "think");
 #ifdef DS_RUNTIME
     if (args.spec) generate_spec(rt.get(), args, vocab, eos, logits, first, pending, turn);
-    else generate_plain(rt.get(), eng.get(), args, vocab, eos, logits, pending, turn);
+    else generate_plain(rt.get(), eng.get(), args, vocab, eos, logits, rt ? rt->n_past() : toks.size(), pending, turn);
 #else
-    generate_plain(nullptr, eng.get(), args, vocab, eos, logits, pending, turn);
+    generate_plain(nullptr, eng.get(), args, vocab, eos, logits, toks.size(), pending, turn);
 #endif
     const double t_tg = std::chrono::duration<double>(Clock::now() - t2).count();
     if (record) rd[3] = io_read_bytes();

@@ -1,0 +1,44 @@
+# scripts/run_matrix.py results/sampler/plain.matrix --prompts tcp-udp,cpp-matrix,geometry, then scripts/records.py (below); commit 1340c2b+changes (the sampler in the plain loop), sclk as in results/sampler/plain/matrix.txt, 2026-11-17T01:15:14-05:00
+# 18 runs, 0 failed. Plain generation (no --spec), --canon. The matrix said reps=2 for s1, which the runner
+# does not do (a configuration's reps can only lower the matrix's); the repeat on the same placement was run by hand, below.
+
+$ scripts/records.py results/sampler/plain/*.json --by prompt,config --show counters.gen_tps,output.tokens,output.hash
+prompt      config     runs  counters.gen_tps  spread  output.tokens  spread               output.hash  spread
+cpp-matrix  greedy        1              22.9                    300          fnv1a64:55214691a828a176
+geometry    greedy        1              24.5                    345          fnv1a64:39009bbaad3bdfec
+tcp-udp     greedy        1             25.41                    300          fnv1a64:e84010b498310b61
+cpp-matrix  s1-cache      1             28.33                    300          fnv1a64:3426536c97f68ad8
+geometry    s1-cache      1             29.21                    342          fnv1a64:b3408ba7088ec36e
+tcp-udp     s1-cache      1             28.82                    300          fnv1a64:92a19b9a44f4e8f7
+cpp-matrix  s1            1             22.33                    300          fnv1a64:3426536c97f68ad8
+geometry    s1            1             23.47                    342          fnv1a64:b3408ba7088ec36e
+cpp-matrix  s1-oracle     1             18.47                    300          fnv1a64:3426536c97f68ad8
+geometry    s1-oracle     1             17.84                    342          fnv1a64:b3408ba7088ec36e
+tcp-udp     s1-oracle     1             26.64                    300          fnv1a64:92a19b9a44f4e8f7
+cpp-matrix  s1-p1         1             22.03                    300          fnv1a64:a514684e2aeb51a8
+geometry    s1-p1         1             23.59                    325          fnv1a64:10e796c1452d8e89
+tcp-udp     s1-p1         1              24.4                    300          fnv1a64:5783a53592ae1298
+tcp-udp     s1            1             23.28                    300          fnv1a64:92a19b9a44f4e8f7
+cpp-matrix  s2            1              22.5                    300          fnv1a64:4af3e9a39dbc0691
+geometry    s2            1              23.6                    315          fnv1a64:920b5ca535d61937
+tcp-udp     s2            1              23.8                    300          fnv1a64:9e776ec227e78107
+
+# the stored greedy outputs (results/record/reference/heldout-output.tsv): prompt, output tokens, output hash
+tcp-udp	300	fnv1a64:e84010b498310b61
+cpp-matrix	300	fnv1a64:55214691a828a176
+geometry	345	fnv1a64:39009bbaad3bdfec
+
+# the same seed again on the same placement (tcp-udp, --placement placements/study30.txt --temp 1 --top-p 0.95 --seed 1, by hand):
+# output hash fnv1a64:92a19b9a44f4e8f7, 300 tokens, 23.85 t/s; its first lines:
+#   # TCP vs UDP
+#   
+#   ## Core Differences
+#   
+#   | Aspect | TCP | UDP |
+#   |---|---|---|
+#   | **Connection** | Connection-oriented (3-way handshake) | Connectionless (fire-and-forget) |
+#   | **Reliability** | Guaranteed delivery, ordering, and integrity (ACKs, retransmissions) | No guarantees — packets may be lost, duplicated, or reordered |
+#   | **Header size** | 20–60 bytes | 8 bytes |
+#   | **Speed/overhead** | Slower due to handshakes, ACKs, congestion control | Faster, minimal overhead |
+#   | **Flow/Congestion control** | Yes (windowing, slow start, etc.) | None |
+#   | **Data boundaries** | Byte stream — no message bo

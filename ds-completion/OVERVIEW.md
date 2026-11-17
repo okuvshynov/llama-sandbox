@@ -13,7 +13,8 @@ on two of them, the model cut in two halves, with the same outputs.
 
 - Priorities, in order: correctness, code clarity, performance.
 - Non-goals: other models, other hardware, serving many users at once. Sampling was a non-goal
-  until step 148 (a sampler exists as a library; the programs are still greedy).
+  until step 148; since step 149 `--temp`, `--top-p`, `--seed` sample in the plain loop (greedy is
+  the default, and the speculative loop is greedy only).
   A CLI (`ds-completion -m model -p "prompt"`) is the interface, with an interactive session
   mode (`-i`).
 
@@ -257,7 +258,7 @@ for one step lies with its results.
 | `src/forward.{h,cpp}` | the CPU reference path (ggml graphs), used by tests and `bin/ds-completion` |
 | `src/cpu_moe.{h,cpp}` | the exact AVX-512 routed-expert kernel |
 | `src/fakequant.{h,cpp}` | the reference's fp8/fp4 rounding |
-| `src/sampler.{h,cpp}` | the next token from the logits: greedy, or temperature and top-p with a random number per (seed, position) (README step 148); `tests/test_sampler.cpp` checks it |
+| `src/sampler.{h,cpp}` | the next token from the logits: greedy, or temperature and top-p with a random number per (seed, position) (README steps 148-149); `tests/test_sampler.cpp` checks it |
 | `apps/fp8pack.cpp` | lossless fp8 repack of the dense weights |
 | `tests/ds_test.cpp` | per-layer and end-to-end tests against the goldens |
 | `hip/rt.{h,cpp}` | the GPU runtime: state, layer order, the expert split |

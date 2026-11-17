@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "label": {"config": "s1-p1", "prompt": "geometry", "rep": "1"},
+  "args": {"mode": "think", "effort": 75, "n": 500, "threads": 16, "runtime": true, "canon": true, "spec": false,
+           "placement": "placements/study30.txt", "cache_loads": 0, "cache_period": 16, "cache_window": 256, "cache_min": 2,
+           "cache_wait": false, "spec_n": 0, "temp": 1, "top_p": 1, "seed": 1,
+           "profile": false, "trace": false, "spec_log": false, "log_routing": false},
+  "prompt": {"tokens": 55, "hash": "fnv1a64:31111264fac1a7a5"},
+  "env": {"gpu_sclk": [6, 6, 6, 6], "ds": {}},
+  "read_bytes": {"load": 0, "prompt": 0, "gen": 12591104},
+  "spec": null,
+  "experts": {"gpu_uses": 63078, "cpu_uses": 28122, "dies": [0, 1, 2, 3], "placed": [1228, 1765, 1765, 1765],
+               "cache": null},
+  "output": {"tokens": 325, "hash": "fnv1a64:10e796c1452d8e89"},
+  "counters": {"load_s": 9.709, "prompt_s": 1.1761, "prompt_tps": 46.766, "gen_tokens": 325, "gen_s": 13.7784, "gen_tps": 23.588}
+}

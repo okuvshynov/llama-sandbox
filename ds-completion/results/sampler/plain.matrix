@@ -1,0 +1,18 @@
+# The sampler in the plain loop (README step 149): greedy against the stored outputs, and
+# sampled runs of one seed across repeats and placements.
+#   scripts/run_matrix.py results/sampler/plain.matrix --prompts tcp-udp,cpp-matrix,geometry
+set M  ~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf
+set F8 ~/llms/ds-1017-fp8/dense-fp8.gguf
+prompts results/spec-heldout/prompts.txt
+out results/sampler/plain
+base --rt $F8 --canon
+# greedy, as before: the outputs must be the stored ones (results/record/reference/heldout-output.tsv)
+config greedy       --placement placements/study30.txt
+# temperature 1, top-p 0.95, seed 1: on one placement, then on two other placements
+# (another fixed one; the expert cache, which moves experts during the run)
+config s1           --placement placements/study30.txt --temp 1 --top-p 0.95 --seed 1
+config s1-oracle    --placement placements/oracle-concurrency.txt --temp 1 --top-p 0.95 --seed 1
+config s1-cache     --placement placements/study30.txt --cache-loads 800 --cache-period 8 --cache-wait --temp 1 --top-p 0.95 --seed 1
+# another seed; top-p 1 (the sampler's other path)
+config s2           --placement placements/study30.txt --temp 1 --top-p 0.95 --seed 2
+config s1-p1        --placement placements/study30.txt --temp 1 --seed 1

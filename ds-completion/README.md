@@ -5386,3 +5386,36 @@ is until measured in the engine.
 Next: `--temp`, `--top-p`, `--seed` in the plain loop; then the logits of every verified
 position out of `verify()` and sampling in the speculative loop, where fewer drafts will be
 accepted than with greedy decoding.
+
+## Step 149: the sampler in the plain loop (`--temp`, `--top-p`, `--seed`)
+
+`ds-completion` takes `--temp T [--top-p P] [--seed S]`, and the plain loop (one token per step,
+on the runtime or the CPU engine) chooses every token with `sample_token`. The position that
+keys the random number is the token's index in the context. The default, `--temp 0`, is the
+greedy choice as before. `--top-p` without `--temp` is refused, and so is `--temp` with `--spec`:
+the speculative loop is still greedy (next step). The record's `args` has `temp`, `top_p`, `seed`.
+
+The check (`results/sampler/plain.matrix`, 18 runs: three held-out prompts, plain generation with
+`--canon`, sclk 6; `results/sampler/plain.txt`, the records in `results/sampler/plain/`):
+
+| question | runs | result |
+|---|---|---|
+| is greedy unchanged? | `greedy` | the three outputs have the stored hashes |
+| one seed, one output, whatever the placement? | seed 1 with `study30`, with another fixed placement, with the expert cache moving experts; and once more with `study30` | one hash per prompt in all of them |
+| another seed? | seed 2 | another output for each prompt |
+| top-p 1 (the sampler's path without a sort) | seed 1, `--temp 1` | runs; another output than with top-p 0.95 |
+
+So with `--canon` a sampled run is as checkable as a greedy one: the logits are the same bits on
+every placement, and the choice is a function of the logits, the seed and the position. The
+sampled text reads as an answer of the same kind (the start of one is in the results file).
+The reference's sampled outputs cannot be reproduced (step 148), so nothing here compares a
+sampled output with the reference.
+
+Speed, one run each on `study30`: greedy 25.4 / 22.9 / 24.5 t/s, seed 1 at 23.3 / 22.3 / 23.5 (-8%,
+-3%, -4%). The sampler's own cost predicts ~-2% (0.9 ms on a ~40 ms step); the texts differ, so
+the experts used and their share on the GPUs differ too, and one run per cell does not separate
+the two. Not pursued: the speculative loop is the one that matters for speed.
+
+A mistake in the matrix: `reps=2` on one configuration did nothing (in `run_matrix.py` a
+configuration's `reps` can only lower the matrix's), so the repeat on the same placement was
+run by hand. The matrix file is corrected; the copy among the records shows what ran.

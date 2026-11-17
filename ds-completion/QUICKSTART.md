@@ -133,6 +133,10 @@ Options:
   before the answer. `line`: one moving line on stderr (a token count and its last characters),
   erased when the answer starts; stdout has the answer alone. `none`: hidden. `scripts/chat.sh`
   uses `line`. README step 147.
+- `--temp T [--top-p P] [--seed S]`: sample the next token instead of taking the most likely
+  one (the default, `--temp 0`). The model card's settings are `--temp 1 --top-p 0.95`. One seed
+  gives one output, whatever the placement (with `--canon`). Not with `--spec` yet. README
+  steps 148-149.
 - neither: the prompt is raw text after BOS.
 - `-n`: max new tokens.
 - `--max-ctx N`: the context's size (default 65,536 with `--rt`; "Limits" below).

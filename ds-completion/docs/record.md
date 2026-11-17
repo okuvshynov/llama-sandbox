@@ -99,7 +99,8 @@ as the program wrote it, the fastest single-machine settings (`results/record/ex
   `spec_n` 0 (the default): the number of drafts verified is chosen per step. Since step 120
   with the knobs a sweep varies: `cache_window`, `cache_min`, `cache_wait`, `spec_n`. Since step
   121 with the options that add work to a run, on or off: `profile`, `trace`, `spec_log`,
-  `log_routing`. The example above is from before both.
+  `log_routing`. Since step 149 with the sampler's settings: `temp` (0: greedy), `top_p`,
+  `seed`. The example above is from before all three.
 - `env.ds` (step 121): every environment variable named `DS_*` with its value, `{}` if none:
   the experiment switches. A record with one set, or with `profile` on, is not a clean timing
   (`--profile` -8%, `DS_FP8_PAD=0` -7.5% on the example's run).

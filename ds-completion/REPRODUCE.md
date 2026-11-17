@@ -274,6 +274,7 @@ Unless stated: sclk 2, 16 CPU threads (32 before README step 18), the study30 pl
 | 146 | `spec-oracle/oracle.txt`, `spec-oracle/runs/`, `spec-oracle/oracle.matrix`, `spec-oracle/oracle.py` | `scripts/run_matrix.py results/spec-oracle/oracle.matrix --out <a new directory>` (the matrix names its log files under `results/spec-oracle/runs/`: change both), then `results/spec-oracle/oracle.py <the directory>` |
 | 147 | `usability/think-show.txt` | the commands in the file, with a build of 0bcb0d2 and with this one; the terminal runs through `script -qec "stty cols N; ..." FILE` |
 | 148 | `sampler/test-sampler.txt` | `make bin/test-sampler && bin/test-sampler` (CPU only, a few seconds) |
+| 149 | `sampler/plain.txt`, `sampler/plain/` (records), `sampler/plain.matrix` | `scripts/run_matrix.py results/sampler/plain.matrix --prompts tcp-udp,cpp-matrix,geometry` (18 runs, 14 min), then the `scripts/records.py` command in the file; the repeat by hand as the file says |
 
 ## 7. Open items (to confirm)
 
