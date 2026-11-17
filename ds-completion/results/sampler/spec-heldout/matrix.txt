@@ -1,0 +1,15 @@
+# scripts/run_matrix.py results/sampler/spec-heldout.matrix; commit 4cadd7c+changes, sclk 6 6 6 6, 2026-11-17T01:52:12-05:00
+# 16 runs: 8 prompts x 2 configurations x up to 1 repeats; records: CONFIG-PROMPT-REP.json; read with scripts/records.py
+# Speculative decoding, greedy against sampled (temperature 1, top-p 0.95, seed 1), on all the
+# held-out prompts with the fastest single-machine settings (README step 150): speed and drafts
+# accepted. The texts differ between the two, so this compares two workloads, not one.
+#   scripts/run_matrix.py results/sampler/spec-heldout.matrix
+set M  ~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf
+set F8 ~/llms/ds-1017-fp8/dense-fp8.gguf
+set D  ~/llms/dspark/dspark-DeepSeek-V4.1-Flash-1017-BF16.gguf
+prompts results/spec-heldout/prompts.txt
+out results/sampler/spec-heldout
+base --rt $F8 --placement placements/study30.txt --dspark $D --spec --canon
+base --cache-loads 800 --cache-period 8 --cache-wait
+config greedy
+config s1      --temp 1 --top-p 0.95 --seed 1

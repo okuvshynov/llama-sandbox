@@ -1,0 +1,43 @@
+# results/sampler/spec_summary.py; runs: scripts/run_matrix.py results/sampler/spec.matrix --prompts tcp-udp,cpp-matrix,geometry and scripts/run_matrix.py results/sampler/spec-heldout.matrix; commit 4cadd7c+changes (sampling in the speculative loop), sclk 6 (the records' matrix.txt), 2026-11-17T02:27:54-05:00
+# spec/ runs carry --spec-log (a line per step); spec-heldout/ runs do not
+1. outputs: the speculative loop against the plain loop with the same settings (and greedy against the stored output)
+  cpp-matrix  greedy  fnv1a64:55214691a828a176  = plain greedy   54.80 t/s  4.55 tokens per step
+  cpp-matrix  s1      fnv1a64:3426536c97f68ad8  = plain s1   49.53 t/s  4.35 tokens per step
+  cpp-matrix  s1-n5   fnv1a64:3426536c97f68ad8  = plain s1   48.65 t/s  4.62 tokens per step
+  cpp-matrix  s1-p1   fnv1a64:a514684e2aeb51a8  = plain s1-p1   50.25 t/s  4.35 tokens per step
+  cpp-matrix  s2      fnv1a64:4af3e9a39dbc0691  = plain s2   50.52 t/s  4.41 tokens per step
+  geometry    greedy  fnv1a64:39009bbaad3bdfec  = plain greedy   54.78 t/s  4.06 tokens per step
+  geometry    s1      fnv1a64:b3408ba7088ec36e  = plain s1   50.20 t/s  3.84 tokens per step
+  geometry    s1-n5   fnv1a64:b3408ba7088ec36e  = plain s1   49.43 t/s  4.38 tokens per step
+  geometry    s1-p1   fnv1a64:10e796c1452d8e89  = plain s1-p1   47.20 t/s  3.42 tokens per step
+  geometry    s2      fnv1a64:920b5ca535d61937  = plain s2   51.03 t/s  3.94 tokens per step
+  tcp-udp     greedy  fnv1a64:e84010b498310b61  = plain greedy   38.95 t/s  2.08 tokens per step
+  tcp-udp     s1      fnv1a64:92a19b9a44f4e8f7  = plain s1   41.22 t/s  2.75 tokens per step
+  tcp-udp     s1-n5   fnv1a64:92a19b9a44f4e8f7  = plain s1   35.39 t/s  3.26 tokens per step
+  tcp-udp     s1-p1   fnv1a64:5783a53592ae1298  = plain s1-p1   37.63 t/s  2.38 tokens per step
+  tcp-udp     s2      fnv1a64:9e776ec227e78107  = plain s2   39.75 t/s  2.52 tokens per step
+  15 of 15 equal
+
+2. a verify step's time by drafts verified, median ms (count): greedy | seed 1 | seed 1 with --spec-n 5
+  cpp-matrix  greedy  1: 48.9 (3)  2: 53.3 (7)  3: 71.5 (12)  4: 71.9 (10)  5: 73.7 (34)
+  cpp-matrix  s1      1: 55.3 (3)  2: 58.0 (7)  3: 74.0 (10)  4: 82.5 (12)  5: 78.9 (37)
+  cpp-matrix  s1-n5   5: 80.3 (65)
+  geometry    greedy  0: 35.5 (1)  1: 49.5 (7)  2: 57.4 (11)  3: 59.4 (15)  4: 60.9 (10)  5: 70.0 (40)
+  geometry    s1      0: 39.4 (1)  1: 47.8 (12)  2: 63.1 (13)  3: 61.2 (12)  4: 75.9 (11)  5: 73.6 (39)
+  geometry    s1-n5   5: 74.9 (78)
+  tcp-udp     greedy  0: 33.3 (15)  1: 41.1 (51)  2: 49.2 (34)  3: 60.2 (19)  4: 61.6 (4)  5: 70.7 (1)
+  tcp-udp     s1      0: 37.4 (1)  1: 44.4 (30)  2: 57.6 (33)  3: 60.4 (28)  4: 69.0 (11)  5: 73.5 (5)
+  tcp-udp     s1-n5   5: 78.5 (92)
+
+3. all held-out prompts, fastest single-machine settings, one run each: greedy | temperature 1, top-p 0.95, seed 1
+  prompt         t/s  tokens/step  = stored |    t/s  tokens/step  tokens
+  cpp-matrix    54.89       4.55       yes |  49.95       4.23     300
+  geometry      54.89       4.06       yes |  50.93       3.84     342
+  ja-email      37.07       1.78       yes |  34.76       2.04     300
+  py-lru        46.64       3.00       yes |  41.05       2.88     300
+  sql-report    46.96       3.90       yes |  41.29       3.66     300
+  summary-json  44.67       3.50       yes |  42.69       3.50      98
+  tcp-udp       38.90       2.08       yes |  42.21       2.75     300
+  zh-travel     34.04       1.50       yes |  31.42       1.76     300
+  greedy  mean 44.76 t/s over 8 prompts; 2.58 tokens per step over all steps
+  s1      mean 41.79 t/s over 8 prompts; 2.80 tokens per step over all steps

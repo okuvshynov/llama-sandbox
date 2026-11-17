@@ -232,7 +232,7 @@ static int parse_args(int argc, char** argv, Args& args) {
   }
   if (args.sampler.temp < 0 || !(args.sampler.top_p > 0 && args.sampler.top_p <= 1)) { fprintf(stderr, "--temp: 0 or more; --top-p: above 0, up to 1\n"); return 2; }
   if (args.sampler.temp == 0 && args.sampler.top_p < 1) { fprintf(stderr, "--top-p needs --temp (without it the choice is greedy)\n"); return 2; }
-  if (args.sampler.temp > 0 && args.spec) { fprintf(stderr, "--temp: not with --spec yet (the speculative loop is greedy)\n"); return 2; }
+  if (args.sampler.temp > 0 && args.spec && !args.remote.empty()) { fprintf(stderr, "--temp with --spec: not with --remote yet (the head's logits are on the back)\n"); return 2; }
   if (args.sampler.temp > 0)
     fprintf(stderr, "# sampling: temperature %g, top-p %g, seed %llu\n", args.sampler.temp, args.sampler.top_p, (unsigned long long)args.sampler.seed);
   if (args.interactive && (args.mode == "raw" || args.rt_path.empty())) {
@@ -342,10 +342,14 @@ struct Turn {
 // (its logs are opened anew); pending: what was printed but not yet run through the model.
 static void generate_spec(Runtime* rt, const Args& args, const llama_vocab* vocab, int eos, const std::vector<float>& logits, bool first,
                           std::vector<int32_t>& pending, Turn& turn) {
-  // speculative decoding (greedy): draft from the anchor (the last emitted token, not yet run),
+  // speculative decoding: draft from the anchor (the last emitted token, not yet run),
   // verify [anchor, drafts], keep the matching prefix plus the main model's own next token;
-  // prints exactly what plain greedy decoding prints
-  int32_t anchor = (int32_t)(std::max_element(logits.begin(), logits.end()) - logits.begin());
+  // prints exactly what the plain loop prints. With --temp the main model's token at a position
+  // is the sampler's (keyed by the position, so the same as in the plain loop), from the
+  // chunk's logits on the host; a draft is accepted if it is that token (README step 150).
+  const bool sampling = args.sampler.temp > 0;
+  rt->keep_verify_logits = sampling;
+  int32_t anchor = sample_token(logits.data(), (int)logits.size(), args.sampler, rt->n_past());
   auto emit = [&](int32_t t) {  // false: stop
     if (t == eos) turn.hit_eos = true;
     if (t == eos || turn.n_gen >= args.n_predict) return false;
@@ -433,7 +437,15 @@ static void generate_spec(Runtime* rt, const Args& args, const llama_vocab* voca
       if ((int)chunk.size() > room) chunk.resize(std::max(room, 1));
       auto tv = Clock::now();
       if (have_t_emit) rt->trace_host("after commit: emit the tokens", t_emit, td_start, 3);  // README step 86
-      const std::vector<int32_t> next = rt->verify(chunk);
+      const uint64_t p0 = rt->n_past();  // the anchor's position; the token after chunk[i] is at p0 + i + 1
+      std::vector<int32_t> next = rt->verify(chunk);
+      if (sampling) {  // (counted in the verify's time: the draft-length rule's cost per token has it)
+        const auto ts = Clock::now();
+        #pragma omp parallel for schedule(static, 1)
+        for (int i = 0; i < (int)chunk.size(); i++)
+          next[i] = sample_token(rt->verify_logits(i), (int)logits.size(), args.sampler, p0 + i + 1);
+        rt->trace_host("after verify: sample", ts, Clock::now(), 3);
+      }
       const auto tv1 = Clock::now();
       const double vms = std::chrono::duration<double, std::milli>(tv1 - tv).count();
       turn.verify_ms += vms;

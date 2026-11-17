@@ -275,6 +275,7 @@ Unless stated: sclk 2, 16 CPU threads (32 before README step 18), the study30 pl
 | 147 | `usability/think-show.txt` | the commands in the file, with a build of 0bcb0d2 and with this one; the terminal runs through `script -qec "stty cols N; ..." FILE` |
 | 148 | `sampler/test-sampler.txt` | `make bin/test-sampler && bin/test-sampler` (CPU only, a few seconds) |
 | 149 | `sampler/plain.txt`, `sampler/plain/` (records), `sampler/plain.matrix` | `scripts/run_matrix.py results/sampler/plain.matrix --prompts tcp-udp,cpp-matrix,geometry` (18 runs, 14 min), then the `scripts/records.py` command in the file; the repeat by hand as the file says |
+| 150 | `sampler/spec.txt`, `sampler/spec/`, `sampler/spec-heldout/` (records, spec logs), `sampler/spec.matrix`, `sampler/spec-heldout.matrix`, `sampler/spec_summary.py` | `scripts/run_matrix.py results/sampler/spec.matrix --prompts tcp-udp,cpp-matrix,geometry` (15 runs, ~12 min; needs step 149's records), `scripts/run_matrix.py results/sampler/spec-heldout.matrix` (16 runs, ~12 min), then `results/sampler/spec_summary.py` |
 
 ## 7. Open items (to confirm)
 

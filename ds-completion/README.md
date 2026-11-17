@@ -5419,3 +5419,48 @@ the two. Not pursued: the speculative loop is the one that matters for speed.
 A mistake in the matrix: `reps=2` on one configuration did nothing (in `run_matrix.py` a
 configuration's `reps` can only lower the matrix's), so the repeat on the same placement was
 run by hand. The matrix file is corrected; the copy among the records shows what ran.
+
+## Step 150: the sampler in the speculative loop
+
+`--temp` now works with `--spec`. The rule is the one step 148 prepared: the draft proposes one
+token per position; the main model's token there is the sampler's, keyed by the position; the
+draft is accepted if it is that token. This samples exactly from the main model's distribution
+(for a draft that proposes one token with certainty, the general accept rule "with probability
+p(x), else resample from the rest" is the same thing), and the output is the plain loop's.
+
+- `Runtime::verify()` still returns the greedy ids from the device. With
+  `keep_verify_logits` set it also copies the chunk's logits to the host (up to 6 rows of
+  129,280), and `verify_logits(i)` gives a row.
+- `generate_spec` samples every row (in parallel, one thread per row) and compares the drafts
+  with the sampled tokens. The first token of a reply is sampled from the prompt's logits.
+  The time is counted in the verify step, so the draft-length rule's cost line includes it.
+- Not with `--remote` yet: on two machines the head's logits are on the back. Refused.
+- The draft-length rule is unchanged. Its confidence is calibrated for greedy acceptance.
+
+Outputs (`results/sampler/spec.matrix`, three prompts, fastest single-machine settings;
+`results/sampler/spec.txt` section 1): 15 of 15 equal to the plain loop's of step 149 with the
+same settings: greedy (the stored outputs), seed 1, seed 1 with `--spec-n 5` (every step
+verifies five drafts: another sequence of steps), seed 2, and top-p 1.
+
+Speed and acceptance on the 8 held-out prompts, one run each
+(`results/sampler/spec-heldout.matrix`, section 3). The sampled texts are other texts, so this
+compares two workloads:
+
+| | mean t/s | tokens per step, all steps |
+|---|---|---|
+| greedy | 44.76 | 2.58 |
+| temperature 1, top-p 0.95, seed 1 | 41.79 (-6.6%) | 2.80 |
+
+The prediction (fewer drafts accepted at temperature 1) was wrong on these prompts: as many or
+more tokens per step. The model is sure of most tokens here, and where it is not, the greedy
+draft was often wrong under greedy decoding too. Per prompt 6 of 8 are slower by 4-12%, two
+are level or faster (`tcp-udp` +9%, another text with more accepted).
+
+The loss is the step's cost, not acceptance. A verify step of the same draft count takes
+~4-6 ms longer when sampling (section 2: five drafts 73.7 -> 78.9 ms and 70.0 -> 73.6 ms
+medians). Expected were ~1 ms for six draws in parallel plus the copy of 3 MB. Where the rest
+goes (the copy into pageable memory, the threads' start, the 1 MB allocation per draw) is not
+measured. It is the open item of this step; recovering it would give most of the 6.6% back.
+
+A mistake in the announcement: "all 16 held-out prompts, 32 runs". The set has 8 prompts (16 was
+the number of runs in step 138, two repeats); 16 runs were made.

@@ -550,6 +550,10 @@ std::vector<int32_t> Runtime::forward_chunk(const std::vector<int32_t>& toks, bo
     const auto t_h0 = Clock::now();  // README step 87: the verify step's tail on the steps track
     next.resize(M);
     CHECK(hipMemcpyAsync(next.data(), next_d, (size_t)M * 4, hipMemcpyDeviceToHost, s));
+    if (keep_verify_logits) {
+      verify_logits_.resize((size_t)M * V);
+      CHECK(hipMemcpyAsync(verify_logits_.data(), logits_d, (size_t)M * V * 4, hipMemcpyDeviceToHost, s));
+    }
     CHECK(hipStreamSynchronize(s));
     trace_host("tail: the head's wait and the ids to host", t_h0, Clock::now(), 3);
   } else {

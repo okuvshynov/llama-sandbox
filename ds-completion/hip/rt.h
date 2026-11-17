@@ -121,6 +121,11 @@ class Runtime {
   // by position and read only up to the current one.
   // head = false: no logits (prompt chunks), returns an empty vector
   std::vector<int32_t> verify(const std::vector<int32_t>& chunk, bool head = true);
+  // For sampling (README step 150): with keep_verify_logits set, verify() also copies the
+  // chunk's logits to the host; verify_logits(i) are those after chunk[i], n_vocab of them,
+  // valid until the next verify(). Not with a peer (the head is the back's).
+  bool keep_verify_logits = false;
+  const float* verify_logits(int i) const { return verify_logits_.data() + (size_t)i * hp.n_vocab; }
   // most tokens one forward runs at once: a prompt chunk (prefill); a verify chunk is at most
   // DSpark::kMaxChunk. Per-token buffers are sized by it.
   static constexpr int kChunk = 512;
@@ -272,6 +277,7 @@ class Runtime {
   float *h, *h2, *pre, *a_pre, *a_post, *a_comb, *f_pre, *f_post, *f_comb, *mixes;
   float *x, *t1, *qr, *q, *kvv, *o, *oa, *y, *ysh, *yr, *logits_d, *partial;
   int* next_d = nullptr;  // a verify chunk's argmax ids (README step 88)
+  std::vector<float> verify_logits_;  // [chunk][n_vocab], with keep_verify_logits
   // activation codes + scales for the GEMVs, two sets: A holds a layer input (x) that several
   // GEMVs read, B the intermediate ones (qr, o, oa, act, engram rows); up to 32768 values each
   struct Codes { uint8_t* q; float* s; };
