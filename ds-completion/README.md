@@ -46,7 +46,7 @@ build, every option, the current results, the limits).
 | [docs/numerics.md](docs/numerics.md) | operand types, how they map to the GPUs, accumulation |
 | [docs/plan.md](docs/plan.md) | the items and their status, the plans and cost models |
 | [PROCESS.md](PROCESS.md) | how the work was approached: the method, the decision log, predictions against outcomes, mistakes |
-| [REPRODUCE.md](REPRODUCE.md) | how to rebuild the setup and which command produced which results file |
+| [docs/reproduce.md](docs/reproduce.md) | how to rebuild the setup and which command produced which results file |
 | [docs/record.md](docs/record.md) | `--record`: a run as one JSON object |
 | [docs/requests.md](docs/requests.md), [docs/server.md](docs/server.md) | `--requests`, the protocol between the engine and a front; the HTTP front |
 | [docs/rocprof.md](docs/rocprof.md) | the GPU side under AMD's profiler |
@@ -55,13 +55,13 @@ build, every option, the current results, the limits).
 
 (The documents other than these two are being moved into `docs/`, one per commit: step 156.
 Code comments and results files name them as they stood: PLAN.md, docs/overview.md, docs/timing.md,
-docs/numerics.md, PROCESS.md, REPRODUCE.md.)
+docs/numerics.md, PROCESS.md, docs/reproduce.md.)
 
 ## Docs and commits
 
 Every commit that changes code, scripts or results updates, in the same commit:
 `docs/steps.md` (a step: what was done and measured), PROCESS.md (the question, prediction,
-result and decision), REPRODUCE.md (new scripts and results and what produces them), and
+result and decision), docs/reproduce.md (new scripts and results and what produces them), and
 QUICKSTART.md / docs/overview.md / docs/plan.md / docs/timing.md / this page's status when what they say
 changed. New results files start with a `#` header naming the command or script, the commit,
 the clock level and the date. (The rule for the assistant is in the sandbox's CLAUDE.md.)

@@ -5582,4 +5582,4 @@ document per commit, and what is out of date is updated or removed.
   header says where their text is (`git show 64f5e05:ds-completion/PLAN.md`).
 - **Moved to `docs/`, one commit each, every link and mention in the documents following**
   (code comments and results files keep the old names; the README lists them): PLAN.md ->
-  `docs/plan.md`, OVERVIEW.md -> `docs/overview.md`, TIMING.md -> `docs/timing.md`, NUMERICS.md -> `docs/numerics.md`
+  `docs/plan.md`, OVERVIEW.md -> `docs/overview.md`, TIMING.md -> `docs/timing.md`, NUMERICS.md -> `docs/numerics.md`, REPRODUCE.md -> `docs/reproduce.md`

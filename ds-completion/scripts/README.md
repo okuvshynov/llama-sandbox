@@ -2,7 +2,7 @@
 
 Since README step 130 this directory holds only what a next step would start. A script written
 for one step lives with that step's results (`results/<topic>/`, or `results/` beside a single
-results file); REPRODUCE.md names each by its path.
+results file); docs/reproduce.md names each by its path.
 
 | | |
 |---|---|
@@ -20,6 +20,6 @@ for what those two cannot do, and then it is filed with its results from the sta
 
 A results file's `#` header names the command as it was at the header's commit: for a file
 older than step 130 that may be `scripts/<name>` for a script that has since moved. Its place
-now is in REPRODUCE.md's row, or `git log --follow -- <path>`.
+now is in docs/reproduce.md's row, or `git log --follow -- <path>`.
 
 The simulators that need numpy run with the reference's environment (`~/venvs/ds-ref/bin/python`).

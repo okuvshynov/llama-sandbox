@@ -56,7 +56,7 @@ Decided in the discussion this document comes from:
 
 - The engine only. Sampling, serving and chat sit a layer above it and are not covered here.
 - Hardware dependence is accepted: the tests need the model and the GPUs, as the code does.
-- Forward, not backward: the old steps stay reproducible through REPRODUCE.md and git; new
+- Forward, not backward: the old steps stay reproducible through docs/reproduce.md and git; new
   testing covers what changes next.
 - The changes expected next, and what each may break:
 

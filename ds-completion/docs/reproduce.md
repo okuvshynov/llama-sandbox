@@ -1,8 +1,8 @@
 # Reproducing ds-completion
 
 What is needed to rebuild the setup, re-run every experiment and regenerate every file in
-`results/`. How the work was approached and why each step followed the last: [PROCESS.md](PROCESS.md).
-What each step found: [docs/steps.md](docs/steps.md).
+`results/`. How the work was approached and why each step followed the last: [PROCESS.md](../PROCESS.md).
+What each step found: [docs/steps.md](steps.md).
 
 Items marked **(to confirm)** are not yet pinned down; they are listed at the end.
 
@@ -77,7 +77,7 @@ F8=~/llms/ds-1017-fp8/dense-fp8.gguf
 D=~/llms/dspark/dspark-DeepSeek-V4.1-Flash-1017-BF16.gguf
 ```
 
-Run from this directory (placement files are relative paths). How to run: [QUICKSTART.md](QUICKSTART.md).
+Run from this directory (placement files are relative paths). How to run: [QUICKSTART.md](../QUICKSTART.md).
 
 ## 5. Data that is not in git (`data/`, ~14 GB; ~115 GB with the 20k-token run of README step 35)
 
