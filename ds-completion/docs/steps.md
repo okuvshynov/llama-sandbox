@@ -1882,7 +1882,7 @@ little and in both directions. The head reads the main model's last layers at th
 position, so an easy stretch of text already shows in its confidence. Not added. (Short runs
 without the cache; long reasoning runs are not checked yet.)
 
-**[TIMING.md](../TIMING.md):** where the time goes in generation and in the prompt, on one page, with
+**[TIMING.md](timing.md):** where the time goes in generation and in the prompt, on one page, with
 what a millisecond is worth (~0.25 t/s per ms of a speculative step) and what-ifs (a 1 ms draft:
 +11%; both prompt sides 2x faster: 76 -> ~150 t/s).
 
@@ -5582,4 +5582,4 @@ document per commit, and what is out of date is updated or removed.
   header says where their text is (`git show 64f5e05:ds-completion/PLAN.md`).
 - **Moved to `docs/`, one commit each, every link and mention in the documents following**
   (code comments and results files keep the old names; the README lists them): PLAN.md ->
-  `docs/plan.md`, OVERVIEW.md -> `docs/overview.md`
+  `docs/plan.md`, OVERVIEW.md -> `docs/overview.md`, TIMING.md -> `docs/timing.md`

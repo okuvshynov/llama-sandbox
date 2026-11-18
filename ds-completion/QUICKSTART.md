@@ -358,4 +358,4 @@ Means over all 17 steps: 1.8e-2 to 2.5e-2 for every mode.
 - The server: one request at a time, no forced tool use, no tool results in a conversation,
   no reply streamed as it is generated, the Anthropic API only.
 
-Details: [TIMING.md](TIMING.md) (where the time goes, one page), [docs/overview.md](docs/overview.md) (a 20-minute summary), [docs/steps.md](docs/steps.md) (all measurements and checks, step by step), [docs/plan.md](docs/plan.md) (what's next).
+Details: [docs/timing.md](docs/timing.md) (where the time goes, one page), [docs/overview.md](docs/overview.md) (a 20-minute summary), [docs/steps.md](docs/steps.md) (all measurements and checks, step by step), [docs/plan.md](docs/plan.md) (what's next).

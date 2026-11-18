@@ -5,7 +5,7 @@ decided). Today (sclk 6, 16 CPU threads): `--spec` with the adaptive cache (`--c
 --cache-loads 800 --cache-period 8`) 44.57 t/s mean on the 8 held-out prompts (33.9-55.0; README
 step 104; every decode change on the same ruler: `results/heldout-history/`); on two machines,
 the model in two halves, 50.85 (README step 111; "Two machines" below). Prompt processing
-93 t/s (63 `--canon`; 1,989 tokens, README step 68). Where a token's time goes today: TIMING.md.
+93 t/s (63 `--canon`; 1,989 tokens, README step 68). Where a token's time goes today: docs/timing.md.
 
 This file is the list of items with their status, and the two lists of ideas still open ("Two
 machines", "Further optimization ideas": dated sections, "today" inside one means its date).

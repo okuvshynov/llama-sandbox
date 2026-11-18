@@ -1,7 +1,7 @@
 # ds-completion: overview (2026-10-28, numbers updated 2026-11-12)
 
 A ~20-minute read: what was built, how it works, what we measured, what we learned, and what
-is next. How to run it: [QUICKSTART.md](../QUICKSTART.md). Where the time goes, one page: [TIMING.md](../TIMING.md). Every step and number in detail:
+is next. How to run it: [QUICKSTART.md](../QUICKSTART.md). Where the time goes, one page: [docs/timing.md](timing.md). Every step and number in detail:
 [docs/steps.md](steps.md). Plan and cost model: [docs/plan.md](plan.md). Operand types and accumulation:
 [NUMERICS.md](../NUMERICS.md).
 
@@ -157,7 +157,7 @@ token -> embedding (host) -> 40 x [ engram (layers 1, 14) -> attention block -> 
   +9% `--spec`, for ~30% more power (README step 27); level 0 is slower at the same energy per
   token as level 2.
 
-## 6. Where a token's time went (sclk 2, 16 threads; 2026-10-28, before the cache; today: TIMING.md)
+## 6. Where a token's time went (sclk 2, 16 threads; 2026-10-28, before the cache; today: docs/timing.md)
 
 | ms per token | experts on CPU only | study30 placement (81% on GPUs) | perfect placement (97%) |
 |---|---|---|---|

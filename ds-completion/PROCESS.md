@@ -344,7 +344,7 @@ Each rule is followed by where it mattered most.
   the confidence head, judged on prompts left out of the fit (so an in-sample improvement from an
   extra parameter is not mistaken for signal)? It does not. Recorded as a checked-and-rejected
   idea, with what is still unchecked (long runs, the cache).
-- **TIMING.md (the person's request):** a one-page "where the time goes", for a reader who wants
+- **docs/timing.md (the person's request):** a one-page "where the time goes", for a reader who wants
   the feel of the numbers (what a millisecond is worth, what-ifs) before the details.
 
 - **The live speculation measurement (README step 48).** Planned to answer "does it adapt?"
@@ -682,11 +682,11 @@ Estimates were made before measuring wherever possible; this is how they fared.
 - **An overhead claimed without a like-for-like run** (README step 58): the trace's cost was
   written as 1-3% from runs of different days; measured properly (untraced, `--profile`,
   `--trace` on the same prompts and build) it is ~7%, most of it the profile's events.
-- **Each summary answers a question someone asked** (README step 62): TIMING.md gained a
+- **Each summary answers a question someone asked** (README step 62): docs/timing.md gained a
   section on background loads when the person asked how long moving an expert takes; every
   number in it was already measured (steps 30, 42-44, 59) except today's load rate, read from
   the latest runs' logs.
-- **A summary document goes stale quietly** (README step 58): TIMING.md's tables kept numbers
+- **A summary document goes stale quietly** (README step 58): docs/timing.md's tables kept numbers
   from four clock settings and a dozen steps back while every later step appended a sentence; the
   person noticed. Refreshed from one build and one clock, with the data in `results/`.
 - **False alarms from the measuring scripts** (a trailing newline in a prefix comparison):

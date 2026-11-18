@@ -168,7 +168,7 @@ Unless stated: sclk 2, 16 CPU threads (32 before README step 18), the study30 pl
 | 44 | `prefill/stream-attempt.txt` | the removed P2 code at each stage (commands and stages in the file; the code is not in the repository) |
 | 45 | `prefill/o3.txt`, `canon-gate.txt` + `canon-gate/` (rerun) | `bin/bench-cpu-moe -m $M -t 16 --check-layers "" --replay data/routing/prefill/readme24k.bin`; `bin-hip/ds-completion ... --profile` (commands in the file); `results/canon-gate/canon-gate.sh` |
 | 46 | `prefill/chunk1024.txt` | `kChunk = 1024` (reverted), then the commands in the file |
-| 47 | `spec-momentum.txt` | `~/venvs/ds-ref/bin/python results/spec_momentum.py 'results/spec-conf/*-n5.log'`; TIMING.md quotes steps 47-82 (generation, prompt, the cache's loads) |
+| 47 | `spec-momentum.txt` | `~/venvs/ds-ref/bin/python results/spec_momentum.py 'results/spec-conf/*-n5.log'`; docs/timing.md quotes steps 47-82 (generation, prompt, the cache's loads) |
 | 48 | `spec-measure-sclk6/` (summary, per-prompt logs, `analysis.txt`) | `scripts/spec-measure.sh`, then `scripts/spec_analysis.py --max-steps 400 results/spec-measure-sclk6/*.log` |
 | 48 | `spec-loop-check.txt`, `engram-copy-fix.txt` | commands in the files (the old build: a worktree at 73b6891) |
 | 49 | `decode-profile-sclk6.txt` | the command in the file under `LD_PRELOAD` of `results/hip_count_shim.c` (`gcc -O2 -shared -fPIC -o shim.so results/hip_count_shim.c -ldl`), `scripts/profile_verify.py`, `bin-hip/bench-launch` |
@@ -186,7 +186,7 @@ Unless stated: sclk 2, 16 CPU threads (32 before README step 18), the study30 pl
 | 59 | `cache-decay/` | `~/venvs/ds-ref/bin/python results/cache_sim.py --decay` (`sweep.txt`); `threshold.txt`: `cs.run(..., rate=800, period=8, [half_life=H], min_count=M)` over the same logs (see its header); `live-min.txt`: the command in the file with `--cache-min 2` and `1` |
 | 60 | `gpu-memory/` | the command in `gpu-memory/README.txt` at each `--max-ctx` (the ledger is printed at startup) |
 | 61 | (none: a reading of `hip/dspark.cpp`) | the draft's loader: `fp8(...)` for its dense matrices, `fp4_upload(...)` for its experts |
-| 62 | the load rate in TIMING.md: `loads started` and `generation:` in `spec-measure-sclk6-cacheloads800cacheperiod8-head/*.err` | (from the files) |
+| 62 | the load rate in docs/timing.md: `loads started` and `generation:` in `spec-measure-sclk6-cacheloads800cacheperiod8-head/*.err` | (from the files) |
 | 62 | `head-lds.txt`, `spec-measure-sclk6-cacheloads800cacheperiod8-head/` | `bin-hip/bench-kernels --bitwise`; the variants: `gemv_head_launch<R, WAVES>` in `hip/kernels.hip`; `DS_DRAFT_PROFILE=1 bin-hip/ds-completion ...` (the draft's parts); `CACHE="--cache-loads 800 --cache-period 8" scripts/spec-measure.sh` (copied) |
 | 63 | `route-ahead/` (`summary.txt`, `pooled.txt`, per prompt `.err`) | with a build of commit 8798740 (the switches were removed in step 135): `results/route-ahead/route-ahead.sh 4` (`DS_ROUTE_AHEAD=4 DS_ROUTE_LOG=...`; logs in `data/route-ahead/`, ~185 MB); `pooled.txt`: the per-prompt tables weighted by their counts |
 | 64 | `route-ahead/prefetch-sim.txt` | `~/venvs/ds-ref/bin/python results/route-ahead/prefetch_sim.py` on `data/route-ahead/*.bin` (from step 63's run) |
