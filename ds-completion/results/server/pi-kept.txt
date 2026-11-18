@@ -1,0 +1,22 @@
+# By hand, 2026-11-18, commit 8d1d130+changes (step 158: a kept context), sclk 6, the page cache warm.
+# The two tasks of results/server/pi.txt again, the same commands (its header), the engine with step 158's change.
+
+task 1: "What does notes.txt say?"                              33.1 s (step 157: 47 s), exit code 0
+task 2: write primes.py, run it, add the count, run it again    30.1 s (step 157: 71 s), exit code 0
+pi printed what it printed in step 157; primes.py is the same file.
+
+the server's log, one line per request (1-2: task 1; 3-5: task 2):
+# server: request 1: thinking, 1505 prompt tokens (0 kept) in 28.8 s, 60 tokens in 1.5 s (40.0 t/s), waited 0.0 s, tool_use: tool_use
+# server: request 2: thinking, 1661 prompt tokens (1565 kept) in 1.1 s, 15 tokens in 0.4 s (42.8 t/s), waited 0.0 s, end_turn: text
+# server: request 3: thinking, 1540 prompt tokens (0 kept) in 13.9 s, 278 tokens in 6.0 s (46.2 t/s), waited 0.0 s, tool_use: tool_use, tool_use
+# server: request 4: thinking, 1934 prompt tokens (1818 kept) in 1.2 s, 252 tokens in 4.3 s (58.2 t/s), waited 0.0 s, tool_use: tool_use, tool_use
+# server: request 5: thinking, 2312 prompt tokens (2186 kept) in 1.3 s, 116 tokens in 2.2 s (53.3 t/s), waited 0.0 s, end_turn: text
+
+the five raw replies are those of step 157, character for character (from the dumps), and four of the five prompts;
+request 2's differs in the tool's result (two directory dates in the output of `ls -la`).
+usage of the five messages: input 1505, cache_read 0; input 96, cache_read 1565; input 1540, cache_read 0; input 116, cache_read 1818; input 126, cache_read 2186
+
+time: 46.3 s of prompts (step 157: 101.1 s), 14.4 s of replies, in 63.2 s of the two tasks (118 s).
+What is left is the first request of each task (42.7 s of the 46.3): the system prompt and the tools, ~1,500
+tokens. The two tasks' first prompts are the same in their first 6216 characters of 6259 and 6404.
+Request 1 is also the engine's first after its load (28.8 s for 1,505 tokens; request 3: 13.9 s for 1,540).

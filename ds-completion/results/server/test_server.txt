@@ -1,4 +1,4 @@
-# server/test_server.py (no model, no GPU); commit 651fd36+changes (step 157: tool results in a conversation), 2026-11-18T12:30:47-05:00
+# server/test_server.py (no model, no GPU); commit 8d1d130+changes (step 158: a kept context), 2026-11-18T13:16:16-05:00
 ok    the prompt: encoding.py's rendering of system + tools + user, effort medium = 62, ends with <think>
 ok    the engine's header: gen n=65536 temp=1.0 top_p=0.95 seed=7 bytes=1439
 ok    thinking + a tool call: blocks ['thinking', 'tool_use'], stop_reason tool_use, the input as sent (non-ASCII included)
@@ -18,6 +18,7 @@ ok    a thinking block has a signature that is not empty: 'ds-completion'
 ok    a tool loop's second prompt starts with the first prompt and the reply as the model wrote it (reasoning, tool call): 200
 ok    and goes on with the result and the text: '<｜end▁of▁sentence｜><｜User｜><tool_result>Red: 2 right. Grün: 0 right.</tool_result>\n\nGo on.<｜Assistant｜><think>'
 ok    it is answered
+ok    the tokens the engine kept (step 158) are the usage's cache_read_input_tokens, the others its input_tokens: {'input_tokens': 139, 'output_tokens': 5, 'cache_creation_input_tokens': 0, 'cache_read_input_tokens': 300}
 ok    without thinking, a result alone: the call is in the prompt, the reasoning is not
 ok    refused, tool_choice any: 400 tool_choice 'any' is not supported: only auto and none
 ok    refused, no max_tokens: 400 max_tokens: a positive integer is required

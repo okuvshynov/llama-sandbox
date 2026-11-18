@@ -1,15 +1,15 @@
-# results/requests/requests_test.py --no-spec; commit 499fd12+changes (the cancel), sclk 6, 2026-11-17T10:59:09-05:00
+# results/requests/requests_test.py --no-spec; commit 8d1d130+changes (step 158: a kept context), sclk 6, 2026-11-18T13:16:16-05:00
 # engine: bin-hip/ds-completion -m ~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf --rt ~/llms/ds-1017-fp8/dense-fp8.gguf --placement placements/study30.txt --canon --cache-loads 800 --cache-period 8 --cache-wait --requests
 # "ready" after 113 s
-ok    tcp-udp      greedy  300 tokens, stop=length fnv1a64:e84010b498310b61 = the single run; 1231 bytes, valid UTF-8; prompt 20 tokens 0.54 s, generation 29.52 t/s
-ok    cpp-matrix   sampled 300 tokens, stop=length fnv1a64:3426536c97f68ad8 = the single run; 1139 bytes, valid UTF-8; prompt 25 tokens 0.40 s, generation 28.25 t/s
-ok    zh-travel    sampled 300 tokens, stop=length fnv1a64:0f178da0c1f4fd5a = the single run; 1029 bytes, valid UTF-8; prompt 17 tokens 0.52 s, generation 28.40 t/s
-ok    tcp-udp      greedy  300 tokens, stop=length fnv1a64:e84010b498310b61 = the single run; 1231 bytes, valid UTF-8; prompt 20 tokens 0.46 s, generation 29.39 t/s
-ok    geometry     sampled 342 tokens, stop=eos    fnv1a64:b3408ba7088ec36e = the single run; 808 bytes, valid UTF-8; prompt 55 tokens 0.90 s, generation 29.37 t/s
-ok    geometry     greedy  345 tokens, stop=eos    fnv1a64:39009bbaad3bdfec = the single run; 818 bytes, valid UTF-8; prompt 55 tokens 0.50 s, generation 31.31 t/s
-ok    summary-json greedy   98 tokens, stop=eos    fnv1a64:963abaf982b15a33 = the single run; 449 bytes, valid UTF-8; prompt 91 tokens 1.60 s, generation 28.07 t/s
-ok    cpp-matrix   sampled 300 tokens, stop=length fnv1a64:3426536c97f68ad8 = the single run; 1139 bytes, valid UTF-8; prompt 25 tokens 0.45 s, generation 28.18 t/s
-ok    py-lru       greedy  300 tokens, stop=length fnv1a64:ccdf68228376b5ca = the single run; 1172 bytes, valid UTF-8; prompt 27 tokens 0.37 s, generation 29.84 t/s
+ok    tcp-udp      greedy  300 tokens, stop=length fnv1a64:e84010b498310b61 = the single run; 1231 bytes, valid UTF-8; prompt 20 tokens 0.55 s, generation 29.57 t/s
+ok    cpp-matrix   sampled 300 tokens, stop=length fnv1a64:3426536c97f68ad8 = the single run; 1139 bytes, valid UTF-8; prompt 25 tokens 0.39 s, generation 28.27 t/s
+ok    zh-travel    sampled 300 tokens, stop=length fnv1a64:0f178da0c1f4fd5a = the single run; 1029 bytes, valid UTF-8; prompt 17 tokens 0.51 s, generation 28.47 t/s
+ok    tcp-udp      greedy  300 tokens, stop=length fnv1a64:e84010b498310b61 = the single run; 1231 bytes, valid UTF-8; prompt 20 tokens 0.45 s, generation 29.43 t/s
+ok    geometry     sampled 342 tokens, stop=eos    fnv1a64:b3408ba7088ec36e = the single run; 808 bytes, valid UTF-8; prompt 55 tokens 0.88 s, generation 29.39 t/s
+ok    geometry     greedy  345 tokens, stop=eos    fnv1a64:39009bbaad3bdfec = the single run; 818 bytes, valid UTF-8; prompt 55 tokens 0.49 s, generation 31.28 t/s
+ok    summary-json greedy   98 tokens, stop=eos    fnv1a64:963abaf982b15a33 = the single run; 449 bytes, valid UTF-8; prompt 91 tokens 1.59 s, generation 28.12 t/s
+ok    cpp-matrix   sampled 300 tokens, stop=length fnv1a64:3426536c97f68ad8 = the single run; 1139 bytes, valid UTF-8; prompt 25 tokens 0.44 s, generation 28.25 t/s
+ok    py-lru       greedy  300 tokens, stop=length fnv1a64:ccdf68228376b5ca = the single run; 1172 bytes, valid UTF-8; prompt 27 tokens 0.37 s, generation 29.87 t/s
 ok    n=5: the first 5 ids of the full reply, stop=length
 ok    a short reply ends by itself: 1 tokens, stop=eos, text 'yes'
 ok    a think reply carries </think> as text: 21 tokens, stop=eos, its end '+3=5. Must reply with number. \n</think>5'
@@ -18,12 +18,24 @@ ok    "gen n=10 temp=-1 bytes=BYTES" with 1 bytes: error temp: 0 or more; top_p:
 ok    "gen n=10 top_p=0 temp=1 bytes=BYTES" with 1 bytes: error temp: 0 or more; top_p: above 0, up to 1
 ok    "gen n=10 bytes=BYTES" with 0 bytes: error an empty prompt
 ok    tcp-udp greedy after the errors: the single run's reply
-ok    a reply of up to 4000 tokens, the signal after 2 s: stop=cancel after 46 tokens, 2.0 s (prompt 27 tokens, 0.4 s)
-ok    its 46 tokens are the first of the full reply
+ok    a reply of up to 4000 tokens, the signal after 2 s: stop=cancel after 47 tokens, 2.0 s (prompt 27 tokens, 0.4 s)
+ok    its 47 tokens are the first of the full reply
 ok    a prompt of ~3000 tokens, the signal after 1 s: stop=cancel after 0 tokens, 8.5 s (prompt 3008 tokens, 8.5 s)
 ok    py-lru greedy after the cancels: the single run's reply
 ok    cpp-matrix sampled after the cancels: the single run's reply
 ok    a signal between requests does not touch the next one
-ok    an unknown request line: error unknown request (expected: gen n=N [temp=T] [top_p=P] [seed=S] bytes=B); closing
+ok    a short chat: 27 prompt tokens, kept 18 (the context held 18), 0.19 s; keep=0: 0.26 s; the two replies (6 tokens, fnv1a64:9a660c3c90028189) are equal
+ok    a short chat: all of the context was kept (18 of 18)
+ok    the same, sampled: 27 prompt tokens, kept 18 (the context held 18), 0.13 s; keep=0: 0.26 s; the two replies (6 tokens, fnv1a64:9a660c3c90028189) are equal
+ok    the same, sampled: all of the context was kept (18 of 18)
+ok    a reply with reasoning, cut by n: 212 prompt tokens, kept 204 (the context held 204), 0.13 s; keep=0: 1.59 s; the two replies (100 tokens, fnv1a64:0c40be5dbb923468) are equal
+ok    a reply with reasoning, cut by n: all of the context was kept (204 of 204)
+ok    a 3000-token prompt, 1000 more: 4046 prompt tokens, kept 3037 (the context held 3037), 9.99 s; keep=0: 39.41 s; the two replies (30 tokens, fnv1a64:f8e3c614ae217b0e) are equal
+ok    a 3000-token prompt, 1000 more: all of the context was kept (3037 of 3037)
+ok    a long reply, sampled: 335 prompt tokens, kept 324 (the context held 324), 0.25 s; keep=0: 2.52 s; the two replies (200 tokens, fnv1a64:bf30bff1657e16fa) are equal
+ok    a long reply, sampled: all of the context was kept (324 of 324)
+ok    the same request again: kept 0, the same reply
+ok    a prompt cancelled after 1 s and sent again: kept 512 of 3008 tokens, the reply of the empty context
+ok    an unknown request line: error unknown request (expected: gen n=N [temp=T] [top_p=P] [seed=S] [keep=0|1] bytes=B); closing
 ok    the engine exits with code 0 when its input ends
 all checks passed

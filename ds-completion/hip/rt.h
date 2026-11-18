@@ -89,6 +89,8 @@ class Runtime {
   Taps run_layer(int L, const std::vector<float>& h_in, const std::vector<float>& pre_in);
   void end_step();
   int n_past() const { return n_past_; }
+  // the tokens the sequence holds, n_past() of them (README step 158: a request that goes on from them)
+  const std::vector<int32_t>& tokens() const { return tokens_; }
 
   // A range of layers (README step 110): the runtime runs the model's loaded layers, a contiguous
   // range [layer0, layer1) (Model::load's `layers`). A range that does not start at layer 0 takes

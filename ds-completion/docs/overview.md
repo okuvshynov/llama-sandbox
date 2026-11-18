@@ -117,7 +117,8 @@ token -> embedding (host) -> 40 x [ engram (layers 1, 14) -> attention block -> 
   speculation: the speculative loop draws the main model's token at each verified position
   and accepts a draft if it is that token.
 - **Requests and the server** (`--requests`, `server/ds_server.py`): the engine reads a whole
-  rendered prompt and its settings from stdin, rewinds its context to empty, and writes the
+  rendered prompt and its settings from stdin, goes on from its context if the prompt starts
+  with all of it and from an empty one otherwise (the same reply either way), and writes the
   reply's tokens as lines. The server in front converts an API request to the model's own
   message format and lets the model's `encoding.py` render the prompt (system block, tools,
   reasoning effort) and parse the reply (reasoning, text, tool calls). One request at a time;
@@ -230,8 +231,9 @@ other programs can use.
    one way to talk to the engine, chat as a client of it like the server, and for that a
    context kept between requests where their prompts share a prefix.
 2. **The server:** working with the pi coding harness over the Anthropic endpoint (tool
-   results in a conversation are read and pi runs small coding tasks since step 157, with 101
-   of 118 seconds spent on prompts; next, a context kept between a conversation's requests), the OpenAI endpoint the benchmark's other script needs,
+   results in a conversation are read and pi runs small coding tasks since step 157; a request
+   that goes on from the last one runs only its new tokens since step 158, which took those
+   tasks from 118 to 63 seconds; next, the system prompt and tools kept across conversations), the OpenAI endpoint the benchmark's other script needs,
    a reply streamed as it is generated, sampling with `--spec` on two machines.
 3. **Where the time is, when optimization resumes** (the list: [docs/plan.md](plan.md)):
    - **die 0's dense part** (~48 ms of a code step): attention over the XGMI pair 0-1 with

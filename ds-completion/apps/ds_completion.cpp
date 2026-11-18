@@ -784,6 +784,7 @@ static int run(int argc, char** argv) {
   }
 #endif
   [[maybe_unused]] long n_requests = 0;
+  [[maybe_unused]] size_t kept = 0;  // --requests: the prompt's first tokens that the context already held
   for ([[maybe_unused]] bool first = true;; first = false) {
 #ifdef DS_RUNTIME
     if (args.requests) {
@@ -798,19 +799,20 @@ static int run(int argc, char** argv) {
         head += (char)c;
       }
       if (head.empty()) break;
-      long n = -1, bytes = -1;
+      long n = -1, bytes = -1, keep = 1;
       SamplerOptions so;
       {
         std::istringstream in(head);
         std::string w;
         in >> w;
-        if (w != "gen") err = "unknown request (expected: gen n=N [temp=T] [top_p=P] [seed=S] bytes=B)";
+        if (w != "gen") err = "unknown request (expected: gen n=N [temp=T] [top_p=P] [seed=S] [keep=0|1] bytes=B)";
         while (err.empty() && in >> w) {
           const size_t eq = w.find('=');
           const std::string k = w.substr(0, eq), v = eq == std::string::npos ? "" : w.substr(eq + 1);
           char* end = nullptr;
           if (k == "n") n = strtol(v.c_str(), &end, 10);
           else if (k == "bytes") bytes = strtol(v.c_str(), &end, 10);
+          else if (k == "keep") keep = strtol(v.c_str(), &end, 10);
           else if (k == "temp") so.temp = strtof(v.c_str(), &end);
           else if (k == "top_p") so.top_p = strtof(v.c_str(), &end);
           else if (k == "seed") so.seed = strtoull(v.c_str(), &end, 10);
@@ -844,11 +846,19 @@ static int run(int argc, char** argv) {
       }
       g_cancel = 0;  // a signal that came after the last request ended was for that one
       first = n_requests++ == 0;  // (the logs are opened by the first request that runs)
-      rt->rewind();
+      // README step 158: the context still holds the last request's prompt and the tokens of its
+      // reply that were run. A prompt that starts with all of them goes on from there: only its
+      // other tokens run, and the reply is the same (the state at a position does not depend on
+      // how the tokens before it were split into forwards). Any other prompt: the empty context.
+      {
+        const std::vector<int32_t>& ctx = rt->tokens();
+        kept = keep && !ctx.empty() && ctx.size() < toks.size() && std::equal(ctx.begin(), ctx.end(), toks.begin()) ? ctx.size() : 0;
+      }
+      if (!kept) rt->rewind();
       pending.clear();
       args.sampler = so;
       args.n_predict = (int)std::min<long>(n, args.opt.max_ctx - (long)toks.size());
-      printf("prompt tokens=%zu n=%d\n", toks.size(), args.n_predict);
+      printf("prompt tokens=%zu n=%d kept=%zu\n", toks.size(), args.n_predict, kept);
       fflush(stdout);
     }
     if (args.interactive && (!first || toks.empty())) {
@@ -884,7 +894,7 @@ static int run(int argc, char** argv) {
       rt->mark();
       logits = rt->prefill({toks.back()});
     } else {
-      logits = rt ? rt->prefill(toks) : eng->forward(toks);
+      logits = rt ? rt->prefill(kept ? std::vector<int32_t>(toks.begin() + kept, toks.end()) : toks) : eng->forward(toks);
     }
 #else
     std::vector<float> logits = eng->forward(toks);
@@ -910,8 +920,8 @@ static int run(int argc, char** argv) {
     view.end();  // (after the lines above: the loop's last stderr line is ended by them)
     if (args.requests) {
       const bool ended = turn.hit_eos || (!turn.gen.empty() && turn.gen.back() == eos && (int)turn.gen.size() > turn.n_gen);
-      printf("end stop=%s prompt_tokens=%zu gen_tokens=%d prompt_s=%.4f gen_s=%.4f\n", turn.cancelled ? "cancel" : ended ? "eos" : "length", toks.size(),
-             turn.n_gen, t_pp, t_tg);
+      printf("end stop=%s prompt_tokens=%zu kept=%zu gen_tokens=%d prompt_s=%.4f gen_s=%.4f\n", turn.cancelled ? "cancel" : ended ? "eos" : "length", toks.size(),
+             kept, turn.n_gen, t_pp, t_tg);
     } else {
       printf("\n");
     }
@@ -923,8 +933,9 @@ static int run(int argc, char** argv) {
               100.0 * rt->total_gpu_experts / (rt->total_gpu_experts + rt->total_cpu_experts), rt->total_gpu_experts,
               rt->total_gpu_experts + rt->total_cpu_experts);
 #endif
+    if (kept) fprintf(stderr, "# prompt: %zu of its %zu tokens were in the context\n", kept, toks.size());
     fprintf(stderr, "# prompt: %zu tokens in %.2f s = %.2f t/s; generation: %d tokens in %.2f s = %.2f t/s\n",
-            toks.size(), t_pp, toks.size() / t_pp, turn.n_gen, t_tg, turn.n_gen > 0 ? turn.n_gen / t_tg : 0.0);
+            toks.size() - kept, t_pp, (toks.size() - kept) / t_pp, turn.n_gen, t_tg, turn.n_gen > 0 ? turn.n_gen / t_tg : 0.0);
     if (record) {
       const RecordRun r{toks, sclk, rd, t_load, t_pp, t_tg, turn.n_gen, turn.gen, turn.spec_steps, turn.spec_plain, turn.spec_accepted, turn.spec_hist, turn.draft_ms, turn.verify_ms};
 #ifdef DS_RUNTIME

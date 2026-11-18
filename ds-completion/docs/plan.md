@@ -354,6 +354,8 @@ sends it when a client closes its connection.
 Step 157: tool results in a conversation (`tool_result`, `thinking`, `tool_use` blocks read; a signature that is not empty),
 for the pi harness; pi runs two small coding tasks (`results/server/pi.txt`): 101 of 118 s are prompts.
 A loop's next prompt = the last prompt + the reply + the new turn. Open: a kept prefix, a live stream.
+Step 158: the context kept between requests when a prompt goes on from it (by token ids; replies equal `keep=0`'s).
+pi's two tasks 118 -> 63 s. Open: what a new conversation shares with the last (system prompt, tools), a live stream.
 constructor in parts.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits

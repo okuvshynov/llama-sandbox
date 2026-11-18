@@ -5658,3 +5658,66 @@ fastest single-machine settings, pi's print mode at `--thinking medium`:
 
 **Next:** a context kept between the requests of a conversation; then a reply streamed as it
 is generated (pi shows nothing until a reply is complete).
+
+## Step 158: a context kept between requests
+
+Step 157's two pi tasks spent 101 of 118 seconds on prompts, and each request's prompt was the
+last one, its reply, and a new turn. The engine ran every request from an empty context.
+
+**The change** (`apps/ds_completion.cpp`, the request loop; `Runtime::tokens()`): after a
+request the context is left as it is: its prompt and the reply's tokens that were run. If the
+next prompt's tokens start with all of them and have more, only the others are run; any other
+prompt starts on the empty context as before (`rewind()` to the mark at 0). The comparison is
+of token ids, so a request's reply is the one it gets on an empty context: the state at a
+position does not depend on how the tokens before it were split into forwards (prompt chunks,
+verify steps, single tokens), which the gates of prompt processing and of speculative decoding
+already rest on. The protocol (`docs/requests.md`): `kept=N` in the `prompt` and `end` lines;
+`keep=0` in a request forces the empty context, for the test. No new saved point in the
+runtime: this is all or nothing.
+
+**The gate** (`results/requests/requests_test.py`, 25 -> 37 checks, both loops;
+`requests_test.txt`, `requests_test-plain.txt`). The earlier 25 pass unchanged (replies equal
+single runs' stored hashes). New: five conversations, each a request, then its prompt + reply +
+a new turn, then the same again with `keep=0`. The treatment is asserted apart from the result:
+`kept` must be above 0 in the one and 0 in the other, and equal to what the context held.
+
+| conversation | prompt tokens | kept | prompt time | with `keep=0` | replies |
+|---|---|---|---|---|---|
+| a short chat, greedy | 27 | 18 | 0.20 s | 0.27 s | equal |
+| the same, sampled (temp 1, top-p 0.95, seed 1) | 27 | 18 | 0.13 s | 0.27 s | equal |
+| a reply with reasoning, cut by `n` | 212 | 204 | 0.13 s | 1.63 s | equal |
+| a 3,000-token prompt, 1,000 more | 4,046 | 3,037 | 10.08 s | 39.92 s | equal |
+| a 300-token reply, sampled | 335 | 324 | 0.29 s | 2.60 s | equal |
+
+(Times of the speculative run; the plain loop's: 9.99 and 39.41 s for the long one.) Also: the same request again
+(kept 0: the context holds its reply; the same reply), and a prompt cancelled between its
+chunks and sent again (kept 512 of 3,008: it goes on from the chunks that ran; the reply of
+the empty context). In all five conversations the reply's text, tokenized again as a part of
+the next prompt, gave the tokens the model had written.
+
+**The server** reports `kept` as the usage's `cache_read_input_tokens` and the other prompt
+tokens as `input_tokens`, as the API counts a cached prefix; its log line says `(N kept)`
+(`server/test_server.py`, 36 checks).
+
+**pi again** (`results/server/pi-kept.txt`; step 157's two tasks, the same commands):
+
+| | step 157 | step 158 |
+|---|---|---|
+| task 1 (2 requests) | 47 s | 33.1 s |
+| task 2 (3 requests) | 71 s | 30.1 s |
+| prompts, all 5 requests | 101.1 s | 46.3 s |
+| replies | 14.3 s | 14.4 s |
+
+The three follow-on requests kept 1,565, 1,818 and 2,186 tokens and ran 96, 116 and 126 in
+1.1-1.3 s each (step 157: 15-25 s). The five raw replies are step 157's, character for
+character.
+
+**What is left:** 42.7 of the 46.3 prompt seconds are the two first requests: pi's system
+prompt and tools, ~1,500 tokens, the same in both tasks up to character 6,216 of ~6,300. A new
+conversation shares that but not the whole context, so it runs whole. Keeping it needs a
+second saved point in the runtime (`mark()` has one, used for the empty context) and a rule
+for where to put it. Also seen: the engine's first request after its load took 28.8 s for
+1,505 tokens against 13.9 s for the next first request of 1,540.
+
+**Next:** a saved point at the end of what two conversations share; a reply streamed as it is
+generated.

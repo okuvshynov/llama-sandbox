@@ -10,8 +10,9 @@ Every reply's token ids must hash to the stored value of a single run of that pr
 greedy: results/record/reference/heldout-output.tsv; temperature 1, top-p 0.95, seed 1:
 results/sampler/spec-heldout/s1-<prompt>-1.json. Also: a prompt again after others, a short
 n (a prefix of the full reply, stop=length), requests with mistakes (an error line, the
-session goes on), and cancels by SIGUSR1 (step 154): during a reply, during a prompt, between
-requests. Exit code 1 if a check fails.
+session goes on), cancels by SIGUSR1 (step 154): during a reply, during a prompt, between
+requests, and prompts that go on from the context (step 158): kept=N, and the reply of the
+same request on an empty context (keep=0). Exit code 1 if a check fails.
 """
 import json
 import os
@@ -155,6 +156,42 @@ def main():
     mode, n, text = prompts['tcp-udp']
     r = request(f'gen n={n} bytes=BYTES', render(mode, text))
     check(r[0] not in ('error', 'closed') and r[2]['stop'] == 'length' and fnv1a64_ids(r[0]) == greedy['tcp-udp'], 'a signal between requests does not touch the next one')
+    # README step 158: a prompt that goes on from the context runs only its new tokens (kept=N), and
+    # the reply is the one the same request gets on an empty context (keep=0)
+    EOS, FOX = '<｜end▁of▁sentence｜>', 'The quick brown fox jumps over the lazy dog. '
+
+    def turn2(first, more):
+        return first + EOS + '<｜User｜>' + more + '<｜Assistant｜></think>'
+
+    for label, how, n1, p1, more, n2 in [
+            ('a short chat', '', 4000, render('chat', 'Name three primary colors, one line.'), 'And three secondary ones?', 4000),
+            ('the same, sampled', S1, 4000, render('chat', 'Name three primary colors, one line.'), 'And three secondary ones?', 4000),
+            ('a reply with reasoning, cut by n', '', 150, render(*prompts['geometry'][::2]), 'Go on.', 100),
+            ('a 3000-token prompt, 1000 more', '', 30, render('chat', 'Summarize: ' + FOX * 300), 'Now this: ' + FOX * 100, 30),
+            ('a long reply, sampled', S1, prompts['cpp-matrix'][1], render(*prompts['cpp-matrix'][::2]), 'Now the same in C.', 200)]:
+        ids1, out1, end1 = request(f'gen n={n1} {how} bytes=BYTES', p1)
+        p2 = turn2(p1 + out1.decode('utf-8', errors='ignore'), more)
+        ids2, out2, end2 = request(f'gen n={n2} {how} bytes=BYTES', p2)
+        ids3, out3, end3 = request(f'gen n={n2} {how} keep=0 bytes=BYTES', p2)
+        in_ctx = int(end1['prompt_tokens']) + len(ids1) - (end1['stop'] == 'length')  # a reply cut by n: its last token was not run
+        check(end1['kept'] == '0' and end3['kept'] == '0' and int(end2['kept']) > 0 and ids2 == ids3 and len(ids2) > 0,
+              f"{label}: {end2['prompt_tokens']} prompt tokens, kept {end2['kept']} (the context held {in_ctx}), {float(end2['prompt_s']):.2f} s; "
+              f"keep=0: {float(end3['prompt_s']):.2f} s; the two replies ({len(ids2)} tokens, {fnv1a64_ids(ids2)}) {'are equal' if ids2 == ids3 else 'DIFFER'}")
+        check(int(end2['kept']) == in_ctx, f'{label}: all of the context was kept ({end2["kept"]} of {in_ctx})')
+    # the same prompt again: nothing to go on from (the context holds it and its reply)
+    ids4, out4, end4 = request(f'gen n={n2} {how} bytes=BYTES', p2)
+    check(end4['kept'] == '0' and ids4 == ids2, f'the same request again: kept {end4["kept"]}, the same reply')
+    # a prompt cancelled between its chunks, then sent again: it goes on from the chunks that ran
+    body = render('chat', 'Summarize: ' + FOX * 300)
+    ref = request('gen n=30 keep=0 bytes=BYTES', body)
+    request('gen n=5 bytes=BYTES', render('chat', 'Reply with the single word: yes'))
+    t = threading.Timer(1.0, lambda: eng.send_signal(signal.SIGUSR1))
+    t.start()
+    ids, out, end = request('gen n=30 bytes=BYTES', body)
+    t.join()
+    ids5, out5, end5 = request('gen n=30 bytes=BYTES', body)
+    check(end['stop'] == 'cancel' and int(end5['kept']) > 0 and int(end5['kept']) % 512 == 0 and ids5 == ref[0],
+          f'a prompt cancelled after 1 s and sent again: kept {end5["kept"]} of {end5["prompt_tokens"]} tokens, the reply of the empty context')
     r = request('generate n=10', '')
     check(r[0] == 'error' and 'closing' in r[1], f'an unknown request line: {r[0]} {r[1]}')
     eng.stdin.close()

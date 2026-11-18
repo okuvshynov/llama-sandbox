@@ -45,7 +45,7 @@ REPLIES = [
     {'text': 'never sent', 'delay': 60},                                                     # 8 the client leaves: cancelled
     {'text': 'never sent', 'delay': 60},                                                     # 9 a stream, the same
     {'text': 'after the cancels'},                                                           # 10
-    {'text': 'r2' + enc.thinking_end_token + 'Done.'},                                      # 12 after a tool result
+    {'text': 'r2' + enc.thinking_end_token + 'Done.', 'kept': 300},                         # 12 after a tool result; 300 tokens were in the context
     {'text': 'ok'},                                                                          # 13 the same without thinking
 ]
 REPLIES.insert(11, REPLIES[0])                                                               # 11 a tool call again
@@ -178,6 +178,8 @@ def main():
           f'a tool loop\'s second prompt starts with the first prompt and the reply as the model wrote it (reasoning, tool call): {code}')
     check(tail == enc.eos_token + '<｜User｜><tool_result>Red: 2 right. Grün: 0 right.</tool_result>\n\nGo on.<｜Assistant｜><think>', f'and goes on with the result and the text: {tail!r}')
     check([b['type'] for b in m.get('content', [])] == ['thinking', 'text'] and m['stop_reason'] == 'end_turn', 'it is answered')
+    check(m['usage']['cache_read_input_tokens'] == 300 and m['usage']['input_tokens'] == len(p) // 4 - 300 and m0['usage']['cache_read_input_tokens'] == 0,
+          f'the tokens the engine kept (step 158) are the usage\'s cache_read_input_tokens, the others its input_tokens: {m["usage"]}')
     code, m = post(dict(loop, thinking={'type': 'disabled'}, messages=loop['messages'][:2] + [{'role': 'user', 'content': [result[0]]}]))
     p = seen()[-1]['prompt']
     check(code == 200 and p.endswith('<｜User｜><tool_result>Red: 2 right. Grün: 0 right.</tool_result><｜Assistant｜></think>') and 'Red is 1234 because' not in p

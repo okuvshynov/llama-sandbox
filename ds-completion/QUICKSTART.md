@@ -142,8 +142,8 @@ Options:
   with `--spec` on two machines yet. README steps 148-151.
 - neither: the prompt is raw text after BOS.
 - `--requests` (with `--rt`, in place of a prompt): prompts from stdin, one after another, each
-  on an empty context; the reply's tokens as lines on stdout. For a server's front. The
-  protocol: `docs/requests.md`. README step 152.
+  with the reply of an empty context; the reply's tokens as lines on stdout. For a server's front. The
+  protocol: `docs/requests.md`. README steps 152, 158.
   `server/ds_server.py [--port 8080] -- <this command with --requests>` puts an HTTP server
   with the Anthropic Messages API in front of it (`docs/server.md`, README step 153).
 - `-n`: max new tokens.
@@ -236,7 +236,8 @@ harness with `server/pi-models.json` (docs/server.md, "pi").
 - **One request at a time;** others wait. A stream gets pings while the engine works and the
   whole message at its end. A request whose client leaves is cancelled.
 - **A conversation with tool calls:** earlier replies (reasoning, text, tool calls) and tool
-  results are read; every request is processed from its first token.
+  results are read. A request that goes on from the last one (its prompt, its reply, a new
+  turn) runs only the new tokens; any other is processed from its first token.
 - **Refused:** forced tool use (`tool_choice` `any` / `tool`), images.
 - **The log** (stderr): a line per finished request, and every 30 s the tokens so far of a
   running one. `--dump DIR` keeps each request's prompt, raw reply and message.
@@ -357,7 +358,7 @@ Means over all 17 steps: 1.8e-2 to 2.5e-2 for every mode.
   step 48: a proof prompt repeats one line after ~800 tokens; the model's behaviour, not a
   bug). Sampling (`--temp 1 --top-p 0.95`, the model card's settings) is the way around it.
 - Sampling with `--spec` on two machines is refused (the logits are on the back).
-- The server: one request at a time, no forced tool use, no images, no context kept between
-  the requests of a conversation, no reply streamed as it is generated, the Anthropic API only.
+- The server: one request at a time, no forced tool use, no images, a context kept only for a
+  request that goes on from the last one, no reply streamed as it is generated, the Anthropic API only.
 
 Details: [docs/timing.md](docs/timing.md) (where the time goes, one page), [docs/overview.md](docs/overview.md) (a 20-minute summary), [docs/steps.md](docs/steps.md) (all measurements and checks, step by step), [docs/plan.md](docs/plan.md) (what's next).

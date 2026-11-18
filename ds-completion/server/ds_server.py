@@ -410,12 +410,15 @@ class Handler(BaseHTTPRequestHandler):
             return
         text = result['out'].decode('utf-8', errors='replace')
         blocks, stop_reason, note = parse_reply(s.enc, text, mode, end['stop'] == 'eos', lambda p: f'{p}_{s.started:x}{number:06d}{next(ids):02d}')
+        kept = int(end.get('kept', 0))
         message = {'id': mid, 'type': 'message', 'role': 'assistant', 'model': s.model_name, 'content': blocks,
                    'stop_reason': stop_reason, 'stop_sequence': None,
-                   'usage': {'input_tokens': int(end['prompt_tokens']), 'output_tokens': int(end['gen_tokens']),
-                             'cache_creation_input_tokens': 0, 'cache_read_input_tokens': 0}}
+                   # kept: the prompt's first tokens that the engine's context already held (step 158);
+                   # as the API counts, input_tokens are the others
+                   'usage': {'input_tokens': int(end['prompt_tokens']) - kept, 'output_tokens': int(end['gen_tokens']),
+                             'cache_creation_input_tokens': 0, 'cache_read_input_tokens': kept}}
         gen_s = float(end['gen_s'])
-        log(f'request {number}: {mode}, {end["prompt_tokens"]} prompt tokens in {float(end["prompt_s"]):.1f} s, '
+        log(f'request {number}: {mode}, {end["prompt_tokens"]} prompt tokens ({kept} kept) in {float(end["prompt_s"]):.1f} s, '
             f'{end["gen_tokens"]} tokens in {gen_s:.1f} s ({int(end["gen_tokens"]) / gen_s if gen_s > 0 else 0:.1f} t/s), '
             f'waited {result.get("t_start", t0) - t0:.1f} s, {stop_reason}: {", ".join(b["type"] for b in blocks) or "nothing"}'
             + (f'; {note}' if note else '') + ('; the client had left' if gone else ''))

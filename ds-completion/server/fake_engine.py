@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """A stand-in for `ds-completion --requests` (docs/requests.md) for server/test_server.py:
 no model. It answers the i-th request with the i-th entry of a JSON file, a list of
-{"text": ..., "stop": "eos"|"length", "delay": seconds} (SIGUSR1 during the delay cancels the
+{"text": ..., "stop": "eos"|"length", "delay": seconds, "kept": tokens} (SIGUSR1 during the delay cancels the
 reply, as the engine does), and appends every request it gets
 (header and prompt) to a log file as one JSON line.
 
@@ -50,5 +50,5 @@ while True:
     for k in range(0, len(data), 3):  # 3 bytes a "token": cuts UTF-8 characters, as real tokens can
         out.write(b'tok %d %s\n' % (k, data[k:k + 3].hex().encode()))
         n += 1
-    out.write(f'end stop={r.get("stop", "eos")} prompt_tokens={len(prompt) // 4} gen_tokens={n} prompt_s=0.1000 gen_s=0.5000\n'.encode())
+    out.write(f'end stop={r.get("stop", "eos")} prompt_tokens={len(prompt) // 4} kept={r.get("kept", 0)} gen_tokens={n} prompt_s=0.1000 gen_s=0.5000\n'.encode())
     out.flush()

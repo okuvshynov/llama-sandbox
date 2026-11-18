@@ -91,8 +91,10 @@ A client that runs tools (an agent's loop) sends the reply back as it got it, `t
 a result into the user turn as `<tool_result>...</tool_result>`, and, when the request has tools,
 keeps the reasoning of every earlier reply. So the next prompt is the last prompt, the reply as
 the model wrote it, and the new turn: the test checks this to the character for a reply with
-reasoning and a tool call. Each request is still processed from its first token (a prefix kept
-between requests: not yet).
+reasoning and a tool call. The engine goes on from its context for such a request and runs only
+the new tokens (step 158, `docs/requests.md` "A kept context"); the message's usage has them as
+`input_tokens` and the kept ones as `cache_read_input_tokens`. A new conversation runs whole,
+its system prompt and tools included.
 
 Without tools in the request, `encoding.py` drops the reasoning of replies before the last user
 turn that carries text, as the model's chat format says.
@@ -105,8 +107,9 @@ The pi coding harness (`pi.dev`) works with the server (step 157). Its side is
 `pi --model ds/deepseek-v4.1-flash-1017`. What the file says: the Anthropic Messages API, any
 key, text only, a 65,536-token context (`--max-ctx`), pi's thinking levels as efforts
 (`forceAdaptiveThinking`; `--thinking off` is the model's chat mode). `results/server/pi.txt`:
-two tasks in pi's print mode. Every request of a task is processed from its first token, so
-most of the time is prompts.
+two tasks in pi's print mode, 47 and 71 s; `results/server/pi-kept.txt`: 33 and 30 s with the
+context kept between a task's requests (step 158). The first request of a task still runs pi's
+~1,500 tokens of system prompt and tools (14 s).
 
 ## Tests
 

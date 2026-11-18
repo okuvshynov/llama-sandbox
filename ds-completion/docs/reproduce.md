@@ -282,6 +282,7 @@ Unless stated: sclk 2, 16 CPU threads (32 before README step 18), the study30 pl
 | 154 | `requests/requests_test.txt`, `requests/requests_test-plain.txt` (again, with the cancel checks), `server/test_server.txt` (again), `server/cancel.txt` | `results/requests/requests_test.py` and with `--no-spec` (~5 min each); `server/test_server.py`; `cancel.txt`: by hand, the commands in its header |
 | 155 | `trace/` (`cpp-matrix.json.gz`, `tcp-udp.json.gz`, `compare-step104.txt`, `critpath.txt`) | the page cache warm (`cat ~/llms/UD-Q8_K_XL/*.gguf > /dev/null` after a reboot), then the command in `trace/README.txt` for both prompts, `gzip -9 -n`; `scripts/trace_compare.py <old> <new>` (step 104's traces: `git show f99081b:ds-completion/results/trace/<name>.json.gz`); `scripts/trace_critpath.py <trace>` |
 | 157 | `server/test_server.txt` (again, with a tool loop's second request), `server/pi.txt` | `server/test_server.py`; `pi.txt`: by hand, the commands in its header (pi built from `~/projects/pi`, `server/pi-models.json` as its `models.json`; ~2 min of model load, ~2 min of tasks) |
+| 158 | `requests/requests_test.txt`, `requests/requests_test-plain.txt` (again, with the kept-context checks), `server/test_server.txt` (again), `server/pi-kept.txt` | `results/requests/requests_test.py` and with `--no-spec` (~7 min each); `server/test_server.py`; `pi-kept.txt`: by hand, the commands in the header of `server/pi.txt` |
 
 ## 7. Open items (to confirm)
 
