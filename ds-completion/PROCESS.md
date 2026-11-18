@@ -3,8 +3,8 @@
 This is the story of the project as a sequence of decisions: at each point, the question we
 asked, what we expected, what we measured, and what we decided. It is meant for someone who
 wants to learn the *approach* (how to make a large model fast on odd hardware without losing
-correctness), not only the result. Details and every number: [README.md](README.md) (the lab
-notebook, steps 1-83). Plans and cost models as they evolved: [PLAN.md](PLAN.md). How to rerun
+correctness), not only the result. Details and every number: [docs/steps.md](docs/steps.md) (the lab
+notebook). Plans and cost models as they evolved: [PLAN.md](PLAN.md). How to rerun
 everything: [REPRODUCE.md](REPRODUCE.md). A 20-minute summary: [OVERVIEW.md](OVERVIEW.md).
 
 Sources: the repository (docs, scripts, results, 100+ commits) and the visible messages of the
@@ -655,6 +655,7 @@ Estimates were made before measuring wherever possible; this is how they fared.
 | an HTTP front (153) | can the benchmark's Anthropic script run against the engine unchanged, with the format left to the model's `encoding.py`? | `server/ds_server.py`: `POST /v1/messages`, the prompt and the reply's parsing by `encoding.py`; 26 checks against a fake engine; the benchmark's script with two synthetic samples: a parsed `make_guesses` call after 42,960 tokens of reasoning in 19 min (38.5 t/s), 1 of 2 solved | kept. A stream is pings and then the whole message; one request at a time. A silent 10 minutes led to a progress line in the log. Next: the person's samples; the OpenAI endpoint if wanted |
 | a cancel (154) | a client that left blocks the engine for up to 19 minutes: can the request be stopped without a second thread in the engine? | `SIGUSR1` sets a flag read between steps and prompt chunks, `end stop=cancel`; the server sees a closed connection within a second and sends it. A reply stops 0.1 s after the signal, a prompt within a chunk (10 s; 40 s before `prefill_stop`); the requests after a cancel give the single runs' replies, both loops | kept. A signal, not a stdin line: no reader thread; the rule is to send it only while a reply is awaited |
 | the traces again (155) | do traces of the current code still look like step 104's? Expected yes: the greedy path was not touched since | first 14% and 10% slow: `engram fetch` 1.2 -> 13 ms per step, a cold page cache three hours after a restart. After `cat` of the model files: 49.28 and 35.05 t/s traced against 49.26 and 34.88, no span moved by more than 1.3 ms per step | `results/trace/` replaced, `compare-step104.txt` added. Check the uptime before a measurement. The two-machine traces wait for the second machine |
+| the documents reorganized (156) | eight documents in the root, the README a 5,680-line notebook: what should a reader meet first? | reviewed: stale status and statements (QUICKSTART said greedy only), October's plans kept beside current ones | README becomes a front page, the notebook `docs/steps.md`; QUICKSTART updated; old plans removed; the other documents move to `docs/` one per commit. "README step N" is left as written, explained in two places |
 
 ## 5. Mistakes and how they were caught
 

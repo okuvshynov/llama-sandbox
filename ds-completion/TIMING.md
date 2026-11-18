@@ -1,7 +1,7 @@
 # Where the time goes
 
 A one-page feel for the numbers: what a millisecond is worth, and what changes if a part gets
-faster or slower. Details and measurements: [README.md](README.md) (steps cited), plans:
+faster or slower. Details and measurements: [docs/steps.md](docs/steps.md) (steps cited), plans:
 [PLAN.md](PLAN.md). Generation and prompt numbers are at sclk 6 (the GPU clock level). The clock:
 held-out 36.8 / 41.1 / 42.1 t/s at sclk 2 / 6 / 8 when swept (sclk 6 is 44.6 since); at sclk 6 ~35% of a token's time scales with
 it (README step 90); the rest is the CPU side and HBM-bound GPU work (step 94).

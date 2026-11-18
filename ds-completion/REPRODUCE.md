@@ -2,7 +2,7 @@
 
 What is needed to rebuild the setup, re-run every experiment and regenerate every file in
 `results/`. How the work was approached and why each step followed the last: [PROCESS.md](PROCESS.md).
-What each step found: [README.md](README.md).
+What each step found: [docs/steps.md](docs/steps.md).
 
 Items marked **(to confirm)** are not yet pinned down; they are listed at the end.
 
