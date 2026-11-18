@@ -51,6 +51,7 @@ build, every option, the current results, the limits).
 | [docs/reproduce.md](docs/reproduce.md) | how to rebuild the setup and which command produced which results file |
 | [docs/record.md](docs/record.md) | `--record`: a run as one JSON object |
 | [docs/requests.md](docs/requests.md), [docs/server.md](docs/server.md) | `--requests`, the protocol between the engine and a front; the HTTP front |
+| [docs/pi.md](docs/pi.md) | the pi coding harness on this engine: the setup, step by step |
 | [docs/rocprof.md](docs/rocprof.md) | the GPU side under AMD's profiler |
 | [docs/llama-cpp-upstream.md](docs/llama-cpp-upstream.md) | why the llama.cpp fork stays at one commit |
 | [scripts/README.md](scripts/README.md) | the tools still in use |

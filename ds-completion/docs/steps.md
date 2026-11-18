@@ -5721,3 +5721,15 @@ for where to put it. Also seen: the engine's first request after its load took 2
 
 **Next:** a saved point at the end of what two conversations share; a reply streamed as it is
 generated.
+
+## Step 159: the pi setup as a document
+
+The person wants to repeat the pi setup by hand on the second machine. `docs/pi.md`: the
+engine and server (with what QUICKSTART does not say for this use: the model's `encoding.py`,
+`--host 0.0.0.0` for a client on another machine), Node and pi from its sources at the tested
+commit, `models.json` field by field, the commands, what to expect (no text until a reply is
+complete, ~15 s before a conversation's first reply, a second for the later ones, compaction
+at ~49,000 tokens), a table of failures seen in steps 157-158 with their causes, and what was
+not tested (only print mode on two small tasks was run). No code changed, nothing measured;
+the statements about pi (the settings file, compaction's threshold, Escape) are from pi's own
+documents at f0f9478a2.

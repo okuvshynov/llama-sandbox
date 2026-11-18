@@ -101,10 +101,11 @@ turn that carries text, as the model's chat format says.
 
 ## pi
 
-The pi coding harness (`pi.dev`) works with the server (step 157). Its side is
+The pi coding harness (`pi.dev`) works with the server (step 157). The whole setup, step by
+step, for a machine that has none of it: [pi.md](pi.md). In short: its side is
 `server/pi-models.json`: copy it to pi's agent directory as `models.json` (`~/.pi/agent`, or
 `PI_CODING_AGENT_DIR`) and set `baseUrl` to the server's address, without `/v1`. Then
-`pi --model ds/deepseek-v4.1-flash-1017`. What the file says: the Anthropic Messages API, any
+`~/projects/pi/pi-test.sh --model ds/deepseek-v4.1-flash-1017` (pi from its sources). What the file says: the Anthropic Messages API, any
 key, text only, a 65,536-token context (`--max-ctx`), pi's thinking levels as efforts
 (`forceAdaptiveThinking`; `--thinking off` is the model's chat mode). `results/server/pi.txt`:
 two tasks in pi's print mode, 47 and 71 s; `results/server/pi-kept.txt`: 33 and 30 s with the

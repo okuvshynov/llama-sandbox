@@ -224,7 +224,7 @@ server/ds_server.py --port 8080 -- \
 
 It prints `listening 8080` when the model is loaded (~2 min). A client: the Anthropic SDK with
 `base_url="http://127.0.0.1:8080"` (or `ANTHROPIC_BASE_URL`) and any API key; or the pi coding
-harness with `server/pi-models.json` (docs/server.md, "pi").
+harness with `server/pi-models.json` (the setup: [docs/pi.md](docs/pi.md)).
 
 - **What it reads of a request:** user and assistant text turns, a system prompt, tools,
   `thinking`, `output_config.effort` (`low` 50, `medium` 62, `high` 75, `xhigh` 88, `max` 100),
