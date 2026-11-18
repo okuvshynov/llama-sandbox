@@ -5651,3 +5651,30 @@ that log too, now from the real engine.
 
 Left: a first request cancelled during its prompt leaves `--spec-log` to be appended, not
 opened anew, by the next one.
+
+## Step 155: the traces taken again
+
+`results/trace/` held the traces of step 104's code (2026-11-11). Fifty steps later the same
+two runs (`results/trace/README.txt`: tcp-udp and cpp-matrix, fastest single-machine settings,
+`--trace`) on the current code, greedy:
+
+| | step 104's | now |
+|---|---|---|
+| cpp-matrix, traced | 49.26 t/s | 49.28 |
+| tcp-udp, traced | 34.88 t/s | 35.05 |
+
+Outputs identical to the stored ones. `compare-step104.txt` (span totals per verify step, old
+against new): nothing moved by 1 ms but the host's wait for the staged block on cpp-matrix
+(13.79 -> 12.52 ms per step); on tcp-udp the largest are under 0.8 ms. That is as expected:
+the steps since were tools, records, the sampler and the server, and the greedy path was not
+changed. `critpath.txt` is from the new traces.
+
+**The first attempt was 14% and 10% slow** (42.57 and 31.41 t/s traced). The machine had been
+restarted three hours before; the page cache held 288 of the model's 508 GB. The comparison
+named it at once: `engram fetch` 1.18 -> 13.13 ms per verify step (its rows read from the disk),
+and the same 12 ms as die 0's wait in `ffn.shared`; everything else level. After
+`cat ~/llms/UD-Q8_K_XL/*.gguf > /dev/null` (2 min 42 s) the runs were as above. QUICKSTART and
+step 53 say to do this after a reboot; I had not checked the uptime before measuring.
+
+The two-machine traces (`results/trace/two-machines/`, step 113) were not taken again: the
+second machine did not answer (`ssh: No route to host`).

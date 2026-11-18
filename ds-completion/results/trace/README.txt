@@ -1,7 +1,9 @@
 # Chrome traces of generation (README step 51): open the .json.gz in ui.perfetto.dev ("Open trace file")
 # bin-hip/ds-completion -m $M --rt $F8 --placement placements/study30.txt --dspark $D --spec --canon --cache-loads 800 --cache-period 8 --cache-wait -p <prompt> --chat -n 300 --trace <name>.json
-# prompts: tcp-udp, cpp-matrix of results/spec-heldout/prompts.txt; commit 195bef1 (README step 104; traced in step 105); sclk 6 (manual, all four cards); CPU defaults; 2026-11-11; 34.88 and 49.26 t/s traced (38.89 and 54.03 untraced in step 104), outputs identical
-# compare-step58.txt, compare-step69.txt, compare-step73.txt, compare-step74.txt, compare-step84.txt, compare-step86.txt, compare-step88.txt, compare-step98.txt: span totals per verify step against the earlier traces (scripts/trace_compare.py)
+# prompts: tcp-udp, cpp-matrix of results/spec-heldout/prompts.txt; commit f99081b (README step 154; traced in step 155); sclk 6 (manual, all four cards); CPU defaults; 2026-11-18; 35.05 and 49.28 t/s traced (38.86 and 54.60 untraced in step 151), outputs identical
+# (step 104's traces, 2026-11-11: git show f99081b:ds-completion/results/trace/<name>.json.gz; 34.88 and 49.26 t/s traced)
+# after a reboot: cat the model files first (QUICKSTART); with a cold page cache the same runs gave 31.41 and 42.57 t/s, 'engram fetch' 13 ms per step instead of 1.2
+# compare-step58.txt, compare-step69.txt, compare-step73.txt, compare-step74.txt, compare-step84.txt, compare-step86.txt, compare-step88.txt, compare-step98.txt, compare-step104.txt: span totals per verify step against the earlier traces (scripts/trace_compare.py)
 # critpath.txt: per verify size, die 0's front, the handoffs to and from the CPU, the CPU's experts, the tail, the time outside
 # the layers (split since step 89: before layer 0, the head, the ids to host, the cache step, bookkeeping), the draft (scripts/trace_critpath.py)
 # since step 73 the engram rows are fetched on the host track ("engram fetch") while die 0 runs layer 0; no "engram.fetch" group on die 0
@@ -21,6 +23,7 @@
 # since step 98 the compressor's two projections run once per chunk: a first 'attn.compressor' group before the per-token ones
 # since step 104 the fp8 matrices at 3-8 tokens run on the several-input kernel (attn.out, ffn.shared, engram, attn.q); DS_FP8_VIRT=0 gives the 64-lane kernel (results/decode-next/virt-onoff.txt)
 # two-machines/ (README step 112): one trace of the model in two halves on two machines, the back's events on the front's clock
+#   (not taken again in step 155: the second machine was not reachable)
 #   TRACE=1 PROMPTS="cpp-matrix tcp-udp" scripts/split-measure.sh (front tomb, back shower; commit bf44341 + step 113; sclk 6 on both; 2026-11-12; step 112's were replaced: the back had prompt chunks traced as generation);
 #   60.33 and 38.11 t/s traced (62.89 and 42.10 untraced in step 111), outputs identical; <name>.clock.txt: the clock fit (14 samples, ~1 us residuals)
 #   process 1 = the front (layers 0-19): the tracks above, with 'send to the back: ...' and 'waiting for the back' on steps (host);

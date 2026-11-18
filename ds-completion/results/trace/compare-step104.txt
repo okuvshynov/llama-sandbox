@@ -1,0 +1,98 @@
+# scripts/trace_compare.py: step 104's traces (195bef1) vs step 154's (f99081b), sclk 6, 2026-11-18T11:45:31-05:00
+## cpp-matrix
+# ms per verify step in generation: step 104's cpp-matrix.json.gz (66 steps) vs step 154's cpp-matrix.json.gz (66 steps)
+span                                     old       new    change
+layer                                  78.59     78.33     -0.25
+experts                                53.99     54.02     +0.03
+verify 6 tokens                        44.43     44.18     -0.25
+CPU experts                            36.45     36.04     -0.41
+ffn.wait_for_cpu_experts               30.66     30.29     -0.37
+cpu.gate_up                            21.87     21.78     -0.09
+verify 5 tokens                        15.96     16.04     +0.08
+wait for the staged block              13.79     12.52     -1.27
+verify 4 tokens                        13.47     13.52     +0.05
+cpu.down                               11.98     11.71     -0.27
+ffn.shared                              8.30      8.35     +0.06
+draft                                   7.98      7.96     -0.02
+draft (GPU)                             7.90      7.87     -0.02
+attn.out                                7.65      7.69     +0.04
+verify 3 tokens                         6.82      6.90     +0.07
+attn.core                               5.65      5.68     +0.03
+attn.q                                  5.05      5.10     +0.05
+hc                                      4.98      4.95     -0.03
+ffn.wait_for_gpu_experts                3.84      3.85     +0.01
+verify 2 tokens                         2.53      2.52     -0.01
+attn.compressor                         2.49      2.47     -0.02
+tail: the head's wait and the ids       2.39      2.41     +0.02
+ffn.router                              2.39      2.37     -0.02
+head                                    2.21      2.23     +0.02
+draft.head                              2.15      2.16     +0.01
+ffn.dispatch                            2.08      2.11     +0.03
+tail: profile and trace bookkeepin      1.79      1.96     +0.17
+attn.kv                                 1.71      1.70     -0.01
+draft.ffn.routed                        1.62      1.64     +0.01
+draft layer 0                           1.45      1.45     +0.01
+draft layer 2                           1.44      1.45     +0.01
+draft layer 1                           1.43      1.45     +0.01
+attn.indexer                            1.21      1.20     -0.00
+engram fetch                            1.18      1.14     -0.04
+engram                                  1.08      1.07     -0.00
+draft.markov                            0.98      0.98     +0.00
+ffn.cpu_rows_copy                       0.90      0.88     -0.02
+cpu.inputs                              0.86      0.80     -0.05
+commit: synchronize                     0.78      0.79     +0.01
+draft.attn.core                         0.74      0.73     -0.00
+cpu.act                                 0.72      0.71     -0.01
+draft: issue                            0.63      0.69     +0.06
+draft.attn.proj                         0.60      0.61     +0.01
+ffn.add                                 0.60      0.61     +0.01
+draft.attn.out                          0.58      0.59     +0.00
+profile bookkeeping                     0.57      0.52     -0.05
+issue the CPU rows' copy                0.44      0.51     +0.07
+## tcp-udp
+# ms per verify step in generation: step 104's tcp-udp.json.gz (140 steps) vs step 154's tcp-udp.json.gz (139 steps)
+span                                     old       new    change
+layer                                  50.05     49.97     -0.08
+experts                                32.60     32.63     +0.03
+verify 2 tokens                        18.18     17.55     -0.63
+CPU experts                            16.27     15.79     -0.48
+verify 3 tokens                        15.47     16.20     +0.73
+ffn.wait_for_cpu_experts               12.84     12.41     -0.43
+cpu.gate_up                             9.52      9.31     -0.21
+wait for the staged block               8.72      7.97     -0.75
+verify 4 tokens                         8.34      8.43     +0.09
+verify 1 tokens                         7.69      7.74     +0.05
+draft                                   7.15      7.07     -0.07
+draft (GPU)                             7.07      7.00     -0.07
+ffn.shared                              6.45      6.48     +0.04
+attn.out                                5.83      5.87     +0.04
+cpu.down                                5.28      5.00     -0.28
+hc                                      4.55      4.63     +0.08
+attn.q                                  4.47      4.51     +0.04
+attn.core                               3.60      3.64     +0.03
+ffn.wait_for_gpu_experts                3.10      3.21     +0.11
+verify 5 tokens                         2.54      2.54     -0.00
+tail: the head's wait and the ids       2.06      2.11     +0.04
+ffn.router                              2.00      2.05     +0.05
+ffn.dispatch                            1.97      1.99     +0.01
+draft.head                              1.90      1.93     +0.03
+head                                    1.84      1.87     +0.03
+verify 6 tokens                         1.49      1.45     -0.04
+draft.ffn.routed                        1.47      1.47     -0.00
+attn.kv                                 1.46      1.45     -0.01
+tail: profile and trace bookkeepin      1.34      1.56     +0.23
+draft layer 0                           1.29      1.29     +0.00
+attn.compressor                         1.29      1.25     -0.04
+draft layer 2                           1.28      1.29     +0.00
+draft layer 1                           1.28      1.28     +0.00
+draft.markov                            0.87      0.87     +0.00
+engram                                  0.83      0.83     +0.00
+draft.attn.core                         0.65      0.65     -0.00
+engram fetch                            0.61      0.62     +0.02
+cpu.inputs                              0.61      0.63     +0.02
+ffn.add                                 0.58      0.57     -0.01
+attn.indexer                            0.57      0.57     +0.00
+draft: issue                            0.56      0.63     +0.07
+draft.attn.proj                         0.54      0.55     +0.01
+draft.attn.out                          0.52      0.52     -0.00
+ffn.cpu_rows_copy                       0.51      0.51     -0.00
