@@ -4,7 +4,7 @@ This is the story of the project as a sequence of decisions: at each point, the 
 asked, what we expected, what we measured, and what we decided. It is meant for someone who
 wants to learn the *approach* (how to make a large model fast on odd hardware without losing
 correctness), not only the result. Details and every number: [docs/steps.md](docs/steps.md) (the lab
-notebook). Plans and cost models as they evolved: [PLAN.md](PLAN.md). How to rerun
+notebook). Plans and cost models as they evolved: [docs/plan.md](docs/plan.md). How to rerun
 everything: [REPRODUCE.md](REPRODUCE.md). A 20-minute summary: [OVERVIEW.md](OVERVIEW.md).
 
 Sources: the repository (docs, scripts, results, 100+ commits) and the visible messages of the

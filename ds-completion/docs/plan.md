@@ -12,7 +12,8 @@ machines", "Further optimization ideas": dated sections, "today" inside one mean
 The plans that have been carried out were removed in step 156: the cost model of 2026-10-27,
 the plans for batched verification, expert placement, the adaptive cache, long context and
 prompt processing, and the first brainstorm with its sections 1-6. Steps and other documents
-cite them by name ("PLAN.md B0", "PLAN.md 'Adaptive expert cache'"); the letters A-G of that
+cite them, and this file, as PLAN.md ("PLAN.md B0", "PLAN.md 'Adaptive expert cache'": it stood in the
+project's directory until step 156); the letters A-G of that
 brainstorm are in the items' names below, and the text is
 `git show 64f5e05:ds-completion/PLAN.md`.
 

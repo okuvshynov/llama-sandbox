@@ -2,7 +2,7 @@
 
 A ~20-minute read: what was built, how it works, what we measured, what we learned, and what
 is next. How to run it: [QUICKSTART.md](QUICKSTART.md). Where the time goes, one page: [TIMING.md](TIMING.md). Every step and number in detail:
-[docs/steps.md](docs/steps.md). Plan and cost model: [PLAN.md](PLAN.md). Operand types and accumulation:
+[docs/steps.md](docs/steps.md). Plan and cost model: [docs/plan.md](docs/plan.md). Operand types and accumulation:
 [NUMERICS.md](NUMERICS.md).
 
 ## 1. Goal and scope
@@ -227,7 +227,7 @@ experts ~3% visible.
    always idle and each half's dense part runs on one die. Next there: overlap between the
    halves (the front starting the next step while the back finishes), to be estimated first.
    (The first estimate of a second machine, ~1-2 ms once the cache adapts, was right for long
-   runs and too low for 300-token ones: step 111.) The list of ideas: PLAN.md "Two machines".
+   runs and too low for 300-token ones: step 111.) The list of ideas: docs/plan.md "Two machines".
 6. **More hardware** (studied, not built): many more
    experts on GPUs; the CPU stays on the critical path for larger models.
 

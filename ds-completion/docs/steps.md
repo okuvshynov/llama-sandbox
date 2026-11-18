@@ -5580,3 +5580,6 @@ document per commit, and what is out of date is updated or removed.
   from the ggml GPU path removed in step 11. Kept: the items with their status, "Two
   machines", "Further optimization ideas". Steps cite the removed sections by name; PLAN's
   header says where their text is (`git show 64f5e05:ds-completion/PLAN.md`).
+- **Moved to `docs/`, one commit each, every link and mention in the documents following**
+  (code comments and results files keep the old names; the README lists them): PLAN.md ->
+  `docs/plan.md`
