@@ -36,6 +36,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 # own (REASONING_EFFORT_MAPPINGS); medium and xhigh are placed between them.
 EFFORT = {'low': 50, 'medium': 62, 'high': 75, 'xhigh': 88, 'max': 100}
 
+# A thinking block's signature. Nothing is signed; it is not empty because a client may send a
+# block without a signature back as text (pi does), and the reasoning must come back as reasoning.
+SIGNATURE = 'ds-completion'
+
 
 class BadRequest(Exception):
     pass
@@ -142,6 +146,55 @@ def text_of(content, where):
     return ''.join(parts)
 
 
+def blocks_of(content, where):
+    """A message's content as a list of blocks (a string is one text block)."""
+    if isinstance(content, str):
+        return [{'type': 'text', 'text': content}]
+    if not isinstance(content, list) or not all(isinstance(b, dict) for b in content):
+        raise BadRequest(f'{where}: content must be a string or a list of blocks')
+    return content
+
+
+def user_message(content, where):
+    """A user message for encoding.py: text, and the results of tool calls (step 157), which the
+    model reads inside a user message, in the order given."""
+    blocks = blocks_of(content, where)
+    if all(b.get('type') == 'text' for b in blocks):
+        return {'role': 'user', 'content': text_of(blocks, where)}
+    out = []
+    for b in blocks:
+        if b.get('type') == 'text' and isinstance(b.get('text'), str):
+            if out and out[-1]['type'] == 'text':
+                out[-1]['text'] += b['text']
+            else:
+                out.append({'type': 'text', 'text': b['text']})
+        elif b.get('type') == 'tool_result':
+            # is_error is not passed on: the model's format has no place for it, the text says it
+            out.append({'type': 'tool_result', 'tool_use_id': str(b.get('tool_use_id', '')),
+                        'content': text_of(b.get('content', ''), f'{where}: a tool_result')})
+        else:
+            raise BadRequest(f'{where}: only text and tool_result blocks are supported (got {b.get("type")!r})')
+    return {'role': 'user', 'content_blocks': out}
+
+
+def assistant_message(content, where):
+    """An earlier reply for encoding.py: its thinking, text and tool_use blocks (step 157).
+    A thinking block's signature is not read."""
+    msg = {'role': 'assistant', 'content': ''}
+    for b in blocks_of(content, where):
+        kind = b.get('type')
+        if kind == 'text' and isinstance(b.get('text'), str):
+            msg['content'] += b['text']
+        elif kind == 'thinking' and isinstance(b.get('thinking'), str):
+            msg['reasoning_content'] = msg.get('reasoning_content', '') + b['thinking']
+        elif kind == 'tool_use' and isinstance(b.get('name'), str) and isinstance(b.get('input'), dict):
+            msg.setdefault('tool_calls', []).append({'id': str(b.get('id', '')), 'type': 'function',
+                                                     'function': {'name': b['name'], 'arguments': b['input']}})
+        else:
+            raise BadRequest(f'{where}: only text, thinking and tool_use blocks are supported (got {kind!r})')
+    return msg
+
+
 def build_prompt(enc, req):
     """An Anthropic Messages request -> (prompt text, thinking_mode). Raises BadRequest."""
     msgs = req.get('messages')
@@ -151,7 +204,7 @@ def build_prompt(enc, req):
     for i, m in enumerate(msgs):
         if not isinstance(m, dict) or m.get('role') not in ('user', 'assistant'):
             raise BadRequest(f'messages[{i}]: role must be user or assistant')
-        out.append({'role': m['role'], 'content': text_of(m.get('content'), f'messages[{i}]')})
+        out.append((user_message if m['role'] == 'user' else assistant_message)(m.get('content'), f'messages[{i}]'))
     if out[-1]['role'] != 'user':
         raise BadRequest('the last message must be from the user (no prefill of the reply)')
     tools = req.get('tools') or []
@@ -209,7 +262,7 @@ def parse_reply(enc, text, mode, ended, new_id):
                 rest = ''
         msg, calls = {'reasoning_content': reasoning, 'content': rest}, []
     if msg.get('reasoning_content'):
-        blocks.append({'type': 'thinking', 'thinking': msg['reasoning_content'], 'signature': ''})
+        blocks.append({'type': 'thinking', 'thinking': msg['reasoning_content'], 'signature': SIGNATURE})
     if msg.get('content'):
         blocks.append({'type': 'text', 'text': msg['content']})
     for name, args in calls:

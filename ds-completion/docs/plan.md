@@ -351,6 +351,9 @@ Step 153: `server/ds_server.py`: the Anthropic Messages endpoint over `--request
 Open: the OpenAI endpoint, tool results, a live stream, cancel, sampling on two machines.
 Step 154: a cancel: `SIGUSR1` stops the engine's request between steps or prompt chunks (`stop=cancel`); the server
 sends it when a client closes its connection.
+Step 157: tool results in a conversation (`tool_result`, `thinking`, `tool_use` blocks read; a signature that is not empty),
+for the pi harness; pi runs two small coding tasks (`results/server/pi.txt`): 101 of 118 s are prompts.
+A loop's next prompt = the last prompt + the reply + the new turn. Open: a kept prefix, a live stream.
 constructor in parts.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits

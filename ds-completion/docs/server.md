@@ -28,7 +28,7 @@ Read of a request:
 
 | field | |
 |---|---|
-| `messages` | `user` and `assistant` turns, each a string or a list of `text` blocks; the last one from the user |
+| `messages` | `user` and `assistant` turns, the last one from the user. A user turn: a string, or `text` and `tool_result` blocks (a result's content: a string or `text` blocks; `is_error` is not passed on, the model's format has no place for it). An assistant turn: a string, or `text`, `thinking` and `tool_use` blocks, as a reply of this server (a `signature` is not read) |
 | `system` | a string or a list of `text` blocks |
 | `tools` | `name`, `description`, `input_schema` (rendered into the system block); `strict` is ignored: nothing constrains the model's output to the schema |
 | `tool_choice` | `auto` (the default) or `none`; `disable_parallel_tool_use` is ignored |
@@ -39,13 +39,14 @@ Read of a request:
 | `seed` | not in the API (a client can send it as an extra field); default `--seed`. One seed, one request: the same reply every time |
 | `stream` | `true`: events, below |
 
-Refused with 400 `invalid_request_error`: other block types (images, `tool_use`, `tool_result`:
-no multi-turn tool use yet), `tool_choice` `any` / `tool` (forcing a tool would need constrained
+Refused with 400 `invalid_request_error`: other block types (images, `redacted_thinking`),
+`tool_choice` `any` / `tool` (forcing a tool would need constrained
 output), a last message from the assistant, an unknown effort. Other fields (`model`, `betas`,
 `metadata`, ...) are ignored.
 
 The reply is a message with, in this order, a `thinking` block (the reasoning; `signature` is
-empty), a `text` block, `tool_use` blocks (`input` as an object). `stop_reason`: `tool_use`,
+the fixed word `ds-completion`: nothing is signed, but a client may send a block without a
+signature back as text, and pi does), a `text` block, `tool_use` blocks (`input` as an object). `stop_reason`: `tool_use`,
 `end_turn`, or `max_tokens`. `usage` has the prompt's and the reply's tokens (reasoning
 included). `model` is `--model-name`.
 
@@ -83,7 +84,31 @@ t/s, how long it waited for the engine, the stop reason and the blocks. While a 
 a line every `--progress` seconds (default 30) with its tokens so far. `--dump DIR` writes
 each request, its prompt, the raw reply and the message to `DIR/<message id>.json`.
 
+## A conversation with tool calls
+
+A client that runs tools (an agent's loop) sends the reply back as it got it, `thinking` and
+`tool_use` blocks included, then a user turn with the `tool_result` blocks. `encoding.py` writes
+a result into the user turn as `<tool_result>...</tool_result>`, and, when the request has tools,
+keeps the reasoning of every earlier reply. So the next prompt is the last prompt, the reply as
+the model wrote it, and the new turn: the test checks this to the character for a reply with
+reasoning and a tool call. Each request is still processed from its first token (a prefix kept
+between requests: not yet).
+
+Without tools in the request, `encoding.py` drops the reasoning of replies before the last user
+turn that carries text, as the model's chat format says.
+
+## pi
+
+The pi coding harness (`pi.dev`) works with the server (step 157). Its side is
+`server/pi-models.json`: copy it to pi's agent directory as `models.json` (`~/.pi/agent`, or
+`PI_CODING_AGENT_DIR`) and set `baseUrl` to the server's address, without `/v1`. Then
+`pi --model ds/deepseek-v4.1-flash-1017`. What the file says: the Anthropic Messages API, any
+key, text only, a 65,536-token context (`--max-ctx`), pi's thinking levels as efforts
+(`forceAdaptiveThinking`; `--thinking off` is the model's chat mode). `results/server/pi.txt`:
+two tasks in pi's print mode. Every request of a task is processed from its first token, so
+most of the time is prompts.
+
 ## Tests
 
 `server/test_server.py`: the server against `server/fake_engine.py` (no model, seconds).
-With the model: `results/server/endgame.txt`.
+With the model: `results/server/endgame.txt`, `results/server/pi.txt`.

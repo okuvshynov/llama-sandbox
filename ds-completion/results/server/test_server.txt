@@ -1,4 +1,4 @@
-# server/test_server.py (no model, no GPU); commit 499fd12+changes (the cancel), 2026-11-17T10:59:09-05:00
+# server/test_server.py (no model, no GPU); commit 651fd36+changes (step 157: tool results in a conversation), 2026-11-18T12:30:47-05:00
 ok    the prompt: encoding.py's rendering of system + tools + user, effort medium = 62, ends with <think>
 ok    the engine's header: gen n=65536 temp=1.0 top_p=0.95 seed=7 bytes=1439
 ok    thinking + a tool call: blocks ['thinking', 'tool_use'], stop_reason tool_use, the input as sent (non-ASCII included)
@@ -14,10 +14,17 @@ ok    a broken tool call: no tool_use block, the raw text returned: stop_reason 
 ok    the engine's error line: 400 the prompt is 70000 tokens; --max-ctx is 65536
 ok    the next request is answered
 ok    two clients left 60 s replies (one plain, one a stream): the next request is answered 0.5 s later
+ok    a thinking block has a signature that is not empty: 'ds-completion'
+ok    a tool loop's second prompt starts with the first prompt and the reply as the model wrote it (reasoning, tool call): 200
+ok    and goes on with the result and the text: '<｜end▁of▁sentence｜><｜User｜><tool_result>Red: 2 right. Grün: 0 right.</tool_result>\n\nGo on.<｜Assistant｜><think>'
+ok    it is answered
+ok    without thinking, a result alone: the call is in the prompt, the reasoning is not
 ok    refused, tool_choice any: 400 tool_choice 'any' is not supported: only auto and none
 ok    refused, no max_tokens: 400 max_tokens: a positive integer is required
-ok    refused, an image block: 400 messages[0]: only text blocks are supported (got 'image')
-ok    refused, a tool_result block: 400 messages[0]: only text blocks are supported (got 'tool_result')
+ok    refused, an image block: 400 messages[0]: only text and tool_result blocks are supported (got 'image')
+ok    refused, an image in a tool result: 400 messages[0]: a tool_result: only text blocks are supported (got 'image')
+ok    refused, a tool_use block from the user: 400 messages[0]: only text and tool_result blocks are supported (got 'tool_use')
+ok    refused, redacted thinking: 400 messages[1]: only text, thinking and tool_use blocks are supported (got 'redacted_thinking')
 ok    refused, the last message from the assistant: 400 the last message must be from the user (no prefill of the reply)
 ok    refused, effort "extreme": 400 output_config.effort 'extreme': one of low, medium, high, xhigh, max
 ok    refused, no messages: 400 messages: a non-empty list is required

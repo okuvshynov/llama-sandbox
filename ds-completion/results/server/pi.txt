@@ -1,0 +1,55 @@
+# By hand, 2026-11-18, commit 651fd36+changes (step 157: tool results in a conversation), sclk 6, the page cache warm.
+# pi (~/projects/pi at f0f9478a2, Node 26.13.1: npm install --ignore-scripts; npm run build) against the server:
+#
+#   server/ds_server.py --port 8177 --dump DIR -- bin-hip/ds-completion -m $M --rt ~/llms/ds-1017-fp8/dense-fp8.gguf \
+#       --placement placements/study30.txt --dspark ~/llms/dspark/dspark-DeepSeek-V4.1-Flash-1017-BF16.gguf --spec \
+#       --canon --cache-loads 800 --cache-period 8 --cache-wait --requests
+#   mkdir agent work; cp server/pi-models.json agent/models.json   (with baseUrl port 8177); echo "The answer is 42." > work/notes.txt
+#   cd work; PI_CODING_AGENT_DIR=../agent ~/projects/pi/pi-test.sh --offline --no-session \
+#       --model ds/deepseek-v4.1-flash-1017 --thinking medium -p "<the task>" < /dev/null
+#
+# (Without "< /dev/null", pi -p waits for its standard input to end.)
+
+task 1: "What does notes.txt say?"                                                       47 s, exit code 0
+pi printed:
+  `notes.txt` contains:
+  
+  ```
+  The answer is 42.
+  ```
+
+task 2: "Write primes.py that prints the primes below 60, one line, space separated. Run it, then change it to
+also print how many there are, and run it again. Tell me the count."                     71 s, exit code 0
+pi printed (the path shortened):
+  `primes.py` created at `<work>/primes.py`.
+  
+  Output:
+  ```
+  2 3 5 7 11 13 17 19 23 29 31 37 41 43 47 53 59
+  count: 17
+  ```
+  
+  **Count: 17**
+
+  primes.py is as it says; python3 primes.py prints the 17 primes and "count: 17".
+
+the server's log, one line per request (1-2: task 1; 3-5: task 2):
+# server: request 1: thinking, 1505 prompt tokens in 28.4 s, 60 tokens in 1.5 s (39.8 t/s), waited 0.0 s, tool_use: tool_use
+# server: request 2: thinking, 1661 prompt tokens in 15.2 s, 15 tokens in 0.3 s (47.0 t/s), waited 0.0 s, end_turn: text
+# server: request 3: thinking, 1540 prompt tokens in 13.9 s, 278 tokens in 6.1 s (45.7 t/s), waited 0.0 s, tool_use: tool_use, tool_use
+# server: request 4: thinking, 1934 prompt tokens in 18.9 s, 252 tokens in 4.2 s (59.6 t/s), waited 0.0 s, tool_use: tool_use, tool_use
+# server: request 5: thinking, 2312 prompt tokens in 24.7 s, 116 tokens in 2.2 s (52.6 t/s), waited 0.0 s, end_turn: text
+
+the requests, from the dumps:
+  1: 1 messages, 4 tools (read bash edit write), thinking {'type': 'adaptive', 'display': 'summarized'}, effort medium, max_tokens 16384, stream True; reply: ['tool_use'] ['bash'], tool_use
+  2: 3 messages, 4 tools (read bash edit write), thinking {'type': 'adaptive', 'display': 'summarized'}, effort medium, max_tokens 16384, stream True; reply: ['text'], end_turn
+  3: 1 messages, 4 tools (read bash edit write), thinking {'type': 'adaptive', 'display': 'summarized'}, effort medium, max_tokens 16384, stream True; reply: ['tool_use', 'tool_use'] ['write', 'bash'], tool_use
+  4: 3 messages, 4 tools (read bash edit write), thinking {'type': 'adaptive', 'display': 'summarized'}, effort medium, max_tokens 16384, stream True; reply: ['tool_use', 'tool_use'] ['edit', 'bash'], tool_use
+  5: 5 messages, 4 tools (read bash edit write), thinking {'type': 'adaptive', 'display': 'summarized'}, effort medium, max_tokens 16384, stream True; reply: ['text'], end_turn
+
+a request's prompt starts with the last request's prompt and its reply as the model wrote it (1->2, 3->4, 4->5): [True, True, True]
+the model wrote no reasoning in any of the five replies ("</think>" at once), at effort medium.
+
+time: 101.1 s of prompts (8,952 tokens) and 14.3 s of replies (721 tokens) in 118 s of the two tasks:
+every request is processed from its first token. Of request 5's 2,312 prompt tokens, 2,186 are request 4's
+prompt and reply.

@@ -5593,3 +5593,68 @@ document per commit, and what is out of date is updated or removed.
   optimization is paused and what the server work leaves open; the code map has the ten files
   it lacked. Timing: sections "Sampling" and "A request through the server", the traces of
   step 155, and what a reboot costs. No new measurement: every number is a step's.
+
+## Step 157: tool results in a conversation (for the pi harness)
+
+The person wants the server to work with the pi coding harness (`~/projects/pi`, cloned, not
+installed), reusing the Anthropic endpoint: first working in principle, then efficient. This
+step is the reading of pi's client, the one thing it showed missing, and pi run against the
+server (Node 26.13.1, installed by the person after the change).
+
+**What pi sends** (`packages/ai/src/api/anthropic-messages.ts`), against the server:
+
+| pi | the server before this step |
+|---|---|
+| `POST /v1/messages?beta=true`, always `stream: true`, any key | read |
+| `system` as text blocks; tools with `cache_control`, `eager_input_streaming` | read, the extra fields ignored |
+| reads `message_start`, the block events, `message_delta`; skips events it does not know (`ping`) | sent |
+| aborts by closing the connection | cancelled (step 154) |
+| earlier replies as `thinking`, `text`, `tool_use` blocks | **refused** |
+| tool results as `tool_result` blocks in a user turn | **refused** |
+| a thinking block with an empty signature goes back as a *text* block (unless `allowEmptySignature`) | **the signature was empty** |
+| images, if the model is declared to take them | refused: declare it text only |
+
+**The change** (`server/ds_server.py`): a user turn may hold `text` and `tool_result` blocks, an
+assistant turn `text`, `thinking` and `tool_use`; they become the messages `encoding.py`
+already renders (`content_blocks`, `reasoning_content`, `tool_calls`). `is_error` is not passed
+on. A thinking block's signature is the fixed word `ds-completion`, so that any client sends
+reasoning back as reasoning.
+
+**What `encoding.py` does with a conversation** matters for the next step: with tools in the
+request it keeps the reasoning of every earlier reply, so a loop's next prompt is the last
+prompt, the reply as the model wrote it, and the new turn. The test checks it to the
+character, for a reply with reasoning and a tool call sent back as blocks: the tool call
+rendered from JSON is the text the model wrote. (For other argument values the two may
+differ, so a kept prefix should be compared by tokens.)
+
+**Test** (`server/test_server.py`, fake engine, 28 -> 35 checks; `results/server/test_server.txt`):
+the signature; a tool loop's second request (the prefix, the rendered result, answered); the
+same without thinking (the call in the prompt, the reasoning not); refused: an image in a tool
+result, a `tool_use` block from the user, `redacted_thinking`.
+
+**pi against the server** (`results/server/pi.txt`; pi at f0f9478a2 run from its sources,
+`npm install --ignore-scripts`, `npm run build`). pi's side is one file, `server/pi-models.json`,
+copied to `<agent dir>/models.json`: `api: "anthropic-messages"`, the server's address without
+`/v1`, `compat.forceAdaptiveThinking` so that pi sends an effort and not a token budget, its
+thinking levels mapped onto the five efforts, text only, `contextWindow` 65,536 as `--max-ctx`.
+First with the fake engine (pi ran the canned `read` call and sent the result), then the model,
+fastest single-machine settings, pi's print mode at `--thinking medium`:
+
+| task | requests | wall | of it prompts | result |
+|---|---|---|---|---|
+| "What does notes.txt say?" | 2 | 47 s | 43.6 s | one `bash` call, the file's line quoted |
+| write `primes.py`, run it, change it to print the count, run it again | 3 | 71 s | 57.5 s | `write` + `bash`, `edit` + `bash` (two calls in a reply, both times), "Count: 17", the file correct |
+
+- pi sends 4 tools (`read`, `bash`, `edit`, `write`) and a system prompt: ~1,500 tokens before
+  the first word of the task.
+- Every prompt started with the last request's prompt and the reply as the model wrote it
+  (3 of 3 pairs, from the dumps), tool calls rendered back from JSON included.
+- The model wrote no reasoning in any of the 5 replies at effort medium (`</think>` at once);
+  pi then sends no thinking block, and the prompt is the same.
+- **101 of the 118 seconds were prompts** (8,952 tokens, 54-110 t/s; replies: 721 tokens in
+  14 s, 40-60 t/s), because every request is processed from its first token. Of the last
+  request's 2,312 prompt tokens, 2,186 were the request before it and its reply.
+- `pi -p` waits for its standard input to end: `< /dev/null`, or it hangs before any request.
+
+**Next:** a context kept between the requests of a conversation; then a reply streamed as it
+is generated (pi shows nothing until a reply is complete).

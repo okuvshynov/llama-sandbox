@@ -5,8 +5,8 @@
 
 What is checked: the prompt the engine receives for a request (the model's encoding.py
 renders it: system, tools, effort, thinking), the message built from a canned reply (thinking,
-text, a tool call), the same as a stream of events, replies that are cut or malformed, and
-requests that are refused.
+text, a tool call), the same as a stream of events, replies that are cut or malformed, a tool
+loop's second request (the reply sent back with a tool result), and requests that are refused.
 """
 import json
 import os
@@ -45,7 +45,10 @@ REPLIES = [
     {'text': 'never sent', 'delay': 60},                                                     # 8 the client leaves: cancelled
     {'text': 'never sent', 'delay': 60},                                                     # 9 a stream, the same
     {'text': 'after the cancels'},                                                           # 10
+    {'text': 'r2' + enc.thinking_end_token + 'Done.'},                                      # 12 after a tool result
+    {'text': 'ok'},                                                                          # 13 the same without thinking
 ]
+REPLIES.insert(11, REPLIES[0])                                                               # 11 a tool call again
 
 failed = 0
 
@@ -159,13 +162,36 @@ def main():
     check(code == 200 and m['content'][0]['text'] == 'after the cancels' and dt < 10,
           f'two clients left 60 s replies (one plain, one a stream): the next request is answered {dt:.1f} s later')
 
+    # 11-13 (step 157): the next request of a tool loop, as pi sends it: the reply of request 0 back as
+    # thinking + tool_use blocks, the tool's result in a user message
+    code, m0 = post(bench)
+    p0 = seen()[-1]['prompt']
+    check(m0['content'][0]['signature'] == ds_server.SIGNATURE != '', f'a thinking block has a signature that is not empty: {m0["content"][0]["signature"]!r}')
+    call = m0['content'][1]
+    result = [{'type': 'tool_result', 'tool_use_id': call['id'], 'content': [{'type': 'text', 'text': 'Red: 2 right.'}, {'type': 'text', 'text': ' Grün: 0 right.'}],
+               'is_error': False}, {'type': 'text', 'text': 'Go on.', 'cache_control': {'type': 'ephemeral'}}]
+    loop = dict(bench, messages=bench['messages'] + [{'role': 'assistant', 'content': m0['content']}, {'role': 'user', 'content': result}])
+    code, m = post(loop)
+    p = seen()[-1]['prompt']
+    tail = p[len(p0) + len(REPLIES[0]['text']):]
+    check(code == 200 and p.startswith(p0 + REPLIES[0]['text']),
+          f'a tool loop\'s second prompt starts with the first prompt and the reply as the model wrote it (reasoning, tool call): {code}')
+    check(tail == enc.eos_token + '<｜User｜><tool_result>Red: 2 right. Grün: 0 right.</tool_result>\n\nGo on.<｜Assistant｜><think>', f'and goes on with the result and the text: {tail!r}')
+    check([b['type'] for b in m.get('content', [])] == ['thinking', 'text'] and m['stop_reason'] == 'end_turn', 'it is answered')
+    code, m = post(dict(loop, thinking={'type': 'disabled'}, messages=loop['messages'][:2] + [{'role': 'user', 'content': [result[0]]}]))
+    p = seen()[-1]['prompt']
+    check(code == 200 and p.endswith('<｜User｜><tool_result>Red: 2 right. Grün: 0 right.</tool_result><｜Assistant｜></think>') and 'Red is 1234 because' not in p
+          and CALL in p, 'without thinking, a result alone: the call is in the prompt, the reasoning is not')
+
     # refused before the engine sees them
     n_seen = len(seen())
     for what, body in [
             ('tool_choice any', dict(bench, tool_choice={'type': 'any'})),
             ('no max_tokens', {k: v for k, v in bench.items() if k != 'max_tokens'}),
             ('an image block', dict(bench, messages=[{'role': 'user', 'content': [{'type': 'image', 'source': {}}]}])),
-            ('a tool_result block', dict(bench, messages=[{'role': 'user', 'content': [{'type': 'tool_result', 'tool_use_id': 'a', 'content': 'b'}]}])),
+            ('an image in a tool result', dict(bench, messages=[{'role': 'user', 'content': [{'type': 'tool_result', 'tool_use_id': 'a', 'content': [{'type': 'image', 'source': {}}]}]}])),
+            ('a tool_use block from the user', dict(bench, messages=[{'role': 'user', 'content': [{'type': 'tool_use', 'id': 'a', 'name': 'b', 'input': {}}]}])),
+            ('redacted thinking', dict(bench, messages=bench['messages'] + [{'role': 'assistant', 'content': [{'type': 'redacted_thinking', 'data': 'x'}]}, {'role': 'user', 'content': 'x'}])),
             ('the last message from the assistant', dict(bench, messages=bench['messages'] + [{'role': 'assistant', 'content': 'I'}])),
             ('effort "extreme"', dict(bench, output_config={'effort': 'extreme'})),
             ('no messages', dict(bench, messages=[]))]:

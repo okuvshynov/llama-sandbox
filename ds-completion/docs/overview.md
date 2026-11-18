@@ -229,8 +229,10 @@ other programs can use.
    model's `encoding.py` for the server). Proposed, not decided: the request protocol as the
    one way to talk to the engine, chat as a client of it like the server, and for that a
    context kept between requests where their prompts share a prefix.
-2. **The server:** tool results in a conversation, the OpenAI endpoint the benchmark's other
-   script needs, a reply streamed as it is generated, sampling with `--spec` on two machines.
+2. **The server:** working with the pi coding harness over the Anthropic endpoint (tool
+   results in a conversation are read and pi runs small coding tasks since step 157, with 101
+   of 118 seconds spent on prompts; next, a context kept between a conversation's requests), the OpenAI endpoint the benchmark's other script needs,
+   a reply streamed as it is generated, sampling with `--spec` on two machines.
 3. **Where the time is, when optimization resumes** (the list: [docs/plan.md](plan.md)):
    - **die 0's dense part** (~48 ms of a code step): attention over the XGMI pair 0-1 with
      the core split by heads (step 76 split only the output projections: +0.6%, not kept);

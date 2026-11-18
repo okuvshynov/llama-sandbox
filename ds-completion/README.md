@@ -31,7 +31,8 @@ How to build and run it: [QUICKSTART.md](QUICKSTART.md).
   turns (steps 108-109).
 - **A server:** the engine answers requests from stdin (`--requests`, step 152), and
   `server/ds_server.py` puts the Anthropic Messages API in front of it: one request at a time,
-  tools and reasoning effort rendered by the model's own `encoding.py` (steps 153-154).
+  tools, tool results and reasoning effort rendered by the model's own `encoding.py`
+  (steps 153-154, 157). The pi coding harness runs against it (step 157).
 
 ## The documents
 

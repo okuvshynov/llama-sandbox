@@ -1,0 +1,22 @@
+{
+  "providers": {
+    "ds": {
+      "baseUrl": "http://127.0.0.1:8080",
+      "api": "anthropic-messages",
+      "apiKey": "none",
+      "models": [
+        {
+          "id": "deepseek-v4.1-flash-1017",
+          "name": "DeepSeek V4.1 Flash (ds-completion)",
+          "reasoning": true,
+          "thinkingLevelMap": { "minimal": "low", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+          "input": ["text"],
+          "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+          "contextWindow": 65536,
+          "maxTokens": 16384,
+          "compat": { "forceAdaptiveThinking": true }
+        }
+      ]
+    }
+  }
+}
