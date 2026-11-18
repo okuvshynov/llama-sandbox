@@ -237,7 +237,8 @@ harness with `server/pi-models.json` (the setup: [docs/pi.md](docs/pi.md)).
   whole message at its end. A request whose client leaves is cancelled.
 - **A conversation with tool calls:** earlier replies (reasoning, text, tool calls) and tool
   results are read. A request that goes on from the last one (its prompt, its reply, a new
-  turn) runs only the new tokens; any other is processed from its first token.
+  turn) runs only the new tokens; one that shares its start with the last ones (the system
+  prompt and tools) runs from a point saved there; any other from its first token.
 - **Refused:** forced tool use (`tool_choice` `any` / `tool`), images.
 - **The log** (stderr): a line per finished request, and every 30 s the tokens so far of a
   running one. `--dump DIR` keeps each request's prompt, raw reply and message.

@@ -5733,3 +5733,73 @@ at ~49,000 tokens), a table of failures seen in steps 157-158 with their causes,
 not tested (only print mode on two small tasks was run). No code changed, nothing measured;
 the statements about pi (the settings file, compaction's threshold, Escape) are from pi's own
 documents at f0f9478a2.
+
+## Step 160: a saved point for what conversations share
+
+After step 158, 43 of the 46 prompt seconds of pi's two tasks were the first request of each:
+the system prompt and tools, ~1,500 tokens, the same in both. A new conversation does not go
+on from the context, so it ran whole.
+
+**The runtime** (`hip/rt.h`): `mark(slot)` / `rewind(slot)`, two saved points where there was
+one, each with its own copies of the window rings, the compressors' partial groups and the
+draft's rings. Slot 0 is what it was (the empty context in `--requests`, the turn's start in
+`-i --think`). A point is only the state *at* a position: the compressed caches before it are
+not copied, so a point is good only while the positions before it hold its tokens. The
+two-machine messages MARK and REWIND carry the slot (the protocol's version 2 -> 3: both
+machines need this build).
+
+**The rule** (`apps/ds_completion.cpp`, the request loop), in the order tried for a prompt:
+
+1. it starts with all of the context and has more: it goes on from there (step 158);
+2. it starts with the point's tokens: back to the point, the rest runs;
+3. else the empty context. If its first 64 tokens or more are the context's, the prompt runs
+   up to where the two part, the point is saved there, and the rest runs.
+
+A prompt that does not start with all of the point's tokens ends the point before anything
+else: it will run over the positions before it. The point never moves otherwise. So it is set
+by the second of two conversations and used from the third on. `saved=N` in the `end` line
+says where it is.
+
+**The gate** (`results/requests/requests_test.py`, 37 -> 46 checks, both loops). Conversations
+with one system prompt of ~1,500 tokens, each compared with the same request on an empty
+context (`keep=0`), `kept` and `saved` asserted apart from the replies:
+
+| | kept | prompt time | with `keep=0` | replies |
+|---|---|---|---|---|
+| the first conversation | 0 | 14.3 s | | |
+| the second (sets the point at 1,518) | 0 | 14.5 s | | |
+| a third | 1,518 of 1,525 | 0.14 s | 14.44 s | equal |
+| a fourth, a 45-token reply | 1,518 of 1,540 | 0.31 s | 14.60 s | equal |
+| the same, sampled | 1,518 of 1,540 | 0.29 s | 14.61 s | equal |
+| the second one again | 1,518 of 1,526 | 0.15 s | 14.44 s | equal |
+
+Also: a conversation's next turn goes on from the context, not from the point (kept 1,527); an
+unrelated prompt gives its single run's stored reply and ends the point; the next three
+conversations keep 0, 0 and 1,518 (the point set again by the second); a system prompt that
+shares half with the point's ends it and gets a point at the shared part (755), which the next
+two conversations use. The 37 earlier checks pass unchanged.
+
+- **The first version of the test failed 5 checks, all of them the test's.** Its users' turns
+  were "Name a color." / "Name a fruit.", so the two prompts parted two tokens into the user's
+  turn and the point was at 1,520; the differently worded fourth conversation ended it and
+  set one at 1,518. Every reply was equal to its control throughout. The rule was left as it
+  is (it corrects itself at the cost of one prompt run whole); the test's turns now start with
+  different words, and `docs/requests.md` says it.
+
+**pi** (`results/server/pi-saved.txt`): step 157's two tasks and a third, each a new
+conversation.
+
+| | step 157 | step 158 | step 160 |
+|---|---|---|---|
+| task 1 (2 requests; the server's first) | 47 s | 33.1 s | 32.9 s |
+| task 2 (3 requests) | 71 s | 30.1 s | 30.5 s |
+| task 3 (3 requests) | | | 7.6 s |
+
+Task 2's first request ran whole and set the point at 1,497 tokens; task 3's first request
+kept them and ran 18 tokens in 0.3 s (task 2's: 14.1 s). So the first two conversations after
+the server's start cost what they did, and those after them start at once.
+
+**Not tested:** two machines (the slot in MARK / REWIND; the second machine was not
+reachable). The second point's device memory was not measured.
+
+**Next:** a reply streamed as it is generated.

@@ -106,8 +106,8 @@ void Runtime::serve(int port) {
         break;
       }
       case Peer::COMMIT: commit(hd.arg); break;
-      case Peer::MARK: mark(); break;
-      case Peer::REWIND: rewind(); break;
+      case Peer::MARK: mark(hd.arg); break;
+      case Peer::REWIND: rewind(hd.arg); break;
       case Peer::DRAFT: {
         const DraftResult r = draft(hd.arg);
         p.send_msg(Peer::DRAFT, 0, 0, {{r.ids.data(), r.ids.size() * 4}, {r.conf.data(), r.conf.size() * 4}});

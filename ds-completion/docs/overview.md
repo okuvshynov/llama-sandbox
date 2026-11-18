@@ -233,7 +233,8 @@ other programs can use.
 2. **The server:** working with the pi coding harness over the Anthropic endpoint (tool
    results in a conversation are read and pi runs small coding tasks since step 157; a request
    that goes on from the last one runs only its new tokens since step 158, which took those
-   tasks from 118 to 63 seconds; next, the system prompt and tools kept across conversations), the OpenAI endpoint the benchmark's other script needs,
+   tasks from 118 to 63 seconds, and a new conversation starts from a point saved at the end
+   of the shared system prompt and tools since step 160), the OpenAI endpoint the benchmark's other script needs,
    a reply streamed as it is generated, sampling with `--spec` on two machines.
 3. **Where the time is, when optimization resumes** (the list: [docs/plan.md](plan.md)):
    - **die 0's dense part** (~48 ms of a code step): attention over the XGMI pair 0-1 with

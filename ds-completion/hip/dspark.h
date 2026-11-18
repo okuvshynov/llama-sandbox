@@ -65,7 +65,7 @@ class DSpark {
   FILE* debug_log = nullptr;   // debugging: the next draft's per-layer attn/ffn in/out [layer][4][block][n_embd], then closed  // debugging: every seeded position's main_hidden, f32 [n_targets][n_embd]
   DraftResult draft(int32_t anchor, int pos, bool keep_logits);
   // Runtime::mark / rewind: the window rings saved, or put back
-  void mark_rings(bool restore);
+  void mark_rings(bool restore, int slot);
 
  private:
   struct Fp8 { uint8_t* q = nullptr; uint8_t* s = nullptr; int N = 0, K = 0, stride = 0; };
@@ -106,7 +106,7 @@ class DSpark {
   int *rids, *iota5, *d_ids;  // d_ids: the block's ids on the device [block + 1]
   const uint16_t* markov_w1_dev = nullptr;  // device copy of the Markov embedding
   std::vector<float*> rings;  // [layer] window ring [window][head_dim]
-  std::vector<float*> rings_mark;  // their copies at Runtime::mark
+  std::vector<float*> rings_mark[2];  // their copies at Runtime::mark, per slot (Runtime::kMarks)
   void* moe_scratch = nullptr;
 
   void* upload(const void* src, size_t n);

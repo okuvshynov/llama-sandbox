@@ -143,8 +143,12 @@ class Runtime {
   // draft's rings. The compressed caches need nothing: they are keyed by position and read only
   // up to the current one, and the positions run again rewrite them. Not saved: the draft's copy
   // of the last position's hidden states, so run a token after rewind() before draft().
-  void mark();
-  void rewind();
+  // kMarks such points (README step 160), each with its own copies. The caller keeps this true:
+  // between mark(slot) and rewind(slot) the sequence held the same tokens at the positions
+  // before the mark (else the compressed caches there are another sequence's).
+  static constexpr int kMarks = 2;
+  void mark(int slot = 0);
+  void rewind(int slot = 0);
   DraftResult draft(int32_t anchor, bool keep_logits = false);
   void draft_log_hidden(const std::string& path) {
     if (!dspark) return;
@@ -217,7 +221,7 @@ class Runtime {
     float* win = nullptr;                          // window KV ring [window][head_dim]
     float *cmp_kv = nullptr, *cmp_score = nullptr; // compressor partial group [ratio][head_dim] (ratio > 1)
     float *comp = nullptr, *idx_k = nullptr;       // compressed KV, index keys [max_ctx / ratio][...] (KV sources)
-    float *win_mark = nullptr, *cmp_mark = nullptr; // mark()'s copies: the ring; the partial group [kv | score]
+    float *win_mark[kMarks] = {}, *cmp_mark[kMarks] = {}; // mark()'s copies: the ring; the partial group [kv | score]
   };
   std::vector<LayerState> S;
   int n_past_ = 0;
@@ -231,7 +235,7 @@ class Runtime {
   bool range_engram = false;  // an engram layer among them (else no rows are fetched)
   void stream_from_host(int M);  // stream_in's next M rows into h, pre
   void stream_to_host(int M);    // h, pre of M tokens into stream_out (after a synchronize)
-  int mark_past = -1;  // mark()'s position
+  int mark_past[kMarks] = {-1, -1};  // mark()'s positions
   std::vector<int32_t> tokens_;  // all tokens so far
   hipStream_t s;
   std::vector<LayerW> W;
@@ -278,7 +282,7 @@ class Runtime {
   // a short forward's lists sit in the last kEarlyGatherMaxM tokens' list slots, next to x: one copy
   size_t short_lists_off() const { return moe_lists_bytes - (size_t)kEarlyGatherMaxM * kMoeListStride * sizeof(MoeList); }
   void setup_experts();
-  void mark_state(bool restore);
+  void mark_state(bool restore, int slot);
 
   // device scratch (one token)
   float *h, *h2, *pre, *a_pre, *a_post, *a_comb, *f_pre, *f_post, *f_comb, *mixes;

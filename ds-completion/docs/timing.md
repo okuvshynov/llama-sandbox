@@ -148,8 +148,9 @@ the engine's (README steps 152-154):
   prompt at its next chunk of 512 tokens (up to ~10 s).
 - **A request that goes on from the last one runs only its new tokens** (step 158): in pi's
   tool loops a follow-on prompt of 1,661-2,312 tokens took 1.1-1.3 s, not 15-25 s, and two
-  small tasks 63 s, not 118. **A new conversation runs whole:** pi's system prompt and tools
-  are ~1,500 tokens (14 s) before the task's first word, and the benchmark's prompts share
+  small tasks 63 s, not 118. **A new conversation returns to a point saved at the end of what
+  it shares with the last ones** (step 160), from the third on: pi's system prompt and tools,
+  ~1,500 tokens, 0.3 s where they took 14 s. Not yet measured on the benchmark, whose prompts share
   their tools block and rules (95% of the stored request's characters come before its
   history: an estimate of ~20 s of each request's 24).
 

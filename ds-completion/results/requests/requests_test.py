@@ -12,7 +12,9 @@ results/sampler/spec-heldout/s1-<prompt>-1.json. Also: a prompt again after othe
 n (a prefix of the full reply, stop=length), requests with mistakes (an error line, the
 session goes on), cancels by SIGUSR1 (step 154): during a reply, during a prompt, between
 requests, and prompts that go on from the context (step 158): kept=N, and the reply of the
-same request on an empty context (keep=0). Exit code 1 if a check fails.
+same request on an empty context (keep=0); conversations that share a system prompt
+(step 160): a saved point at its end (saved=N), returned to by the later ones. Exit code 1 if
+a check fails.
 """
 import json
 import os
@@ -192,6 +194,57 @@ def main():
     ids5, out5, end5 = request('gen n=30 bytes=BYTES', body)
     check(end['stop'] == 'cancel' and int(end5['kept']) > 0 and int(end5['kept']) % 512 == 0 and ids5 == ref[0],
           f'a prompt cancelled after 1 s and sent again: kept {end5["kept"]} of {end5["prompt_tokens"]} tokens, the reply of the empty context')
+    # README step 160: conversations that share their start (a system prompt) but do not go on from
+    # one another. The second one puts a saved point at the end of what they share (saved=N); the
+    # later ones return to it (kept=N). Every reply is the same request's on an empty context.
+    # (the users' lines start with different words: the point lands at the end of what two prompts share, and
+    # "Name a ..." twice would put it two tokens into the user's turn, for the next prompt to end it)
+    SYS = BOS + '<｜System｜>You answer in one short line. Background, not to be repeated: ' + FOX * 150
+
+    def conv(user, system=SYS):
+        return system + '<｜User｜>' + user + '<｜Assistant｜></think>'
+
+    def ask(user, how='', keep='', system=SYS, n=20):
+        ids, out, end = request(f'gen n={n} {how} {keep} bytes=BYTES', conv(user, system))
+        return ids, int(end['kept']), int(end['saved']), float(end['prompt_s']), int(end['prompt_tokens'])
+
+    request('gen n=5 bytes=BYTES', render('chat', 'Reply with the single word: yes'))
+    a_ids, a_kept, a_saved, a_s, a_n = ask('Color: name one.')
+    b_ids, b_kept, b_saved, b_s, b_n = ask('Fruit: name one.')
+    check(a_kept == 0 and a_saved == 0 and b_kept == 0 and b_saved > 1000,
+          f'two conversations with one system prompt: the first runs whole ({a_n} tokens, {a_s:.1f} s), the second too and saves a point at {b_saved} ({b_s:.1f} s)')
+    d = b_saved
+    LONG = 'Ignore the one-line rule: write a haiku about rain, then explain it in three sentences.'
+    for label, user, how, n_gen in [('a third conversation', 'City: name one.', '', 20), ('a fourth, a long reply', LONG, '', 120), ('a fifth, the same sampled', LONG, S1, 120),
+                                    ('the second one again', 'Fruit: name one.', '', 20)]:
+        ids, kept, sv, t, n = ask(user, how, n=n_gen)
+        ids0, kept0, sv0, t0, _ = ask(user, how, 'keep=0', n=n_gen)
+        check(kept == d and sv == d and kept0 == 0 and sv0 == d and ids == ids0 and len(ids) > 0 and (user != 'Fruit: name one.' or ids == b_ids),
+              f'{label}: {n} prompt tokens, kept {kept}, {t:.2f} s; keep=0: kept {kept0}, {t0:.2f} s; the replies ({len(ids)} tokens) {"are equal" if ids == ids0 else "DIFFER"}; the point stays at {sv0}')
+    # a reply's next turn goes on from the context, not from the point
+    ids1, out1, end1 = request('gen n=20 bytes=BYTES', conv('Tree: name one.'))
+    p2 = turn2(conv('Tree: name one.') + out1.decode(), 'And another?')
+    ids2, out2, end2 = request('gen n=20 bytes=BYTES', p2)
+    ids3, out3, end3 = request('gen n=20 keep=0 bytes=BYTES', p2)
+    check(int(end1['kept']) == d and int(end2['kept']) > d and ids2 == ids3, f'the next turn of a conversation: kept {end2["kept"]} (the point is at {d}), the reply of the empty context')
+    # a prompt that does not start with the point's tokens ends the point; the next two conversations set it again
+    mode, n, text = prompts['tcp-udp']
+    r = request(f'gen n={n} bytes=BYTES', render(mode, text))
+    check(fnv1a64_ids(r[0]) == greedy['tcp-udp'] and r[2]['kept'] == '0' and r[2]['saved'] == '0', f'another prompt: the single run\'s reply, kept {r[2]["kept"]}, the point is gone (saved {r[2]["saved"]})')
+    e = ask('Bird: name one.')
+    f = ask('Fish: name one.')
+    g = ask('City: name one.')
+    g0 = ask('City: name one.', keep='keep=0')
+    check(e[1:3] == (0, 0) and f[1:3] == (0, d) and g[1:3] == (d, d) and g[0] == g0[0],
+          f'then three conversations: kept {e[1]}, {f[1]}, {g[1]}; the point at {e[2]}, {f[2]}, {g[2]}; the third\'s reply is the empty context\'s')
+    # a system prompt that shares only the first part with the point's: the point ends, and the next conversation sets one at the shared part
+    SYS2 = SYS[:len(SYS) // 2] + ' Now answer in French.'
+    h = ask('Color: name one.', system=SYS2)
+    i_ = ask('Fruit: name one.', system=SYS2)
+    j = ask('City: name one.', system=SYS2)
+    j0 = ask('City: name one.', keep='keep=0', system=SYS2)
+    check(h[1] == 0 and 64 <= h[2] < d and i_[1] == h[2] and j[1] == h[2] and j[0] == j0[0] and len(j[0]) > 0,
+          f'a system prompt that shares half: kept {h[1]} and a point at {h[2]} (what it shares with the last context); the next two keep {i_[1]}, {j[1]} of {j[4]}; the reply is the empty context\'s')
     r = request('generate n=10', '')
     check(r[0] == 'error' and 'closing' in r[1], f'an unknown request line: {r[0]} {r[1]}')
     eng.stdin.close()

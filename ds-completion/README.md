@@ -33,7 +33,8 @@ How to build and run it: [QUICKSTART.md](QUICKSTART.md).
   `server/ds_server.py` puts the Anthropic Messages API in front of it: one request at a time,
   tools, tool results and reasoning effort rendered by the model's own `encoding.py`
   (steps 153-154, 157). The pi coding harness runs against it (step 157); a request that goes on from the
-  last one runs only its new tokens (step 158).
+  last one runs only its new tokens (step 158), and a new conversation starts from a point
+  saved at the end of the shared system prompt and tools (step 160).
 
 ## The documents
 

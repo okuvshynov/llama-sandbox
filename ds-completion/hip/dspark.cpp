@@ -380,8 +380,9 @@ void DSpark::seed(int pos, const float* hidden) {
   }
 }
 
-void DSpark::mark_rings(bool restore) {
+void DSpark::mark_rings(bool restore, int slot) {
   const size_t n = (size_t)rt.hp.window * rt.hp.head_dim * 4;
+  std::vector<float*>& rings_mark = this->rings_mark[slot];
   if (rings_mark.empty()) {
     for (size_t l = 0; l < rings.size(); l++) rings_mark.push_back((float*)upload(nullptr, n));
     CHECK(hipDeviceSynchronize());  // the buffers' zero fill is not on rt.s

@@ -38,11 +38,12 @@ after the load (about two minutes).
     prompt tokens=<prompt's tokens> n=<n after the cap> kept=<tokens>
     tok <id> <the token's bytes in hex>
     ...
-    end stop=eos|length prompt_tokens=.. kept=.. gen_tokens=.. prompt_s=.. gen_s=..
+    end stop=eos|length prompt_tokens=.. kept=.. saved=.. gen_tokens=.. prompt_s=.. gen_s=..
 
 - `prompt` comes when the request is accepted, before the prompt runs. `kept`: how many of
   the prompt's first tokens the context already held; only the others run (`prompt_s` is
-  their time).
+  their time). `saved` (in `end`): where the saved point is after this request, in tokens; 0:
+  there is none ("A kept context").
 - One `tok` line per generated token, as it is generated. The bytes are the token's text,
   special tokens included (`</think>`, the tool-call tags), in hex because one token can be a
   part of a UTF-8 character. A token without text has no third field. The end-of-sequence
@@ -67,14 +68,33 @@ context keeps what was run, as after any request.
 After a request the context holds its prompt and the reply's tokens that were run through the
 model: all of them but the last one of a reply cut by `n`, and never the end of sequence. If
 the next prompt's tokens start with all of these and have more, only the others are run
-(`kept=N`); any other prompt starts on an empty context (`kept=0`). The reply does not depend
+(`kept=N`); any other prompt returns to the saved point below, or starts on an empty context
+(`kept=0`). The reply does not depend
 on which happened: a position's state is the same however the tokens before it were split
 into forwards (checked: the same request with `keep=0`, greedy and sampled).
 
 This is the case of a conversation sent again with one more turn, as an agent's loop does:
-the prompt is the last prompt, the last reply, and the new turn. It is all or nothing: a prompt
-that shares only a part of the context (another conversation with the same system prompt, a
-reply whose text tokenizes differently than the model wrote it) runs whole.
+the prompt is the last prompt, the last reply, and the new turn.
+
+**A saved point** (step 160) is for prompts that share only their start with the context:
+another conversation with the same system prompt and tools.
+
+- When a prompt does not go on from the context but its first tokens, 64 or more, are the
+  context's, it runs from the empty context, and the engine saves a point at the end of what
+  the two share (`saved=N`). So the point is set by the second conversation, not the first.
+- A later prompt that starts with the point's tokens and does not go on from the context
+  returns to the point and runs the rest (`kept=N`).
+- The point stays where it is, also when a prompt shares more than it. A prompt that does not
+  start with all of its tokens ends it (`saved=0`): that prompt runs from the empty context
+  over the positions before the point. The next pair of prompts that share a start sets a new
+  one.
+- The point is where two prompts part, which can be past the system prompt: two users' turns
+  that start with the same words put it after those words, and the next conversation that
+  starts otherwise ends it and sets one earlier. That costs one prompt run whole.
+- There is one point. Two groups of conversations with two system prompts, taking turns, end
+  each other's point every time.
+
+A reply never depends on any of this.
 
 ## Errors
 

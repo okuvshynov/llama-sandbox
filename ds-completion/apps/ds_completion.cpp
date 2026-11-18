@@ -785,6 +785,11 @@ static int run(int argc, char** argv) {
 #endif
   [[maybe_unused]] long n_requests = 0;
   [[maybe_unused]] size_t kept = 0;  // --requests: the prompt's first tokens that the context already held
+  // --requests (README step 160): the tokens before the runtime's second saved point (empty:
+  // there is none), where this request puts it (0: nowhere), the fewest tokens worth a point
+  [[maybe_unused]] std::vector<int32_t> saved;
+  [[maybe_unused]] size_t save_at = 0;
+  [[maybe_unused]] const size_t kMinSaved = 64;
   for ([[maybe_unused]] bool first = true;; first = false) {
 #ifdef DS_RUNTIME
     if (args.requests) {
@@ -850,11 +855,33 @@ static int run(int argc, char** argv) {
       // reply that were run. A prompt that starts with all of them goes on from there: only its
       // other tokens run, and the reply is the same (the state at a position does not depend on
       // how the tokens before it were split into forwards). Any other prompt: the empty context.
+      // README step 160: a prompt that does not go on from the context may still share its start
+      // with it (another conversation with the same system prompt and tools). The runtime's
+      // second saved point is put at the end of what two such prompts share, when the second of
+      // them runs; a later prompt that starts with those tokens returns to it. It stays where it
+      // is until a prompt comes that does not start with its tokens: that one runs from the
+      // empty context over the positions before the point, which ends the point (rt.h, mark).
+      save_at = 0;
       {
         const std::vector<int32_t>& ctx = rt->tokens();
-        kept = keep && !ctx.empty() && ctx.size() < toks.size() && std::equal(ctx.begin(), ctx.end(), toks.begin()) ? ctx.size() : 0;
+        auto common = [&](const std::vector<int32_t>& a) {
+          size_t i = 0;
+          while (i < a.size() && i < toks.size() && a[i] == toks[i]) i++;
+          return i;
+        };
+        const size_t with_ctx = common(ctx);
+        if (!saved.empty() && common(saved) < saved.size()) saved.clear();
+        if (keep && !ctx.empty() && with_ctx == ctx.size() && ctx.size() < toks.size()) {
+          kept = ctx.size();
+        } else if (keep && !saved.empty() && saved.size() < toks.size()) {
+          rt->rewind(1);
+          kept = saved.size();
+        } else {
+          rt->rewind();
+          kept = 0;
+          if (keep && saved.empty() && with_ctx >= kMinSaved && with_ctx < toks.size()) save_at = with_ctx;
+        }
       }
-      if (!kept) rt->rewind();
       pending.clear();
       args.sampler = so;
       args.n_predict = (int)std::min<long>(n, args.opt.max_ctx - (long)toks.size());
@@ -894,7 +921,15 @@ static int run(int argc, char** argv) {
       rt->mark();
       logits = rt->prefill({toks.back()});
     } else {
-      logits = rt ? rt->prefill(kept ? std::vector<int32_t>(toks.begin() + kept, toks.end()) : toks) : eng->forward(toks);
+      if (rt && save_at) {  // (--requests) up to the shared start, the saved point, then the rest
+        if (!rt->prefill(std::vector<int32_t>(toks.begin(), toks.begin() + save_at)).empty()) {  // (empty: cancelled)
+          rt->mark(1);
+          saved.assign(toks.begin(), toks.begin() + save_at);
+          logits = rt->prefill(std::vector<int32_t>(toks.begin() + save_at, toks.end()));
+        }
+      } else {
+        logits = rt ? rt->prefill(kept ? std::vector<int32_t>(toks.begin() + kept, toks.end()) : toks) : eng->forward(toks);
+      }
     }
 #else
     std::vector<float> logits = eng->forward(toks);
@@ -920,8 +955,8 @@ static int run(int argc, char** argv) {
     view.end();  // (after the lines above: the loop's last stderr line is ended by them)
     if (args.requests) {
       const bool ended = turn.hit_eos || (!turn.gen.empty() && turn.gen.back() == eos && (int)turn.gen.size() > turn.n_gen);
-      printf("end stop=%s prompt_tokens=%zu kept=%zu gen_tokens=%d prompt_s=%.4f gen_s=%.4f\n", turn.cancelled ? "cancel" : ended ? "eos" : "length", toks.size(),
-             kept, turn.n_gen, t_pp, t_tg);
+      printf("end stop=%s prompt_tokens=%zu kept=%zu saved=%zu gen_tokens=%d prompt_s=%.4f gen_s=%.4f\n", turn.cancelled ? "cancel" : ended ? "eos" : "length",
+             toks.size(), kept, saved.size(), turn.n_gen, t_pp, t_tg);
     } else {
       printf("\n");
     }

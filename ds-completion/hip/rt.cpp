@@ -583,23 +583,24 @@ std::vector<int32_t> Runtime::forward_chunk(const std::vector<int32_t>& toks, bo
   return next;
 }
 
-void Runtime::mark() { mark_state(false); }
-void Runtime::rewind() {
-  if (mark_past < 0) throw std::runtime_error("rewind without a mark");
-  mark_state(true);
+void Runtime::mark(int slot) { mark_state(false, slot); }
+void Runtime::rewind(int slot) {
+  if (slot < 0 || slot >= kMarks || mark_past[slot] < 0) throw std::runtime_error("rewind without a mark");
+  mark_state(true, slot);
 }
 
-void Runtime::mark_state(bool restore) {
+void Runtime::mark_state(bool restore, int slot) {
   const int HD = hp.head_dim;
-  if (peer) peer->send_msg(restore ? Peer::REWIND : Peer::MARK, 0, 0);
+  if (slot < 0 || slot >= kMarks) throw std::runtime_error("mark: no such slot");
+  if (peer) peer->send_msg(restore ? Peer::REWIND : Peer::MARK, 0, slot);
   auto copy = [&](float* live, float* saved, size_t n) {
     CHECK(hipMemcpyAsync(restore ? live : saved, restore ? saved : live, n * 4, hipMemcpyDeviceToDevice, s));
   };
-  if (mark_past < 0 && !restore) {  // the first mark: the copies' buffers
+  if (mark_past[slot] < 0 && !restore) {  // the slot's first mark: the copies' buffers
     for (int L = 0; L < hp.n_layer; L++) {
       if (!S[L].win) continue;
-      S[L].win_mark = dalloc<float>((size_t)ring_n * HD);
-      if (S[L].cmp_kv) S[L].cmp_mark = dalloc<float>(2 * (size_t)m.layers[L].kind.ratio * HD);
+      S[L].win_mark[slot] = dalloc<float>((size_t)ring_n * HD);
+      if (S[L].cmp_kv) S[L].cmp_mark[slot] = dalloc<float>(2 * (size_t)m.layers[L].kind.ratio * HD);
     }
     // dalloc's zero fill is not on stream s: without this it could land after the first copies
     CHECK(hipDeviceSynchronize());
@@ -607,19 +608,19 @@ void Runtime::mark_state(bool restore) {
   for (int L = 0; L < hp.n_layer; L++) {
     if (!S[L].win) continue;
     const size_t nc = S[L].cmp_kv ? (size_t)m.layers[L].kind.ratio * HD : 0;
-    copy(S[L].win, S[L].win_mark, (size_t)ring_n * HD);
+    copy(S[L].win, S[L].win_mark[slot], (size_t)ring_n * HD);
     if (nc) {
-      copy(S[L].cmp_kv, S[L].cmp_mark, nc);
-      copy(S[L].cmp_score, S[L].cmp_mark + nc, nc);
+      copy(S[L].cmp_kv, S[L].cmp_mark[slot], nc);
+      copy(S[L].cmp_score, S[L].cmp_mark[slot] + nc, nc);
     }
   }
-  if (dspark) dspark->mark_rings(restore);
+  if (dspark) dspark->mark_rings(restore, slot);
   CHECK(hipStreamSynchronize(s));
   if (restore) {
-    n_past_ = mark_past;
+    n_past_ = mark_past[slot];
     tokens_.resize(n_past_);
   } else {
-    mark_past = n_past_;
+    mark_past[slot] = n_past_;
   }
 }
 

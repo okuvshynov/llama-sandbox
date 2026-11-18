@@ -12,7 +12,7 @@
 //   VERIFY    n tokens, their stream, arg = want ids  n next ids
 //   COMMIT    arg = tokens kept                       -
 //   DRAFT     arg = the anchor token                  block + 1 ids, block confidences
-//   MARK, REWIND                                      -
+//   MARK, REWIND   arg = the slot                    -
 //   SYNC      -                                       an empty SYNC (a clock sample only)
 //   BYE                                               -
 //
@@ -50,7 +50,7 @@
 
 struct Peer {
   enum Type : uint32_t { HELLO = 1, CHUNK, DECODE, VERIFY, COMMIT, DRAFT, MARK, REWIND, BYE, SYNC };
-  enum : int32_t { kVersion = 2 };                    // HELLO's arg: both ends must be the same build of this file
+  enum : int32_t { kVersion = 3 };                    // HELLO's arg: both ends must be the same build of this file
   enum : int32_t { kWantLogits = 1, kInPrefill = 2 };  // CHUNK and DECODE's arg
   static const char* name(uint32_t t) {
     static const char* n[] = {"?", "HELLO", "CHUNK", "DECODE", "VERIFY", "COMMIT", "DRAFT", "MARK", "REWIND", "BYE", "SYNC"};

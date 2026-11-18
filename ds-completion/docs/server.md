@@ -93,8 +93,9 @@ keeps the reasoning of every earlier reply. So the next prompt is the last promp
 the model wrote it, and the new turn: the test checks this to the character for a reply with
 reasoning and a tool call. The engine goes on from its context for such a request and runs only
 the new tokens (step 158, `docs/requests.md` "A kept context"); the message's usage has them as
-`input_tokens` and the kept ones as `cache_read_input_tokens`. A new conversation runs whole,
-its system prompt and tools included.
+`input_tokens` and the kept ones as `cache_read_input_tokens`. A new conversation with the
+same system prompt and tools as the last ones returns to a point saved at their end (step 160);
+the first two conversations after the server's start run whole.
 
 Without tools in the request, `encoding.py` drops the reasoning of replies before the last user
 turn that carries text, as the model's chat format says.
@@ -109,8 +110,9 @@ step, for a machine that has none of it: [pi.md](pi.md). In short: its side is
 key, text only, a 65,536-token context (`--max-ctx`), pi's thinking levels as efforts
 (`forceAdaptiveThinking`; `--thinking off` is the model's chat mode). `results/server/pi.txt`:
 two tasks in pi's print mode, 47 and 71 s; `results/server/pi-kept.txt`: 33 and 30 s with the
-context kept between a task's requests (step 158). The first request of a task still runs pi's
-~1,500 tokens of system prompt and tools (14 s).
+context kept between a task's requests (step 158); `results/server/pi-saved.txt`: a third task
+in 7.6 s, its system prompt and tools (~1,500 tokens, 14 s for the first two tasks) taken
+from the saved point (step 160).
 
 ## Tests
 
