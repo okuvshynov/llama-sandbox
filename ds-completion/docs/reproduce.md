@@ -1,7 +1,7 @@
 # Reproducing ds-completion
 
 What is needed to rebuild the setup, re-run every experiment and regenerate every file in
-`results/`. How the work was approached and why each step followed the last: [PROCESS.md](../PROCESS.md).
+`results/`. How the work was approached and why each step followed the last: [docs/process.md](process.md).
 What each step found: [docs/steps.md](steps.md).
 
 Items marked **(to confirm)** are not yet pinned down; they are listed at the end.

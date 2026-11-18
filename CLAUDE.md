@@ -5,7 +5,7 @@
 Before proposing or making a commit that touches `ds-completion/`, check every doc against the
 change and update in the same commit: `docs/steps.md` (a step: what was done and measured; the
 lab notebook, which was `README.md` until step 156, so "README step N" anywhere means its "Step N"),
-`PROCESS.md` (the question, the prediction, the result and the decision), `docs/reproduce.md` (any new
+`docs/process.md` (the question, the prediction, the result and the decision), `docs/reproduce.md` (any new
 script or results file and what produces it), and `QUICKSTART.md` / `docs/overview.md` / `docs/plan.md` /
 `docs/timing.md` / the status in `README.md` (now the front page) when what they say changed (CLI options, status, plan items, the current numbers). New results files start with a `#`
 header: command or script, commit, sclk level, date. The goal is that the work can be published
