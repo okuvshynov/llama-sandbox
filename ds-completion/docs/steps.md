@@ -5582,4 +5582,10 @@ document per commit, and what is out of date is updated or removed.
   header says where their text is (`git show 64f5e05:ds-completion/PLAN.md`).
 - **Moved to `docs/`, one commit each, every link and mention in the documents following**
   (code comments and results files keep the old names; the README lists them): PLAN.md ->
-  `docs/plan.md`, OVERVIEW.md -> `docs/overview.md`, TIMING.md -> `docs/timing.md`, NUMERICS.md -> `docs/numerics.md`, REPRODUCE.md -> `docs/reproduce.md`, PROCESS.md -> `docs/process.md`
+  `docs/plan.md`, OVERVIEW.md -> `docs/overview.md`, TIMING.md -> `docs/timing.md`,
+  NUMERICS.md -> `docs/numerics.md`, REPRODUCE.md -> `docs/reproduce.md`, PROCESS.md ->
+  `docs/process.md`. A link check over all the documents after each move: no broken link.
+
+Not done here, noticed in the review: the overview's section 6 (a token's time at sclk 2,
+before the cache) and its sections 7-8 (what is next, open questions) are from October and
+early November; `docs/timing.md` has no line on sampling yet.

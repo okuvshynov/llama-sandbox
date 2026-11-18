@@ -8,7 +8,7 @@ notebook). Plans and cost models as they evolved: [docs/plan.md](plan.md). How t
 everything: [docs/reproduce.md](reproduce.md). A 20-minute summary: [docs/overview.md](overview.md).
 
 Sources: the repository (docs, scripts, results, 100+ commits) and the visible messages of the
-working sessions (a person directing, an AI assistant, Claude, implementing and measuring), 2026-10-26 to 11-07.
+working sessions (a person directing, an AI assistant, Claude, implementing and measuring), from 2026-10-26 on.
 
 ## 1. The method in ten rules
 

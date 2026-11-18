@@ -53,15 +53,15 @@ build, every option, the current results, the limits).
 | [docs/llama-cpp-upstream.md](docs/llama-cpp-upstream.md) | why the llama.cpp fork stays at one commit |
 | [scripts/README.md](scripts/README.md) | the tools still in use |
 
-(The documents other than these two are being moved into `docs/`, one per commit: step 156.
-Code comments and results files name them as they stood: PLAN.md, docs/overview.md, docs/timing.md,
-docs/numerics.md, docs/process.md, docs/reproduce.md.)
+Until step 156 the documents of `docs/` with a lower-case name of one word stood in this
+directory in capitals, and code comments and results files still name them so: "PLAN.md" is
+`docs/plan.md`, and the same for OVERVIEW, TIMING, NUMERICS, PROCESS and REPRODUCE.
 
 ## Docs and commits
 
 Every commit that changes code, scripts or results updates, in the same commit:
-`docs/steps.md` (a step: what was done and measured), docs/process.md (the question, prediction,
-result and decision), docs/reproduce.md (new scripts and results and what produces them), and
-QUICKSTART.md / docs/overview.md / docs/plan.md / docs/timing.md / this page's status when what they say
-changed. New results files start with a `#` header naming the command or script, the commit,
+`docs/steps.md` (a step: what was done and measured), `docs/process.md` (the question,
+prediction, result and decision), `docs/reproduce.md` (new scripts and results and what
+produces them), and `QUICKSTART.md`, `docs/overview.md`, `docs/plan.md`, `docs/timing.md` and
+this page's status when what they say changed. New results files start with a `#` header naming the command or script, the commit,
 the clock level and the date. (The rule for the assistant is in the sandbox's CLAUDE.md.)
