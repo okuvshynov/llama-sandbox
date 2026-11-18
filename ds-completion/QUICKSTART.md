@@ -176,7 +176,7 @@ Options:
 - `--spec`: speculative decoding (needs `--dspark`, or `--remote` to a back that has it); the number of guesses verified per step
   is chosen from the draft's confidence. `--spec-n N` fixes it; `--spec-log FILE` writes
   per-step data.
-- `--canon` ([NUMERICS.md](NUMERICS.md)): placement-invariant expert numerics: the output no longer depends on where the
+- `--canon` ([docs/numerics.md](docs/numerics.md)): placement-invariant expert numerics: the output no longer depends on where the
   experts run (any placement, any `--moe-dies`, with or without the draft, with or without the
   cache give the same bytes); generation ~2% slower, the prompt ~32% (93 -> 63 t/s; its CPU expert
   kernel is slower).

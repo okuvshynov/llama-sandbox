@@ -43,7 +43,7 @@ build, every option, the current results, the limits).
 | [docs/steps.md](docs/steps.md) | the lab notebook: every step in order, what was done, measured and decided. "README step N" and "step N", in code comments, results files and the other documents, mean its section "Step N" (it was this file until step 156) |
 | [docs/overview.md](docs/overview.md) | a 20-minute read: what was built, how a token is computed, what we learned, the code map |
 | [docs/timing.md](docs/timing.md) | where the time goes, on one page |
-| [NUMERICS.md](NUMERICS.md) | operand types, how they map to the GPUs, accumulation |
+| [docs/numerics.md](docs/numerics.md) | operand types, how they map to the GPUs, accumulation |
 | [docs/plan.md](docs/plan.md) | the items and their status, the plans and cost models |
 | [PROCESS.md](PROCESS.md) | how the work was approached: the method, the decision log, predictions against outcomes, mistakes |
 | [REPRODUCE.md](REPRODUCE.md) | how to rebuild the setup and which command produced which results file |
@@ -55,7 +55,7 @@ build, every option, the current results, the limits).
 
 (The documents other than these two are being moved into `docs/`, one per commit: step 156.
 Code comments and results files name them as they stood: PLAN.md, docs/overview.md, docs/timing.md,
-NUMERICS.md, PROCESS.md, REPRODUCE.md.)
+docs/numerics.md, PROCESS.md, REPRODUCE.md.)
 
 ## Docs and commits
 

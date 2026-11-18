@@ -3,7 +3,7 @@
 A ~20-minute read: what was built, how it works, what we measured, what we learned, and what
 is next. How to run it: [QUICKSTART.md](../QUICKSTART.md). Where the time goes, one page: [docs/timing.md](timing.md). Every step and number in detail:
 [docs/steps.md](steps.md). Plan and cost model: [docs/plan.md](plan.md). Operand types and accumulation:
-[NUMERICS.md](../NUMERICS.md).
+[docs/numerics.md](numerics.md).
 
 ## 1. Goal and scope
 
