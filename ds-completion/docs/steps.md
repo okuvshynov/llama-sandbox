@@ -5574,3 +5574,9 @@ document per commit, and what is out of date is updated or removed.
   (the command, what a request may carry, the limits), the results table at today's date with
   the fastest rows, the sampled row and the CPU rows (the sclk 2 milestones between them are
   in the overview), the server's limits.
+- **PLAN** (third commit): 1,221 -> 501 lines. Removed: the plans that were carried out (the
+  cost model of 2026-10-27, batched verification, expert placement, the adaptive cache, long
+  context, prompt processing) and the first brainstorm with its sections 1-6, which started
+  from the ggml GPU path removed in step 11. Kept: the items with their status, "Two
+  machines", "Further optimization ideas". Steps cite the removed sections by name; PLAN's
+  header says where their text is (`git show 64f5e05:ds-completion/PLAN.md`).

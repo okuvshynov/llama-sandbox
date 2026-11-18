@@ -218,7 +218,7 @@ experts ~3% visible.
 2. **Die 0's dense part** (~48 ms of a code step): attention over the XGMI pair 0-1 with the core
    split by heads (step 76 split only the output projections: +0.6%, not kept; the core needs the
    KV state on die 1); the fp8 GEMV at 2-8 inputs needs a new work split (steps 65, 75).
-3. **Long context** (PLAN.md "Long context", steps 34-35): runs to 1M with `--max-ctx`, gated
+3. **Long context** (steps 34-35): runs to 1M with `--max-ctx`, gated
    against the reference at 20k tokens. Left: compressed caches in fp8/fp4 (far beyond 64k), and
    the indexer batched over a verify step past 512 keys (PLAN F; step 74 skips it below).
 4. **The prompt:** 93 / 63 t/s (fast / `--canon`); with `--canon` the CPU's experts set the pace,
