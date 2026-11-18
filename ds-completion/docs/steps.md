@@ -5569,3 +5569,8 @@ document per commit, and what is out of date is updated or removed.
   step 8; `git show 2c8e6fe:ds-completion/README.md`).
 - "What the model is", "Correctness ladder" and "Which checkpoint" stay in front of the
   steps.
+- **QUICKSTART** (second commit): it said "Greedy" in its first lines and "Sampling is greedy
+  only" under Limits, both wrong since step 149. Now: sampling named, a section "A server"
+  (the command, what a request may carry, the limits), the results table at today's date with
+  the fastest rows, the sampled row and the CPU rows (the sclk 2 milestones between them are
+  in the overview), the server's limits.

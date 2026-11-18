@@ -8,7 +8,10 @@ machine, or split over two of them for more speed. Both setups print the same by
 - Routed experts: the most-used ones on the four GPUs, the rest on the CPU (our own exact
   AVX-512 kernel); with the adaptive cache the GPUs follow the experts in use.
 - The prompt goes through in chunks of up to 512 tokens; generation one token at a time, or a
-  few at once with speculative decoding. Greedy, one sequence, text only.
+  few at once with speculative decoding. Greedy by default, sampled with `--temp`; one sequence,
+  text only.
+- As a program for one prompt, as an interactive session (`-i`), or behind an HTTP server
+  with the Anthropic Messages API ("A server" below).
 - With two machines the model is cut in the middle: layers 0-19 on the first (the **front**),
   layers 20-39 with the head and the draft on the second (the **back**), each with its own four
   GPUs for its half's experts.
@@ -203,6 +206,45 @@ Options:
 
 Without `--rt` (or with `bin/ds-completion`) everything runs on the CPU.
 
+## A server
+
+`server/ds_server.py` (Python 3, standard library only) starts the engine with `--requests`
+and serves the Anthropic Messages API (README steps 152-154; [docs/server.md](docs/server.md)).
+Everything after `--` is the engine's command, the one-machine command above with `--requests`
+in place of the prompt:
+
+```bash
+cd ~/projects/llama-sandbox/ds-completion
+server/ds_server.py --port 8080 -- \
+    bin-hip/ds-completion -m $M --rt ~/llms/ds-1017-fp8/dense-fp8.gguf \
+    --placement placements/study30.txt \
+    --dspark ~/llms/dspark/dspark-DeepSeek-V4.1-Flash-1017-BF16.gguf --spec \
+    --canon --cache-loads 800 --cache-period 8 --cache-wait --requests
+```
+
+It prints `listening 8080` when the model is loaded (~2 min). A client: the Anthropic SDK with
+`base_url="http://127.0.0.1:8080"` (or `ANTHROPIC_BASE_URL`) and any API key.
+
+- **What it reads of a request:** user and assistant text turns, a system prompt, tools,
+  `thinking`, `output_config.effort` (`low` 50, `medium` 62, `high` 75, `xhigh` 88, `max` 100),
+  `max_tokens`, `temperature`, `top_p`, `stream`. The model's own `encoding.py`
+  (`--encoding`, default `~/llms/ds-flash/encoding/encoding.py`) renders the prompt and parses
+  the reply, tool calls included.
+- **Sampling:** temperature 1 and top-p 0.95 unless the request says otherwise, and one seed
+  for every request (`--seed`, default 0): the same request gives the same reply.
+- **One request at a time;** others wait. A stream gets pings while the engine works and the
+  whole message at its end. A request whose client leaves is cancelled.
+- **Refused:** forced tool use (`tool_choice` `any` / `tool`), tool results and images in a
+  conversation.
+- **The log** (stderr): a line per finished request, and every 30 s the tokens so far of a
+  running one. `--dump DIR` keeps each request's prompt, raw reply and message.
+- **The network:** it listens on `127.0.0.1`; `--host 0.0.0.0` for other machines. No
+  authentication, no encryption: a private network only.
+- A reasoning request can take long: one of the benchmark this was written for ran 19 minutes
+  (43k tokens at 38.5 t/s; README step 153).
+
+The engine's side alone, for another front: `--requests`, [docs/requests.md](docs/requests.md).
+
 ## Two machines
 
 The model in two halves (README steps 110-112): **~50.9 t/s** mean on the held-out prompts
@@ -253,20 +295,23 @@ bin-hip/ds-completion -m $M --rt ~/llms/ds-1017-fp8/dense-fp8.gguf \
   needs `ssh` to the second machine without a password prompt); `TRACE=1` gives one merged trace
   of both machines (README step 112).
 
-## Current results (2026-11-12)
+## Current results (2026-11-18)
 
 The two top rows were measured with `--cache-wait` (the run starts after the cache's
-registration); without it a short run starts at the static placement's speed.
+registration); without it a short run starts at the static placement's speed. At sclk 6 unless
+a row says otherwise (the clock does not matter to the CPU rows).
 
 | mode | command | decode | KL vs reference*: median / mean without the near-tie step |
 |---|---|---|---|
-| **two machines, the model in two halves** | the two commands of "Two machines" above | **35.0-62.9 t/s, mean 50.9** at sclk 6 (300 tokens, held-out prompts; README step 111) | output byte-identical to every row down to "own runtime" with `--canon` |
-| **+ adaptive expert cache** | `... --placement placements/study30.txt --dspark ... --spec --canon --cache-loads 800 --cache-period 8` | **33.9-55.0 t/s, mean 44.6** at sclk 6 (300 tokens, held-out prompts; README steps 50, 53, 57, 62, 68, 71, 73, 74, 80, 82, 84, 86, 88, 97, 98, 101, 102, 104; `--cache-loads 200`: 25.6 at sclk 2, 28.0 at sclk 6) | output byte-identical to the plain `--canon` run |
-| + speculative decoding | `... --placement placements/study30.txt --dspark ... --spec` | 16-24 t/s (sclk 2; 300 tokens, held-out prompts; +22% geometric mean) | output byte-identical to the row below |
-| own runtime + experts placed on GPUs | `bin-hip/ds-completion --rt ... --placement placements/study30.txt` | 17.7-21.7 t/s (sclk 2; 128 tokens) | same numerics: per-layer gate identical to below |
-| own runtime, dense on GPU 0 | `bin-hip/ds-completion --rt ...` | 12.0-12.5 t/s (sclk 2) | 5.9e-6 / 4.8e-3 (earlier run 1.7e-5 / 6.3e-4) |
+| **two machines, the model in two halves** | the two commands of "Two machines" above | **35.0-62.9 t/s, mean 50.9** (300 tokens, held-out prompts; README step 111) | output byte-identical to one machine with `--canon` |
+| **one machine: speculative decoding + adaptive expert cache** | `... --placement placements/study30.txt --dspark ... --spec --canon --cache-loads 800 --cache-period 8` | **33.9-55.0 t/s, mean 44.6** (300 tokens, held-out prompts; README step 104) | output byte-identical to plain decoding with `--canon` |
+| the same, sampled | `... --temp 1 --top-p 0.95 --seed 1` | mean 43.1 against 44.9 greedy in the same session (README step 151) | the plain loop's output for the same seed |
+| own runtime, dense on GPU 0, experts on the CPU | `bin-hip/ds-completion --rt ...` | 12.0-12.5 t/s (sclk 2) | 5.9e-6 / 4.8e-3 (earlier run 1.7e-5 / 6.3e-4) |
 | CPU only | `bin/ds-completion` | 3.5 t/s | 1.3e-5 / 3.9e-3 |
 | llama.cpp fork (llama-cli, CPU) | - | 3.5 t/s | 2.1e-5 / 1.3e-3 |
+
+The steps between these rows (the static placement, speculation without the cache) and their
+numbers: OVERVIEW.md, section 2.
 
 \* vs the official reference implementation run on the CPU (README "Step 2"): chat prompt
 "Hello, how are you?", 17 steps. Every mode agrees with the reference on the top token at 16
@@ -284,7 +329,7 @@ Means over all 17 steps: 1.8e-2 to 2.5e-2 for every mode.
 - **Where a step goes on two machines** (README step 112's merged trace): a 6-token code step
   with its draft ~83 ms (~93 on one machine, below): the front's layers ~36 ms, the back's ~36
   ms, the draft ~9 ms, the network ~0.5 ms; neither half waits for the CPU's experts.
-- **Where a step goes** (`--spec`, cache, sclk 6; the traces of README step 105): a 6-token
+- **Where a step goes** (`--spec`, cache, sclk 6; the traces of README steps 105 and 155): a 6-token
   code verify step ~85 ms (medians): die 0's dense part ~48 ms, its wait for the CPU's experts
   ~27 ms, its wait for the other dies ~5 ms, outside the layers ~5 ms; the draft before it ~8 ms
   more. The prompt: the CPU's experts and the GPU's work overlap and the slower
@@ -306,8 +351,11 @@ Means over all 17 steps: 1.8e-2 to 2.5e-2 for every mode.
 - At exit the process sometimes aborts (signal 6, exit code 134) inside the GPU runtime's
   shutdown, after `main` has returned: the output and the timing lines are complete by then
   (README step 96; unexplained).
-- Sampling is greedy only. Greedy decoding can fall into a repetition loop on long reasoning
-  (README step 48: a proof prompt repeats one line after ~800 tokens; the model's behaviour, not
-  a bug).
+- Greedy decoding (the default) can fall into a repetition loop on long reasoning (README
+  step 48: a proof prompt repeats one line after ~800 tokens; the model's behaviour, not a
+  bug). Sampling (`--temp 1 --top-p 0.95`, the model card's settings) is the way around it.
+- Sampling with `--spec` on two machines is refused (the logits are on the back).
+- The server: one request at a time, no forced tool use, no tool results in a conversation,
+  no reply streamed as it is generated, the Anthropic API only.
 
 Details: [TIMING.md](TIMING.md) (where the time goes, one page), [OVERVIEW.md](OVERVIEW.md) (a 20-minute summary), [docs/steps.md](docs/steps.md) (all measurements and checks, step by step), [PLAN.md](PLAN.md) (what's next).
