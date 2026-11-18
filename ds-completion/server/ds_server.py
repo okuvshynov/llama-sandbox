@@ -19,10 +19,12 @@ GET  /v1/models
 GET  /health
 """
 import argparse
+import codecs
 import importlib.util
 import itertools
 import json
 import os
+import queue
 import select
 import signal
 import socket
@@ -80,8 +82,8 @@ class Engine:
 
     def generate(self, prompt, n, temp, top_p, seed, on_start=None, on_token=None, token=None):
         """-> (the reply's text as bytes, the end line's fields). Raises BadRequest on an
-        engine "error" line, RuntimeError if the engine is gone. on_start(prompt_tokens) is
-        called when the engine has accepted the request, on_token() after every token.
+        engine "error" line, RuntimeError if the engine is gone. on_start(prompt_tokens, kept) is
+        called when the engine has accepted the request, on_token(its bytes) after every token.
         token: a dict naming this request for cancel(); a cancelled reply ends with stop=cancel."""
         body = prompt.encode('utf-8')
         head = f'gen n={n} temp={temp!r} top_p={top_p!r} seed={seed} bytes={len(body)}\n'
@@ -111,12 +113,13 @@ class Engine:
                 raise BadRequest(' '.join(w[1:]))
             if w[0] == 'prompt':
                 if on_start:
-                    on_start(int(dict(f.split('=') for f in w[1:])['tokens']))
+                    f = dict(f.split('=') for f in w[1:])
+                    on_start(int(f['tokens']), int(f.get('kept', 0)))
             elif w[0] == 'tok':
-                if len(w) > 2:
-                    out += bytes.fromhex(w[2])
+                piece = bytes.fromhex(w[2]) if len(w) > 2 else b''
+                out += piece
                 if on_token:
-                    on_token()
+                    on_token(piece)
             elif w[0] == 'end':
                 return out, dict(f.split('=') for f in w[1:])
 
@@ -270,23 +273,82 @@ def parse_reply(enc, text, mode, ended, new_id):
     return blocks, ('max_tokens' if not ended else 'tool_use' if calls else 'end_turn'), note
 
 
-def sse_events(message):
-    """A finished message as the Messages API's stream of events: (event name, data) pairs."""
-    start = dict(message, content=[], stop_reason=None, usage=dict(message['usage'], output_tokens=0))
-    yield 'message_start', {'type': 'message_start', 'message': start}
-    for i, b in enumerate(message['content']):
-        if b['type'] == 'thinking':
-            first, delta = dict(b, thinking=''), {'type': 'thinking_delta', 'thinking': b['thinking']}
-        elif b['type'] == 'text':
-            first, delta = dict(b, text=''), {'type': 'text_delta', 'text': b['text']}
-        else:
-            first, delta = dict(b, input={}), {'type': 'input_json_delta', 'partial_json': json.dumps(b['input'], ensure_ascii=False)}
-        yield 'content_block_start', {'type': 'content_block_start', 'index': i, 'content_block': first}
-        yield 'content_block_delta', {'type': 'content_block_delta', 'index': i, 'delta': delta}
-        yield 'content_block_stop', {'type': 'content_block_stop', 'index': i}
-    yield 'message_delta', {'type': 'message_delta', 'delta': {'stop_reason': message['stop_reason'], 'stop_sequence': None},
-                            'usage': {'output_tokens': message['usage']['output_tokens']}}
-    yield 'message_stop', {'type': 'message_stop'}
+class Live:
+    """A reply as the Messages API's stream of events while it is generated (step 161).
+
+    The model writes: reasoning </think> text, then perhaps a block of tool calls. feed(bytes)
+    returns the events that the bytes so far allow: thinking and text as deltas, token by token.
+    A tool call can only be parsed when the reply is complete, so from the tool block's first
+    characters on nothing is sent until finish(), which gets the blocks that parse_reply() made
+    of the whole text: it sends what was held back, then the tool_use blocks. What a stream
+    carried as thinking and as text is exactly the message's thinking and text blocks; `differs`
+    says if it ever is not.
+    """
+
+    def __init__(self, enc, mode):
+        self.dec = codecs.getincrementaldecoder('utf-8')(errors='replace')  # a token can end inside a character
+        self.state = 'thinking' if mode == 'thinking' else 'text'
+        self.stops = {'thinking': enc.thinking_end_token, 'text': '\n\n<' + enc.dsml_token + enc.tool_calls_block_name}
+        self.buf = ''
+        self.index = -1
+        self.open = None
+        self.sent = {'thinking': '', 'text': ''}
+        self.differs = False
+
+    def _close(self, out):
+        if self.open:
+            out.append(('content_block_stop', {'type': 'content_block_stop', 'index': self.index}))
+            self.open = None
+
+    def _emit(self, out, kind, text):
+        if not text:
+            return
+        if self.open != kind:
+            self._close(out)
+            self.index += 1
+            self.open = kind
+            first = {'type': 'thinking', 'thinking': '', 'signature': SIGNATURE} if kind == 'thinking' else {'type': 'text', 'text': ''}
+            out.append(('content_block_start', {'type': 'content_block_start', 'index': self.index, 'content_block': first}))
+        out.append(('content_block_delta', {'type': 'content_block_delta', 'index': self.index, 'delta': {'type': kind + '_delta', kind: text}}))
+        self.sent[kind] += text
+
+    def feed(self, data, final=False):
+        out = []
+        self.buf += self.dec.decode(data, final)
+        while self.state != 'tools':
+            stop = self.stops[self.state]
+            i = self.buf.find(stop)
+            if i >= 0:
+                self._emit(out, self.state, self.buf[:i])
+                if self.state == 'thinking':
+                    self.state, self.buf = 'text', self.buf[i + len(stop):]
+                    continue
+                self.state, self.buf = 'tools', self.buf[i:]  # (the text block stays open: finish() may add to it)
+                break
+            # what could still become the stop string is held back: its longest start that ends the buffer
+            hold = next((k for k in range(min(len(stop) - 1, len(self.buf)), 0, -1) if self.buf.endswith(stop[:k])), 0)
+            self._emit(out, self.state, self.buf[:len(self.buf) - hold])
+            self.buf = self.buf[len(self.buf) - hold:]
+            break
+        return out
+
+    def finish(self, blocks):
+        """The reply ended: `blocks` are the message's. -> the events that are left."""
+        out = self.feed(b'', final=True)
+        tools = [b for b in blocks if b['type'] == 'tool_use']
+        if self.state == 'tools' and tools:
+            self.buf = ''
+        self._emit(out, 'text' if self.state != 'thinking' else 'thinking', self.buf)  # held back and never a stop string; a tool block that did not parse
+        self._close(out)
+        for b in tools:
+            self.index += 1
+            out.append(('content_block_start', {'type': 'content_block_start', 'index': self.index, 'content_block': dict(b, input={})}))
+            out.append(('content_block_delta', {'type': 'content_block_delta', 'index': self.index,
+                                                'delta': {'type': 'input_json_delta', 'partial_json': json.dumps(b['input'], ensure_ascii=False)}}))
+            out.append(('content_block_stop', {'type': 'content_block_stop', 'index': self.index}))
+        want = {k: ''.join(b[k] for b in blocks if b['type'] == k) for k in ('thinking', 'text')}
+        self.differs = want != self.sent
+        return out
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -353,22 +415,55 @@ class Handler(BaseHTTPRequestHandler):
         token = {}
         t0 = time.time()
 
-        def on_token():
+        events = queue.Queue()  # a stream: what the engine's thread saw, for this thread to send
+
+        def on_start(tokens, kept):
+            result.update(t_start=time.time(), prompt_tokens=tokens)
+            events.put(('start', tokens, kept))
+
+        def on_token(piece):
             result['tokens'] += 1
+            events.put(('tok', piece))
 
         def work():
             try:
                 result['out'], result['end'] = s.engine.generate(prompt, n, float(temp), float(top_p), seed,
-                                                                 on_start=lambda tokens: result.update(t_start=time.time(), prompt_tokens=tokens),
-                                                                 on_token=on_token, token=token)
+                                                                 on_start=on_start, on_token=on_token, token=token)
             except BadRequest as e:
                 result['bad'] = str(e)
             except Exception as e:
                 result['failed'] = str(e)
+            events.put(('end',))  # (wakes this request's thread at once)
 
         worker = threading.Thread(target=work, daemon=True)
         worker.start()
-        if stream:  # the reply is parsed whole, so its events come at the end; pings until then
+        live = Live(s.enc, mode)
+
+        def send_live(wait):
+            """A stream: sends what the engine made since the last call (waits up to `wait` s for
+            the first of it). -> False if the client is gone."""
+            try:
+                item = events.get(timeout=wait)
+            except queue.Empty:
+                return True
+            while True:
+                if item[0] == 'start':  # the engine took the request: the message starts, its content empty
+                    out = [('message_start', {'type': 'message_start', 'message': {
+                        'id': mid, 'type': 'message', 'role': 'assistant', 'model': s.model_name, 'content': [], 'stop_reason': None, 'stop_sequence': None,
+                        'usage': {'input_tokens': item[1] - item[2], 'output_tokens': 0, 'cache_creation_input_tokens': 0, 'cache_read_input_tokens': item[2]}}})]
+                elif item[0] == 'tok':
+                    out = live.feed(item[1])
+                else:
+                    return True
+                for name, data in out:
+                    if not self.try_sse(name, data):
+                        return False
+                try:
+                    item = events.get_nowait()
+                except queue.Empty:
+                    return True
+
+        if stream:  # the reply's events as it is generated (step 161); pings while there is nothing to send
             self.send_response(200)
             self.send_header('Content-Type', 'text/event-stream')
             self.send_header('Cache-Control', 'no-cache')
@@ -376,7 +471,16 @@ class Handler(BaseHTTPRequestHandler):
         gone = False
         t_said = t_ping = time.time()
         while worker.is_alive():
-            worker.join(min(1.0, s.ping))
+            if stream and not gone:
+                n_sent = result['tokens']
+                if not send_live(min(1.0, s.ping)):
+                    gone = True
+                    log(f'request {number}: the client left; cancelling')
+                    s.engine.cancel(token)
+                if result['tokens'] != n_sent:
+                    t_ping = time.time()
+            else:
+                worker.join(min(1.0, s.ping))
             if worker.is_alive() and not gone and self.client_left():
                 gone = True
                 log(f'request {number}: the client left; cancelling')
@@ -427,10 +531,14 @@ class Handler(BaseHTTPRequestHandler):
                 json.dump({'request': req, 'prompt': prompt, 'reply': text, 'message': message, 'note': note}, f, ensure_ascii=False, indent=1)
         if not stream:
             return self.send_json(200, message)
-        if not gone:
-            for name, data in sse_events(message):
+        if not gone and send_live(0):  # (what the loop above did not get to), then the reply's end
+            for name, data in live.finish(blocks) + [
+                    ('message_delta', {'type': 'message_delta', 'delta': {'stop_reason': stop_reason, 'stop_sequence': None}, 'usage': {'output_tokens': message['usage']['output_tokens']}}),
+                    ('message_stop', {'type': 'message_stop'})]:
                 if not self.try_sse(name, data):
                     break
+            if live.differs:
+                log(f'request {number}: the stream\'s thinking or text is not the message\'s (a bug: please keep the dump)')
 
     def client_left(self):
         """The client closed its side: the socket is readable and has no bytes (a client that

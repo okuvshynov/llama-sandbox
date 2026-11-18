@@ -111,24 +111,52 @@ def main():
           f'no thinking, a system prompt, three turns: the prompt is encoding.py\'s; header {p["head"]}')
     check(code == 200 and m['content'] == [{'type': 'text', 'text': 'Hello there.'}] and m['stop_reason'] == 'end_turn', f'a text reply: stop_reason {m.get("stop_reason")}')
 
-    # 2: the stream (the reply takes 2.5 s: pings first)
-    code, raw = post(dict(bench, stream=True), raw=True)
-    events = []
-    for part in raw.strip().split('\n\n'):
-        lines = part.split('\n')
-        events.append((lines[0][len('event: '):], json.loads(lines[1][len('data: '):])))
+    # 2: the stream (step 161: as the reply is generated). The fake engine takes the request, waits 2.5 s,
+    # then writes the reply 3 bytes a token.
+    def stream_of(body):
+        """-> (the events, the message rebuilt from them: content blocks, stop_reason, usage)"""
+        code, raw = post(dict(body, stream=True), raw=True)
+        events = []
+        for part in raw.strip().split('\n\n'):
+            lines = part.split('\n')
+            events.append((lines[0][len('event: '):], json.loads(lines[1][len('data: '):])))
+        blocks, stop, usage = {}, None, {}
+        for n, d in events:
+            if n == 'message_start':
+                usage = dict(d['message']['usage'])
+            elif n == 'content_block_start':
+                blocks[d['index']] = dict(d['content_block'], _json='')
+            elif n == 'content_block_delta':
+                b, dl = blocks[d['index']], d['delta']
+                if dl['type'] == 'input_json_delta':
+                    b['_json'] += dl['partial_json']
+                else:
+                    b[b['type']] += dl[b['type']]
+            elif n == 'message_delta':
+                stop = d['delta']['stop_reason']
+                usage.update(d['usage'])
+        content = []
+        for k in sorted(blocks):
+            b = blocks[k]
+            if b['type'] == 'tool_use':
+                b['input'] = json.loads(b['_json'])
+            del b['_json']
+            content.append(b)
+        return events, content, stop, usage
+
+    events, content, stop, usage = stream_of(bench)
     names = [n for n, _ in events]
     rest = [n for n in names if n != 'ping']
-    check(names[0] == 'ping' and names.count('ping') >= 2, f'a stream starts with pings while the engine works: {names.count("ping")} pings')
-    check(rest == ['message_start'] + ['content_block_start', 'content_block_delta', 'content_block_stop'] * 3 + ['message_delta', 'message_stop'],
-          f'then the events of three blocks: {" ".join(rest)}')
-    by = {i: [d for n, d in events if d.get('index') == i] for i in range(3)}
-    tool_json = ''.join(d['delta']['partial_json'] for d in by[2] if d['type'] == 'content_block_delta')
-    check(all(n == d['type'] for n, d in events) and events[names.index('message_start')][1]['message']['content'] == []
-          and by[0][0]['content_block']['type'] == 'thinking' and by[0][1]['delta'] == {'type': 'thinking_delta', 'thinking': 'reasoning'}
-          and by[1][1]['delta'] == {'type': 'text_delta', 'text': 'An answer.'}
-          and by[2][0]['content_block']['type'] == 'tool_use' and by[2][0]['content_block']['input'] == {} and json.loads(tool_json) == ARGS
-          and events[-2][1]['delta']['stop_reason'] == 'tool_use' and events[-2][1]['usage']['output_tokens'] > 0,
+    check(names[0] == 'message_start' and names[1] == 'ping' and names.count('ping') >= 2 and names.index('content_block_start') > names.index('ping'),
+          f'a stream starts with message_start when the engine takes the request, then pings while it works: {names.count("ping")} pings')
+    shape = [n for k, n in enumerate(rest) if n != 'content_block_delta' or rest[k - 1] != 'content_block_delta']
+    check(shape == ['message_start'] + ['content_block_start', 'content_block_delta', 'content_block_stop'] * 3 + ['message_delta', 'message_stop'],
+          f'then three blocks, each started, its deltas, stopped: {" ".join(shape[1:4])} x3, message_delta, message_stop')
+    n_delta = [sum(1 for n, d in events if n == 'content_block_delta' and d['index'] == k) for k in range(3)]
+    check(n_delta[0] >= 2 and n_delta[1] >= 2 and n_delta[2] == 1, f'the thinking and the text come in pieces, the tool call whole: {n_delta} deltas')
+    check(all(n == d['type'] for n, d in events) and events[0][1]['message']['content'] == [] and events[0][1]['message']['usage']['output_tokens'] == 0
+          and [b['type'] for b in content] == ['thinking', 'text', 'tool_use'] and content[0]['thinking'] == 'reasoning' and content[0]['signature'] == ds_server.SIGNATURE
+          and content[1]['text'] == 'An answer.' and content[2]['input'] == ARGS and content[2]['name'] == 'make_guesses' and stop == 'tool_use' and usage['output_tokens'] > 0,
           'the events carry the thinking, the text, the tool\'s input as JSON, stop_reason tool_use')
 
     # 3-5: cut and malformed replies
@@ -140,6 +168,38 @@ def main():
     code, m = post(bench)
     check(code == 200 and m['stop_reason'] == 'end_turn' and [b['type'] for b in m['content']] == ['thinking', 'text'] and 'DSML' in m['content'][1]['text'],
           f'a broken tool call: no tool_use block, the raw text returned: stop_reason {m.get("stop_reason")}')
+
+    # (step 161) the same three as streams: the canned replies come round again below; here, without a server,
+    # every canned reply through Live in pieces of 1, 2, 3, 7 bytes and whole: the stream's thinking and text
+    # are the message's, the tool calls come after them
+    n_live = 0
+    tricky = [{'text': t} for t in ('text that ends with line ends\n\n', 'a\n\n<b> is not a tool call\n\n<｜DSML and more', 'r</th' + enc.thinking_end_token + '\n\n', '',
+                                    'r' + enc.thinking_end_token + 'x\n\n<' + enc.dsml_token + ' calls> cut here')]
+    tricky[-1]['stop'] = 'length'
+    for r in REPLIES + tricky:
+        if 'text' not in r:
+            continue
+        for mode in ('thinking', 'chat'):
+            data = r['text'].encode('utf-8')
+            blocks, stop_reason, note = ds_server.parse_reply(enc, r['text'], mode, r.get('stop', 'eos') == 'eos', lambda p: p + '_x')
+            for size in (1, 2, 3, 7, max(1, len(data))):
+                live = ds_server.Live(enc, mode)
+                ev = []
+                for k in range(0, len(data), size):
+                    ev += live.feed(data[k:k + size])
+                ev += live.finish(blocks)
+                got = {}
+                for name, d in ev:
+                    if name == 'content_block_start':
+                        got[d['index']] = dict(d['content_block'])
+                    elif name == 'content_block_delta' and d['delta']['type'] != 'input_json_delta':
+                        got[d['index']][got[d['index']]['type']] += d['delta'][got[d['index']]['type']]
+                    elif name == 'content_block_delta':
+                        got[d['index']]['input'] = json.loads(d['delta']['partial_json'])
+                n_live += 1
+                if [got[k] for k in sorted(got)] != blocks or live.differs:
+                    check(False, f'Live, {mode}, pieces of {size}: {[got[k] for k in sorted(got)]} is not {blocks}')
+    check(n_live >= 150, f'Live: {n_live} cases (every canned reply and five odd ones, both modes, pieces of 1, 2, 3, 7 bytes and whole): the stream\'s blocks are the message\'s')
 
     # 6-7: an engine error, and the request after it
     code, m = post(bench)

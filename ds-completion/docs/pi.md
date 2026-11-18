@@ -18,7 +18,7 @@ Three parts, which need not be on one machine:
 1. Build the engine and check that a single prompt runs, as [QUICKSTART.md](../QUICKSTART.md)
    says (`make && make HIP=1`, the model files under `~/llms`). The checkout must be at step
    158 or later: `git log --oneline -1` in `ds-completion` shows `bec889e` or a later commit
-   (step 160 for the saved point under "What to expect").
+   (step 160 for the saved point, 161 for the stream, under "What to expect").
 2. The server also reads the model's own chat format, which is not in the GGUF files:
    `~/llms/ds-flash/encoding/encoding.py`, from the model's Hugging Face repository
    (the directory `encoding/` of DeepSeek-V4.1-Flash). Another place: `--encoding PATH`.
@@ -151,9 +151,9 @@ second one says `(1565 kept)` or a number near it.
 
 ## What to expect
 
-- **Nothing appears until a reply is complete.** The server sends a reply at its end, not as
-  it is generated; pi shows its working indicator meanwhile. A long reasoning can take minutes
-  (38-60 tokens per second).
+- **Reasoning and text appear as they are generated** (step 161; 38-60 tokens per second).
+  **A tool call appears when it is complete:** while the model writes one (a file's contents
+  in a `write`, for example) nothing arrives, and pi shows its working indicator.
 - **The first request of the first two conversations takes ~15 s before any reply** (~30 s
   for the very first after the server's start): pi's system prompt and tools are ~1,500
   tokens, processed at ~100 tokens per second. A longer `AGENTS.md` or more tools add to it.

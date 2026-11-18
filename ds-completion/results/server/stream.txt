@@ -1,0 +1,27 @@
+# results/server/stream_check.py http://127.0.0.1:8177; commit 095ea39+changes (step 161: a reply streamed as it is generated), sclk 6, 2026-11-18T15:01:00-05:00
+# the server: the command of results/server/pi.txt's header; these were its first six requests after the load
+reasoning and text: 205 tokens, end_turn, blocks ['thinking', 'text']
+  stream: message_start at 0.01 s; thinking_delta: 71 from 1.25 to 3.23 s; text_delta: 127 from 3.23 to 5.55 s; message_stop at 5.67 s; pings: 0
+  plain: the whole message after 4.16 s (0 of its 54 prompt tokens kept; the stream: 0)
+  the message rebuilt from the stream is the plain message
+a tool call: 50 tokens, tool_use, blocks ['text', 'tool_use']
+  stream: message_start at 0.01 s; text_delta: 13 from 3.26 to 3.71 s; input_json_delta: 1 from 4.35 to 4.35 s; message_stop at 4.35 s; pings: 0
+  plain: the whole message after 3.39 s (0 of its 303 prompt tokens kept; the stream: 0)
+  the message rebuilt from the stream is the plain message
+no reasoning: 38 tokens, end_turn, blocks ['text']
+  stream: message_start at 0.00 s; text_delta: 38 from 0.21 to 1.81 s; message_stop at 1.86 s; pings: 0
+  plain: the whole message after 1.45 s (0 of its 10 prompt tokens kept; the stream: 0)
+  the message rebuilt from the stream is the plain message
+all checks passed
+
+the server's log for the six (a pair is the same request: first the stream, then plain):
+# server: request 1: thinking, 54 prompt tokens (0 kept) in 1.2 s, 205 tokens in 4.4 s (46.4 t/s), waited 0.0 s, end_turn: thinking, text
+# server: request 2: thinking, 54 prompt tokens (0 kept) in 0.5 s, 205 tokens in 3.7 s (55.5 t/s), waited 0.0 s, end_turn: thinking, text
+# server: request 3: thinking, 303 prompt tokens (0 kept) in 3.2 s, 50 tokens in 1.1 s (43.5 t/s), waited 0.0 s, tool_use: text, tool_use
+# server: request 4: thinking, 303 prompt tokens (0 kept) in 2.4 s, 50 tokens in 1.0 s (49.4 t/s), waited 0.0 s, tool_use: text, tool_use
+# server: request 5: chat, 10 prompt tokens (0 kept) in 0.2 s, 38 tokens in 1.6 s (23.2 t/s), waited 0.0 s, end_turn: text
+# server: request 6: chat, 10 prompt tokens (0 kept) in 0.1 s, 38 tokens in 1.3 s (29.1 t/s), waited 0.0 s, end_turn: text
+
+The stream of a pair took longer than the plain request, and the engine's own times say where: its generation was
+slower in the first of each pair (46.4 / 43.5 / 23.2 t/s) than in the second (55.5 / 49.4 / 29.1). The order was not
+swapped, so this does not measure what streaming costs.

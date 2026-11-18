@@ -235,7 +235,8 @@ other programs can use.
    that goes on from the last one runs only its new tokens since step 158, which took those
    tasks from 118 to 63 seconds, and a new conversation starts from a point saved at the end
    of the shared system prompt and tools since step 160), the OpenAI endpoint the benchmark's other script needs,
-   a reply streamed as it is generated, sampling with `--spec` on two machines.
+   sampling with `--spec` on two machines (a reply is streamed as it is generated since step
+   161).
 3. **Where the time is, when optimization resumes** (the list: [docs/plan.md](plan.md)):
    - **die 0's dense part** (~48 ms of a code step): attention over the XGMI pair 0-1 with
      the core split by heads (step 76 split only the output projections: +0.6%, not kept);

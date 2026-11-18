@@ -284,6 +284,7 @@ Unless stated: sclk 2, 16 CPU threads (32 before README step 18), the study30 pl
 | 157 | `server/test_server.txt` (again, with a tool loop's second request), `server/pi.txt` | `server/test_server.py`; `pi.txt`: by hand, the commands in its header (pi built from `~/projects/pi`, `server/pi-models.json` as its `models.json`; ~2 min of model load, ~2 min of tasks) |
 | 158 | `requests/requests_test.txt`, `requests/requests_test-plain.txt` (again, with the kept-context checks), `server/test_server.txt` (again), `server/pi-kept.txt` | `results/requests/requests_test.py` and with `--no-spec` (~7 min each); `server/test_server.py`; `pi-kept.txt`: by hand, the commands in the header of `server/pi.txt` |
 | 160 | `requests/requests_test.txt`, `requests/requests_test-plain.txt` (again, with the saved-point checks), `server/test_server.txt` (again), `server/pi-saved.txt` | `results/requests/requests_test.py` and with `--no-spec` (~10 min each); `server/test_server.py`; `pi-saved.txt`: by hand, the commands in the header of `server/pi.txt`, three tasks |
+| 161 | `server/test_server.txt` (again), `server/stream_check.py`, `server/stream.txt`, `server/pi-stream.txt` | `server/test_server.py`; `results/server/stream_check.py http://127.0.0.1:PORT` against a running server (the model); `pi-stream.txt`: by hand, the commands in the header of `server/pi.txt` with `--mode json` |
 
 ## 7. Open items (to confirm)
 

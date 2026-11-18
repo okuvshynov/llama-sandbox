@@ -34,7 +34,8 @@ How to build and run it: [QUICKSTART.md](QUICKSTART.md).
   tools, tool results and reasoning effort rendered by the model's own `encoding.py`
   (steps 153-154, 157). The pi coding harness runs against it (step 157); a request that goes on from the
   last one runs only its new tokens (step 158), and a new conversation starts from a point
-  saved at the end of the shared system prompt and tools (step 160).
+  saved at the end of the shared system prompt and tools (step 160). A stream carries the
+  reasoning and the text as they are generated (step 161).
 
 ## The documents
 

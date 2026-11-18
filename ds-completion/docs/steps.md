@@ -5803,3 +5803,58 @@ the server's start cost what they did, and those after them start at once.
 reachable). The second point's device memory was not measured.
 
 **Next:** a reply streamed as it is generated.
+
+## Step 161: a reply streamed as it is generated
+
+A stream got pings and then the whole reply at its end (step 153): a tool call can only be
+parsed from a complete reply, and the server parsed everything at once. With pi a person
+watches the reply, and a long reasoning was minutes of nothing.
+
+**The change** (`server/ds_server.py`, class `Live`). The model writes reasoning, `</think>`,
+text, and perhaps a tool block that starts with two line ends and `<｜DSML｜ calls`. `Live` is
+fed the engine's bytes token by token and returns events: the reasoning as `thinking_delta`,
+the text as `text_delta`. What could still become `</think>` or the tool block's start is held
+back until the next bytes decide (in practice the two line ends). From the tool block on
+nothing is sent; at the end the whole reply is parsed as before (`parse_reply`, the model's
+`encoding.py`) and the tool calls go out as blocks. If the block did not parse, or the reply
+was cut inside it, its characters are sent as text, which is what the plain message has.
+
+- `message_start` is sent when the engine takes the request (the `prompt` line), with the
+  prompt's token counts; pings fill the silences as before.
+- The engine's thread puts what it reads on a queue and the request's thread sends it, so
+  one thread writes to a connection.
+- The invariant: the thinking and text a stream carried are the message's blocks. `Live`
+  checks it at the end of every reply and the log says if it ever fails.
+
+**Tests.** `server/test_server.py` (38 checks): the stream of a slow canned reply
+(`message_start`, pings, three blocks, the thinking and text in pieces, the tool call whole),
+and `Live` alone over 180 cases: every canned reply and five odd ones (text ending in line
+ends, `\n\n<b>`, a start of `</think>` inside reasoning, an empty reply, a reply cut inside a
+tool block), in both modes, in pieces of 1, 2, 3 and 7 bytes and whole. The blocks rebuilt
+from the events equal `parse_reply`'s in all of them.
+
+**With the model** (`results/server/stream_check.py` -> `stream.txt`): three requests, each as
+a stream and then plain (one seed: one reply).
+
+| | tokens | the first piece | the last | `message_stop` | rebuilt = plain |
+|---|---|---|---|---|---|
+| reasoning and text | 205 | 1.25 s (thinking), 3.23 s (text) | 5.55 s | 5.67 s | yes |
+| text and a tool call | 50 | 3.26 s (text) | 3.71 s; the call at 4.35 s | 4.35 s | yes |
+| no reasoning | 38 | 0.21 s | 1.81 s | 1.86 s | yes |
+
+- **The first version sent `message_stop` a second late** (6.50 s where the last piece came at
+  5.48): the sending loop waited out its one-second timeout after the engine's thread had
+  ended. The thread now puts an end mark on the queue. Seen only because the check prints
+  the events' times.
+- The stream of a pair took longer than the plain request (5.67 against 4.16 s). The engine's
+  own generation was slower in the first of each pair (46.4 / 43.5 / 23.2 t/s) than in the
+  second (55.5 / 49.4 / 29.1), and the order was not swapped: this is not a measure of what
+  streaming costs, and none was taken.
+
+**pi** (`results/server/pi-stream.txt`): step 160's three tasks with `--mode json`, which
+prints pi's own events: task 2 had 113 `text_delta` updates and 4 tool calls, each whole. The
+tasks' results are right, the replies those of step 160 where the prompts are (the dates of an
+`ls -la` differ in three). Only print mode again: the interactive interface was not driven.
+
+**Left open:** a tool call in pieces (the model writes its arguments as tagged text, not JSON:
+it would need a second, incremental parser); the OpenAI endpoint; forced tool use.

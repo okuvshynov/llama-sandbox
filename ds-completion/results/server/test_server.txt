@@ -1,19 +1,21 @@
-# server/test_server.py (no model, no GPU); commit 560b20d+changes (step 160), 2026-11-18T14:47:21-05:00
+# server/test_server.py (no model, no GPU); commit 095ea39+changes (step 161), 2026-11-18T15:01:00-05:00
 ok    the prompt: encoding.py's rendering of system + tools + user, effort medium = 62, ends with <think>
 ok    the engine's header: gen n=65536 temp=1.0 top_p=0.95 seed=7 bytes=1439
 ok    thinking + a tool call: blocks ['thinking', 'tool_use'], stop_reason tool_use, the input as sent (non-ASCII included)
 ok    the message's fields: usage {'input_tokens': 345, 'output_tokens': 98, 'cache_creation_input_tokens': 0, 'cache_read_input_tokens': 0}
 ok    no thinking, a system prompt, three turns: the prompt is encoding.py's; header gen n=100 temp=0.0 top_p=1.0 seed=3 bytes=166
 ok    a text reply: stop_reason end_turn
-ok    a stream starts with pings while the engine works: 2 pings
-ok    then the events of three blocks: message_start content_block_start content_block_delta content_block_stop content_block_start content_block_delta content_block_stop content_block_start content_block_delta content_block_stop message_delta message_stop
+ok    a stream starts with message_start when the engine takes the request, then pings while it works: 2 pings
+ok    then three blocks, each started, its deltas, stopped: content_block_start content_block_delta content_block_stop x3, message_delta, message_stop
+ok    the thinking and the text come in pieces, the tool call whole: [3, 4, 1] deltas
 ok    the events carry the thinking, the text, the tool's input as JSON, stop_reason tool_use
 ok    cut inside the reasoning: stop_reason max_tokens, blocks ['thinking']
 ok    cut inside the answer: stop_reason max_tokens, blocks ['thinking', 'text']
 ok    a broken tool call: no tool_use block, the raw text returned: stop_reason end_turn
+ok    Live: 180 cases (every canned reply and five odd ones, both modes, pieces of 1, 2, 3, 7 bytes and whole): the stream's blocks are the message's
 ok    the engine's error line: 400 the prompt is 70000 tokens; --max-ctx is 65536
 ok    the next request is answered
-ok    two clients left 60 s replies (one plain, one a stream): the next request is answered 0.5 s later
+ok    two clients left 60 s replies (one plain, one a stream): the next request is answered 0.0 s later
 ok    a thinking block has a signature that is not empty: 'ds-completion'
 ok    a tool loop's second prompt starts with the first prompt and the reply as the model wrote it (reasoning, tool call): 200
 ok    and goes on with the result and the text: '<｜end▁of▁sentence｜><｜User｜><tool_result>Red: 2 right. Grün: 0 right.</tool_result>\n\nGo on.<｜Assistant｜><think>'
@@ -33,6 +35,6 @@ ok    none of the refused requests reached the engine
 ok    a body that is not JSON: 400
 ok    GET /v1/models names the model
 ok    another path: 404
-ok    the log has the two cancelled requests: ['# server: request 9: cancelled after 0 tokens, 2.0 s after it arrived', '# server: request 10: cancelled after 0 tokens, 2.0 s after it arrived']
-ok    the log has progress lines for the slow request: 6, the first: # server: request 3: 345 prompt tokens, 0 tokens so far, 1 s since it started
+ok    the log has the two cancelled requests: ['# server: request 9: cancelled after 0 tokens, 2.0 s after it arrived', '# server: request 10: cancelled after 0 tokens, 1.5 s after it arrived']
+ok    the log has progress lines for the slow request: 5, the first: # server: request 3: 345 prompt tokens, 0 tokens so far, 1 s since it started
 all checks passed

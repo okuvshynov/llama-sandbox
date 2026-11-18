@@ -233,8 +233,8 @@ harness with `server/pi-models.json` (the setup: [docs/pi.md](docs/pi.md)).
   the reply, tool calls included.
 - **Sampling:** temperature 1 and top-p 0.95 unless the request says otherwise, and one seed
   for every request (`--seed`, default 0): the same request gives the same reply.
-- **One request at a time;** others wait. A stream gets pings while the engine works and the
-  whole message at its end. A request whose client leaves is cancelled.
+- **One request at a time;** others wait. A stream carries the reasoning and the text as they are
+  generated, tool calls whole at the end, pings in the silences. A request whose client leaves is cancelled.
 - **A conversation with tool calls:** earlier replies (reasoning, text, tool calls) and tool
   results are read. A request that goes on from the last one (its prompt, its reply, a new
   turn) runs only the new tokens; one that shares its start with the last ones (the system
@@ -359,7 +359,7 @@ Means over all 17 steps: 1.8e-2 to 2.5e-2 for every mode.
   step 48: a proof prompt repeats one line after ~800 tokens; the model's behaviour, not a
   bug). Sampling (`--temp 1 --top-p 0.95`, the model card's settings) is the way around it.
 - Sampling with `--spec` on two machines is refused (the logits are on the back).
-- The server: one request at a time, no forced tool use, no images, a context kept only for a
-  request that goes on from the last one, no reply streamed as it is generated, the Anthropic API only.
+- The server: one request at a time, no forced tool use, no images, one context and one saved
+  point kept between requests, tool calls streamed only when complete, the Anthropic API only.
 
 Details: [docs/timing.md](docs/timing.md) (where the time goes, one page), [docs/overview.md](docs/overview.md) (a 20-minute summary), [docs/steps.md](docs/steps.md) (all measurements and checks, step by step), [docs/plan.md](docs/plan.md) (what's next).

@@ -2,8 +2,9 @@
 
 README step 153. A small program (Python, standard library only) that speaks a part of the
 Anthropic Messages API and runs the engine as a child process in its `--requests` mode
-(`docs/requests.md`). It exists for a benchmark that sends single-turn requests with one tool;
-it does what that needs and refuses the rest.
+(`docs/requests.md`). It was made for a benchmark that sends single-turn requests with one tool
+and then for the pi coding harness ([pi.md](pi.md)); it does what those need and refuses the
+rest.
 
     server/ds_server.py [--port 8080] [--host 127.0.0.1] [--temp 1 --top-p 0.95 --seed 0] \\
         [--dump DIR] -- bin-hip/ds-completion -m $M --rt $F8 --placement placements/study30.txt \\
@@ -57,11 +58,25 @@ included). `model` is `--model-name`.
 
 ## Streaming
 
-A tool call can only be parsed when the reply is complete, so a stream does not carry the
-reply as it is generated: the server sends `ping` events (every `--ping` seconds, default 10)
-while the engine works, and then all the message's events at once (`message_start`, per block
-`content_block_start` / `content_block_delta` / `content_block_stop`, `message_delta`,
-`message_stop`). This keeps a client's read timeout from firing during long reasoning.
+With `stream: true` the reply comes as it is generated (step 161):
+
+- `message_start` when the engine has taken the request, before the prompt runs; its usage has
+  the prompt's tokens (`input_tokens`, and `cache_read_input_tokens` for those kept).
+- `ping` every `--ping` seconds (default 10) while nothing else is sent: the prompt running,
+  a request waiting for the engine, a tool call being written.
+- The reasoning as `thinking_delta` events and the text as `text_delta` events, as the engine
+  makes the tokens (a verify step's tokens come together, 38-60 tokens a second).
+- **Tool calls at the end, whole.** A call can only be parsed when the reply is complete, so
+  from the first characters of the tool block on nothing is sent until the reply ends; then
+  each call as one `tool_use` block with its input in one `input_json_delta`. A long call (a
+  file being written) is a silence with pings.
+- `message_delta` (the stop reason, `output_tokens`) and `message_stop`.
+
+The message a stream carries is the message the same request gets without `stream`: the
+thinking and text sent in pieces are those blocks' contents exactly, also for a reply that is
+cut or does not parse. (The last characters before a possible tool block, the two line ends,
+are held back until the next token shows what they are.) An engine error after
+`message_start` comes as an `error` event.
 
 ## One request at a time
 
@@ -117,4 +132,5 @@ from the saved point (step 160).
 ## Tests
 
 `server/test_server.py`: the server against `server/fake_engine.py` (no model, seconds).
-With the model: `results/server/endgame.txt`, `results/server/pi.txt`.
+With the model: `results/server/endgame.txt`, `results/server/pi.txt`, and
+`results/server/stream_check.py` (a stream against the same request without it).

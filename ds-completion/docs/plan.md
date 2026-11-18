@@ -358,6 +358,8 @@ Step 158: the context kept between requests when a prompt goes on from it (by to
 pi's two tasks 118 -> 63 s. Open: what a new conversation shares with the last (system prompt, tools), a live stream.
 Step 160: a second saved point in the runtime, at the end of what two conversations share; from the third conversation
 on a new one starts in 0.1-0.3 s, not 14 s (pi's third task: 7.6 s). Open: a live stream; two machines not tested.
+Step 161: a stream carries reasoning and text as they are generated, tool calls whole at the end; its message is the
+plain request's. Open: the OpenAI endpoint, tool calls streamed in pieces, forced tool use, sampling on two machines.
 constructor in parts.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
