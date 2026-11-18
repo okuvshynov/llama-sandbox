@@ -1,7 +1,7 @@
-# ds-completion: overview (2026-10-28, numbers updated 2026-11-12)
+# ds-completion: overview (2026-11-18)
 
 A ~20-minute read: what was built, how it works, what we measured, what we learned, and what
-is next. How to run it: [QUICKSTART.md](../QUICKSTART.md). Where the time goes, one page: [docs/timing.md](timing.md). Every step and number in detail:
+is next. First written 2026-10-28; brought up to date at step 156. How to run it: [QUICKSTART.md](../QUICKSTART.md). Where the time goes, one page: [docs/timing.md](timing.md). Every step and number in detail:
 [docs/steps.md](steps.md). Plan and cost model: [docs/plan.md](plan.md). Operand types and accumulation:
 [docs/numerics.md](numerics.md).
 
@@ -12,11 +12,12 @@ allows, with **outputs that match the official reference implementation**. Since
 on two of them, the model cut in two halves, with the same outputs.
 
 - Priorities, in order: correctness, code clarity, performance.
-- Non-goals: other models, other hardware, serving many users at once. Sampling was a non-goal
-  until step 148; since steps 149-150 `--temp`, `--top-p`, `--seed` sample, in the plain and the speculative
-  loop with the same output (greedy is the default; not yet on two machines with `--spec`).
-  A CLI (`ds-completion -m model -p "prompt"`) is the interface, with an interactive session
-  mode (`-i`).
+- Non-goals: other models, other hardware, serving many users at once.
+- One sequence at a time, text only. Greedy by default; temperature and top-p with a seed
+  since steps 148-151.
+- Three ways in, one engine: a program for one prompt (`ds-completion -m model -p "prompt"`),
+  an interactive session (`-i`), and since steps 152-154 requests on stdin (`--requests`) with
+  a small HTTP server in front that speaks the Anthropic Messages API.
 
 | | |
 |---|---|
@@ -39,6 +40,13 @@ Decode speed (16 CPU threads; sclk level 2 and 128 generated tokens unless a row
 | for scale, at sclk 2 and before steps 50-104: placement from the prompt's own routing (perfect knowledge) | ~25 t/s plain; 29-41 t/s with `--spec` |
 
 (The speculative and cache numbers are 300-token runs on held-out prompts; README steps 26, 32.)
+
+Sampled (temperature 1, top-p 0.95; README steps 149-151): 43.1 t/s mean on the same prompts
+against 44.9 greedy in the same session. The loss is the draws (~0.5 ms each on the host), not
+acceptance: as many drafts are accepted as with greedy decoding.
+
+Through the server (README step 153): one request of the benchmark it was written for, 1,305
+prompt tokens and 42,960 tokens of reasoning ending in a tool call, at 38.5 t/s: 19 minutes.
 
 Two machines (README steps 110-112; sclk 6, the same prompts): **mean 50.9 t/s** against 44.6
 (+14%; +12% to +27% on code, math, SQL and JSON, +8% on chat, +2.5% on Chinese and Japanese,
@@ -103,6 +111,17 @@ token -> embedding (host) -> 40 x [ engram (layers 1, 14) -> attention block -> 
   is kept, the rest rolled back (window slots, compressor state). How many guesses to verify is
   chosen per step from the draft's confidence head, which turned out to be calibrated: the n
   with the most expected tokens per ms, with verify costs fitted during the run.
+- **The next token** (`src/sampler.cpp`): the largest logit, or with `--temp` a draw from the
+  softmax with top-p. The random number of a token is a hash of the seed and the token's
+  position, not the next value of a generator, so one seed gives one output with and without
+  speculation: the speculative loop draws the main model's token at each verified position
+  and accepts a draft if it is that token.
+- **Requests and the server** (`--requests`, `server/ds_server.py`): the engine reads a whole
+  rendered prompt and its settings from stdin, rewinds its context to empty, and writes the
+  reply's tokens as lines. The server in front converts an API request to the model's own
+  message format and lets the model's `encoding.py` render the prompt (system block, tools,
+  reasoning effort) and parse the reply (reasoning, text, tool calls). One request at a time;
+  a signal cancels a request whose client left.
 - **Reference path** (`src/forward.cpp`): the whole model as ggml CPU graphs, module by module like
   the official `model.py`. Slow (3.5 t/s), but it is the second implementation every runtime
   change is checked against.
@@ -122,6 +141,14 @@ token -> embedding (host) -> 40 x [ engram (layers 1, 14) -> attention block -> 
   (`bench-fp8 --bitwise`, `bench-kernels --bitwise`, `bench-expert-pool`), each with a control
   that the test can see a difference; the end-to-end gate is speculative output = plain greedy
   output, byte for byte.
+
+- **Stored outputs:** the held-out prompts' outputs are kept as hashes of their token ids
+  (`results/record/reference/`); a run writes itself as a record (`--record`), and
+  `scripts/run_matrix.py` runs prompts x configurations and compares. With `--canon` the output
+  must be the stored one on any placement, with or without speculation or the cache.
+- **Sampling and requests** are held to the same kind of gate: a sampled speculative run must
+  equal the plain loop's with the same seed; a reply in `--requests` mode must equal a single
+  run of that prompt, also after other requests, errors and cancels.
 
 ## 5. What we learned (the surprises)
 
@@ -156,89 +183,80 @@ token -> embedding (host) -> 40 x [ engram (layers 1, 14) -> attention block -> 
   buys little while CPU expert misses are half of a verify step: level 2 -> 8 gives +8% plain,
   +9% `--spec`, for ~30% more power (README step 27); level 0 is slower at the same energy per
   token as level 2.
+- **Sampling at temperature 1 did not lower the draft's acceptance** on the held-out prompts
+  (2.80 tokens per step against 2.58 greedy; predicted: clearly fewer). The model is sure of
+  most tokens, and where it is not, the draft was often wrong under greedy decoding too
+  (README step 150).
+- **129,280 scalar `exp` calls are a millisecond.** A draw from the whole vocabulary cost more
+  than the copy of the logits it reads; a vector `exp` and stopping at the first rejected draft
+  halved it (README step 151).
+- **Two traces side by side name a cause in one line.** Runs that came out 10-14% slow were
+  the engram rows read from disk, 1.2 -> 13 ms per step, three hours after a reboot; every
+  other span was level (README step 155).
 
-## 6. Where a token's time went (sclk 2, 16 threads; 2026-10-28, before the cache; today: docs/timing.md)
+## 6. Where a token's time goes
 
-| ms per token | experts on CPU only | study30 placement (81% on GPUs) | perfect placement (97%) |
-|---|---|---|---|
-| dense: attention, hyper-connections, norms, engram, head | 26.1 | 26.1 | 26.1 |
-| shared expert + router + dispatch/copies | 8.5 | 8.7 | 8.7 |
-| routed experts on GPUs (critical-path part) | - | 4.2 | ~5 |
-| routed experts on the CPU (critical-path part) | 51.6 | 11.0 | ~2 |
-| **step** | **86.6** | **50.6** | **~43** |
+Today, at sclk 6 with speculation and the cache (the page for this: [docs/timing.md](timing.md)):
 
-A floor of ~35 ms (~28 t/s) remains whatever the caching: the dense part, the shared expert, the
-router and the per-layer dispatch. (At sclk 2, before the decode work of steps 50-104.)
+    step  ~=  draft (~8 ms)  +  verify: ~38 ms for one token, ~+9 ms per token after it
 
-With speculative decoding, a verify step of 6 tokens (`results/spec-profiles.txt`):
+A step yields ~2 tokens on chat and Chinese/Japanese and 3.3-4.5 on code and structured text.
+A code prompt's 6-token verify step, 85 ms (the traces of README steps 105 and 155):
 
-| ms per verify step (6 tokens) | study30 placement | perfect placement |
-|---|---|---|
-| routed experts on the CPU (critical path) | 68 | 9 |
-| attention core (per token, in order) | 20 | 21 |
-| fp8 projections: attention q + output, shared expert | 35 | 37 |
-| router, hyper-connections, indexer, compressor, head, rest | ~48 | ~54 |
-| **step** | **171** | **121** |
+| part | ms |
+|---|---|
+| die 0's dense part (shared expert 8, attention's output 8, its core 6, its query 5, hyper-connections 5, the rest) | 48 |
+| die 0 waiting for the CPU's experts | 27 |
+| die 0 waiting for the other dies' experts | 5 |
+| outside the layers (embedding, head, ids to the host, the cache's step) | 5 |
 
-plus the draft, ~12 ms (at sclk 8 the GPU parts shrink ~25%; the CPU misses do not: 152 ms).
-One token alone costs ~50 ms, so 6 tokens verified cost ~3.4x one; the
-win depends on how many guesses are right (2 per step on chat, 4 on code).
+So the dense part on one die is over half of a step and the CPU's misses a third; on two
+machines the CPU's part is gone and each half's layers take ~36 ms. Sampling adds ~0.5 ms per
+draw, one per accepted draft and one more.
 
-With the adaptive cache (`--canon --cache-loads 200`, sclk 8; README step 33,
-`results/verify-breakdown.txt`), the dense part is now most of a verify step:
-
-| ms per verify step (6 tokens) | static study30 | + cache 200/s |
-|---|---|---|
-| **CPU experts** (the GPU waiting for them) | **77.6** | **24.8** |
-| (host CPU expert compute, partly overlapped) | 85.4 | 32.3 |
-| (expert uses per step on GPU / CPU) | 1,156 / 284 | 1,348 / 92 |
-| **GPU experts** (visible part; the rest overlaps the shared expert) | 2.9 | 4.2 |
-| attention: core (per token, in order) | 15.8 | 15.9 |
-| attention: output projection | 11.1 | 11.2 |
-| attention: q, indexer, compressor, kv | 15.0 | 15.2 |
-| shared expert | 13.4 | 14.4 |
-| router + dispatch + sum (per layer) | 10.5 | 10.6 |
-| hyper-connections | 4.7 | 4.7 |
-| output head | 3.7 | 3.7 |
-| engram | 14.6 (cold table pages; ~3 warm) | 2.8 |
-| **step** | **172.4** (~160 warm) | **110.8** |
-| draft (separate) | 8.8 | 11.6 |
-
-Per verify step plus draft (~122 ms): dense part ~64%, CPU experts ~20%, draft ~10%, GPU
-experts ~3% visible.
+When this page was first written (sclk 2, before the cache) a plain step was 87 ms with every
+expert on the CPU, 51 with the static placement, and ~43 with perfect knowledge of the
+experts: the CPU's experts were the cost then, and the cache and steps 50-104 moved it to the
+dense part.
 
 ## 7. What is next
 
-1. **The CPU's experts** (27 of a code verify step's 85 ms on one machine; ~40% before steps 80-82): steps 77-82 took a
-   CPU call apart (activations written by many threads read slowly: one writer each, step 80;
-   tasks handed out in pairs, step 82; +3.4% together). A CPU weight layout (step 83,
-   benchmarked: the same bits, compute x1.8, a cold call -9%) was tried in the runtime as a copy
-   in RAM and not kept (step 91). On two machines these experts are nearly gone (item 5); the ~0.03-0.04 ms a call
-   loses after the runtime's idle gap (step 81) stays.
-2. **Die 0's dense part** (~48 ms of a code step): attention over the XGMI pair 0-1 with the core
-   split by heads (step 76 split only the output projections: +0.6%, not kept; the core needs the
-   KV state on die 1); the fp8 GEMV at 2-8 inputs needs a new work split (steps 65, 75).
-3. **Long context** (steps 34-35): runs to 1M with `--max-ctx`, gated
-   against the reference at 20k tokens. Left: compressed caches in fp8/fp4 (far beyond 64k), and
-   the indexer batched over a verify step past 512 keys (PLAN F; step 74 skips it below).
-4. **The prompt:** 93 / 63 t/s (fast / `--canon`); with `--canon` the CPU's experts set the pace,
-   so the CPU work above helps there too.
-5. **Two machines** (built, steps 110-112: +14%): the halves take turns, so one machine is
-   always idle and each half's dense part runs on one die. Next there: overlap between the
-   halves (the front starting the next step while the back finishes), to be estimated first.
-   (The first estimate of a second machine, ~1-2 ms once the cache adapts, was right for long
-   runs and too low for 300-token ones: step 111.) The list of ideas: docs/plan.md "Two machines".
-6. **More hardware** (studied, not built): many more
-   experts on GPUs; the CPU stays on the critical path for larger models.
+Optimization is paused (the person, 2026-11-16); the work since is the engine as something
+other programs can use.
 
-Explored, not planned: RDMA between machines, an MI210 for the dense part (~33 t/s estimated), and a hypothetical
-V4.1-Pro (engram on SSD is easy; experts barely fit in two machines' RAM).
+1. **How the programs are organized.** One prompt, chat and the server are modes of one loop in
+   `apps/ds_completion.cpp`, and the chat template exists twice (in C++ for `-i`, in the
+   model's `encoding.py` for the server). Proposed, not decided: the request protocol as the
+   one way to talk to the engine, chat as a client of it like the server, and for that a
+   context kept between requests where their prompts share a prefix.
+2. **The server:** tool results in a conversation, the OpenAI endpoint the benchmark's other
+   script needs, a reply streamed as it is generated, sampling with `--spec` on two machines.
+3. **Where the time is, when optimization resumes** (the list: [docs/plan.md](plan.md)):
+   - **die 0's dense part** (~48 ms of a code step): attention over the XGMI pair 0-1 with
+     the core split by heads (step 76 split only the output projections: +0.6%, not kept);
+     the fp8 GEMV at 2-8 inputs needs a new work split (steps 65, 75);
+   - **the CPU's experts** (27 ms of that step): steps 77-82 took a CPU call apart (+3.4%); a
+     CPU weight layout was tried and not kept (steps 83, 91); on two machines they are
+     nearly gone;
+   - **two machines** (+14%): the halves take turns, so one machine is always idle; an
+     overlap between the halves is to be estimated first;
+   - **the draft:** a block of 5 tokens; on code the rule verifies all 5 on about half of
+     the steps (step 146 estimated what a perfect draft-length rule would give).
+4. **Long context** (steps 34-35): runs to 1M with `--max-ctx`, gated against the reference at
+   20k tokens. Left: compressed caches in fp8/fp4 (far beyond 64k), the indexer batched over a
+   verify step past 512 keys.
+
+Explored, not planned: RDMA between machines, an MI210 for the dense part (~33 t/s estimated),
+more hardware for the experts, and a hypothetical V4.1-Pro (engram on SSD is easy; experts
+barely fit in two machines' RAM).
 
 ## 8. Open questions for review
 
 - Which prompts represent real use? The placement and the cache's starting set depend on it.
 - Which GPU clock level is acceptable for power (sclk 6 for every measurement since step 48; 4-6 is the sweet spot; level 8
   costs ~17-25% more energy per token for ~8-9% speed while CPU misses dominate)?
+- Should chat need Python and the model's `encoding.py` (as the server does), or stay inside
+  the C++ program?
 - Is the remaining correctness risk acceptable: near-tie fp8 rounding flips make the top token
   differ from the reference occasionally (1 of 17 steps on the test prompt), in every
   implementation we compared, the llama.cpp fork included.
@@ -254,6 +272,10 @@ for one step lies with its results.
 |---|---|
 | `apps/ds_completion.cpp` | the CLI, top to bottom: the options (`Args`, `parse_args`), the record (`write_record`: `--record` writes a run as one JSON object, `docs/record.md`), the two generation loops (`generate_spec`, `generate_plain`), then `run`: load, the turns (one prompt, `-i`'s lines or `--requests`' requests), the summaries |
 | `apps/think_view.h` | how a reply is printed: `--think-show`, the reasoning as one moving line or hidden (README step 147) |
+| `apps/record.h` | what `--record` writes beyond the program's own variables: the id hashes, the GPU clock, the storage reads |
+| `apps/ds_inspect.cpp` | load the model, or some layers, through the real loader and show what it found |
+| `src/canon_dot.{h,cpp}`, `src/canon_math.h` | `--canon`: one specification of an expert's arithmetic that the CPU and the GPU kernels both reproduce bit for bit, so an expert gives the same bits wherever it runs |
+| `src/fatal.h` | where the process is, for the handler that reports a fatal signal |
 | `src/model.{h,cpp}` | GGUF loading (zero-copy mmap), the model's schema and hyperparameters |
 | `src/forward.{h,cpp}` | the CPU reference path (ggml graphs), used by tests and `bin/ds-completion` |
 | `src/cpu_moe.{h,cpp}` | the exact AVX-512 routed-expert kernel |
@@ -261,20 +283,23 @@ for one step lies with its results.
 | `src/sampler.{h,cpp}` | the next token from the logits: greedy, or temperature and top-p with a random number per (seed, position) (README steps 148-151); `tests/test_sampler.cpp` checks it |
 | `apps/fp8pack.cpp` | lossless fp8 repack of the dense weights |
 | `tests/ds_test.cpp` | per-layer and end-to-end tests against the goldens |
+| `tests/test_fakequant.cpp`, `tests/test_topk.cpp` | the rounding ops and the indexer's selection against the reference's, bit for bit |
 | `hip/rt.{h,cpp}` | the GPU runtime: state, layer order, the expert split |
 | `hip/rt_peer.cpp` | the runtime as one half of a model on two machines: the front's messages, the back's `serve` (`hip/peer.h`: the protocol) |
 | `hip/rt_trace.cpp` | the runtime's observability: the startup memory ledger, `--profile`'s groups, `--trace` (`hip/rt_internal.h`: the helpers the runtime's files share) |
 | `docs/requests.md` | `--requests`: the protocol between the engine and a server's front (README step 152) |
-| `docs/server.md`, `server/` | the HTTP front: `ds_server.py` (Anthropic Messages over `--requests`), its test with a fake engine (README step 153) |
+| `docs/server.md`, `server/` | the HTTP front: `ds_server.py` (Anthropic Messages over `--requests`), and its test without a model (`test_server.py` with `fake_engine.py`; README steps 153-154) |
 | `docs/rocprof.md` | the GPU side under AMD's `rocprofv3`: how to run it, its files, how to read them (README step 140) |
 | `hip/kernels.{h,hip}` | the runtime's kernels (norms, attention, indexer, hyper-connections, router, dispatch) |
 | `hip/fp8_gemv.{h,hip}` | exact fp8 x fp8 GEMV |
 | `hip/fp4_moe.{h,hip}` | exact fp4 routed-expert kernel (4 launches) |
 | `hip/expert_pool.{h,hip}` | expert slots per die, placement reading and assignment |
+| `hip/expert_cache.{h,cpp}` | the adaptive cache: which experts to swap in and out, from recent use |
+| `hip/expert_loader.{h,cpp}` | the background loads into pool slots, one thread per die |
 | `hip/dspark.{h,cpp}` | the DSpark draft (3 layers, Markov and confidence heads) |
 | `hip/peer.h` | two machines: the messages between the front and the back half (TCP) |
 | `bench/bench_*` | benchmarks of each kernel and of the loader, CPU and GPU (the Makefile knows which need `HIP=1`) |
 | `ref/` | the Python reference, golden export, weight checks, logits comparison |
 | `scripts/` | the tools still in use ([scripts/README.md](../scripts/README.md)): the runner of a matrix of runs (`run_matrix.py`) and the reader of their records (`records.py`; README steps 128-129), the chat launcher (`chat.sh`), the held-out measurement (`spec-measure.sh`) and the two-machine one (`split-measure.sh`), the trace tools, `route_stats.py`. A script written for one step lies with its results under `results/` (README step 130) |
 | `placements/` | ranked expert placements (`study30.txt` is the default) |
-| `results/` | raw outputs of every measurement quoted in the README |
+| `results/` | raw outputs of every measurement quoted in the steps ([docs/reproduce.md](reproduce.md): which command produced which) |

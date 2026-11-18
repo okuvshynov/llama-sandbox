@@ -5,6 +5,7 @@ faster or slower. Details and measurements: [docs/steps.md](steps.md) (steps cit
 [docs/plan.md](plan.md). Generation and prompt numbers are at sclk 6 (the GPU clock level). The clock:
 held-out 36.8 / 41.1 / 42.1 t/s at sclk 2 / 6 / 8 when swept (sclk 6 is 44.6 since); at sclk 6 ~35% of a token's time scales with
 it (README step 90); the rest is the CPU side and HBM-bound GPU work (step 94).
+Greedy unless a section says sampled. Last brought up to date at step 156 (2026-11-18).
 
 ## Generation (one sequence, speculative decoding with the adaptive cache)
 
@@ -13,7 +14,7 @@ steps 57-58). A step drafts up to 5 tokens, then verifies the anchor and n draft
 
     step  ~=  draft (~8 ms)  +  verify: ~38 ms for one token, ~+9 ms per token after it
 
-(verify steps of a chat prompt, the traces of README step 105, medians: 1 token 38 ms, 2: 47,
+(verify steps of a chat prompt, the traces of README step 105, the same in step 155's, medians: 1 token 38 ms, 2: 47,
 3: 56, 4: 65; a code prompt's 6-token step 85; at step 58 these were 40, 56, 70, 85 and 108). A step yields the accepted drafts plus one token of its own:
 **~2 tokens per step on chat and Chinese/Japanese, 3.3-4.5 on code and structured text**. Two
 typical steps, from the held-out run (README step 57):
@@ -41,7 +42,7 @@ the cache tuning and the router and CPU-routine fixes (steps 50, 53, 57).
 (A cheaper draft also gets used more: the rule would draft on more steps and verify more, so the
 gain at 1 ms would be somewhat larger.)
 
-**Where a verify step goes.** Today (README step 105's traces, a code prompt's 6-token step, 85 ms
+**Where a verify step goes.** Today (README step 105's traces, and step 155's on the current code: no span moved by more than 1.3 ms; a code prompt's 6-token step, 85 ms
 plus the draft's 8): die 0's dense part 48 ms (the shared expert 8, attention's output 8, its core
 6, its query 5, hyper-connections 5), its wait for the CPU's experts 27, for the other dies 5,
 outside the layers 5. The table below is the same breakdown at step 58 (`--profile`, sclk 6,
@@ -71,6 +72,27 @@ a warm call was reading activation digits written by 16 threads (one writer each
 a cold call's memory and compute nearly add up, and after the runtime's wait for the GPU a call
 loses ~0.03-0.04 ms (step 81). Contiguous rows per thread stream best; the tasks go out in pairs
 (step 82), as a static schedule waits for the core that idled longest.
+
+## Sampling
+
+With `--temp` the host draws each token from the logits instead of taking the device's argmax
+(README steps 148-151):
+
+    a draw  ~=  0.5 ms on one thread: the maximum, exp of 129,280 logits (8 at a time), their sum, top-p
+
+| | |
+|---|---|
+| plain loop | one draw per token: ~0.5 ms on a ~35-40 ms step |
+| speculative loop | the chunk's logits copied to the host (up to 6 x 129,280 floats: 0.3 ms), then one draw per accepted draft and one more: 2.4 ms per step (mean, traced) |
+| held-out mean, temperature 1, top-p 0.95 | 43.1 t/s against 44.9 greedy in the same session (-4.2%) |
+
+- The acceptance does not pay for it: 2.80 tokens per step sampled against 2.58 greedy on the
+  held-out prompts (other texts, so a comparison of two workloads).
+- Before step 151 a draw was ~1.0 ms (scalar `exp` 0.63, an unvectorized maximum 0.22) and the
+  six rows were drawn on six threads, which cost ~1.2 ms to start and 1.45 ms per draw:
+  -6.6%.
+- Top-p sorts only the tokens above a floor; on logits where the tail holds most of the
+  probability (not what the model gives) a draw is 6.6 ms.
 
 ## Prompt (chunks of 512 tokens)
 
@@ -107,6 +129,27 @@ fast one per (token, expert) pair, so only the CPU side helps there.
 10,000 tokens of reasoning take ~3 min at ~57 t/s (the held-out long proof's speed; ~3.7 min
 at the 44.6 mean).
 
+## A request through the server
+
+The server adds nothing measurable per token (it reads lines from a pipe); a request's time is
+the engine's (README steps 152-154):
+
+| | |
+|---|---|
+| the benchmark's request: 1,305 prompt tokens | 23.9 s (55 t/s; `--canon`, the cache's loads running) |
+| its reply: 42,960 tokens of reasoning and a tool call | 1,117 s at 38.5 t/s (2.97 tokens per step) |
+| a 3,008-token prompt | 40 s (74 t/s) |
+| replies on the held-out prompts in `--requests` mode | as single runs (38.9 / 47.9 / 51.2 against 38.9 / 50.8 / 52.0 t/s) |
+| the engine ready after its start | ~116 s with `--cache-wait` (the experts' registration) |
+
+- **Requests wait in line:** one at a time, so a second client's 19-minute request starts
+  when the first one ends.
+- **A cancel** (the client left): seen within 1 s; a reply stops within one step (~0.1 s), a
+  prompt at its next chunk of 512 tokens (up to ~10 s).
+- **Every request runs its whole prompt:** nothing is kept between requests, though the
+  benchmark's prompts share their tools block and rules (95% of the stored request's
+  characters come before its history: an estimate of ~20 s of each request's 24).
+
 ## Two machines (the model in two halves)
 
 Layers 0-19 on one machine, layers 20-39 with the head and the draft on a second one; per step
@@ -132,7 +175,7 @@ the stream of the verified tokens goes over once (64 KB per token) and a few ids
 ## Seeing a step: traces
 
 `results/trace/tcp-udp.json.gz` (chat) and `cpp-matrix.json.gz` (code), 300 tokens each with
-speculation and the tuned cache (README steps 51, 58, 69, 73, 75, 84, 86; the current ones from step 86), open in ui.perfetto.dev. Per layer: die
+speculation and the tuned cache (README steps 51, 58, 69, 73, 75, 84, 86, 88, 98, 105; the current ones from step 155), open in ui.perfetto.dev. Per layer: die
 0's "layer N" span with its groups nested (attention, router, shared expert, the wait for the
 CPU, the sum); the host's "CPU experts" span with how many experts and tokens and its phases (`cpu.*`, step 84);
 the draft's parts (`draft.*`), commit's parts and the cache's loads per die (step 86);
@@ -142,12 +185,13 @@ ms; in a layer with CPU experts die 0 sits in `ffn.wait_for_cpu_experts` for mos
 span, while the dies' experts finish in 0.1-0.35 ms.
 
 Measuring costs time: `--profile` 5-6% of generation speed, `--trace` 8-10% (step 86's: 35.28 / 50.08 t/s
-untraced vs 32.28 / 45.02 traced; README steps 58, 69, 73, 75, 84, 86), so a trace's times run a few percent long;
+untraced vs 32.28 / 45.02 traced; step 155's: 38.9 / 54.6 vs 35.05 / 49.28; README steps 58, 69, 73, 75, 84, 86, 155), so a trace's times run a few percent long;
 its proportions hold. `--trace FILE` writes the file for any run; `scripts/trace_compare.py OLD
 NEW` lists two traces' spans side by side (`results/trace/compare-step58.txt`: the attention
 core 14.8 -> 6.0 ms per code verify step, everything else within ~1 ms; `compare-step69.txt`: the
 handoffs and the engram fetch of steps 71 and 73; `compare-step73.txt`: the indexer skip of step 74;
-`compare-step74.txt`: steps 80-84; `compare-step84.txt`: step 86). `scripts/trace_critpath.py TRACE` splits each verify size into
+`compare-step74.txt`: steps 80-84; `compare-step84.txt`: step 86; `compare-step86.txt`, `-88`, `-98`: steps 88, 98, 104;
+`compare-step104.txt`: the fifty steps to step 155, nothing moved). `scripts/trace_critpath.py TRACE` splits each verify size into
 die 0's front, the handoffs to and from the CPU, the CPU's experts, the tail and the draft
 (`results/trace/critpath.txt`).
 
@@ -211,3 +255,8 @@ for a placement 5-30 s, the cache's expert registration ~100 s in the background
 two machines) (its loads
 start only after it). For short runs these dominate: a 20-token prompt and 100 tokens of answer
 take ~5 s of work after ~20-30 s of startup.
+
+**After a reboot** the page cache is empty, and a run reads what it touches from disk: the
+experts once, and the engram table's rows for every new text (1.2 -> 13 ms per verify step,
+10-14% of generation speed, three hours after a restart; README step 155). `cat` of the model
+files (508 GB, ~3 min) before measuring or serving.

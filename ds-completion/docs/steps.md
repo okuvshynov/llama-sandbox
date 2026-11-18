@@ -5586,6 +5586,10 @@ document per commit, and what is out of date is updated or removed.
   NUMERICS.md -> `docs/numerics.md`, REPRODUCE.md -> `docs/reproduce.md`, PROCESS.md ->
   `docs/process.md`. A link check over all the documents after each move: no broken link.
 
-Not done here, noticed in the review: the overview's section 6 (a token's time at sclk 2,
-before the cache) and its sections 7-8 (what is next, open questions) are from October and
-early November; `docs/timing.md` has no line on sampling yet.
+- **The overview and the timing page brought up to date** (a later commit). Overview: the
+  scope names sampling and the three ways in; results and mechanism gain sampling and the
+  server; section 6, three tables of a token's time at sclk 2 before the cache, is now today's
+  step in one table with two sentences on where it started; "What is next" says that
+  optimization is paused and what the server work leaves open; the code map has the ten files
+  it lacked. Timing: sections "Sampling" and "A request through the server", the traces of
+  step 155, and what a reboot costs. No new measurement: every number is a step's.

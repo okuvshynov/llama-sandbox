@@ -32,7 +32,7 @@ Each rule is followed by where it mattered most.
 5. **Keep a cost model and attack its largest term.** Every planning point started from "where
    does a token's time go", measured (profiles, single-kernel benchmarks) and extrapolated from
    unit costs (an expert: 0.27 ms on the CPU, ~0.065 ms on a GPU, ~1.4 ms to copy).
-   (PLAN "Current cost model", OVERVIEW section 6.)
+   (Then PLAN "Current cost model"; today docs/timing.md and docs/overview.md section 6.)
 6. **Measure the cheap unknown that decides the design.** The routing study (30 prompts, a few
    hours, no runtime changes) decided between a fixed hot set and an adaptive cache before
    either was built. (Step 13.)
