@@ -41,7 +41,7 @@ build, every option, the current results, the limits).
 | | |
 |---|---|
 | [docs/steps.md](docs/steps.md) | the lab notebook: every step in order, what was done, measured and decided. "README step N" and "step N", in code comments, results files and the other documents, mean its section "Step N" (it was this file until step 156) |
-| [OVERVIEW.md](OVERVIEW.md) | a 20-minute read: what was built, how a token is computed, what we learned, the code map |
+| [docs/overview.md](docs/overview.md) | a 20-minute read: what was built, how a token is computed, what we learned, the code map |
 | [TIMING.md](TIMING.md) | where the time goes, on one page |
 | [NUMERICS.md](NUMERICS.md) | operand types, how they map to the GPUs, accumulation |
 | [docs/plan.md](docs/plan.md) | the items and their status, the plans and cost models |
@@ -54,7 +54,7 @@ build, every option, the current results, the limits).
 | [scripts/README.md](scripts/README.md) | the tools still in use |
 
 (The documents other than these two are being moved into `docs/`, one per commit: step 156.
-Code comments and results files name them as they stood: PLAN.md, OVERVIEW.md, TIMING.md,
+Code comments and results files name them as they stood: PLAN.md, docs/overview.md, TIMING.md,
 NUMERICS.md, PROCESS.md, REPRODUCE.md.)
 
 ## Docs and commits
@@ -62,6 +62,6 @@ NUMERICS.md, PROCESS.md, REPRODUCE.md.)
 Every commit that changes code, scripts or results updates, in the same commit:
 `docs/steps.md` (a step: what was done and measured), PROCESS.md (the question, prediction,
 result and decision), REPRODUCE.md (new scripts and results and what produces them), and
-QUICKSTART.md / OVERVIEW.md / docs/plan.md / TIMING.md / this page's status when what they say
+QUICKSTART.md / docs/overview.md / docs/plan.md / TIMING.md / this page's status when what they say
 changed. New results files start with a `#` header naming the command or script, the commit,
 the clock level and the date. (The rule for the assistant is in the sandbox's CLAUDE.md.)

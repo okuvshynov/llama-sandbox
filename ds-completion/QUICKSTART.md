@@ -311,7 +311,7 @@ a row says otherwise (the clock does not matter to the CPU rows).
 | llama.cpp fork (llama-cli, CPU) | - | 3.5 t/s | 2.1e-5 / 1.3e-3 |
 
 The steps between these rows (the static placement, speculation without the cache) and their
-numbers: OVERVIEW.md, section 2.
+numbers: docs/overview.md, section 2.
 
 \* vs the official reference implementation run on the CPU (README "Step 2"): chat prompt
 "Hello, how are you?", 17 steps. Every mode agrees with the reference on the top token at 16
@@ -358,4 +358,4 @@ Means over all 17 steps: 1.8e-2 to 2.5e-2 for every mode.
 - The server: one request at a time, no forced tool use, no tool results in a conversation,
   no reply streamed as it is generated, the Anthropic API only.
 
-Details: [TIMING.md](TIMING.md) (where the time goes, one page), [OVERVIEW.md](OVERVIEW.md) (a 20-minute summary), [docs/steps.md](docs/steps.md) (all measurements and checks, step by step), [docs/plan.md](docs/plan.md) (what's next).
+Details: [TIMING.md](TIMING.md) (where the time goes, one page), [docs/overview.md](docs/overview.md) (a 20-minute summary), [docs/steps.md](docs/steps.md) (all measurements and checks, step by step), [docs/plan.md](docs/plan.md) (what's next).

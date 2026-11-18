@@ -5,7 +5,7 @@ asked, what we expected, what we measured, and what we decided. It is meant for 
 wants to learn the *approach* (how to make a large model fast on odd hardware without losing
 correctness), not only the result. Details and every number: [docs/steps.md](docs/steps.md) (the lab
 notebook). Plans and cost models as they evolved: [docs/plan.md](docs/plan.md). How to rerun
-everything: [REPRODUCE.md](REPRODUCE.md). A 20-minute summary: [OVERVIEW.md](OVERVIEW.md).
+everything: [REPRODUCE.md](REPRODUCE.md). A 20-minute summary: [docs/overview.md](docs/overview.md).
 
 Sources: the repository (docs, scripts, results, 100+ commits) and the visible messages of the
 working sessions (a person directing, an AI assistant, Claude, implementing and measuring), 2026-10-26 to 11-07.

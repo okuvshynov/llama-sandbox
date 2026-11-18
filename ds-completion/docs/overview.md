@@ -1,9 +1,9 @@
 # ds-completion: overview (2026-10-28, numbers updated 2026-11-12)
 
 A ~20-minute read: what was built, how it works, what we measured, what we learned, and what
-is next. How to run it: [QUICKSTART.md](QUICKSTART.md). Where the time goes, one page: [TIMING.md](TIMING.md). Every step and number in detail:
-[docs/steps.md](docs/steps.md). Plan and cost model: [docs/plan.md](docs/plan.md). Operand types and accumulation:
-[NUMERICS.md](NUMERICS.md).
+is next. How to run it: [QUICKSTART.md](../QUICKSTART.md). Where the time goes, one page: [TIMING.md](../TIMING.md). Every step and number in detail:
+[docs/steps.md](steps.md). Plan and cost model: [docs/plan.md](plan.md). Operand types and accumulation:
+[NUMERICS.md](../NUMERICS.md).
 
 ## 1. Goal and scope
 
@@ -275,6 +275,6 @@ for one step lies with its results.
 | `hip/peer.h` | two machines: the messages between the front and the back half (TCP) |
 | `bench/bench_*` | benchmarks of each kernel and of the loader, CPU and GPU (the Makefile knows which need `HIP=1`) |
 | `ref/` | the Python reference, golden export, weight checks, logits comparison |
-| `scripts/` | the tools still in use ([scripts/README.md](scripts/README.md)): the runner of a matrix of runs (`run_matrix.py`) and the reader of their records (`records.py`; README steps 128-129), the chat launcher (`chat.sh`), the held-out measurement (`spec-measure.sh`) and the two-machine one (`split-measure.sh`), the trace tools, `route_stats.py`. A script written for one step lies with its results under `results/` (README step 130) |
+| `scripts/` | the tools still in use ([scripts/README.md](../scripts/README.md)): the runner of a matrix of runs (`run_matrix.py`) and the reader of their records (`records.py`; README steps 128-129), the chat launcher (`chat.sh`), the held-out measurement (`spec-measure.sh`) and the two-machine one (`split-measure.sh`), the trace tools, `route_stats.py`. A script written for one step lies with its results under `results/` (README step 130) |
 | `placements/` | ranked expert placements (`study30.txt` is the default) |
 | `results/` | raw outputs of every measurement quoted in the README |
