@@ -144,7 +144,7 @@ Options:
 - `--requests` (with `--rt`, in place of a prompt): prompts from stdin, one after another, each
   with the reply of an empty context; the reply's tokens as lines on stdout. For a server's front. The
   protocol: `docs/requests.md`. README steps 152, 158.
-  `server/ds_server.py [--port 8080] -- <this command with --requests>` puts an HTTP server
+  `python3 server/ds_server.py [--port 8080] -- <this command with --requests>` puts an HTTP server
   with the Anthropic Messages API in front of it (`docs/server.md`, README step 153).
 - `-n`: max new tokens.
 - `--max-ctx N`: the context's size (default 65,536 with `--rt`; "Limits" below).
@@ -215,7 +215,7 @@ in place of the prompt:
 
 ```bash
 cd ~/projects/llama-sandbox/ds-completion
-server/ds_server.py --port 8080 -- \
+python3 server/ds_server.py --port 8080 -- \
     bin-hip/ds-completion -m $M --rt ~/llms/ds-1017-fp8/dense-fp8.gguf \
     --placement placements/study30.txt \
     --dspark ~/llms/dspark/dspark-DeepSeek-V4.1-Flash-1017-BF16.gguf --spec \
@@ -242,6 +242,12 @@ harness with `server/pi-models.json` (the setup: [docs/pi.md](docs/pi.md)).
 - **Refused:** forced tool use (`tool_choice` `any` / `tool`), images.
 - **The log** (stderr): a line per finished request, and every 30 s the tokens so far of a
   running one. `--dump DIR` keeps each request's prompt, raw reply and message.
+  The engine's `# context:` lines say where each request started and where its prompt and
+  the context part (step 164).
+- **Metrics and health:** `GET /metrics` has counters and gauges in the Prometheus text format
+  (requests by outcome, tokens run / kept / generated, seconds, the engine up and busy;
+  `docs/server.md` "Metrics", step 165); `GET /health` is 200 while the engine lives, 503 when
+  it is gone.
 - **The network:** it listens on `127.0.0.1`; `--host 0.0.0.0` for other machines. No
   authentication, no encryption: a private network only.
 - A reasoning request can take long: one of the benchmark this was written for ran 19 minutes

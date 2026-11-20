@@ -31,7 +31,7 @@ Three parts, which need not be on one machine:
 
        cd ~/projects/llama-sandbox/ds-completion
        M=~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf
-       server/ds_server.py --port 8080 -- \
+       python3 server/ds_server.py --port 8080 -- \
            bin-hip/ds-completion -m $M --rt ~/llms/ds-1017-fp8/dense-fp8.gguf \
            --placement placements/study30.txt \
            --dspark ~/llms/dspark/dspark-DeepSeek-V4.1-Flash-1017-BF16.gguf --spec \
@@ -46,7 +46,7 @@ Three parts, which need not be on one machine:
 
 5. Check it without pi (the model-free test, then one real request):
 
-       server/test_server.py                           # "all checks passed", a few seconds
+       python3 server/test_server.py                   # "all checks passed", a few seconds
        curl -s http://127.0.0.1:8080/v1/messages -H 'content-type: application/json' -d \
          '{"max_tokens": 50, "messages": [{"role": "user", "content": "Reply with the single word: yes"}]}'
 

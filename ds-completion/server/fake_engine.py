@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """A stand-in for `ds-completion --requests` (docs/requests.md) for server/test_server.py:
 no model. It answers the i-th request with the i-th entry of a JSON file, a list of
-{"text": ..., "stop": "eos"|"length", "delay": seconds, "kept": tokens} (SIGUSR1 during the delay cancels the
-reply, as the engine does), and appends every request it gets
-(header and prompt) to a log file as one JSON line.
+{"text": ..., "stop": "eos"|"length", "delay": seconds, "kept": tokens, "saved": tokens} (SIGUSR1 during the
+delay cancels the reply, as the engine does; "how" in the prompt line is continue with kept tokens, else
+empty), and appends every request it gets (header and prompt) to a log file as one JSON line.
+An entry {"exit": code} ends the process in place of a reply: an engine that is gone.
 
   fake_engine.py REPLIES.json REQUESTS.log --requests
 """
@@ -31,11 +32,14 @@ while True:
     log.flush()
     r = replies[i % len(replies)]
     i += 1
+    if 'exit' in r:
+        sys.exit(r['exit'])
     if 'error' in r:
         out.write(f'error {r["error"]}\n'.encode())
         out.flush()
         continue
-    out.write(b'prompt tokens=%d n=%s\n' % (len(prompt) // 4, f['n'].encode()))
+    kept = r.get('kept', 0)
+    out.write(f'prompt tokens={len(prompt) // 4} n={f["n"]} kept={kept} ctx={kept} common={kept} how={"continue" if kept else "empty"}\n'.encode())
     out.flush()
     del cancel[:]
     t_end = time.time() + r.get('delay', 0)
@@ -50,5 +54,5 @@ while True:
     for k in range(0, len(data), 3):  # 3 bytes a "token": cuts UTF-8 characters, as real tokens can
         out.write(b'tok %d %s\n' % (k, data[k:k + 3].hex().encode()))
         n += 1
-    out.write(f'end stop={r.get("stop", "eos")} prompt_tokens={len(prompt) // 4} kept={r.get("kept", 0)} gen_tokens={n} prompt_s=0.1000 gen_s=0.5000\n'.encode())
+    out.write(f'end stop={r.get("stop", "eos")} prompt_tokens={len(prompt) // 4} kept={kept} saved={r.get("saved", 0)} gen_tokens={n} prompt_s=0.1000 gen_s=0.5000\n'.encode())
     out.flush()

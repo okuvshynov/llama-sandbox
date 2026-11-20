@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """README step 152: the engine's --requests mode against single runs of the same prompts.
 
-  results/requests/requests_test.py [--no-spec] > results/requests/requests_test.txt
+  python3 results/requests/requests_test.py [--no-spec] > results/requests/requests_test.txt
 
 Starts one engine with --requests (the fastest single-machine settings, as
 results/sampler/spec-heldout.matrix; --no-spec: the plain loop) and sends held-out prompts one

@@ -6,7 +6,7 @@ Anthropic Messages API and runs the engine as a child process in its `--requests
 and then for the pi coding harness ([pi.md](pi.md)); it does what those need and refuses the
 rest.
 
-    server/ds_server.py [--port 8080] [--host 127.0.0.1] [--temp 1 --top-p 0.95 --seed 0] \\
+    python3 server/ds_server.py [--port 8080] [--host 127.0.0.1] [--temp 1 --top-p 0.95 --seed 0] \\
         [--dump DIR] -- bin-hip/ds-completion -m $M --rt $F8 --placement placements/study30.txt \\
         --dspark $D --spec --canon --cache-loads 800 --cache-period 8 --cache-wait --requests
 
@@ -90,7 +90,50 @@ line for both. Stopping the server cancels a running request the same way.
 
 ## Other paths
 
-`GET /v1/models` (one model), `GET /health`.
+`GET /v1/models` (one model).
+
+`GET /health`: 200 `{"status": "ok"}` while the engine's process lives; 503 with the engine's
+exit code when it is gone (every request is then a 500: restart the server).
+
+## Metrics
+
+`GET /metrics` (step 165): counters and gauges in the Prometheus text format, for a collector
+to read every few seconds, or `curl -s http://127.0.0.1:8080/metrics`. It does not wait for
+the engine, so it answers while a request runs. Every series is there from the server's start,
+at 0. No histograms.
+
+| metric | kind | what |
+|---|---|---|
+| `ds_requests_total{outcome}` | counter | requests to `POST /v1/messages`: `ok` (a message was made), `cancelled` (the client left), `bad_request` (refused by the server or the engine, a 400), `engine_error` (a 500) |
+| `ds_stop_reason_total{reason}` | counter | completed requests by `end_turn`, `tool_use`, `max_tokens` |
+| `ds_prompt_tokens_total{kind}` | counter | prompt tokens of completed requests: `run` through the model, or `kept` (already in the context) |
+| `ds_generated_tokens_total` | counter | tokens of completed replies |
+| `ds_prompt_seconds_total`, `ds_generation_seconds_total` | counter | the engine's time on prompts and on replies, completed requests |
+| `ds_queue_wait_seconds_total` | counter | from a request's arrival to the engine taking it |
+| `ds_first_token_seconds_total` | counter | from a request's arrival to its reply's first token (the wait and the prompt are in it) |
+| `ds_context_total{how}` | counter | requests the engine took, by where it started: `continue`, `saved`, `empty` (`docs/requests.md`) |
+| `ds_reply_parse_failures_total` | counter | replies returned as text because they did not parse |
+| `ds_stream_mismatch_total` | counter | streams that differed from their message (a bug; should stay 0) |
+| `ds_engine_up` | gauge | 1 while the engine's process lives |
+| `ds_engine_busy`, `ds_requests_waiting` | gauge | a request is running; requests waiting behind it |
+| `ds_saved_point_tokens` | gauge | where the saved point is (0: none) |
+| `ds_engine_load_seconds`, `ds_start_time_seconds` | gauge | the load's time; when the server started |
+
+Tokens and seconds are those of completed requests only: a cancelled or failed request adds to
+`ds_requests_total` and, if the engine took it, to `ds_context_total`. So the page's ratios are
+of the same requests:
+
+- generation speed: `ds_generated_tokens_total / ds_generation_seconds_total`;
+- prompt speed: `ds_prompt_tokens_total{kind="run"} / ds_prompt_seconds_total`;
+- the share of prompt tokens that did not have to run: `kept / (kept + run)`;
+- mean time to the first token: `ds_first_token_seconds_total / ds_requests_total{outcome="ok"}`.
+
+With a collector these are rates over a window (`rate(a[5m]) / rate(b[5m])`). The counters
+start at 0 with every start of the server.
+
+Not there yet: the tokens in the engine's context, the speculative loop, the routed experts,
+bytes read from storage, the GPU clock (the engine does not report them per request; plan
+item 33, step 4).
 
 ## The log
 

@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """server/ds_server.py against a fake engine (server/fake_engine.py): no model, a few seconds.
 
-  server/test_server.py            exit code 1 if a check fails
+  python3 server/test_server.py            exit code 1 if a check fails
 
 What is checked: the prompt the engine receives for a request (the model's encoding.py
 renders it: system, tools, effort, thinking), the message built from a canned reply (thinking,
 text, a tool call), the same as a stream of events, replies that are cut or malformed, a tool
-loop's second request (the reply sent back with a tool result), and requests that are refused.
+loop's second request (the reply sent back with a tool result), requests that are refused, and
+GET /metrics and /health (step 165): the page while a request runs and another waits, its
+totals against this test's own count of what it sent, and both with the engine gone.
 """
 import json
 import os
@@ -45,8 +47,9 @@ REPLIES = [
     {'text': 'never sent', 'delay': 60},                                                     # 8 the client leaves: cancelled
     {'text': 'never sent', 'delay': 60},                                                     # 9 a stream, the same
     {'text': 'after the cancels'},                                                           # 10
-    {'text': 'r2' + enc.thinking_end_token + 'Done.', 'kept': 300},                         # 12 after a tool result; 300 tokens were in the context
+    {'text': 'r2' + enc.thinking_end_token + 'Done.', 'kept': 300, 'saved': 280},           # 12 after a tool result; 300 tokens were in the context
     {'text': 'ok'},                                                                          # 13 the same without thinking
+    {'exit': 3},                                                                             # 14 the engine is gone
 ]
 REPLIES.insert(11, REPLIES[0])                                                               # 11 a tool call again
 
@@ -69,14 +72,42 @@ def main():
     port = int(srv.stdout.readline().split()[1])
     base = f'http://127.0.0.1:{port}'
 
+    codes = []  # of every POST /v1/messages sent through post(): what /metrics must add up to
+
     def post(body, path='/v1/messages?beta=true', raw=False):
         r = urllib.request.Request(base + path, data=json.dumps(body).encode(), headers={'Content-Type': 'application/json'})
         try:
             with urllib.request.urlopen(r, timeout=30) as f:
                 data = f.read().decode('utf-8')
+                codes.append(200)
                 return 200, data if raw else json.loads(data)
         except urllib.error.HTTPError as e:
+            codes.append(e.code)
             return e.code, json.loads(e.read().decode('utf-8'))
+
+    def metrics():
+        """GET /metrics -> ({'name' or 'name{label="value"}': number}, the content type, the text)"""
+        with urllib.request.urlopen(base + '/metrics', timeout=5) as f:
+            text, kind = f.read().decode('utf-8'), f.headers['Content-Type']
+        return {l.rsplit(' ', 1)[0]: float(l.rsplit(' ', 1)[1]) for l in text.split('\n') if l and not l.startswith('#')}, kind, text
+
+    def health():
+        try:
+            with urllib.request.urlopen(base + '/health', timeout=5) as f:
+                return 200, json.loads(f.read())
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read())
+
+    # (step 165) before any request: the page is there, every series at 0, the engine up
+    m0, kind, text = metrics()
+    names = [l.split()[2] for l in text.split('\n') if l.startswith('# TYPE')]
+    check(kind.startswith('text/plain; version=0.0.4') and len(names) == 17 and text.count('# HELP') == 17 and all(n.startswith('ds_') for n in names)
+          and all(l.split()[3] in ('counter', 'gauge') for l in text.split('\n') if l.startswith('# TYPE')),
+          f'GET /metrics: the Prometheus text format, {len(names)} metrics with HELP and TYPE (counters and gauges), {len(m0)} series')
+    check(all(v == 0 for k, v in m0.items() if k.endswith('_total') or '_total{' in k) and m0['ds_engine_up'] == 1 and m0['ds_engine_busy'] == 0
+          and m0['ds_requests_waiting'] == 0 and m0['ds_start_time_seconds'] > 1.7e9 and len([k for k in m0 if k.startswith('ds_requests_total{')]) == 4,
+          'before any request: every counter is there at 0, ds_engine_up 1, busy 0, waiting 0')
+    check(health() == (200, {'status': 'ok'}), f'GET /health with the engine up: {health()}')
 
     def seen():
         return [json.loads(l) for l in open(reqlog, encoding='utf-8')]
@@ -210,12 +241,21 @@ def main():
     # 8-10: a client that leaves while the engine works (60 s of it): the request is cancelled, the next one answered
     import socket
     import time
+    # (step 165) both are sent before the first leaves: /metrics answers meanwhile, with one request running and one waiting
+    conns = []
     for stream in (False, True):
         body = json.dumps(dict(bench, stream=stream)).encode()
         c = socket.create_connection(('127.0.0.1', port))
         c.sendall(b'POST /v1/messages HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n' % len(body) + body)
-        time.sleep(1.5)
-        c.close()
+        conns.append(c)
+        time.sleep(0.75)
+    t = time.time()
+    mm = metrics()[0]
+    check(mm['ds_engine_busy'] == 1 and mm['ds_requests_waiting'] == 1 and time.time() - t < 1,
+          f'GET /metrics while one request runs and one waits: busy {mm["ds_engine_busy"]:.0f}, waiting {mm["ds_requests_waiting"]:.0f}, answered in {time.time() - t:.2f} s')
+    conns[0].close()
+    time.sleep(3)  # (the second one has the engine by now: it is cancelled there, as before, not in the queue)
+    conns[1].close()
     t = time.time()
     code, m = post({'max_tokens': 5, 'messages': [{'role': 'user', 'content': 'x'}]})
     dt = time.time() - t
@@ -238,6 +278,10 @@ def main():
           f'a tool loop\'s second prompt starts with the first prompt and the reply as the model wrote it (reasoning, tool call): {code}')
     check(tail == enc.eos_token + '<｜User｜><tool_result>Red: 2 right. Grün: 0 right.</tool_result>\n\nGo on.<｜Assistant｜><think>', f'and goes on with the result and the text: {tail!r}')
     check([b['type'] for b in m.get('content', [])] == ['thinking', 'text'] and m['stop_reason'] == 'end_turn', 'it is answered')
+    mm = metrics()[0]
+    check(mm['ds_saved_point_tokens'] == 280 and mm['ds_prompt_tokens_total{kind="kept"}'] == 300 and mm['ds_context_total{how="continue"}'] == 1,
+          '/metrics after a request that kept 300 tokens and left a saved point at 280: kept %.0f, the point %.0f, how=continue %.0f'
+          % (mm['ds_prompt_tokens_total{kind="kept"}'], mm['ds_saved_point_tokens'], mm['ds_context_total{how="continue"}']))
     check(m['usage']['cache_read_input_tokens'] == 300 and m['usage']['input_tokens'] == len(p) // 4 - 300 and m0['usage']['cache_read_input_tokens'] == 0,
           f'the tokens the engine kept (step 158) are the usage\'s cache_read_input_tokens, the others its input_tokens: {m["usage"]}')
     code, m = post(dict(loop, thinking={'type': 'disabled'}, messages=loop['messages'][:2] + [{'role': 'user', 'content': [result[0]]}]))
@@ -267,6 +311,7 @@ def main():
     except urllib.error.HTTPError as e:
         code = e.code
     check(code == 400, f'a body that is not JSON: {code}')
+    codes.append(400)
     with urllib.request.urlopen(base + '/v1/models', timeout=30) as f:
         models = json.loads(f.read())
     check(models['data'][0]['id'] == 'deepseek-v4.1-flash-1017', 'GET /v1/models names the model')
@@ -276,6 +321,33 @@ def main():
     except urllib.error.HTTPError as e:
         code = e.code
     check(code == 404, f'another path: {code}')
+
+    # (step 165) the page's totals against this test's own count: every POST through post() and the two clients that left
+    mm = metrics()[0]
+    n_ok, n_bad = codes.count(200), codes.count(400)
+    outcome = {k: mm['ds_requests_total{outcome="%s"}' % k] for k in ('ok', 'cancelled', 'bad_request', 'engine_error')}
+    check(outcome == {'ok': n_ok, 'cancelled': 2, 'bad_request': n_bad, 'engine_error': 0} and len(codes) == n_ok + n_bad,
+          f'/metrics, requests by outcome: {({k: int(v) for k, v in outcome.items()})} (this test sent {n_ok} answered, {n_bad} refused, 2 left)')
+    stops = {k: mm['ds_stop_reason_total{reason="%s"}' % k] for k in ('end_turn', 'tool_use', 'max_tokens')}
+    check(sum(stops.values()) == n_ok and stops['max_tokens'] == 2 and stops['tool_use'] == 3 and mm['ds_reply_parse_failures_total'] == 1 and mm['ds_stream_mismatch_total'] == 0,
+          f'stop reasons {({k: int(v) for k, v in stops.items()})} add up to the answered ones; 1 reply did not parse, no stream differed')
+    how = {k: mm['ds_context_total{how="%s"}' % k] for k in ('continue', 'saved', 'empty')}
+    check(how == {'continue': 1, 'saved': 0, 'empty': n_ok + 2 - 1},
+          f'the engine\'s choice of context {({k: int(v) for k, v in how.items()})}: every request it took, the two cancelled ones too')
+    check(abs(mm['ds_generation_seconds_total'] - 0.5 * n_ok) < 1e-6 and abs(mm['ds_prompt_seconds_total'] - 0.1 * n_ok) < 1e-6 and mm['ds_generated_tokens_total'] > 100
+          and mm['ds_prompt_tokens_total{kind="run"}'] > 1000 and mm['ds_first_token_seconds_total'] > 2.5 and mm['ds_queue_wait_seconds_total'] >= 0
+          and mm['ds_saved_point_tokens'] == 0,
+          f'seconds: generation {mm["ds_generation_seconds_total"]:.1f} and prompt {mm["ds_prompt_seconds_total"]:.1f} (the fake engine says 0.5 and 0.1 a request), '
+          f'to the first token {mm["ds_first_token_seconds_total"]:.1f} (one reply took 2.5 s to start); tokens: {mm["ds_generated_tokens_total"]:.0f} generated, '
+          + '%.0f of prompts run; the saved point is gone (0)' % mm['ds_prompt_tokens_total{kind="run"}'])
+    # the engine goes away (the fake one exits at this request): a 500, then /health and /metrics say so
+    code, m = post({'max_tokens': 5, 'messages': [{'role': 'user', 'content': 'x'}]})
+    time.sleep(0.3)
+    mm = metrics()[0]
+    hc, hb = health()
+    check(code == 500 and m['error']['type'] == 'api_error' and mm['ds_engine_up'] == 0 and mm['ds_requests_total{outcome="engine_error"}'] == 1
+          and mm['ds_engine_busy'] == 0 and mm['ds_requests_waiting'] == 0 and hc == 503 and hb.get('exit_code') == 3,
+          f'the engine gone: the request is a {code}, /metrics has ds_engine_up 0 and one engine_error, /health is {hc} {hb}')
 
     srv.terminate()
     srv.wait()

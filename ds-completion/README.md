@@ -35,7 +35,8 @@ How to build and run it: [QUICKSTART.md](QUICKSTART.md).
   (steps 153-154, 157). The pi coding harness runs against it (step 157); a request that goes on from the
   last one runs only its new tokens (step 158), and a new conversation starts from a point
   saved at the end of the shared system prompt and tools (step 160). A stream carries the
-  reasoning and the text as they are generated (step 161).
+  reasoning and the text as they are generated (step 161). `GET /metrics` has counters and
+  gauges in the Prometheus format (step 165).
 
 ## The documents
 

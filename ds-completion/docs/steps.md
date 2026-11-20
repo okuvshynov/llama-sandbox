@@ -5976,3 +5976,74 @@ single run's or the empty context's, as before. `server/test_server.py`: 38 chec
 **Not done:** the server does not read the new fields yet (the metrics page and the log of
 requests, the plan's steps 2 and 3). Not run: pi, two machines. No conversation was seen
 whose next turn failed to go on, so the line has not yet explained a real miss.
+
+## Step 165: a metrics page
+
+Plan item 33, its second step. The server's numbers were in its log, a line per request;
+nothing could be read from outside while it ran, and `GET /health` said ok whether the engine
+lived or not.
+
+**`GET /metrics`**: 17 metrics (25 series) in the Prometheus text format, written by hand: the
+server still uses only the standard library. Counters: requests by outcome (`ok`, `cancelled`,
+`bad_request`, `engine_error`), completed requests by stop reason, prompt tokens run and kept,
+generated tokens, the engine's seconds on prompts and on replies, the wait for the engine, the
+time to the first token, the engine's choice of context (step 164's `how`), replies that did
+not parse, streams that differed. Gauges: the engine up, busy, requests waiting, the saved
+point, the load's time, the start's time. The table and the ratios to take: `docs/server.md`,
+"Metrics".
+
+- **No histograms** (the person, 2026-11-19): nothing collects the page yet, and one request
+  runs at a time. A speed is a ratio of two counters.
+- **Tokens and seconds are counted for completed requests only.** A cancelled prompt's
+  `prompt_tokens` are not the tokens that ran, so counting them would spoil every ratio; a
+  cancelled or failed request adds to `ds_requests_total` (and, if the engine took it, to
+  `ds_context_total`).
+- **The page does not take the engine's lock**: it answers while a request runs.
+- Every series is there from the start, at 0.
+
+**`GET /health`** is 200 while the engine's process lives and 503 with its exit code when it
+is gone.
+
+**Not there:** `ds_context_tokens`, which the plan listed. After a cancelled request the
+server cannot tell the context's size from what the engine says, and an estimate that is
+sometimes wrong is worse than none; it comes with step 4, when the `end` line gets more
+fields. `ds_engine_load_seconds` was added.
+
+**Checked without the model** (`server/test_server.py`, 38 -> 48 checks; `fake_engine.py` now
+writes `how` and `saved` and can exit in place of a reply):
+
+- the page before any request: the format, every counter at 0, the engine up;
+- while one request runs and another waits: busy 1, waiting 1, answered at once;
+- after a request that kept 300 tokens and left a saved point at 280: both on the page;
+- the totals against the test's own count of what it sent: 11 answered, 11 refused, 2 clients
+  that left; stop reasons 6 / 3 / 2; one reply that did not parse; the fake engine's seconds
+  (0.5 and 0.1 a request) times the answered ones;
+- the engine gone: the request is a 500, `ds_engine_up` 0, one `engine_error`, `/health` 503
+  with exit code 3.
+
+My first expected count of tool calls in that test was wrong (4; the canned replies have 3,
+the fourth is the broken one): the test failed on its own expectation, not on the server.
+
+**With the model** (`results/server/metrics_check.py` -> `metrics.txt`): four requests with one
+1,500-token system prompt and one refused.
+
+| | on the page | from the usages |
+|---|---|---|
+| requests | `ok` 4, `bad_request` 1 | 4 answered, 1 refused |
+| prompt tokens run | 3065 | 1525 + 1526 + 7 + 7 |
+| prompt tokens kept | 3045 | 0 + 0 + 1518 + 1527 |
+| the choice of context | `empty` 2, `saved` 1, `continue` 1 | the engine's four `# context:` lines |
+| the saved point | 1518 | the second request's line: "a point is saved at 1518" |
+| prompt seconds | 39.6 | the log's 25.1 + 14.2 + 0.2 + 0.1 |
+
+**The documents' commands corrected:** `server/ds_server.py`, `server/test_server.py` and
+`results/requests/requests_test.py` are not executable in the repository (mode 644), and
+QUICKSTART, `docs/pi.md`, `docs/server.md` and `docs/reproduce.md` wrote them as commands: as
+written they failed with "Permission denied" (found when this step's check started the server
+that way). The documents and the three files' own usage lines now say `python3 <file> ...`
+(the person: the documents rather than the files' modes). Not looked at: the other scripts
+with mode 644 that a document may write as a command (five in `scripts/`, the ones in `ref/`
+and under `results/`).
+
+**Not done:** no collector is set up (the person's). The numbers are per server process: they
+start at 0 with every start. Two machines: the back has no page.

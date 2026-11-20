@@ -1,4 +1,7 @@
-# server/test_server.py (no model, no GPU); commit 095ea39+changes (step 161), 2026-11-18T15:01:00-05:00
+# server/test_server.py (no model, no GPU); commit 1660fd8+changes (step 165), 2026-11-20T10:24:06-05:00
+ok    GET /metrics: the Prometheus text format, 17 metrics with HELP and TYPE (counters and gauges), 25 series
+ok    before any request: every counter is there at 0, ds_engine_up 1, busy 0, waiting 0
+ok    GET /health with the engine up: (200, {'status': 'ok'})
 ok    the prompt: encoding.py's rendering of system + tools + user, effort medium = 62, ends with <think>
 ok    the engine's header: gen n=65536 temp=1.0 top_p=0.95 seed=7 bytes=1439
 ok    thinking + a tool call: blocks ['thinking', 'tool_use'], stop_reason tool_use, the input as sent (non-ASCII included)
@@ -15,11 +18,13 @@ ok    a broken tool call: no tool_use block, the raw text returned: stop_reason 
 ok    Live: 180 cases (every canned reply and five odd ones, both modes, pieces of 1, 2, 3, 7 bytes and whole): the stream's blocks are the message's
 ok    the engine's error line: 400 the prompt is 70000 tokens; --max-ctx is 65536
 ok    the next request is answered
-ok    two clients left 60 s replies (one plain, one a stream): the next request is answered 0.0 s later
+ok    GET /metrics while one request runs and one waits: busy 1, waiting 1, answered in 0.00 s
+ok    two clients left 60 s replies (one plain, one a stream): the next request is answered 0.5 s later
 ok    a thinking block has a signature that is not empty: 'ds-completion'
 ok    a tool loop's second prompt starts with the first prompt and the reply as the model wrote it (reasoning, tool call): 200
 ok    and goes on with the result and the text: '<｜end▁of▁sentence｜><｜User｜><tool_result>Red: 2 right. Grün: 0 right.</tool_result>\n\nGo on.<｜Assistant｜><think>'
 ok    it is answered
+ok    /metrics after a request that kept 300 tokens and left a saved point at 280: kept 300, the point 280, how=continue 1
 ok    the tokens the engine kept (step 158) are the usage's cache_read_input_tokens, the others its input_tokens: {'input_tokens': 139, 'output_tokens': 5, 'cache_creation_input_tokens': 0, 'cache_read_input_tokens': 300}
 ok    without thinking, a result alone: the call is in the prompt, the reasoning is not
 ok    refused, tool_choice any: 400 tool_choice 'any' is not supported: only auto and none
@@ -35,6 +40,11 @@ ok    none of the refused requests reached the engine
 ok    a body that is not JSON: 400
 ok    GET /v1/models names the model
 ok    another path: 404
-ok    the log has the two cancelled requests: ['# server: request 9: cancelled after 0 tokens, 2.0 s after it arrived', '# server: request 10: cancelled after 0 tokens, 1.5 s after it arrived']
-ok    the log has progress lines for the slow request: 5, the first: # server: request 3: 345 prompt tokens, 0 tokens so far, 1 s since it started
+ok    /metrics, requests by outcome: {'ok': 11, 'cancelled': 2, 'bad_request': 11, 'engine_error': 0} (this test sent 11 answered, 11 refused, 2 left)
+ok    stop reasons {'end_turn': 6, 'tool_use': 3, 'max_tokens': 2} add up to the answered ones; 1 reply did not parse, no stream differed
+ok    the engine's choice of context {'continue': 1, 'saved': 0, 'empty': 12}: every request it took, the two cancelled ones too
+ok    seconds: generation 5.5 and prompt 1.1 (the fake engine says 0.5 and 0.1 a request), to the first token 3.0 (one reply took 2.5 s to start); tokens: 415 generated, 2672 of prompts run; the saved point is gone (0)
+ok    the engine gone: the request is a 500, /metrics has ds_engine_up 0 and one engine_error, /health is 503 {'status': 'the engine is gone', 'exit_code': 3}
+ok    the log has the two cancelled requests: ['# server: request 9: cancelled after 0 tokens, 2.0 s after it arrived', '# server: request 10: cancelled after 0 tokens, 4.3 s after it arrived']
+ok    the log has progress lines for the slow request: 7, the first: # server: request 3: 345 prompt tokens, 0 tokens so far, 1 s since it started
 all checks passed
