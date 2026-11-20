@@ -99,6 +99,11 @@ t/s, how long it waited for the engine, the stop reason and the blocks. While a 
 a line every `--progress` seconds (default 30) with its tokens so far. `--dump DIR` writes
 each request, its prompt, the raw reply and the message to `DIR/<message id>.json`.
 
+The engine's own lines are in the same stream. Per request, before the prompt runs, a line
+`# context: ...` says where it starts (on from the context, from the saved point, or empty)
+and, when the prompt and the context part, a second one says at which token and shows the
+text on both sides (step 164, `docs/requests.md` "What the engine says about its choice").
+
 ## A conversation with tool calls
 
 A client that runs tools (an agent's loop) sends the reply back as it got it, `thinking` and

@@ -182,7 +182,7 @@ second one says `(1565 kept)` or a number near it.
 | `node: command not found` in a script | nvm's PATH (section 2) |
 | an error naming a block type (`image`, `redacted_thinking`) | the server refuses it: [server.md](server.md); a conversation started with another model can carry such blocks |
 | `the prompt is N tokens; --max-ctx is 65536` | the conversation outgrew the context: compact it in pi (`/compact`) or raise both limits |
-| every request `(0 kept)` | something else uses the server between pi's requests; or the server is older than step 158 |
+| every request `(0 kept)` | something else uses the server between pi's requests; or the server is older than step 158. The engine's `# context: they part at token N: ...` line in the server's log shows where the prompt and the context part (step 164) |
 | much slower than above | a cold page cache after a reboot (section 1, item 3) |
 | `malloc_consolidate(): invalid chunk size` when the server stops | a known abort at the engine's exit (steps 91, 93); nothing is lost |
 

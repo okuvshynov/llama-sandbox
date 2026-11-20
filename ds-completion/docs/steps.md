@@ -5936,3 +5936,43 @@ Also looked at for a shorter pi setup, not done: a `scripts/serve.sh` like `scri
 (the server's eight-line command as one); a command that fetches only the model's `encoding/`
 directory (the default path is inside the 510 GB base download, which pi does not need); pi's
 defaults in its `settings.json`.
+
+## Step 164: the engine says how it chose the context
+
+Plan item 33, its first step. The engine computed its whole choice of where a request starts
+(step 158: on from the context; step 160: from the saved point; else empty) and reported one
+number, `kept=N`. A prompt that did not go on from the context left no trace of why.
+
+**In the protocol.** The `prompt` line has three more fields: `ctx` (the tokens the context
+held), `common` (how many of them the prompt starts with), `how` (`continue`, `saved`,
+`empty`). The server and both tests read the line's fields by name, so nothing else changes.
+
+**On stderr**, one line per accepted request, and a second one when the prompt and the
+context part before either ends. From the test, the second and third conversations with one
+system prompt:
+
+    # context: held 1527 tokens, the prompt (1526 tokens) starts with 1518 of them: it starts on the empty context; a point is saved at 1518
+    # context: they part at token 1518: the context has 10232 "Color", the prompt 40 "F"; before it " jumps over the lazy dog. <｜User｜>", then the context "Color: name one.<｜Assistant｜></think>Brown", the prompt "Fruit: name one.<｜Assistant｜></think>"
+    # context: held 1528 tokens, the prompt (1525 tokens) starts with 1518 of them: it returns to the saved point (1518 kept)
+    # context: they part at token 1518: the context has 40 "F", the prompt 31060 "City"; before it " jumps over the lazy dog. <｜User｜>", then the context "Fruit: name one.<｜Assistant｜></think>", the prompt "City: name one.<｜Assistant｜></think>"
+
+The second line has the index of the first token that differs, its id and text on each side,
+the 8 tokens before it and 8 from it on each side. The first line also says when a saved point
+ends, and why a prompt starts empty where there is a reason to give (`keep=0`; the prompt is
+the context itself). `docs/requests.md`, "What the engine says about its choice".
+
+The choice itself is the code of step 160 in another order: it is made first, reported, and
+then the runtime is rewound (the report reads the runtime's own token list).
+
+**Checked** (`results/requests/requests_test.py`, 46 -> 59 checks, with `--spec` and without):
+the new fields on the cases the test already had (a turn that goes on: `how=continue`,
+`ctx` = `common` = the tokens the context held; the same with `keep=0`: `how=empty` and the
+whole prompt inside the context; the second conversation: `common` is where the point is
+saved; the later ones: `how=saved`), and the stderr lines: 61 first lines for 61 accepted
+requests (7 `continue`, 8 `saved`, 46 `empty`), each with its prompt line's choice in words,
+and 37 second lines, the token index of each its request's `common`. Every reply is still the
+single run's or the empty context's, as before. `server/test_server.py`: 38 checks, unchanged.
+
+**Not done:** the server does not read the new fields yet (the metrics page and the log of
+requests, the plan's steps 2 and 3). Not run: pi, two machines. No conversation was seen
+whose next turn failed to go on, so the line has not yet explained a real miss.

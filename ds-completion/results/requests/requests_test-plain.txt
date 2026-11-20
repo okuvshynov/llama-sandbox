@@ -1,15 +1,15 @@
-# results/requests/requests_test.py --no-spec; commit 560b20d+changes (step 160: a saved point for a shared start), sclk 6, 2026-11-18T14:47:21-05:00
+# results/requests/requests_test.py --no-spec; commit 0ba0ce6+changes (step 164: the engine's choice of context reported), sclk 6, 2026-11-20T10:17:32-05:00
 # engine: bin-hip/ds-completion -m ~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf --rt ~/llms/ds-1017-fp8/dense-fp8.gguf --placement placements/study30.txt --canon --cache-loads 800 --cache-period 8 --cache-wait --requests
-# "ready" after 113 s
-ok    tcp-udp      greedy  300 tokens, stop=length fnv1a64:e84010b498310b61 = the single run; 1231 bytes, valid UTF-8; prompt 20 tokens 0.53 s, generation 29.66 t/s
-ok    cpp-matrix   sampled 300 tokens, stop=length fnv1a64:3426536c97f68ad8 = the single run; 1139 bytes, valid UTF-8; prompt 25 tokens 0.39 s, generation 28.27 t/s
-ok    zh-travel    sampled 300 tokens, stop=length fnv1a64:0f178da0c1f4fd5a = the single run; 1029 bytes, valid UTF-8; prompt 17 tokens 0.51 s, generation 28.46 t/s
-ok    tcp-udp      greedy  300 tokens, stop=length fnv1a64:e84010b498310b61 = the single run; 1231 bytes, valid UTF-8; prompt 20 tokens 0.46 s, generation 29.43 t/s
-ok    geometry     sampled 342 tokens, stop=eos    fnv1a64:b3408ba7088ec36e = the single run; 808 bytes, valid UTF-8; prompt 55 tokens 0.89 s, generation 29.40 t/s
-ok    geometry     greedy  345 tokens, stop=eos    fnv1a64:39009bbaad3bdfec = the single run; 818 bytes, valid UTF-8; prompt 55 tokens 0.48 s, generation 31.39 t/s
-ok    summary-json greedy   98 tokens, stop=eos    fnv1a64:963abaf982b15a33 = the single run; 449 bytes, valid UTF-8; prompt 91 tokens 1.58 s, generation 28.10 t/s
-ok    cpp-matrix   sampled 300 tokens, stop=length fnv1a64:3426536c97f68ad8 = the single run; 1139 bytes, valid UTF-8; prompt 25 tokens 0.44 s, generation 28.28 t/s
-ok    py-lru       greedy  300 tokens, stop=length fnv1a64:ccdf68228376b5ca = the single run; 1172 bytes, valid UTF-8; prompt 27 tokens 0.37 s, generation 29.96 t/s
+# "ready" after 55 s
+ok    tcp-udp      greedy  300 tokens, stop=length fnv1a64:e84010b498310b61 = the single run; 1231 bytes, valid UTF-8; prompt 20 tokens 0.55 s, generation 29.48 t/s
+ok    cpp-matrix   sampled 300 tokens, stop=length fnv1a64:3426536c97f68ad8 = the single run; 1139 bytes, valid UTF-8; prompt 25 tokens 0.39 s, generation 28.16 t/s
+ok    zh-travel    sampled 300 tokens, stop=length fnv1a64:0f178da0c1f4fd5a = the single run; 1029 bytes, valid UTF-8; prompt 17 tokens 0.52 s, generation 28.32 t/s
+ok    tcp-udp      greedy  300 tokens, stop=length fnv1a64:e84010b498310b61 = the single run; 1231 bytes, valid UTF-8; prompt 20 tokens 0.46 s, generation 29.27 t/s
+ok    geometry     sampled 342 tokens, stop=eos    fnv1a64:b3408ba7088ec36e = the single run; 808 bytes, valid UTF-8; prompt 55 tokens 0.90 s, generation 29.32 t/s
+ok    geometry     greedy  345 tokens, stop=eos    fnv1a64:39009bbaad3bdfec = the single run; 818 bytes, valid UTF-8; prompt 55 tokens 0.48 s, generation 31.31 t/s
+ok    summary-json greedy   98 tokens, stop=eos    fnv1a64:963abaf982b15a33 = the single run; 449 bytes, valid UTF-8; prompt 91 tokens 1.62 s, generation 27.85 t/s
+ok    cpp-matrix   sampled 300 tokens, stop=length fnv1a64:3426536c97f68ad8 = the single run; 1139 bytes, valid UTF-8; prompt 25 tokens 0.45 s, generation 28.19 t/s
+ok    py-lru       greedy  300 tokens, stop=length fnv1a64:ccdf68228376b5ca = the single run; 1172 bytes, valid UTF-8; prompt 27 tokens 0.38 s, generation 29.78 t/s
 ok    n=5: the first 5 ids of the full reply, stop=length
 ok    a short reply ends by itself: 1 tokens, stop=eos, text 'yes'
 ok    a think reply carries </think> as text: 21 tokens, stop=eos, its end '+3=5. Must reply with number. \n</think>5'
@@ -18,33 +18,51 @@ ok    "gen n=10 temp=-1 bytes=BYTES" with 1 bytes: error temp: 0 or more; top_p:
 ok    "gen n=10 top_p=0 temp=1 bytes=BYTES" with 1 bytes: error temp: 0 or more; top_p: above 0, up to 1
 ok    "gen n=10 bytes=BYTES" with 0 bytes: error an empty prompt
 ok    tcp-udp greedy after the errors: the single run's reply
-ok    a reply of up to 4000 tokens, the signal after 2 s: stop=cancel after 47 tokens, 2.0 s (prompt 27 tokens, 0.4 s)
-ok    its 47 tokens are the first of the full reply
-ok    a prompt of ~3000 tokens, the signal after 1 s: stop=cancel after 0 tokens, 8.6 s (prompt 3008 tokens, 8.6 s)
+ok    a reply of up to 4000 tokens, the signal after 2 s: stop=cancel after 46 tokens, 2.0 s (prompt 27 tokens, 0.4 s)
+ok    its 46 tokens are the first of the full reply
+ok    a prompt of ~3000 tokens, the signal after 1 s: stop=cancel after 0 tokens, 8.5 s (prompt 3008 tokens, 8.4 s)
 ok    py-lru greedy after the cancels: the single run's reply
 ok    cpp-matrix sampled after the cancels: the single run's reply
 ok    a signal between requests does not touch the next one
-ok    a short chat: 27 prompt tokens, kept 18 (the context held 18), 0.19 s; keep=0: 0.25 s; the two replies (6 tokens, fnv1a64:9a660c3c90028189) are equal
+ok    a short chat: 27 prompt tokens, kept 18 (the context held 18), 0.20 s; keep=0: 0.26 s; the two replies (6 tokens, fnv1a64:9a660c3c90028189) are equal
 ok    a short chat: all of the context was kept (18 of 18)
+ok    a short chat: the prompt line says how=continue ctx=18 common=18; with keep=0 how=empty ctx=33 common=27
 ok    the same, sampled: 27 prompt tokens, kept 18 (the context held 18), 0.12 s; keep=0: 0.25 s; the two replies (6 tokens, fnv1a64:9a660c3c90028189) are equal
 ok    the same, sampled: all of the context was kept (18 of 18)
+ok    the same, sampled: the prompt line says how=continue ctx=18 common=18; with keep=0 how=empty ctx=33 common=27
 ok    a reply with reasoning, cut by n: 212 prompt tokens, kept 204 (the context held 204), 0.13 s; keep=0: 1.57 s; the two replies (100 tokens, fnv1a64:0c40be5dbb923468) are equal
 ok    a reply with reasoning, cut by n: all of the context was kept (204 of 204)
-ok    a 3000-token prompt, 1000 more: 4046 prompt tokens, kept 3037 (the context held 3037), 9.80 s; keep=0: 38.94 s; the two replies (30 tokens, fnv1a64:f8e3c614ae217b0e) are equal
+ok    a reply with reasoning, cut by n: the prompt line says how=continue ctx=204 common=204; with keep=0 how=empty ctx=311 common=212
+ok    a 3000-token prompt, 1000 more: 4046 prompt tokens, kept 3037 (the context held 3037), 9.97 s; keep=0: 39.02 s; the two replies (30 tokens, fnv1a64:f8e3c614ae217b0e) are equal
 ok    a 3000-token prompt, 1000 more: all of the context was kept (3037 of 3037)
-ok    a long reply, sampled: 335 prompt tokens, kept 324 (the context held 324), 0.24 s; keep=0: 2.49 s; the two replies (200 tokens, fnv1a64:bf30bff1657e16fa) are equal
+ok    a 3000-token prompt, 1000 more: the prompt line says how=continue ctx=3037 common=3037; with keep=0 how=empty ctx=4075 common=4046
+ok    a long reply, sampled: 335 prompt tokens, kept 324 (the context held 324), 0.25 s; keep=0: 2.49 s; the two replies (200 tokens, fnv1a64:bf30bff1657e16fa) are equal
 ok    a long reply, sampled: all of the context was kept (324 of 324)
+ok    a long reply, sampled: the prompt line says how=continue ctx=324 common=324; with keep=0 how=empty ctx=534 common=335
 ok    the same request again: kept 0, the same reply
 ok    a prompt cancelled after 1 s and sent again: kept 512 of 3008 tokens, the reply of the empty context
-ok    two conversations with one system prompt: the first runs whole (1525 tokens, 14.0 s), the second too and saves a point at 1518 (14.2 s)
-ok    a third conversation: 1525 prompt tokens, kept 1518, 0.14 s; keep=0: kept 0, 14.08 s; the replies (2 tokens) are equal; the point stays at 1518
-ok    a fourth, a long reply: 1540 prompt tokens, kept 1518, 0.30 s; keep=0: kept 0, 14.26 s; the replies (45 tokens) are equal; the point stays at 1518
-ok    a fifth, the same sampled: 1540 prompt tokens, kept 1518, 0.29 s; keep=0: kept 0, 14.25 s; the replies (19 tokens) are equal; the point stays at 1518
-ok    the second one again: 1526 prompt tokens, kept 1518, 0.14 s; keep=0: kept 0, 14.11 s; the replies (2 tokens) are equal; the point stays at 1518
+ok    two conversations with one system prompt: the first runs whole (1525 tokens, 13.9 s), the second too and saves a point at 1518 (14.1 s)
+ok    the prompt lines: how=empty common=1 (ctx 12), then how=empty common=1518 (ctx 1527)
+ok    a third conversation: the prompt line says how=saved common=1518 ctx=1528; with keep=0 how=empty
+ok    a third conversation: 1525 prompt tokens, kept 1518, 0.14 s; keep=0: kept 0, 14.09 s; the replies (2 tokens) are equal; the point stays at 1518
+ok    a fourth, a long reply: the prompt line says how=saved common=1518 ctx=1527; with keep=0 how=empty
+ok    a fourth, a long reply: 1540 prompt tokens, kept 1518, 0.30 s; keep=0: kept 0, 14.20 s; the replies (45 tokens) are equal; the point stays at 1518
+ok    a fifth, the same sampled: the prompt line says how=saved common=1540 ctx=1585; with keep=0 how=empty
+ok    a fifth, the same sampled: 1540 prompt tokens, kept 1518, 0.29 s; keep=0: kept 0, 14.18 s; the replies (19 tokens) are equal; the point stays at 1518
+ok    the second one again: the prompt line says how=saved common=1518 ctx=1559; with keep=0 how=empty
+ok    the second one again: 1526 prompt tokens, kept 1518, 0.14 s; keep=0: kept 0, 14.03 s; the replies (2 tokens) are equal; the point stays at 1518
 ok    the next turn of a conversation: kept 1527 (the point is at 1518), the reply of the empty context
 ok    another prompt: the single run's reply, kept 0, the point is gone (saved 0)
 ok    then three conversations: kept 0, 0, 1518; the point at 0, 1518, 1518; the third's reply is the empty context's
 ok    a system prompt that shares half: kept 0 and a point at 755 (what it shares with the last context); the next two keep 755, 755 of 768; the reply is the empty context's
 ok    an unknown request line: error unknown request (expected: gen n=N [temp=T] [top_p=P] [seed=S] [keep=0|1] bytes=B); closing
 ok    the engine exits with code 0 when its input ends
+ok    stderr: 61 "# context:" lines for 61 accepted requests ({'continue': 7, 'saved': 8, 'empty': 46})
+ok    stderr: 37 "they part at token N" lines, the N of each is its request's common (37 such requests)
+ok    stderr: every line says what its prompt line says
+# the engine's lines for the second and third conversations with one system prompt (the saved point set, then used):
+#   # context: held 1527 tokens, the prompt (1526 tokens) starts with 1518 of them: it starts on the empty context; a point is saved at 1518
+#   # context: they part at token 1518: the context has 10232 "Color", the prompt 40 "F"; before it " jumps over the lazy dog. <｜User｜>", then the context "Color: name one.<｜Assistant｜></think>Brown", the prompt "Fruit: name one.<｜Assistant｜></think>"
+#   # context: held 1528 tokens, the prompt (1525 tokens) starts with 1518 of them: it returns to the saved point (1518 kept)
+#   # context: they part at token 1518: the context has 40 "F", the prompt 31060 "City"; before it " jumps over the lazy dog. <｜User｜>", then the context "Fruit: name one.<｜Assistant｜></think>", the prompt "City: name one.<｜Assistant｜></think>"
 all checks passed

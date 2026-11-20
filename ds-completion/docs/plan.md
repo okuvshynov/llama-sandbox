@@ -68,7 +68,7 @@ Features and limits
 | 27 | Candidate-block selection (>16k tokens) | done (runtime) | the reference's layer-20 path, checked against its own function; the CPU path still stops at 16k |
 | 28 | Full 1017 checkpoint | not needed | item 19 runs from the GGUF; exact references read the release by HTTP ranges (README "Which checkpoint") |
 | 29 | Sampling beyond greedy | started | temperature and top-p for a minimal server (the person's benchmark). Step 148: the sampler as a library with its test. Step 149: `--temp`, `--top-p`, `--seed` in the plain loop, one seed one output on any placement. Step 150: the speculative loop samples too (the plain loop's outputs; held-out mean 41.8 t/s against 44.8 greedy, not with `--remote`). Step 151: that loss was the draws (~1 ms each and the threads' start); a vector `exp` and draws in turn: 43.1 t/s against 44.9 greedy. Step 152: `--requests`, the engine's side of the server (prompts on stdin, each on an empty context; `docs/requests.md`). Step 153: the HTTP front, `server/ds_server.py` (Anthropic Messages; the model's `encoding.py` renders and parses): the benchmark's script runs against it unchanged. Step 154: a request whose client left is cancelled (`SIGUSR1` to the engine). Next: the person's samples, the OpenAI endpoint if wanted. Greedy loops on some long reasoning (README step 48) |
-| 33 | Observability of the server | planned (to be reviewed) | a metrics page in the Prometheus format, the engine's choice of context in the protocol and the log, a log of requests as JSON lines: "Observability of the server" below (README step 162) |
+| 33 | Observability of the server | started (step 1 of 4 done, step 164) | a metrics page in the Prometheus format, the engine's choice of context in the protocol and the log, a log of requests as JSON lines: "Observability of the server" below (README step 162) |
 
 ## Observability of the server (2026-11-19)
 
@@ -101,7 +101,7 @@ line; its own lines per request (speculation, routed experts, speeds) go to the 
 
 **The steps, in order, one commit each.**
 
-1. **The engine's choice of context, reported.** In the `prompt` line: `ctx=` (the context's
+1. **Done (step 164).** **The engine's choice of context, reported.** In the `prompt` line: `ctx=` (the context's
    tokens), `common=` (how many of them the prompt starts with), `how=continue|saved|empty`.
    One stderr line per request with the same; when the prompt parts from the context before
    its end, the index of the first token that differs, the id on each side, and the text of a
@@ -444,6 +444,8 @@ plain request's. Open: the OpenAI endpoint, tool calls streamed in pieces, force
 Step 162: the server's observability reviewed and planned (item 33, "Observability of the server"); nothing built.
 Step 163: a trial build against upstream llama.cpp: with the Engram rows decoded by our own code the 8 held-out outputs
 are the stored ones'. Documented (`docs/llama-cpp-upstream.md`), not done: the pin stays.
+Step 164: item 33's first step: `ctx`, `common`, `how` in the engine's `prompt` line and its `# context:` lines on stderr
+(where a prompt and the context part). Next: `GET /metrics`.
 constructor in parts.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits

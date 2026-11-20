@@ -13,13 +13,16 @@ n (a prefix of the full reply, stop=length), requests with mistakes (an error li
 session goes on), cancels by SIGUSR1 (step 154): during a reply, during a prompt, between
 requests, and prompts that go on from the context (step 158): kept=N, and the reply of the
 same request on an empty context (keep=0); conversations that share a system prompt
-(step 160): a saved point at its end (saved=N), returned to by the later ones. Exit code 1 if
-a check fails.
+(step 160): a saved point at its end (saved=N), returned to by the later ones; the engine's
+account of its choice of context (step 164): ctx, common and how in the "prompt" line, and its
+"# context:" lines on stderr. Exit code 1 if a check fails.
 """
 import json
 import os
 import subprocess
+import re
 import sys
+import tempfile
 import time
 
 HOME = os.path.expanduser('~')
@@ -64,7 +67,8 @@ def main():
         cmd += ['--dspark', D, '--spec']
     print('# engine: ' + ' '.join(c.replace(HOME, '~') for c in cmd), flush=True)
     t0 = time.time()
-    eng = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=open('/dev/null', 'w'))
+    err = tempfile.NamedTemporaryFile(prefix='requests_test-', suffix='.err')  # the engine's own lines (step 164 reads them)
+    eng = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=err)
     line = eng.stdout.readline().decode().strip()
     print(f'# "{line}" after {time.time() - t0:.0f} s', flush=True)
     if line != 'ready':
@@ -83,6 +87,8 @@ def main():
                 return 'closed', ''
             if w[0] == 'error':
                 return 'error', ' '.join(w[1:])
+            if w[0] == 'prompt':  # step 164: the engine's choice of context, one entry per accepted request
+                seen.append(dict(f.split('=') for f in w[1:]))
             if w[0] == 'tok':
                 ids.append(int(w[1]))
                 out += bytes.fromhex(w[2]) if len(w) > 2 else b''
@@ -90,6 +96,7 @@ def main():
                 return ids, out, dict(f.split('=') for f in w[1:])
 
     failed = 0
+    seen = []  # the "prompt" lines' fields, in order
 
     def check(ok, what):
         nonlocal failed
@@ -180,6 +187,10 @@ def main():
               f"{label}: {end2['prompt_tokens']} prompt tokens, kept {end2['kept']} (the context held {in_ctx}), {float(end2['prompt_s']):.2f} s; "
               f"keep=0: {float(end3['prompt_s']):.2f} s; the two replies ({len(ids2)} tokens, {fnv1a64_ids(ids2)}) {'are equal' if ids2 == ids3 else 'DIFFER'}")
         check(int(end2['kept']) == in_ctx, f'{label}: all of the context was kept ({end2["kept"]} of {in_ctx})')
+        s2, s3 = seen[-2], seen[-1]  # step 164: the same in the engine's words
+        check(s2['how'] == 'continue' and int(s2['ctx']) == int(s2['common']) == in_ctx and s3['how'] == 'empty' and s3['kept'] == '0'
+              and int(s3['common']) == int(s3['tokens']) < int(s3['ctx']),
+              f"{label}: the prompt line says how={s2['how']} ctx={s2['ctx']} common={s2['common']}; with keep=0 how={s3['how']} ctx={s3['ctx']} common={s3['common']}")
     # the same prompt again: nothing to go on from (the context holds it and its reply)
     ids4, out4, end4 = request(f'gen n={n2} {how} bytes=BYTES', p2)
     check(end4['kept'] == '0' and ids4 == ids2, f'the same request again: kept {end4["kept"]}, the same reply')
@@ -214,11 +225,17 @@ def main():
     check(a_kept == 0 and a_saved == 0 and b_kept == 0 and b_saved > 1000,
           f'two conversations with one system prompt: the first runs whole ({a_n} tokens, {a_s:.1f} s), the second too and saves a point at {b_saved} ({b_s:.1f} s)')
     d = b_saved
+    sa, sb = seen[-2], seen[-1]
+    check(sa['how'] == 'empty' and int(sa['common']) < 64 and sb['how'] == 'empty' and int(sb['common']) == d and int(sb['ctx']) > d,
+          f"the prompt lines: how={sa['how']} common={sa['common']} (ctx {sa['ctx']}), then how={sb['how']} common={sb['common']} (ctx {sb['ctx']})")
     LONG = 'Ignore the one-line rule: write a haiku about rain, then explain it in three sentences.'
     for label, user, how, n_gen in [('a third conversation', 'City: name one.', '', 20), ('a fourth, a long reply', LONG, '', 120), ('a fifth, the same sampled', LONG, S1, 120),
                                     ('the second one again', 'Fruit: name one.', '', 20)]:
         ids, kept, sv, t, n = ask(user, how, n=n_gen)
+        s1 = seen[-1]
         ids0, kept0, sv0, t0, _ = ask(user, how, 'keep=0', n=n_gen)
+        check(s1['how'] == 'saved' and int(s1['common']) >= d and seen[-1]['how'] == 'empty',
+              f"{label}: the prompt line says how={s1['how']} common={s1['common']} ctx={s1['ctx']}; with keep=0 how={seen[-1]['how']}")
         check(kept == d and sv == d and kept0 == 0 and sv0 == d and ids == ids0 and len(ids) > 0 and (user != 'Fruit: name one.' or ids == b_ids),
               f'{label}: {n} prompt tokens, kept {kept}, {t:.2f} s; keep=0: kept {kept0}, {t0:.2f} s; the replies ({len(ids)} tokens) {"are equal" if ids == ids0 else "DIFFER"}; the point stays at {sv0}')
     # a reply's next turn goes on from the context, not from the point
@@ -250,6 +267,22 @@ def main():
     eng.stdin.close()
     rc = eng.wait()
     check(rc == 0, f'the engine exits with code {rc} when its input ends')
+    # README step 164: the engine's stderr has one "# context:" line per accepted request, and a second one
+    # with the place wherever a prompt and the context part before either ends
+    lines = [l for l in open(err.name, encoding='utf-8', errors='replace').read().split('\n') if l.startswith('# context: ')]
+    first = [l for l in lines if l.startswith('# context: held ') or l.startswith('# context: empty')]
+    parts = [int(m.group(1)) for l in lines for m in [re.match(r'# context: they part at token (\d+): ', l)] if m]
+    want = [int(f['common']) for f in seen if int(f['common']) < int(f['ctx']) and int(f['common']) < int(f['tokens'])]
+    hows = {h: sum(f['how'] == h for f in seen) for h in ('continue', 'saved', 'empty')}
+    check(len(first) == len(seen), f'stderr: {len(first)} "# context:" lines for {len(seen)} accepted requests ({hows})')
+    check(parts == want and len(want) > 0, f'stderr: {len(parts)} "they part at token N" lines, the N of each is its request\'s common ({len(want)} such requests)')
+    words = {'continue': 'it goes on from the context', 'saved': 'it returns to the saved point', 'empty': 'it starts on the empty context'}
+    check(all(words[f['how']] in l for f, l in zip(seen, first)), 'stderr: every line says what its prompt line says')
+    print('# the engine\'s lines for the second and third conversations with one system prompt (the saved point set, then used):')
+    k = next(i for i, f in enumerate(seen) if f['how'] == 'saved')
+    pos = [i for i, l in enumerate(lines) if not l.startswith('# context: they part') and not l.startswith('# context: the prompt ends')]
+    for l in lines[pos[k - 1]:pos[k + 1]]:
+        print('#   ' + l)
     print('FAILED' if failed else 'all checks passed')
     return 1 if failed else 0
 

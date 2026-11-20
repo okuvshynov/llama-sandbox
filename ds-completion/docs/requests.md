@@ -35,7 +35,7 @@ after the load (about two minutes).
 
 ## The reply
 
-    prompt tokens=<prompt's tokens> n=<n after the cap> kept=<tokens>
+    prompt tokens=<prompt's tokens> n=<n after the cap> kept=<tokens> ctx=<tokens> common=<tokens> how=continue|saved|empty
     tok <id> <the token's bytes in hex>
     ...
     end stop=eos|length prompt_tokens=.. kept=.. saved=.. gen_tokens=.. prompt_s=.. gen_s=..
@@ -43,7 +43,8 @@ after the load (about two minutes).
 - `prompt` comes when the request is accepted, before the prompt runs. `kept`: how many of
   the prompt's first tokens the context already held; only the others run (`prompt_s` is
   their time). `saved` (in `end`): where the saved point is after this request, in tokens; 0:
-  there is none ("A kept context").
+  there is none ("A kept context"). `ctx`, `common`, `how` (step 164): how the engine chose
+  where to start, "What the engine says about its choice" below.
 - One `tok` line per generated token, as it is generated. The bytes are the token's text,
   special tokens included (`</think>`, the tool-call tags), in hex because one token can be a
   part of a UTF-8 character. A token without text has no third field. The end-of-sequence
@@ -95,6 +96,40 @@ another conversation with the same system prompt and tools.
   each other's point every time.
 
 A reply never depends on any of this.
+
+## What the engine says about its choice
+
+Step 164. In the `prompt` line:
+
+- `ctx`: the tokens the context held when the request came (the last request's prompt and
+  the reply's tokens that were run; 0 for the first request).
+- `common`: how many of them the prompt starts with.
+- `how`: `continue` (the prompt starts with all of the context and has more: `kept` = `ctx`),
+  `saved` (it returned to the saved point: `kept` = the point), `empty` (it runs whole:
+  `kept` = 0).
+
+On stderr one line per accepted request says the same in words, with what becomes of the
+saved point, and a second line when the prompt and the context part before either ends:
+
+    # context: held 1527 tokens, the prompt (1526 tokens) starts with 1518 of them: it starts on the empty context; a point is saved at 1518
+    # context: they part at token 1518: the context has 10232 "Color", the prompt 40 "F"; before it " jumps over the lazy dog. <｜User｜>", then the context "Color: name one.<｜Assistant｜></think>Brown", the prompt "Fruit: name one.<｜Assistant｜></think>"
+
+- The first line: `it goes on from the context (N kept)`, `it returns to the saved point (N
+  kept)` or `it starts on the empty context`, the last with its reason where there is one
+  (`(keep=0)`; `(it has no token after the context's)` for a prompt that is the context
+  itself), then `; a point is saved at N` or `; the saved point at N ends (the prompt starts
+  with M of its tokens)`. With an empty context: `# context: empty; the prompt has N tokens: ...`.
+- The second line: the index of the first token that differs (the first token is 0), its id
+  and text on each side, the text of the 8 tokens before it, and of 8 tokens from it on each
+  side. Special tokens are written out, a line end as `\n`. A token can be a part of a
+  character, so a text's first or last character may be broken.
+- A prompt that ends inside the context (the same request sent again) has
+  `# context: the prompt ends inside the context, at token N; the context goes on "..."`.
+
+**When a conversation's next turn does not go on** (`how=empty` with `common` far below
+`ctx`), the second line shows where the client's prompt and the model's own tokens part: a
+reply that the client sent back in other words than the model wrote (a changed space, a tool
+call's arguments written out again, the reasoning left out), or another request in between.
 
 ## Errors
 

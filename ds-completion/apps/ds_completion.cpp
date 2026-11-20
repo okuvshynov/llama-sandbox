@@ -73,6 +73,23 @@ static std::string piece(const llama_vocab* v, int32_t tok, bool special = false
   return n > 0 ? std::string(buf, n) : std::string();
 }
 
+// The text of tokens [a, b) of v in quotes, on one line (special tokens written out, line ends
+// and quotes escaped): for the --requests note on where a prompt parts from the context.
+[[maybe_unused]] static std::string quoted(const llama_vocab* vocab, const std::vector<int32_t>& v, size_t a, size_t b) {
+  std::string out = "\"";
+  for (size_t i = a; i < b && i < v.size(); i++)
+    for (unsigned char c : piece(vocab, v[i], true)) {
+      char hex[8];
+      if (c == '\n') out += "\\n";
+      else if (c == '\r') out += "\\r";
+      else if (c == '\t') out += "\\t";
+      else if (c == '"' || c == '\\') out += '\\', out += (char)c;
+      else if (c < 0x20) snprintf(hex, sizeof hex, "\\x%02x", c), out += hex;
+      else out += (char)c;
+    }
+  return out + "\"";
+}
+
 // A fatal signal (an abort from glibc's heap checks, a crash) prints, before the default action,
 // where the process was (fatal.h's phase), the thread (its name: the loader's are load-die<N>),
 // the expert loader's loads per die and the stack (README steps 93, 96: a rare abort at exit; no
@@ -861,7 +878,11 @@ static int run(int argc, char** argv) {
       // them runs; a later prompt that starts with those tokens returns to it. It stays where it
       // is until a prompt comes that does not start with its tokens: that one runs from the
       // empty context over the positions before the point, which ends the point (rt.h, mark).
+      // README step 164: the choice is reported, in the "prompt" line (ctx, common, how) and on
+      // stderr, with the tokens around the place where the prompt parts from the context.
       save_at = 0;
+      const char* how = "empty";
+      size_t n_ctx = 0, with_ctx = 0;
       {
         const std::vector<int32_t>& ctx = rt->tokens();
         auto common = [&](const std::vector<int32_t>& a) {
@@ -869,23 +890,47 @@ static int run(int argc, char** argv) {
           while (i < a.size() && i < toks.size() && a[i] == toks[i]) i++;
           return i;
         };
-        const size_t with_ctx = common(ctx);
-        if (!saved.empty() && common(saved) < saved.size()) saved.clear();
-        if (keep && !ctx.empty() && with_ctx == ctx.size() && ctx.size() < toks.size()) {
+        n_ctx = ctx.size();
+        with_ctx = common(ctx);
+        std::string note;  // what becomes of the saved point
+        if (!saved.empty() && common(saved) < saved.size()) {
+          note = "; the saved point at " + std::to_string(saved.size()) + " ends (the prompt starts with " + std::to_string(common(saved)) + " of its tokens)";
+          saved.clear();
+        }
+        const bool go_on = keep && !ctx.empty() && with_ctx == ctx.size() && ctx.size() < toks.size();
+        const bool to_saved = !go_on && keep && !saved.empty() && saved.size() < toks.size();
+        if (go_on) {
+          how = "continue";
           kept = ctx.size();
-        } else if (keep && !saved.empty() && saved.size() < toks.size()) {
-          rt->rewind(1);
+        } else if (to_saved) {
+          how = "saved";
           kept = saved.size();
         } else {
-          rt->rewind();
           kept = 0;
           if (keep && saved.empty() && with_ctx >= kMinSaved && with_ctx < toks.size()) save_at = with_ctx;
         }
+        if (ctx.empty()) fprintf(stderr, "# context: empty; the prompt has %zu tokens: ", toks.size());
+        else fprintf(stderr, "# context: held %zu tokens, the prompt (%zu tokens) starts with %s%zu of them: ", n_ctx, toks.size(), with_ctx == n_ctx ? "all " : "", with_ctx);
+        if (go_on) fprintf(stderr, "it goes on from the context (%zu kept)", kept);
+        else if (to_saved) fprintf(stderr, "it returns to the saved point (%zu kept)", kept);
+        else fprintf(stderr, "it starts on the empty context%s%s", !keep ? " (keep=0)" : !ctx.empty() && with_ctx == toks.size() ? " (it has no token after the context's)" : "",
+                     save_at ? ("; a point is saved at " + std::to_string(save_at)).c_str() : "");
+        fprintf(stderr, "%s\n", note.c_str());
+        const size_t kShow = 8;  // tokens of text on each side of the place
+        if (with_ctx < n_ctx && with_ctx < toks.size())
+          fprintf(stderr, "# context: they part at token %zu: the context has %d %s, the prompt %d %s; before it %s, then the context %s, the prompt %s\n", with_ctx,
+                  ctx[with_ctx], quoted(vocab, ctx, with_ctx, with_ctx + 1).c_str(), toks[with_ctx], quoted(vocab, toks, with_ctx, with_ctx + 1).c_str(),
+                  quoted(vocab, toks, with_ctx - std::min(with_ctx, kShow), with_ctx).c_str(), quoted(vocab, ctx, with_ctx, with_ctx + kShow).c_str(),
+                  quoted(vocab, toks, with_ctx, with_ctx + kShow).c_str());
+        else if (with_ctx < n_ctx)
+          fprintf(stderr, "# context: the prompt ends inside the context, at token %zu; the context goes on %s\n", with_ctx, quoted(vocab, ctx, with_ctx, with_ctx + kShow).c_str());
+        if (to_saved) rt->rewind(1);  // (after the lines above: ctx is the runtime's own)
+        else if (!go_on) rt->rewind();
       }
       pending.clear();
       args.sampler = so;
       args.n_predict = (int)std::min<long>(n, args.opt.max_ctx - (long)toks.size());
-      printf("prompt tokens=%zu n=%d kept=%zu\n", toks.size(), args.n_predict, kept);
+      printf("prompt tokens=%zu n=%d kept=%zu ctx=%zu common=%zu how=%s\n", toks.size(), args.n_predict, kept, n_ctx, with_ctx, how);
       fflush(stdout);
     }
     if (args.interactive && (!first || toks.empty())) {
