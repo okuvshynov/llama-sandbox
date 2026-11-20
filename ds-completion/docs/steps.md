@@ -5858,3 +5858,38 @@ tasks' results are right, the replies those of step 160 where the prompts are (t
 
 **Left open:** a tool call in pieces (the model writes its arguments as tagged text, not JSON:
 it would need a second, incremental parser); the OpenAI endpoint; forced tool use.
+
+## Step 162: the server's observability, as a plan
+
+pi works well against the server (the person, 2026-11-19). Before
+it runs for long: what would we need to see? Two things were asked for: a metrics page over
+HTTP in the Prometheus format, and logs detailed enough to debug the kept context and the
+saved point. `server/ds_server.py` and the `--requests` loop of `apps/ds_completion.cpp` were
+read for it. No code changed, nothing measured.
+
+**Found:**
+
+- The server already has most of a metrics page's numbers: per request the prompt's tokens,
+  the kept ones, both times, the wait for the engine, the stop reason, a reply that did not
+  parse, a stream that differs from its message.
+- The engine computes the whole choice of context (how much the prompt shares with the context
+  and with the saved point, and which of three ways it takes) and reports `kept=N`. Where a
+  prompt parts from the context is printed nowhere.
+- The server does not read the `saved` field of the engine's `end` line.
+- `GET /health` answers ok whether the engine's process lives or not.
+- `--dump` leaves out the cancelled, failed and refused requests.
+- The time to a reply's first token is not taken.
+- `--record` is refused with `--requests`: the record's counters are not there for a request.
+- Both tests read the protocol's lines as key=value pairs, so new fields in `prompt` and `end`
+  do not break them.
+
+**Planned** (`docs/plan.md`, item 33, "Observability of the server"), four steps, one commit
+each: (1) the engine's choice of context in the `prompt` line and on stderr, with the tokens
+around the place where a prompt parts from the context; (2) `GET /metrics`, counters and
+gauges written by hand, and `/health` looking at the engine; (3) a log of requests as JSON
+lines, the time of day on the log's lines, dumps for requests that did not complete; (4) the
+speculative loop, the routed experts, bytes read from storage and the GPU clock in the `end`
+line, for a second set of metrics.
+
+No histograms: nothing collects the metrics yet (the person will set a collector up), and one
+request runs at a time. The plan is to be reviewed by the person before any of it is built.

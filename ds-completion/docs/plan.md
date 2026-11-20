@@ -68,6 +68,87 @@ Features and limits
 | 27 | Candidate-block selection (>16k tokens) | done (runtime) | the reference's layer-20 path, checked against its own function; the CPU path still stops at 16k |
 | 28 | Full 1017 checkpoint | not needed | item 19 runs from the GGUF; exact references read the release by HTTP ranges (README "Which checkpoint") |
 | 29 | Sampling beyond greedy | started | temperature and top-p for a minimal server (the person's benchmark). Step 148: the sampler as a library with its test. Step 149: `--temp`, `--top-p`, `--seed` in the plain loop, one seed one output on any placement. Step 150: the speculative loop samples too (the plain loop's outputs; held-out mean 41.8 t/s against 44.8 greedy, not with `--remote`). Step 151: that loss was the draws (~1 ms each and the threads' start); a vector `exp` and draws in turn: 43.1 t/s against 44.9 greedy. Step 152: `--requests`, the engine's side of the server (prompts on stdin, each on an empty context; `docs/requests.md`). Step 153: the HTTP front, `server/ds_server.py` (Anthropic Messages; the model's `encoding.py` renders and parses): the benchmark's script runs against it unchanged. Step 154: a request whose client left is cancelled (`SIGUSR1` to the engine). Next: the person's samples, the OpenAI endpoint if wanted. Greedy loops on some long reasoning (README step 48) |
+| 33 | Observability of the server | planned (to be reviewed) | a metrics page in the Prometheus format, the engine's choice of context in the protocol and the log, a log of requests as JSON lines: "Observability of the server" below (README step 162) |
+
+## Observability of the server (2026-11-19)
+
+Item 33. From a review of `server/ds_server.py` and the `--requests` loop in
+`apps/ds_completion.cpp` after step 161 (README step 162); nothing is built. Two aims: numbers
+to watch while the server runs for days (a metrics page), and enough in the logs to say why a
+prompt did or did not go on from the context.
+
+**What there is.** The server writes one line per request to stderr (mode, prompt tokens, kept,
+prompt seconds, t/s, the wait for the engine, the stop reason) and a progress line every 30 s;
+`--dump DIR` writes the request, the prompt, the raw reply and the message. The engine's
+protocol has `kept` in its `prompt` line and `kept`, `saved` and the two times in its `end`
+line; its own lines per request (speculation, routed experts, speeds) go to the same stderr.
+
+**What is missing.**
+
+- The choice of context cannot be seen. The engine computes how many tokens the prompt shares
+  with the context and with the saved point, and takes one of three ways (goes on from the
+  context, returns to the saved point, starts empty); it prints `kept=N`. When a prompt does
+  not go on, nothing says where the tokens part.
+- The server does not read `saved`: a point being set or ended is in no log.
+- `GET /health` answers ok without looking at the engine. With the engine gone every request
+  is a 500 and the health check is still ok.
+- `--dump` writes completed requests only: not the cancelled ones, not the failed or refused.
+- The time to the first token is not taken (only when the engine accepted the request).
+- The log lines have no time of day, and the engine's lines no request number.
+- `--record` is refused with `--requests`, so the record's counters (the speculative loop's
+  totals, the routed experts, the cache's loads, bytes read from storage, the GPU clock) are
+  not available for a request.
+
+**The steps, in order, one commit each.**
+
+1. **The engine's choice of context, reported.** In the `prompt` line: `ctx=` (the context's
+   tokens), `common=` (how many of them the prompt starts with), `how=continue|saved|empty`.
+   One stderr line per request with the same; when the prompt parts from the context before
+   its end, the index of the first token that differs, the id on each side, and the text of a
+   few tokens around it on each side. Both tests read the protocol's lines as key=value pairs,
+   so new fields do not break them; `results/requests/requests_test.py` gains checks of the
+   new fields on the cases it already has. First because it is the only step that gives what
+   cannot be had today: the others put together what is already logged.
+2. **`GET /metrics`** in the Prometheus text format, written by hand (the server uses only the
+   standard library), from what the server already knows. It does not take the engine's lock,
+   so it answers while a request runs. `/health` looks at the engine's process. Tested with
+   `server/fake_engine.py`.
+
+   | metric | kind | labels |
+   |---|---|---|
+   | `ds_requests_total` | counter | `outcome`: ok, cancelled, bad_request, engine_error |
+   | `ds_stop_reason_total` | counter | `reason`: end_turn, tool_use, max_tokens |
+   | `ds_prompt_tokens_total` | counter | `kind`: run, kept |
+   | `ds_generated_tokens_total` | counter | |
+   | `ds_prompt_seconds_total`, `ds_generation_seconds_total`, `ds_queue_wait_seconds_total`, `ds_first_token_seconds_total` | counter | |
+   | `ds_context_total` | counter | `how`: continue, saved, empty (from step 1) |
+   | `ds_reply_parse_failures_total`, `ds_stream_mismatch_total` | counter | |
+   | `ds_engine_up`, `ds_engine_busy`, `ds_requests_waiting` | gauge | |
+   | `ds_context_tokens`, `ds_saved_point_tokens` | gauge | |
+   | `ds_start_time_seconds` | gauge | |
+
+   No histograms for now (the person, 2026-11-19): nothing collects the metrics yet, and one
+   request runs at a time. Speeds are ratios of the counters (generated tokens over
+   generation seconds).
+3. **A log of requests as JSON lines** (`--log FILE`): one object per request with the time,
+   the request's number and message id, every field of today's summary line, `saved`, how the
+   context was reached and the time to the first token. The time of day on the stderr lines;
+   `--dump` also for cancelled, failed and refused requests.
+4. **More of the engine in the `end` line**, for a second set of metrics: the speculative
+   loop's steps and accepted drafts, the routed experts on GPUs and on the CPU, bytes read from
+   storage (step 155's cold page cache would have shown at once), the GPU clock setting (a
+   level, or auto after a reboot). The same numbers `--record` writes, so the code that takes
+   them is shared with it.
+
+**Not decided.**
+
+- A comparison of texts in the server (the last prompt and reply against the new prompt: which
+  message differs first). Easier to read than token ids, but the tokens are what the engine
+  compares; only if step 1's line is not enough.
+- The request number in the engine's stderr lines: it needs the number in the request's header
+  (a new field of the protocol).
+- Setting up a collector (Prometheus) and what to draw: the person's, after step 2.
+- Two machines: the back's numbers are not in any of this.
 
 ## Two machines (2026-11-12)
 
@@ -360,6 +441,7 @@ Step 160: a second saved point in the runtime, at the end of what two conversati
 on a new one starts in 0.1-0.3 s, not 14 s (pi's third task: 7.6 s). Open: a live stream; two machines not tested.
 Step 161: a stream carries reasoning and text as they are generated, tool calls whole at the end; its message is the
 plain request's. Open: the OpenAI endpoint, tool calls streamed in pieces, forced tool use, sampling on two machines.
+Step 162: the server's observability reviewed and planned (item 33, "Observability of the server"); nothing built.
 constructor in parts.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
