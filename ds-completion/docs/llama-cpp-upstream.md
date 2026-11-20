@@ -5,6 +5,11 @@ support, but it cannot read the GGUF files we use (Unsloth's DeepSeek-V4.1-Flash
 it loads them without an error and generates garbage. These files and that commit belong together.
 When a newer DeepSeek model (Flash or full) is quantized with the merged code, we move to upstream.
 
+**Checked again (2026-11-20):** upstream still reads these files wrong, but we do not need it to
+read them. With a small change on our side (the Engram rows decoded by our own code, not by
+ggml) `ds-completion` built against upstream master gives the stored outputs: "A trial against
+upstream" below. Nothing is changed in the code yet, and the decision above stands until it is.
+
 ## What ds-completion takes from llama.cpp
 
 - **The tokenizer:** `llama_model_load_from_file` with `vocab_only`, `llama_tokenize`,
@@ -94,8 +99,76 @@ GB, Q6_K 161.3, Q5_K 135.2, IQ4_NL 110.6) with a script to swap it in.
 Also worth having upstream, for everyone with these files: the `deepseek41` loader refusing a
 type-43 Engram whose size on disk does not match, instead of producing garbage (not filed).
 
+## A trial against upstream (2026-11-20)
+
+The question: a person who wants to run this (the pi harness on one machine, say) has to fetch
+a PR's commit by its hash and build it. Could any recent llama.cpp do?
+
+**Upstream has not changed for these files.** At master `e626db7ca` (2026-11-20, 353 commits
+after `a4d4f2fd4`) type 43 is still `F8_E4M3`, and no MXFP8 type exists in `ggml.h`. Upstream's
+own programs still misread the Engram table.
+
+**What we take from the fork that upstream lacks is small.** Every ggml function our code calls
+is in upstream's `ggml.h` (`ggml_dsv4_hc_pre`, `ggml_swiglu_clamp`, `ggml_mul_mat_id` and the
+rest). Three places depend on type 43 being MXFP8:
+
+| place | what it takes from ggml |
+|---|---|
+| `src/model.cpp`, the Engram tensor's check | the name `GGML_TYPE_MXFP8` |
+| `hip/rt.cpp`, `fetch_engram_rows` (the GPU runtime) | the type's `to_float` and the row's size in bytes (`nb[1]`) |
+| `src/forward.cpp`, `Engine::engram` (the CPU-only path) | `ggml_get_rows` on the table |
+
+**The trial** (`results/dist/trunk-trial.patch`, on a copy of our sources at `40f345e`; the
+repository's code is as it was): the first two places only. The type is checked as the number
+43, and a new 20-line header decodes a row itself: blocks of 33 bytes, one e8m0 scale and 32
+e4m3 codes, value = e4m3(code) x 2^(scale - 127); a row of 256 values is 264 bytes. Built
+against upstream `e626db7ca` (CPU, static libraries, as the fork is built):
+
+| check | result |
+|---|---|
+| `make` and `make HIP=1` (`ds-completion`, `ds-inspect`, `fp8pack`) | no errors |
+| the 8 held-out prompts, the held-out command | every output byte-identical to `results/cache-test/plain-canon-static/` (`results/dist/trunk-trial.txt`) |
+| `fp8pack` regenerates `dense-fp8.gguf` | byte-identical to ours, 18.8 s |
+
+The Japanese and Chinese prompts are among the eight, so upstream's tokenizer gives the same
+ids for them as the fork's. The speeds in the results file are single runs after a restart
+and are not a measurement.
+
+**Not covered by the trial:**
+
+- The CPU-only path. `Engine::engram` still gathers the rows with `ggml_get_rows`, which on
+  upstream would read them as plain fp8, with no error. It needs the same decoder (the rows
+  as an input tensor filled by our code).
+- The gates against the reference (`ds-test` per layer and end to end). ggml's CPU kernels have
+  a month of upstream changes since the fork's base (2026-10-17), and the CPU path's numbers
+  may have moved.
+- The other programs (`ds-test`, `llama-logits`, the benchmarks) were not built.
+- A check at load that the tensor is what we decode: its size in the file is 33 bytes per 32
+  values. The trial trusts the type number.
+- Two machines, sampling, `--requests`: none of them reads the table another way, but none
+  was run.
+
+**What it would take to move** (way 1 of the section above, now known to be enough):
+
+1. Our own decoder on both paths, and the size check at load. The code then builds against
+   the pinned commit and against upstream alike, and nothing changes for a setup on the pin.
+2. The gates and the held-out set against upstream; then QUICKSTART and `reproduce.md` name a
+   tested upstream commit in place of the PR's.
+
+What we would give up: the pin keeps upstream's changes out. Following upstream, a later commit
+can break the build or move the CPU reference's numbers; the tested commit in the documents is
+the way back.
+
+**To repeat the trial:** upstream at `e626db7ca` built with the two `cmake` lines above;
+`git apply ds-completion/results/dist/trunk-trial.patch` on `40f345e`; `make FORK=<upstream>
+BIN=bin-trunk && make HIP=1 FORK=<upstream> BIN=bin-trunk-hip`; the held-out command per prompt
+of `results/spec-heldout/prompts.txt` (as `scripts/spec-measure.sh` runs it, with
+`--cache-loads 800 --cache-period 8`, without `--spec-log`), each output against the stored
+one with `cmp`; `bin-trunk/fp8pack -m $M -o <file>` and `cmp` with `dense-fp8.gguf`.
+
 ## Other notes
 
 - The other files are not affected: `dense-fp8.gguf` (`fp8pack`) is all `I8`, the DSpark draft
   `F32`, `BF16` and `MXFP4`, all with the same meaning upstream.
 - Our code does not build against upstream as is: `src/model.cpp` names `GGML_TYPE_MXFP8`.
+  It is the only compile error in the programs the trial built (above).

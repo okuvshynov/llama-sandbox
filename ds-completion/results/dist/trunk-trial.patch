@@ -1,0 +1,57 @@
+--- a/ds-completion/src/model.cpp
++++ b/ds-completion/src/model.cpp
+@@ -285,7 +285,7 @@
+     int64_t rows = 0;
+     for (size_t c = 0; c < h.engram_offsets.size(); c++)
+       rows = std::max<int64_t>(rows, (int64_t)(h.engram_offsets[c] + h.engram_primes[c]));
+-    engram_table = req("per_layer_token_embd.weight", GGML_TYPE_MXFP8, {h.engram_dim, rows});
++    engram_table = req("per_layer_token_embd.weight", (ggml_type)43, {h.engram_dim, rows});
+   }
+ 
+   layers.assign(h.n_layer, Layer{});
+--- a/ds-completion/hip/rt.cpp
++++ b/ds-completion/hip/rt.cpp
+@@ -1,4 +1,5 @@
+ #include "rt.h"
++#include "mxfp8.h"
+ 
+ #include "cpu_moe.h"
+ #include "fatal.h"
+@@ -952,12 +953,12 @@
+   const int n_cols = hp.engram_cols(), D = hp.engram_dim, n_slots = (int)hp.engram_layers.size();
+   const size_t n = (size_t)n_cols * D;  // one token's rows of one slot
+   const ggml_tensor* tab = m.engram_table;  // host mmap, mxfp8
+-  const auto to_float = ggml_get_type_traits(tab->type)->to_float;
++  const auto to_float = mxfp8_to_float;
+   // the rows by pread from the page cache: through the mapping, nearly every row was a minor page
+   // fault (~7 us each, ~200 per 5-token fetch; README step 73)
+   size_t tab_off = 0;
+   const int tab_fd = m.file_of(tab->data, tab_off);
+-  const size_t row_bytes = tab->nb[1];
++  const size_t row_bytes = mxfp8_row_bytes(D);
+   std::vector<char> row(row_bytes);
+   std::vector<int32_t> hs = tokens_;  // the history up to and including each chunk token
+   for (size_t t = 0; t < chunk.size(); t++) {
+--- /dev/null
++++ b/ds-completion/src/mxfp8.h
+@@ -0,0 +1,20 @@
++// The Engram table's rows as the GGUF files hold them (the PR's MXFP8, ggml type id 43 there):
++// blocks of 33 bytes, one e8m0 scale then 32 e4m3 codes; value = e4m3(code) * 2^(scale - 127).
++// Decoded here, so that nothing depends on what ggml's type 43 means (upstream: plain fp8).
++#pragma once
++#include <cmath>
++#include <cstddef>
++#include <cstdint>
++inline size_t mxfp8_row_bytes(int64_t n) { return (size_t)n / 32 * 33; }
++inline float mxfp8_e4m3(uint8_t c) {
++  const int e = (c >> 3) & 15, m = c & 7;
++  const float v = e == 0 ? std::ldexp((float)m, -9) : std::ldexp((float)(8 + m), e - 10);
++  return (c & 0x80) ? -v : v;
++}
++inline void mxfp8_to_float(const void* src, float* y, int64_t n) {
++  const uint8_t* b = (const uint8_t*)src;
++  for (int64_t i = 0; i < n / 32; i++, b += 33) {
++    const float d = std::ldexp(1.0f, (int)b[0] - 127);
++    for (int j = 0; j < 32; j++) y[i * 32 + j] = mxfp8_e4m3(b[1 + j]) * d;
++  }
++}

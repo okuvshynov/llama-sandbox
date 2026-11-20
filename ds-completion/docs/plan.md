@@ -442,6 +442,8 @@ on a new one starts in 0.1-0.3 s, not 14 s (pi's third task: 7.6 s). Open: a liv
 Step 161: a stream carries reasoning and text as they are generated, tool calls whole at the end; its message is the
 plain request's. Open: the OpenAI endpoint, tool calls streamed in pieces, forced tool use, sampling on two machines.
 Step 162: the server's observability reviewed and planned (item 33, "Observability of the server"); nothing built.
+Step 163: a trial build against upstream llama.cpp: with the Engram rows decoded by our own code the 8 held-out outputs
+are the stored ones'. Documented (`docs/llama-cpp-upstream.md`), not done: the pin stays.
 constructor in parts.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits

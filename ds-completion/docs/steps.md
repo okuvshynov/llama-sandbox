@@ -5893,3 +5893,46 @@ line, for a second set of metrics.
 
 No histograms: nothing collects the metrics yet (the person will set a collector up), and one
 request runs at a time. The plan is to be reviewed by the person before any of it is built.
+
+## Step 163: a trial build against upstream llama.cpp
+
+The setup asks for llama.cpp at a PR's commit, fetched by its hash (step 95,
+`docs/llama-cpp-upstream.md`). The person asked what would make the setup shorter, for pi on
+one machine above all, and whether upstream would do now.
+
+**Upstream is as it was for these files.** At master `e626db7ca` (2026-11-20) ggml's type 43
+is still plain fp8 (`F8_E4M3`) and the PR's MXFP8 is not there: upstream's own programs still
+misread the Engram table.
+
+**But we need little from the fork.** Every ggml function our code calls is in upstream. Three
+places depend on type 43 being MXFP8: the type's name in `src/model.cpp`, the GPU runtime's
+fetch of the Engram rows (ggml's `to_float` and row size), and the CPU-only path's
+`ggml_get_rows` on the table.
+
+**The trial** (`results/dist/trunk-trial.patch`; a copy of the sources outside the repository,
+whose code is unchanged): the type checked as the number 43, and the rows decoded by 20 lines
+of our own in the GPU runtime (33 bytes per 32 values: one e8m0 scale, 32 e4m3 codes). Built
+against upstream `e626db7ca`:
+
+| check | result |
+|---|---|
+| `make`, `make HIP=1` (`ds-completion`, `ds-inspect`, `fp8pack`) | no errors |
+| the 8 held-out prompts, the held-out command | every output the stored one's bytes (`results/dist/trunk-trial.txt`) |
+| `fp8pack` | `dense-fp8.gguf` byte-identical, 18.8 s |
+
+The machine had been restarted (the page cache held 1 GB): the model files were read through
+first, 3 min 13 s. The speeds in the results file are single runs and are not a measurement.
+
+**Not covered:** the CPU-only path (it would read the rows as plain fp8 on upstream, without
+an error, until it uses the same decoder); the gates against the reference; the other programs;
+a check at load of the tensor's size in the file; two machines.
+
+**Decided:** documented only (the person). The pin stays. What a move would take is in
+`docs/llama-cpp-upstream.md`, "A trial against upstream": the decoder on both paths with the
+size check (the code then builds against the pin and upstream alike), then the gates against
+upstream and the documents naming a tested upstream commit.
+
+Also looked at for a shorter pi setup, not done: a `scripts/serve.sh` like `scripts/chat.sh`
+(the server's eight-line command as one); a command that fetches only the model's `encoding/`
+directory (the default path is inside the 510 GB base download, which pi does not need); pi's
+defaults in its `settings.json`.
