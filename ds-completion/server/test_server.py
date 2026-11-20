@@ -8,10 +8,12 @@ renders it: system, tools, effort, thinking), the message built from a canned re
 text, a tool call), the same as a stream of events, replies that are cut or malformed, a tool
 loop's second request (the reply sent back with a tool result), requests that are refused, and
 GET /metrics and /health (step 165): the page while a request runs and another waits, its
-totals against this test's own count of what it sent, and both with the engine gone.
+totals against this test's own count of what it sent, and both with the engine gone; --log
+and --dump (step 166): a JSON line and a dump file for every request, however it ended.
 """
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -66,7 +68,9 @@ def main():
     tmp = tempfile.mkdtemp(prefix='ds-server-test-')
     replies, reqlog = os.path.join(tmp, 'replies.json'), os.path.join(tmp, 'requests.log')
     json.dump(REPLIES, open(replies, 'w', encoding='utf-8'), ensure_ascii=False)
-    srv = subprocess.Popen([sys.executable, os.path.join(HERE, 'ds_server.py'), '--port', '0', '--encoding', ENC, '--seed', '7', '--ping', '1', '--progress', '1', '--',
+    req_log, dump_dir = os.path.join(tmp, 'requests.jsonl'), os.path.join(tmp, 'dump')
+    srv = subprocess.Popen([sys.executable, os.path.join(HERE, 'ds_server.py'), '--port', '0', '--encoding', ENC, '--seed', '7', '--ping', '1', '--progress', '1',
+                            '--log', req_log, '--dump', dump_dir, '--',
                             sys.executable, os.path.join(HERE, 'fake_engine.py'), replies, reqlog, '--requests'],
                            stdout=subprocess.PIPE, stderr=open(os.path.join(tmp, 'server.err'), 'w'))
     port = int(srv.stdout.readline().split()[1])
@@ -351,6 +355,46 @@ def main():
 
     srv.terminate()
     srv.wait()
+    # (step 166) --log: one JSON line per request to /v1/messages, whichever way it ended; --dump: a file for each
+    recs = [json.loads(l) for l in open(req_log, encoding='utf-8')]
+    by = {o: [r for r in recs if r['outcome'] == o] for o in ('ok', 'cancelled', 'bad_request', 'engine_error')}
+    check(len(recs) == len(codes) + 2 and [r['request'] for r in recs] == sorted(r['request'] for r in recs) and {r['request'] for r in recs} == set(range(1, len(recs) + 1))
+          and all(tuple(r) == ds_server.RECORD for r in recs),
+          f'--log: {len(recs)} lines for {len(codes)} requests sent and 2 clients that left, numbered 1..{len(recs)}, every line with the same {len(ds_server.RECORD)} keys')
+    check({o: len(v) for o, v in by.items()} == {'ok': n_ok, 'cancelled': 2, 'bad_request': n_bad, 'engine_error': 1},
+          f'--log, by outcome: {({o: len(v) for o, v in by.items()})}: what /metrics counted, and the request the engine died on')
+    check(sum(r['generated_tokens'] for r in by['ok']) == mm['ds_generated_tokens_total'] and sum(r['prompt_tokens'] - r['kept'] for r in by['ok']) == mm['ds_prompt_tokens_total{kind="run"}']
+          and all(r['stop_reason'] and r['blocks'] is not None and r['prompt_s'] == 0.1 and r['generation_s'] == 0.5 and r['total_s'] >= r['first_token_s'] >= r['wait_s'] >= 0
+                  and r['how'] in ('continue', 'empty') and r['mode'] in ('chat', 'thinking') and r['error'] is None for r in by['ok']),
+          'the lines of the answered requests: tokens add up to /metrics\' totals; each has its stop reason, blocks, seconds, mode and how')
+    k300 = [r for r in recs if r['kept'] == 300]
+    slow = max(by['ok'], key=lambda r: r['first_token_s'])
+    check(len(k300) == 1 and k300[0]['how'] == 'continue' and k300[0]['ctx'] == 300 and k300[0]['saved'] == 280 and slow['stream'] is True and slow['first_token_s'] >= 2.5
+          and slow['stream_differs'] is False and slow['blocks'] == ['thinking', 'text', 'tool_use'] and slow['tools'] == 1 and slow['max_tokens'] == 65536,
+          f'the request that kept 300 tokens: how={k300[0]["how"]} ctx={k300[0]["ctx"]} saved={k300[0]["saved"]}; the slow stream: first token after {slow["first_token_s"]} s, blocks {slow["blocks"]}')
+    notes = [r['note'] for r in by['ok'] if r['note']]
+    check(len(notes) == 1 and 'did not parse' in notes[0], f'one line has a note: {notes[0] if notes else None!r:.60}')
+    check(all(r['client_left'] and r['generated_tokens'] == 0 and r['stop_reason'] is None and r['prompt_tokens'] > 0 for r in by['cancelled'])
+          and [r['stream'] for r in by['cancelled']] == [False, True],
+          f'the two cancelled ones: client_left, no stop reason, the prompt\'s tokens ({by["cancelled"][0]["prompt_tokens"]}); one plain, one a stream')
+    refused = [r for r in by['bad_request'] if r['mode'] is None]  # by the server, before the engine saw them
+    check(len(refused) == n_bad - 1 and all(r['error'] and r['how'] is None and r['generated_tokens'] is None for r in by['bad_request'])
+          and sum('70000 tokens' in r['error'] for r in by['bad_request']) == 1 and sum('not JSON' in r['error'] for r in by['bad_request']) == 1
+          and 'gone' in by['engine_error'][0]['error'],
+          f'the refused ones have the error\'s text ({len(refused)} by the server, 1 by the engine); the last line: {by["engine_error"][0]["error"]!r}')
+    check(all(re.fullmatch(r'\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}[+-]\d\d:\d\d', r['time']) for r in recs) and [r['time'] for r in recs] == sorted(r['time'] for r in recs),
+          f'every line has its arrival\'s time with the zone, in order: {recs[0]["time"]}')
+    dumps = {f[:-5]: json.load(open(os.path.join(dump_dir, f), encoding='utf-8')) for f in os.listdir(dump_dir)}
+    d_can, d_bad, d_ok = dumps[by['cancelled'][0]['id']], dumps[refused[0]['id']], dumps[k300[0]['id']]
+    not_json = dumps[[r for r in recs if r['error'] and 'not JSON' in r['error']][0]['id']]
+    check(set(dumps) == {r['id'] for r in recs} and all(d['outcome'] == r['outcome'] for r in recs for d in [dumps[r['id']]])
+          and d_can['prompt'] and d_can['message'] is None and d_can['reply'] == '' and d_bad['request'] and d_bad['prompt'] is None and d_bad['error']
+          and d_ok['message']['usage']['cache_read_input_tokens'] == 300 and d_ok['reply'] and not_json['request'] is None and not_json['body'] == '{not json',
+          f'--dump: {len(dumps)} files, one per line, each with its outcome: a cancelled one has its prompt and no message, a refused one its request and error, '
+          'the body that is not JSON as text')
+    stamped = [l for l in open(os.path.join(tmp, 'server.err'), encoding='utf-8') if l.startswith('# server')]
+    check(len(stamped) > 20 and all(re.match(r'# server \d{4}-\d\d-\d\d \d\d:\d\d:\d\d: ', l) for l in stamped),
+          f'the server\'s {len(stamped)} log lines start with the date and time: {stamped[-1].strip()[:70]!r}')
     cancelled = [l for l in open(os.path.join(tmp, 'server.err'), encoding='utf-8') if ': cancelled after' in l]
     check(len(cancelled) == 2, f'the log has the two cancelled requests: {[l.strip() for l in cancelled]}')
     said = [l for l in open(os.path.join(tmp, 'server.err'), encoding='utf-8') if 'tokens so far' in l]

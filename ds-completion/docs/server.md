@@ -137,10 +137,38 @@ item 33, step 4).
 
 ## The log
 
-One line per finished request: the mode, prompt tokens and seconds, reply tokens, seconds and
-t/s, how long it waited for the engine, the stop reason and the blocks. While a request runs,
-a line every `--progress` seconds (default 30) with its tokens so far. `--dump DIR` writes
-each request, its prompt, the raw reply and the message to `DIR/<message id>.json`.
+On stderr, one line per finished request: the mode, prompt tokens and seconds, reply tokens,
+seconds and t/s, how long it waited for the engine, the stop reason and the blocks. While a
+request runs, a line every `--progress` seconds (default 30) with its tokens so far. The
+server's lines start with the date and time (`# server 2026-11-20 10:34:36: request 3: ...`).
+
+**`--log FILE`** (step 166) appends one JSON object per request to `POST /v1/messages`, on one
+line, when the request ends, however it ends. Every line has the same keys; a value is `null`
+where the request did not get that far.
+
+| key | what |
+|---|---|
+| `time` | the request's arrival, with milliseconds and the zone |
+| `request`, `id` | the request's number in the server's log lines (from 1 with every start), the message id (`--dump`'s file name) |
+| `outcome`, `error` | `ok`, `cancelled`, `bad_request`, `engine_error` (as `/metrics`); the error's text for the last two |
+| `stream`, `mode`, `messages`, `tools` | what was asked: a stream, `chat` or `thinking`, how many messages and tools |
+| `max_tokens`, `temperature`, `top_p`, `seed` | as sent to the engine |
+| `how`, `ctx`, `common` | where the engine started (`continue`, `saved`, `empty`), the tokens its context held, how many of them the prompt starts with (`docs/requests.md`) |
+| `prompt_tokens`, `kept`, `saved` | the prompt's tokens, those already in the context, where the saved point is after the request |
+| `generated_tokens` | the reply's tokens (of a cancelled request: those made before it stopped) |
+| `prompt_s`, `generation_s` | the engine's time on the prompt and on the reply |
+| `wait_s`, `first_token_s`, `total_s` | from the arrival: to the engine taking the request, to the reply's first token, to the end |
+| `stop_reason`, `blocks`, `note` | of a completed reply: the stop reason, its blocks' types, why it did not parse (if it did not) |
+| `client_left`, `stream_differs` | the client closed its connection; a stream that was not its message (a bug) |
+
+A request refused by the server has only the first rows; one the engine took and then
+cancelled has its tokens and seconds but no stop reason. To read it: `jq -c
+'[.request, .outcome, .how, .kept, .prompt_s]' FILE`.
+
+**`--dump DIR`** writes each request, its prompt, the raw reply and the message to
+`DIR/<message id>.json`, with its `outcome` and `error`: also for a cancelled request (the
+prompt and the reply so far), a failed and a refused one (the request; a body that is not
+JSON as text in `body`).
 
 The engine's own lines are in the same stream. Per request, before the prompt runs, a line
 `# context: ...` says where it starts (on from the context, from the saved point, or empty)

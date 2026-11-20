@@ -159,7 +159,9 @@ second one says `(1565 kept)` or a number near it.
   tokens, processed at ~100 tokens per second. A longer `AGENTS.md` or more tools add to it.
   From the third conversation on they are taken from a saved point (step 160) and the reply
   starts within a second, as long as the system prompt and tools stay the same (the same
-  directory, the same `AGENTS.md`).
+  directory, the same `AGENTS.md`) and so does `--thinking`: with reasoning the prompt starts
+  with a line naming the effort, before the system prompt, so a conversation with reasoning
+  and one without share two tokens (seen in step 166), and the saved point ends.
 - **Later requests of the same conversation start in about a second:** the engine goes on
   from its context (`(N kept)` in the log). It keeps one context: a second pi session, or
   anything else sent to the server in between, makes the next request run whole again.
@@ -188,6 +190,8 @@ second one says `(1565 kept)` or a number near it.
 
 To see exactly what pi sent and what the model wrote, start the server with `--dump DIR`:
 one JSON file per request with the request, the rendered prompt, the raw reply and the message.
+For one line per request (its time, tokens kept and run, seconds, where the engine started):
+`--log FILE` ([server.md](server.md), "The log").
 
 ## Not tested
 

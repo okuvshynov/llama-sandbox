@@ -241,7 +241,8 @@ harness with `server/pi-models.json` (the setup: [docs/pi.md](docs/pi.md)).
   prompt and tools) runs from a point saved there; any other from its first token.
 - **Refused:** forced tool use (`tool_choice` `any` / `tool`), images.
 - **The log** (stderr): a line per finished request, and every 30 s the tokens so far of a
-  running one. `--dump DIR` keeps each request's prompt, raw reply and message.
+  running one. `--log FILE` appends a JSON line per request (time, outcome, tokens, seconds,
+  where the engine started); `--dump DIR` keeps each request's prompt, raw reply and message.
   The engine's `# context:` lines say where each request started and where its prompt and
   the context part (step 164).
 - **Metrics and health:** `GET /metrics` has counters and gauges in the Prometheus text format

@@ -6047,3 +6047,73 @@ and under `results/`).
 
 **Not done:** no collector is set up (the person's). The numbers are per server process: they
 start at 0 with every start. Two machines: the back has no page.
+
+## Step 166: a log of requests
+
+Plan item 33, its third step. The server said what it did in lines for a person to read, on
+stderr, without the time; `--dump` kept only the requests that completed, which are the ones
+least in need of a second look.
+
+**`--log FILE`**: one JSON object per request to `POST /v1/messages`, on one line, appended
+when the request ends, however it ends. 30 keys, the same in every line, `null` where the
+request did not get that far: the arrival's time, the request's number and message id, the
+outcome and the error's text, what was asked (stream, mode, messages, tools, the sampler),
+where the engine started (step 164's `how`, `ctx`, `common`), the tokens (prompt, kept,
+saved point, generated), the seconds (prompt, generation, the wait for the engine, to the
+first token, the total), the stop reason, the blocks, the note of a reply that did not parse,
+whether the client left, whether a stream differed. The table: `docs/server.md`, "The log".
+
+**`--dump DIR`** now writes a file for every request, with its outcome: a cancelled one has
+the prompt and the reply so far, a refused one the request and the error, a body that is not
+JSON its text.
+
+**The server's stderr lines start with the date and time.** The engine's own lines do not.
+
+**In the code** the handler has one way out, `done(outcome, error)`, which counts the request
+for `/metrics`, writes the log line and the dump; step 165's four scattered counts are gone.
+A request gets its number when it arrives, not after it is found valid, so the refused ones
+have a number and a message id too. The line of a plain request is written before its reply
+is sent: a client that has its reply finds the line there.
+
+**Checked without the model** (`server/test_server.py`, 48 -> 58 checks): 25 lines for the 23
+requests the test sent and the 2 clients that left, numbered 1 to 25, every line with the same
+keys; by outcome what `/metrics` counted; the answered ones' tokens add up to `/metrics`'
+totals; the request that kept 300 tokens (`how=continue`, `saved` 280); the slow stream's
+first token after 2.5 s; the two cancelled ones; the refused ones' errors; the times in order;
+25 dump files, one per line; the stderr lines' dates. Two of the test's own expectations were
+wrong when first run (I took "no prompt tokens" for "never reached the engine", but a request
+the engine refuses has none either): the test was corrected, the server was right.
+
+**With the model** (`results/server/log_check.py` -> `log.txt`): step 165's four requests, one
+refused, a stream with reasoning whose client leaves after 3 s, and one more.
+
+| request | outcome | how | ctx | common | kept | saved | prompt s | wait s |
+|---|---|---|---|---|---|---|---|---|
+| 1 a conversation | ok | empty | 0 | 0 | 0 | 0 | 24.9 | 0.01 |
+| 2 another, the same system prompt | ok | empty | 1527 | 1518 | 0 | 1518 | 14.2 | 0.01 |
+| 3 a third | ok | saved | 1528 | 1518 | 1518 | 1518 | 0.15 | 0.01 |
+| 4 its next turn | ok | continue | 1527 | 1527 | 1527 | 1518 | 0.15 | 0.01 |
+| 5 no messages | bad_request | | | | | | | |
+| 6 a stream with reasoning, the client leaves | cancelled | empty | 1536 | 2 | 0 | 0 | 4.1 | 0.01 |
+| 7 a conversation as the first | ok | empty | 512 | 2 | 0 | 0 | 14.3 | 1.1 |
+
+**What the first run showed, unasked.** Request 6 has the same system prompt as the others
+and shares 2 tokens with them. The engine's line says why:
+
+    # context: they part at token 2: the context has 3476 "You", the prompt 77666 "Reason"; before it "<｜begin▁of▁sentence｜><｜System｜>", then the context "You answer in one short line. Background", the prompt "Reasoning Effort: 75 ("
+
+With reasoning, `encoding.py` writes the effort line at the start of the system turn, before
+the system prompt. So a conversation with reasoning and one without part at token 2: the saved
+point ended (`saved` 0), and request 7, a conversation like the first three, ran its 1,525
+tokens again (14.3 s where the point gave 0.15). For pi this means: a change of `--thinking`
+between off and a level costs one whole prompt, twice (once to end the point, once more before
+a new one is set). Two efforts would part a few tokens later by the same line; that was not
+run. `docs/pi.md` says it now. Nothing is changed: the format is the model's.
+
+Also in the table: request 7 waited 1.1 s for the engine (the server looks for a client that
+left once a second, then the engine stops at its next prompt chunk), and after the cancelled
+prompt the context held 512 tokens, one chunk.
+
+**Not done:** the engine's lines have no time and no request number (the number would be a
+new field of the protocol; the plan's "Not decided"). The log is one file that grows: no
+rotation. Not run: pi, two machines.

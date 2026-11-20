@@ -3,7 +3,8 @@
 benchmark with one tool needs it (README step 153).
 
   python3 server/ds_server.py [--port 8080] [--host 127.0.0.1] [--encoding ~/llms/ds-flash/encoding/encoding.py]
-                      [--temp 1 --top-p 0.95 --seed 0] [--model-name NAME] [--dump DIR] [--ping 10] -- ENGINE COMMAND ...
+                      [--temp 1 --top-p 0.95 --seed 0] [--model-name NAME] [--log FILE] [--dump DIR] [--ping 10]
+                      -- ENGINE COMMAND ...
 
   python3 server/ds_server.py -- bin-hip/ds-completion -m $M --rt $F8 --placement placements/study30.txt \\
       --dspark $D --spec --canon --cache-loads 800 --cache-period 8 --cache-wait --requests
@@ -21,6 +22,7 @@ GET  /metrics       counters and gauges in the Prometheus text format (docs/serv
 """
 import argparse
 import codecs
+import datetime
 import importlib.util
 import itertools
 import json
@@ -49,7 +51,14 @@ class BadRequest(Exception):
 
 
 def log(*a):
-    print('# server:', *a, file=sys.stderr, flush=True)
+    print(f'# server {time.strftime("%Y-%m-%d %H:%M:%S")}:', *a, file=sys.stderr, flush=True)
+
+
+# One line of --log (README step 166): a request to POST /v1/messages as one JSON object. Every
+# line has every key; null where the request did not get that far. docs/server.md "The log".
+RECORD = ('time', 'request', 'id', 'outcome', 'error', 'stream', 'mode', 'messages', 'tools', 'max_tokens', 'temperature', 'top_p', 'seed',
+          'how', 'ctx', 'common', 'prompt_tokens', 'kept', 'saved', 'generated_tokens', 'prompt_s', 'generation_s', 'wait_s', 'first_token_s',
+          'total_s', 'stop_reason', 'blocks', 'note', 'client_left', 'stream_differs')
 
 
 def load_encoding(path):
@@ -465,13 +474,37 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split('?')[0]
         if path != '/v1/messages':
             return self.send_error_json(404, 'not_found_error', f'no such path: {path}')
+        t0 = time.time()
+        number = next(s.counter)  # every request to this path has one, the refused ones too (step 166)
+        mid = f'msg_{s.started:x}{number:06d}'
+        rec = dict.fromkeys(RECORD)
+        rec.update(time=datetime.datetime.fromtimestamp(t0).astimezone().isoformat(timespec='milliseconds'), request=number, id=mid, client_left=False)
+        kept_dump = {'request': None, 'prompt': None, 'reply': None, 'message': None, 'note': ''}
+
+        def done(outcome, error=None):
+            """The request's end, whichever it is: counted, written to --log and to --dump."""
+            rec.update(outcome=outcome, error=error, total_s=round(time.time() - t0, 3))
+            s.metrics.inc('ds_requests_total', label=outcome)
+            if s.req_log:
+                with s.req_log_lock:
+                    s.req_log.write(json.dumps(rec, ensure_ascii=False) + '\n')
+                    s.req_log.flush()
+            if s.dump_dir:
+                with open(os.path.join(s.dump_dir, f'{mid}.json'), 'w', encoding='utf-8') as f:
+                    json.dump(dict(kept_dump, outcome=outcome, error=error), f, ensure_ascii=False, indent=1)
+
+        raw = self.rfile.read(int(self.headers.get('Content-Length', 0)))
         try:
-            req = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))))
+            req = json.loads(raw)
             if not isinstance(req, dict):
                 raise ValueError('the body is not a JSON object')
         except ValueError as e:
-            s.metrics.inc('ds_requests_total', label='bad_request')
+            kept_dump['body'] = raw.decode('utf-8', errors='replace')
+            done('bad_request', f'the body is not JSON: {e}')
             return self.send_error_json(400, 'invalid_request_error', f'the body is not JSON: {e}')
+        kept_dump['request'] = req
+        rec.update(stream=bool(req.get('stream')), messages=len(req['messages']) if isinstance(req.get('messages'), list) else None,
+                   tools=len(req['tools']) if isinstance(req.get('tools'), list) else 0)
         try:
             prompt, mode = build_prompt(s.enc, req)
             n = req.get('max_tokens')
@@ -485,29 +518,31 @@ class Handler(BaseHTTPRequestHandler):
             if temp == 0:
                 top_p = 1.0
         except BadRequest as e:
-            s.metrics.inc('ds_requests_total', label='bad_request')
+            done('bad_request', str(e))
             return self.send_error_json(400, 'invalid_request_error', str(e))
 
         stream = bool(req.get('stream'))
-        number = next(s.counter)
-        mid = f'msg_{s.started:x}{number:06d}'
+        kept_dump['prompt'] = prompt
+        rec.update(mode=mode, max_tokens=n, temperature=float(temp), top_p=float(top_p), seed=seed)
         ids = itertools.count(1)
         result = {'tokens': 0}
         token = {}
-        t0 = time.time()
 
         events = queue.Queue()  # a stream: what the engine's thread saw, for this thread to send
 
         def on_start(f):
             tokens, kept = int(f['tokens']), int(f.get('kept', 0))
             result.update(t_start=time.time(), prompt_tokens=tokens)
+            rec.update(prompt_tokens=tokens, kept=kept, wait_s=round(result['t_start'] - t0, 3))
             if f.get('how') in ('continue', 'saved', 'empty'):  # (an engine before step 164 does not say)
                 s.metrics.inc('ds_context_total', label=f['how'])
+                rec.update(how=f['how'], ctx=int(f.get('ctx', 0)), common=int(f.get('common', 0)))
             events.put(('start', tokens, kept))
 
         def on_token(piece):
             if not result['tokens']:
                 result['t_first'] = time.time()
+                rec['first_token_s'] = round(result['t_first'] - t0, 3)
             result['tokens'] += 1
             events.put(('tok', piece))
 
@@ -562,7 +597,7 @@ class Handler(BaseHTTPRequestHandler):
             if stream and not gone:
                 n_sent = result['tokens']
                 if not send_live(min(1.0, s.ping)):
-                    gone = True
+                    gone = rec['client_left'] = True
                     log(f'request {number}: the client left; cancelling')
                     s.engine.cancel(token)
                 if result['tokens'] != n_sent:
@@ -570,7 +605,7 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 worker.join(min(1.0, s.ping))
             if worker.is_alive() and not gone and self.client_left():
-                gone = True
+                gone = rec['client_left'] = True
                 log(f'request {number}: the client left; cancelling')
                 s.engine.cancel(token)
             if worker.is_alive() and time.time() - t_said >= s.progress:  # a long reply is otherwise silent until its end
@@ -582,17 +617,17 @@ class Handler(BaseHTTPRequestHandler):
             if stream and worker.is_alive() and not gone and time.time() - t_ping >= s.ping:
                 t_ping = time.time()
                 if not self.try_sse('ping', {'type': 'ping'}):
-                    gone = True
+                    gone = rec['client_left'] = True
                     log(f'request {number}: the client left; cancelling')
                     s.engine.cancel(token)
         if 'failed' in result:
-            s.metrics.inc('ds_requests_total', label='engine_error')
+            done('engine_error', result['failed'])
             log(f'request {number}: {result["failed"]}')
             if stream:
                 return self.try_sse('error', {'type': 'error', 'error': {'type': 'api_error', 'message': result['failed']}})
             return self.send_error_json(500, 'api_error', result['failed'])
         if 'bad' in result:
-            s.metrics.inc('ds_requests_total', label='bad_request')
+            done('bad_request', result['bad'])
             if stream:
                 log(f'request {number}: {result["bad"]}')
                 return self.try_sse('error', {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': result['bad']}})
@@ -601,11 +636,15 @@ class Handler(BaseHTTPRequestHandler):
         end = result['end']
         if 'saved' in end:
             s.metrics.set('ds_saved_point_tokens', int(end['saved']))
+        text = result['out'].decode('utf-8', errors='replace')
+        kept_dump['reply'] = text
+        if 't_start' in result:  # the engine took it (a request cancelled while it waited has no numbers)
+            rec.update(prompt_tokens=int(end['prompt_tokens']), kept=int(end.get('kept', 0)), generated_tokens=int(end['gen_tokens']),
+                       prompt_s=float(end['prompt_s']), generation_s=float(end['gen_s']), saved=int(end['saved']) if 'saved' in end else None)
         if end['stop'] == 'cancel':
-            s.metrics.inc('ds_requests_total', label='cancelled')
+            done('cancelled')
             log(f'request {number}: cancelled after {end["gen_tokens"]} tokens, {time.time() - t0:.1f} s after it arrived')
             return
-        text = result['out'].decode('utf-8', errors='replace')
         blocks, stop_reason, note = parse_reply(s.enc, text, mode, end['stop'] == 'eos', lambda p: f'{p}_{s.started:x}{number:06d}{next(ids):02d}')
         kept = int(end.get('kept', 0))
         message = {'id': mid, 'type': 'message', 'role': 'assistant', 'model': s.model_name, 'content': blocks,
@@ -616,7 +655,7 @@ class Handler(BaseHTTPRequestHandler):
                              'cache_creation_input_tokens': 0, 'cache_read_input_tokens': kept}}
         gen_s = float(end['gen_s'])
         t_done = time.time()
-        for name, by, label in [('ds_requests_total', 1, 'ok'), ('ds_stop_reason_total', 1, stop_reason),
+        for name, by, label in [('ds_stop_reason_total', 1, stop_reason),
                                 ('ds_prompt_tokens_total', int(end['prompt_tokens']) - kept, 'run'), ('ds_prompt_tokens_total', kept, 'kept'),
                                 ('ds_generated_tokens_total', int(end['gen_tokens']), None), ('ds_prompt_seconds_total', float(end['prompt_s']), None),
                                 ('ds_generation_seconds_total', gen_s, None), ('ds_queue_wait_seconds_total', result.get('t_start', t0) - t0, None),
@@ -627,10 +666,10 @@ class Handler(BaseHTTPRequestHandler):
             f'{end["gen_tokens"]} tokens in {gen_s:.1f} s ({int(end["gen_tokens"]) / gen_s if gen_s > 0 else 0:.1f} t/s), '
             f'waited {result.get("t_start", t0) - t0:.1f} s, {stop_reason}: {", ".join(b["type"] for b in blocks) or "nothing"}'
             + (f'; {note}' if note else '') + ('; the client had left' if gone else ''))
-        if s.dump_dir:
-            with open(os.path.join(s.dump_dir, f'{mid}.json'), 'w', encoding='utf-8') as f:
-                json.dump({'request': req, 'prompt': prompt, 'reply': text, 'message': message, 'note': note}, f, ensure_ascii=False, indent=1)
+        kept_dump.update(message=message, note=note)
+        rec.update(stop_reason=stop_reason, blocks=[b['type'] for b in blocks], note=note or None)
         if not stream:
+            done('ok')  # (before the reply is sent: a client that has its reply finds the line written)
             return self.send_json(200, message)
         if not gone and send_live(0):  # (what the loop above did not get to), then the reply's end
             for name, data in live.finish(blocks) + [
@@ -638,9 +677,11 @@ class Handler(BaseHTTPRequestHandler):
                     ('message_stop', {'type': 'message_stop'})]:
                 if not self.try_sse(name, data):
                     break
+            rec['stream_differs'] = live.differs
             if live.differs:
                 s.metrics.inc('ds_stream_mismatch_total')
                 log(f'request {number}: the stream\'s thinking or text is not the message\'s (a bug: please keep the dump)')
+        done('ok')
 
     def client_left(self):
         """The client closed its side: the socket is readable and has no bytes (a client that
@@ -682,6 +723,7 @@ def main():
     ap.add_argument('--model-name', default='deepseek-v4.1-flash-1017', help='the model name in replies')
     ap.add_argument('--ping', type=float, default=10, help='seconds between ping events of a stream while the engine works')
     ap.add_argument('--progress', type=float, default=30, help='seconds between progress lines of a running request in the log')
+    ap.add_argument('--log', metavar='FILE', help='append one JSON line per request to FILE: its time, outcome, tokens, seconds, how the context was reached')
     ap.add_argument('--dump', metavar='DIR', help='write every request, its prompt, the raw reply and the message to DIR/<message id>.json')
     a = ap.parse_args(argv[:cut])
     cmd = argv[cut + 1:]
@@ -691,6 +733,7 @@ def main():
     enc = load_encoding(a.encoding)
     if a.dump:
         os.makedirs(a.dump, exist_ok=True)
+    req_log = open(a.log, 'a', encoding='utf-8') if a.log else None  # (before the load: a path that cannot be written fails now)
     engine = Engine(cmd)
     srv = ThreadingHTTPServer((a.host, a.port), Handler)
     srv.daemon_threads = True
@@ -698,6 +741,7 @@ def main():
     srv.model_name, srv.dump_dir, srv.ping = a.model_name, a.dump, a.ping
     srv.progress = a.progress
     srv.counter, srv.started = itertools.count(1), int(time.time())
+    srv.req_log, srv.req_log_lock = req_log, threading.Lock()
     srv.metrics = Metrics()
     srv.metrics.set('ds_start_time_seconds', srv.started)
     srv.metrics.set('ds_engine_load_seconds', round(engine.load_s, 3))

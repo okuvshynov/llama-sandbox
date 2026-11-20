@@ -288,6 +288,7 @@ Unless stated: sclk 2, 16 CPU threads (32 before README step 18), the study30 pl
 | 163 | `dist/trunk-trial.txt`, `dist/trunk-trial.patch` | upstream llama.cpp at `e626db7ca` built with the fork's two `cmake` lines; `git apply ds-completion/results/dist/trunk-trial.patch` on 40f345e; `make FORK=<upstream> BIN=bin-trunk && make HIP=1 FORK=<upstream> BIN=bin-trunk-hip`; the held-out command per prompt (`scripts/spec-measure.sh`'s, with `--cache-loads 800 --cache-period 8`, without `--spec-log`), `cmp` with `cache-test/plain-canon-static/<name>.out`; `bin-trunk/fp8pack` and `cmp` with `dense-fp8.gguf` |
 | 164 | `requests/requests_test.txt`, `requests/requests_test-plain.txt` (again, with the checks of `ctx`, `common`, `how` and of the engine's `# context:` lines) | `python3 results/requests/requests_test.py` and with `--no-spec` (~10 min each) |
 | 165 | `server/test_server.txt` (again, with the metrics and health checks), `server/metrics.txt`, `server/metrics_check.py` | `python3 server/test_server.py` (no model); `python3 results/server/metrics_check.py SERVER_LOG` (the model: ~1 min of load, ~1 min of requests), its output and the log's `# server` and `# context` lines |
+| 166 | `server/test_server.txt` (again, with the `--log` and `--dump` checks), `server/log.txt`, `server/log_check.py` | `python3 server/test_server.py` (no model); `python3 results/server/log_check.py SERVER_LOG` (the model: ~1 min of load, ~1 min of requests), its output and the log's `# server` and `# context` lines |
 
 ## 7. Open items (to confirm)
 

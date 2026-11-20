@@ -68,7 +68,7 @@ Features and limits
 | 27 | Candidate-block selection (>16k tokens) | done (runtime) | the reference's layer-20 path, checked against its own function; the CPU path still stops at 16k |
 | 28 | Full 1017 checkpoint | not needed | item 19 runs from the GGUF; exact references read the release by HTTP ranges (README "Which checkpoint") |
 | 29 | Sampling beyond greedy | started | temperature and top-p for a minimal server (the person's benchmark). Step 148: the sampler as a library with its test. Step 149: `--temp`, `--top-p`, `--seed` in the plain loop, one seed one output on any placement. Step 150: the speculative loop samples too (the plain loop's outputs; held-out mean 41.8 t/s against 44.8 greedy, not with `--remote`). Step 151: that loss was the draws (~1 ms each and the threads' start); a vector `exp` and draws in turn: 43.1 t/s against 44.9 greedy. Step 152: `--requests`, the engine's side of the server (prompts on stdin, each on an empty context; `docs/requests.md`). Step 153: the HTTP front, `server/ds_server.py` (Anthropic Messages; the model's `encoding.py` renders and parses): the benchmark's script runs against it unchanged. Step 154: a request whose client left is cancelled (`SIGUSR1` to the engine). Next: the person's samples, the OpenAI endpoint if wanted. Greedy loops on some long reasoning (README step 48) |
-| 33 | Observability of the server | started (steps 1-2 of 4 done, steps 164-165) | a metrics page in the Prometheus format, the engine's choice of context in the protocol and the log, a log of requests as JSON lines: "Observability of the server" below (README step 162) |
+| 33 | Observability of the server | started (steps 1-3 of 4 done, steps 164-166) | a metrics page in the Prometheus format, the engine's choice of context in the protocol and the log, a log of requests as JSON lines: "Observability of the server" below (README step 162) |
 
 ## Observability of the server (2026-11-19)
 
@@ -132,7 +132,7 @@ line; its own lines per request (speculation, routed experts, speeds) go to the 
    No histograms for now (the person, 2026-11-19): nothing collects the metrics yet, and one
    request runs at a time. Speeds are ratios of the counters (generated tokens over
    generation seconds).
-3. **A log of requests as JSON lines** (`--log FILE`): one object per request with the time,
+3. **Done (step 166).** **A log of requests as JSON lines** (`--log FILE`): one object per request with the time,
    the request's number and message id, every field of today's summary line, `saved`, how the
    context was reached and the time to the first token. The time of day on the stderr lines;
    `--dump` also for cancelled, failed and refused requests.
@@ -450,6 +450,9 @@ Step 164: item 33's first step: `ctx`, `common`, `how` in the engine's `prompt` 
 (where a prompt and the context part). Next: `GET /metrics`.
 Step 165: item 33's second step: `GET /metrics` (counters and gauges, the Prometheus text format, `docs/server.md` "Metrics"),
 `GET /health` 503 when the engine is gone. Next: the log of requests as JSON lines.
+Step 166: item 33's third step: `--log FILE` (a JSON line per request, 30 keys), the date and time on the server's log lines,
+`--dump` for every outcome. Seen in its first run: a request with reasoning and one without share 2 tokens (the effort line
+comes first), which ends the saved point. Next: more of the engine in the `end` line.
 constructor in parts.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
