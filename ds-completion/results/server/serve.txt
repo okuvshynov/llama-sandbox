@@ -1,0 +1,76 @@
+# scripts/serve.sh tried (a driver that starts it with DS_LOGS in a scratch directory, sends one request, waits 63 s and
+# sends SIGINT to its process group, as Ctrl-C does); commit fa4d6a0+changes (step 167), sclk 6, 2026-11-20T11:23:27-05:00
+# This is the second trial, with the default --max-ctx 262144. The first, with --max-ctx 1000000 (then read from pi's
+# models.json), went the same; its two lines that differ are at the end, with those of the engine's default 65536.
+# the driver's output:
+stdout: listening 8080
+reply: [{'type': 'text', 'text': 'yes'}] {'input_tokens': 11, 'output_tokens': 1, 'cache_creation_input_tokens': 0, 'cache_read_input_tokens': 0} 0.6 s
+exit code 0
+# the directory it left:
+#    700 ./dump/msg_6b00738b000001.json
+#   1900 ./info.txt
+#   2954 ./metrics.prom
+#    556 ./requests.jsonl
+#   2699 ./server.log
+#   8809 total
+# info.txt (without the copy of pi's models.json):
+# scripts/serve.sh, commit fa4d6a0+changes, 2026-11-20T11:20:31-05:00
+# command: python3 server/ds_server.py --port 8080 --log <scratch>/20261120-112031/requests.jsonl --dump <scratch>/20261120-112031/dump -- bin-hip/ds-completion -m /home/oleksandr/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf --rt /home/oleksandr/llms/ds-1017-fp8/dense-fp8.gguf --placement placements/study30.txt --dspark /home/oleksandr/llms/dspark/dspark-DeepSeek-V4.1-Flash-1017-BF16.gguf --spec --canon --cache-loads 800 --cache-period 8 --cache-wait --max-ctx 262144 --requests
+# max-ctx 262144; contextWindow in pi's models.json: 262144 (/home/oleksandr/.pi/agent/models.json); pi 1.5.2
+# card0: manual, sclk 6: 1608Mhz 
+# card1: manual, sclk 6: 1608Mhz 
+# card2: manual, sclk 6: 1608Mhz 
+# card3: manual, sclk 6: 1608Mhz 
+# page cache: 489 GB (the model files are 488 GB)
+# /home/oleksandr/.pi/agent/models.json:
+# the terminal (stderr), without the engine's per-request lines:
+# logs: <scratch>/20261120-112031
+# mapped 289 GB of CPU experts in 1.1 s
+# runtime: 6.41 GiB of fp8 weights on GPU 0 (80 matrices with padded rows)
+# runtime: 1.75 GiB of small weights on GPU 0
+# dspark: 3 layers, block 5, 128 experts top-3, targets 37 38 39; 0.5 GB on GPU 0, its routed experts in the expert pool
+# runtime: 6029 experts (39.3% of the loaded layers' pairs) on GPUs (0: 734, 1: 1765, 2: 1765, 3: 1765), loaded in 6.2 s
+# expert loader: 288.8 GB of expert tensors registered in 45.8 s (direct loads from now)
+# expert cache: up to 800 loads/s, rebalance every 8 tokens over the last 256
+# GPU memory (GB; the driver's used memory after each startup phase; expert slot = 18.8 MB):
+#   phase                                                           GPU 0  GPU 1  GPU 2  GPU 3
+#   context, other processes                                         0.22   0.07   0.07   0.07
+#   dense fp8 weights                                                6.88   0.00   0.00   0.00
+#   small weights (rotary, embeddings, head, norms, ...)             1.92   0.00   0.00   0.00
+#   activations and scratch (sized for 512-token chunks)             0.84   0.00   0.00   0.00
+#   sequence state: window, compressed KV, indexer keys (--max-ctx)   1.76   0.00   0.00   0.00
+#   draft (DSpark)                                                   0.79   0.00   0.00   0.00
+#   expert path buffers (per die: scratch, staging)                  0.13   0.32   0.32   0.32
+#   expert slots                                                    21.03  33.20  33.20  33.20
+#   cache and loader staging, the rest                               0.00   0.00   0.00   0.00
+#   free                                                             0.76   0.76   0.76   0.76
+#   total                                                           34.34  34.34  34.34  34.34
+# loaded in 58.7 s; prompt 0 tokens; fake-quant on; 16 threads
+# ready for requests on stdin (docs/requests.md)
+# server 2026-11-20 11:21:31: the engine is ready after 59 s
+# server 2026-11-20 11:21:31: listening on http://127.0.0.1:8080 (POST /v1/messages); defaults: temperature 1.0, top-p 0.95, seed 0
+# server 2026-11-20 11:21:31: request 1: chat, 11 prompt tokens (0 kept) in 0.4 s, 1 tokens in 0.2 s (5.3 t/s), waited 0.0 s, end_turn: text
+# logs: <scratch>/20261120-112031
+# requests.jsonl:
+{"time": "2026-11-20T11:21:31.070-05:00", "request": 1, "id": "msg_6b00738b000001", "outcome": "ok", "error": null, "stream": false, "mode": "chat", "messages": 1, "tools": 0, "max_tokens": 50, "temperature": 1.0, "top_p": 0.95, "seed": 0, "how": "empty", "ctx": 0, "common": 0, "prompt_tokens": 11, "kept": 0, "saved": 0, "generated_tokens": 1, "prompt_s": 0.4343, "generation_s": 0.1899, "wait_s": 0.003, "first_token_s": 0.437, "total_s": 0.627, "stop_reason": "end_turn", "blocks": ["text"], "note": null, "client_left": false, "stream_differs": null}
+# metrics.prom, the lines that are not 0:
+ds_requests_total{outcome="ok"} 1
+ds_stop_reason_total{reason="end_turn"} 1
+ds_prompt_tokens_total{kind="run"} 11
+ds_generated_tokens_total 1
+ds_prompt_seconds_total 0.4343
+ds_generation_seconds_total 0.1899
+ds_queue_wait_seconds_total 0.002546
+ds_first_token_seconds_total 0.437457
+ds_context_total{how="empty"} 1
+ds_engine_up 1
+ds_engine_load_seconds 58.969
+ds_start_time_seconds 1795191691
+# --max-ctx 1000000 (the first trial):
+# runtime: 5775 experts (37.6% of the loaded layers' pairs) on GPUs (0: 480, 1: 1765, 2: 1765, 3: 1765), loaded in 6.2 s
+#   sequence state: window, compressed KV, indexer keys (--max-ctx)   6.50   0.00   0.00   0.00
+# --max-ctx 65536 (the engine's default; step 166's run):
+# runtime: 6097 experts (39.7% of the loaded layers' pairs) on GPUs (0: 802, 1: 1765, 2: 1765, 3: 1765), loaded in 6.1 s
+#   sequence state: window, compressed KV, indexer keys (--max-ctx)   0.50   0.00   0.00   0.00
+# MAX_CTX=65536 with contextWindow 262144 in pi's models.json, stopped after 2 s: the warning
+# WARNING: contextWindow in /home/oleksandr/.pi/agent/models.json is 262144, the engine's --max-ctx 65536: pi will not compact in time and a longer prompt is refused. Set contextWindow to 65536 there, or start with MAX_CTX=262144

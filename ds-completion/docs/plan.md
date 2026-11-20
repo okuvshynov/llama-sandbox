@@ -453,6 +453,8 @@ Step 165: item 33's second step: `GET /metrics` (counters and gauges, the Promet
 Step 166: item 33's third step: `--log FILE` (a JSON line per request, 30 keys), the date and time on the server's log lines,
 `--dump` for every outcome. Seen in its first run: a request with reasoning and one without share 2 tokens (the effort line
 comes first), which ends the saved point. Next: more of the engine in the `end` line.
+Step 167: `scripts/serve.sh`: the server with the fastest settings and every log in a directory per start, for the person's
+runs with pi; what those logs show decides what comes next.
 constructor in parts.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits

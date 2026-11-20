@@ -222,6 +222,10 @@ python3 server/ds_server.py --port 8080 -- \
     --canon --cache-loads 800 --cache-period 8 --cache-wait --requests
 ```
 
+`scripts/serve.sh` is this command with every log kept (the request log, dumps, `/metrics`
+every minute) in a new directory under `~/ds-serve-logs/` per start, and `--max-ctx 262144`
+(`MAX_CTX` for another; it warns if pi's `models.json` asks for more).
+
 It prints `listening 8080` when the model is loaded (~2 min). A client: the Anthropic SDK with
 `base_url="http://127.0.0.1:8080"` (or `ANTHROPIC_BASE_URL`) and any API key; or the pi coding
 harness with `server/pi-models.json` (the setup: [docs/pi.md](docs/pi.md)).

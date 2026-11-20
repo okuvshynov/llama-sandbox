@@ -26,8 +26,14 @@ Three parts, which need not be on one machine:
 
        cat ~/llms/UD-Q8_K_XL/*.gguf > /dev/null        # 508 GB, ~3 min
 
-4. Start the server. It starts the engine itself; everything after `--` is the engine's
-   command.
+4. Start the server. The short way (step 167), with the fastest settings, the context size
+   a context of 262,144 tokens and every log kept in a new directory under
+   `~/ds-serve-logs/`:
+
+       ~/projects/llama-sandbox/ds-completion/scripts/serve.sh
+
+   What it starts, written out: the server starts the engine itself; everything after `--` is
+   the engine's command.
 
        cd ~/projects/llama-sandbox/ds-completion
        M=~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf
@@ -168,7 +174,12 @@ second one says `(1565 kept)` or a number near it.
 - **One request at a time.** A second one waits for the first.
 - **Esc in pi cancels a request:** pi closes the connection and the server stops the engine
   within a second (a prompt being processed: within ~10 s).
-- **The context is 65,536 tokens.** pi compacts a conversation (summarizes its older part,
+- **The context is 65,536 tokens** by the engine's default, and the repository's `models.json`
+  says the same; `scripts/serve.sh` starts the engine with 262,144. `contextWindow` in
+  `models.json` must not be larger than the engine's `--max-ctx` (the script warns if it is):
+  set it to the same number. A position costs ~6.4 KB of GPU 0: the home die holds 802 of the
+  model's experts at 65,536, 734 at 262,144 and 480 at 1,000,000 (step 167; what that costs
+  in speed was not measured). pi compacts a conversation (summarizes its older part,
   with a request to the same server) when it passes `contextWindow` minus 16,384, so at about
   49,000 tokens. A longer context: the engine's `--max-ctx N` (up to 1M) and the same number in
   `models.json`.

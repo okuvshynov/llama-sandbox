@@ -6117,3 +6117,56 @@ prompt the context held 512 tokens, one chunk.
 **Not done:** the engine's lines have no time and no request number (the number would be a
 new field of the protocol; the plan's "Not decided"). The log is one file that grows: no
 rotation. Not run: pi, two machines.
+
+## Step 167: a script that starts the server with every log
+
+The person installed pi system-wide (`~/.local/bin/pi`, 1.5.2) and will use it against the
+server for real work; the logs of that use are to show what needs changing. Until now the
+server was started by an eight-line command, and nothing was kept unless `--log` and `--dump`
+were added by hand.
+
+**`scripts/serve.sh`** starts `server/ds_server.py` with the fastest single-machine settings
+(those of `scripts/chat.sh`, with `--cache-wait`) and writes a new directory per start,
+`~/ds-serve-logs/<date>-<time>/` (`DS_LOGS` for another place):
+
+| file | what |
+|---|---|
+| `info.txt` | the commit, the whole command, each GPU's clock, the page cache's size, pi's version and `models.json` |
+| `server.log` | the server's and the engine's lines, also shown on the terminal |
+| `requests.jsonl` | `--log` (step 166) |
+| `dump/` | `--dump`: each request's body, prompt, raw reply, message |
+| `metrics.prom` | `GET /metrics`, taken again every 60 s: what is left after a stop is at most a minute old |
+
+The directory is outside the repository: its files hold the prompts and the replies.
+
+- **`--max-ctx` is 262,144** (`MAX_CTX` for another). pi compacts a conversation by the
+  `contextWindow` of its own `models.json`, and a prompt past the engine's limit is refused: so
+  the script reads that number (of the provider whose `baseUrl` ends with the port) and warns
+  when it is larger than the engine's.
+- It warns when the page cache holds less than the model (after a reboot: step 155) and when
+  a GPU's clock is on auto (step 116).
+- More options of the server after the script's name (`--seed 3`, `--host 0.0.0.0`); `PORT`.
+
+**Tried** (`results/server/serve.txt`): started, `listening 8080` after about a minute, one
+request answered, the five files there, `metrics.prom` after a minute, and on SIGINT to its
+process group (what Ctrl-C sends) the server and the engine stopped with exit code 0 and
+nothing was left running. Twice: with `--max-ctx 1000000`, then with 262,144. The warning: a
+start with `MAX_CTX=65536` against a `contextWindow` of 262,144, stopped after 2 s.
+
+**The context's size, and why 262,144.** The script's first version took `--max-ctx` from
+pi's `models.json`, where the person had `contextWindow` 1,000,000 (the repository's
+`server/pi-models.json`: 65,536). The trial showed what that takes from the home die (step 60:
+6.4 KB per position):
+
+| `--max-ctx` | sequence state on GPU 0 | expert slots on GPU 0 | experts on the four GPUs |
+|---|---|---|---|
+| 65,536 (the engine's default) | 0.50 GB | 802 | 6,097 |
+| 262,144 | 1.76 GB | 734 | 6,029 |
+| 1,000,000 | 6.50 GB | 480 | 5,775 |
+
+The person chose 262,144 as the script's default and set the same in pi's `models.json`. What
+any of the three costs in speed was not measured.
+
+**Not done:** nothing rotates or removes the directories. pi itself was not run here. The
+documents' section on installing pi still describes a build from its sources (step 159); how
+the system-wide one was installed is not recorded.

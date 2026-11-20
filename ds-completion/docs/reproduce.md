@@ -289,6 +289,7 @@ Unless stated: sclk 2, 16 CPU threads (32 before README step 18), the study30 pl
 | 164 | `requests/requests_test.txt`, `requests/requests_test-plain.txt` (again, with the checks of `ctx`, `common`, `how` and of the engine's `# context:` lines) | `python3 results/requests/requests_test.py` and with `--no-spec` (~10 min each) |
 | 165 | `server/test_server.txt` (again, with the metrics and health checks), `server/metrics.txt`, `server/metrics_check.py` | `python3 server/test_server.py` (no model); `python3 results/server/metrics_check.py SERVER_LOG` (the model: ~1 min of load, ~1 min of requests), its output and the log's `# server` and `# context` lines |
 | 166 | `server/test_server.txt` (again, with the `--log` and `--dump` checks), `server/log.txt`, `server/log_check.py` | `python3 server/test_server.py` (no model); `python3 results/server/log_check.py SERVER_LOG` (the model: ~1 min of load, ~1 min of requests), its output and the log's `# server` and `# context` lines |
+| 167 | `server/serve.txt` | by hand: `DS_LOGS=<a directory> scripts/serve.sh`, one request with `curl` (the one of `docs/pi.md`, section 1), a minute's wait for `metrics.prom`, Ctrl-C; the file's parts are named in it |
 
 ## 7. Open items (to confirm)
 
