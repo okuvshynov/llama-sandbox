@@ -1,6 +1,7 @@
 // test-fakequant: our fake-quant ops vs ref/kernel_cpu.py on the inputs of ref/make_fq_test.py.
 // Must be bit-identical.
 #include "fakequant.h"
+#include "fakequant_graph.h"
 #include "ggml-cpu.h"
 #include "ggml-backend.h"
 

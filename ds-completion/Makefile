@@ -23,8 +23,8 @@ CXXFLAGS = -std=c++17 -O3 -g -march=native -fopenmp -Wall -Wextra -Wno-unused-pa
            -I$(FORK)/ggml/include -I$(FORK)/include -Isrc
 LDLIBS   = $(GGML_LIBS) -fopenmp -lpthread -ldl
 
-CORE   = src/model.cpp src/engram.cpp src/forward.cpp src/fakequant.cpp src/cpu_moe.cpp src/canon_dot.cpp src/sampler.cpp
-CORE_H = src/model.h src/engram.h src/taps.h src/forward.h src/fakequant.h src/cpu_moe.h src/canon_dot.h src/sampler.h
+CORE   = src/model.cpp src/engram.cpp src/forward.cpp src/fakequant.cpp src/fakequant_graph.cpp src/cpu_moe.cpp src/canon_dot.cpp src/sampler.cpp
+CORE_H = src/model.h src/engram.h src/taps.h src/forward.h src/fakequant.h src/fakequant_graph.h src/cpu_moe.h src/canon_dot.h src/sampler.h
 
 # HIP builds: ds-completion and ds-test also carry the own decode runtime (hip/), compiled by
 # hipcc into objects that the g++ link picks up
@@ -165,9 +165,9 @@ $(BIN)/test-sampler: tests/test_sampler.cpp src/sampler.cpp src/sampler.h
 	@mkdir -p $(BIN)
 	$(CXX) $(CXXFLAGS) -o $@ tests/test_sampler.cpp src/sampler.cpp
 
-$(BIN)/test-fakequant: tests/test_fakequant.cpp src/fakequant.cpp src/fakequant.h
+$(BIN)/test-fakequant: tests/test_fakequant.cpp src/fakequant.cpp src/fakequant_graph.cpp src/fakequant.h src/fakequant_graph.h
 	@mkdir -p $(BIN)
-	$(CXX) $(CXXFLAGS) -o $@ tests/test_fakequant.cpp src/fakequant.cpp $(LDLIBS)
+	$(CXX) $(CXXFLAGS) -o $@ tests/test_fakequant.cpp src/fakequant.cpp src/fakequant_graph.cpp $(LDLIBS)
 
 # the fork's own llama.cpp pipeline: the "second opinion" for the reference
 $(BIN)/llama-logits: ref/llama_logits.cpp

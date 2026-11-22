@@ -1,0 +1,22 @@
+# src/fakequant.cpp in two, the host half without ggml (README step 172): the unit test, the gates, fp8pack, three held-out prompts.
+# Commit e48df2e + step 172's change (the commit that adds this file); llama.cpp at the pin (b72050d03);
+# sclk 6 on the four GPUs; 2026-11-21.
+# M=~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf  F8=~/llms/ds-1017-fp8/dense-fp8.gguf  G=data/golden/hello-fp32
+#
+# 1. bin/test-fakequant data/fq
+fp8    45312 values, 0 differ
+fp4    45312 values, 0 differ
+fp4e4  45312 values, 0 differ
+ALL BIT-EXACT
+#
+# 2. The gates, as results/dist/forward-split.txt's section 1 (against the same reference files):
+CPU path:    end-to-end logits the same bytes; per-layer table 201 rows, 0 differing
+GPU runtime: end-to-end logits the same bytes; per-layer table 201 rows, 0 differing
+#
+# 3. bin/fp8pack -m $M -o <file>: "wrote 330 tensors, every value exact" in 18.9 s; cmp with $F8: the same bytes
+#
+# 4. scripts/run_matrix.py results/cleanup/heldout.matrix --prompts cpp-matrix,ja-email,summary-json --reps 1 --keep-out --out <dir>
+#    each output against results/cache-test/plain-canon-static/<prompt>.out (cmp)
+cpp-matrix: 300 tokens, 55.04 t/s; output the same bytes
+ja-email: 300 tokens, 37.23 t/s; output the same bytes
+summary-json: 98 tokens, 44.83 t/s; output the same bytes

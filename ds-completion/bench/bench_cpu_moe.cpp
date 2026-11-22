@@ -28,6 +28,7 @@
 #include <immintrin.h>
 #include "cpu_moe.h"
 #include "fakequant.h"
+#include "fakequant_graph.h"
 #include "model.h"
 
 #include "ggml-alloc.h"

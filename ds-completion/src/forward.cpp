@@ -1,6 +1,7 @@
 #include "forward.h"
 
 #include "fakequant.h"
+#include "fakequant_graph.h"
 #include "ggml-alloc.h"
 #include "ggml-cpu.h"
 #include "ggml-backend.h"

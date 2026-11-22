@@ -289,9 +289,10 @@ three parts (README step 169). The rule the first part should obey, and where it
 Where the product still reaches into the second part (the next steps of `docs/plan.md`,
 "The product and the tools"):
 
-- `src/fakequant.cpp` holds the runtime's host functions and the reference path's graph ops.
 - `ds-completion` without `--rt` *is* the CPU reference path, so the product's binary links
-  `src/forward.cpp` and ggml's CPU backend.
+  `src/forward.cpp`, `src/fakequant_graph.cpp` and ggml's CPU backend. Decided (2026-11-21): the
+  CPU-only mode is a reference tool, not part of the product; taking it out of the binary is
+  the next step.
 
 Since step 171 nothing in `hip/` includes `src/forward.h`: the two names the runtime took from
 it have headers of their own (`src/engram.h`, `src/taps.h`).
@@ -313,7 +314,7 @@ each also with `HIP=1`; `make` builds all of them, as before.
 | `src/cpu_moe.{h,cpp}` | the exact AVX-512 routed-expert kernel |
 | `src/canon_dot.{h,cpp}`, `src/canon_math.h` | `--canon`: one specification of an expert's arithmetic that the CPU and the GPU kernels both reproduce bit for bit, so an expert gives the same bits wherever it runs |
 | `src/sampler.{h,cpp}` | the next token from the logits: greedy, or temperature and top-p with a random number per (seed, position) (README steps 148-151); `tests/test_sampler.cpp` checks it |
-| `src/fakequant.{h,cpp}` | the reference's fp8/fp4 rounding. Two halves in one file: host functions the runtime calls, and ggml graph ops only the CPU reference path uses |
+| `src/fakequant.{h,cpp}` | the reference's fp8/fp4 rounding without ggml: the scalar rules, the host functions the runtime calls, the fp8 repack of `fp8pack` |
 | `src/fatal.h` | where the process is, for the handler that reports a fatal signal |
 | `hip/rt.{h,cpp}` | the GPU runtime: state, layer order, the expert split |
 | `hip/rt_peer.cpp` | the runtime as one half of a model on two machines: the front's messages, the back's `serve` (`hip/peer.h`: the protocol) |
@@ -338,6 +339,7 @@ Also the product's: `scripts/serve.sh` and `scripts/chat.sh` (the two ways to st
 | path | what |
 |---|---|
 | `src/forward.{h,cpp}` | the CPU reference path (ggml graphs), used by tests and by `ds-completion` without `--rt`. The runtime does not include it (step 171) |
+| `src/fakequant_graph.{h,cpp}` | the same roundings as ggml custom ops, for the reference path's graphs (step 172) |
 | `tests/ds_test.cpp` | per-layer and end-to-end tests against the goldens |
 | `tests/test_fakequant.cpp`, `tests/test_topk.cpp` | the rounding ops and the indexer's selection against the reference's, bit for bit |
 | `ref/` | the Python reference, golden export, weight checks, logits comparison |

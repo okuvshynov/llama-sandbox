@@ -6344,3 +6344,44 @@ answers (is the CPU-only mode part of the product; where `ds-test` belongs).
 
 **Not done:** the full held-out set (3 of 8 prompts, once); two machines; `--requests` with
 the model (the hash and the taps are not on a path of their own there).
+
+## Step 172: the rounding functions without ggml
+
+**The decision before it** (the person, 2026-11-21): `ds-completion` without `--rt`, the model on
+the CPU through ggml graphs, is a reference tool and not part of the product. So the product
+should in the end be buildable without it. Step 169 listed what stands in the way; the smaller
+of the two is this step.
+
+**The question.** `src/fakequant.cpp` held two kinds of code: the scalar rounding rules and
+host functions, which the GPU runtime, `fp8pack` and the kernel benchmarks call, and the same
+roundings as ggml custom ops, which only the reference path's graphs use. Can they part with
+the same bytes everywhere?
+
+**The change.**
+
+- `src/fakequant.h`, `src/fakequant.cpp`: the scalar rules (`fq_e4m3_round`, `fq_e2m1_round`),
+  the host functions (`fq_fp8_host`, `fq_fp8_split`) and the fp8 repack. No ggml include.
+- `src/fakequant_graph.h`, `src/fakequant_graph.cpp`: `fq_fp8`, `fq_fp4`, `fq_fp4_e4`, the ops,
+  with the comment on where the reference applies each.
+- The scale rule both halves use (`pow2_ceil`, a static function before) is `fq_pow2_ceil`,
+  inline in `fakequant.h`.
+- `forward.cpp`, `bench_cpu_moe.cpp` and `test_fakequant.cpp` include the new header; the
+  Makefile's core lists and `test-fakequant` have the new file.
+
+**Checked** (`results/dist/fakequant-split.txt`; the pin, sclk 6):
+
+| check | result |
+|---|---|
+| `make`, `make HIP=1` | no errors, no new warnings |
+| `bin/test-fakequant data/fq` | fp8, fp4, fp4e4: 45,312 values each, 0 differ |
+| per-layer gate, CPU path and GPU runtime | 201 rows each, 0 differ from step 168's |
+| end-to-end logits, both paths | the same bytes |
+| `bin/fp8pack` | `dense-fp8.gguf` byte for byte, 18.9 s |
+| held-out cpp-matrix, ja-email, summary-json (one run each) | the stored outputs; 55.04, 37.23, 44.83 t/s |
+
+**What is left between the product and the reference path:** one thing. `ds-completion` without
+`--rt` runs `Engine` (`src/forward.cpp`), so the binary links it, `fakequant_graph.cpp` and
+ggml's CPU backend. Taking it out changes the command line of the product or adds a program,
+so it is its own step, not part of this one.
+
+**Not done:** the full held-out set; two machines.
