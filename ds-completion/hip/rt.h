@@ -13,7 +13,8 @@
 // Numerics are the reference's: fp32 everywhere, fake quantization where it has it.
 #pragma once
 
-#include "forward.h"  // Taps, engram_rows
+#include "engram.h"  // engram_rows
+#include "taps.h"    // Taps: run_layer, for tests
 #include "peer.h"
 #include "dspark.h"
 #include "expert_cache.h"

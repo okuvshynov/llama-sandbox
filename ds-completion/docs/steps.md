@@ -6307,3 +6307,40 @@ compared with `cmp` only if made at the same path. It does not touch what the pr
 **Not done:** `make -j` was not tried with the new targets. The GPU build's `product` still
 compiles the whole runtime, tracing and two-machine code included: the groups are of programs,
 not of the runtime's parts.
+
+## Step 171: the runtime without the reference path's header
+
+**The question.** `hip/rt.h` included `src/forward.h`, the header of the CPU reference path,
+for two names (step 169): `engram_rows` and `Taps`. Can they get a place of their own, with
+nothing changed in what any program computes?
+
+**The change.**
+
+- `src/engram.h`, `src/engram.cpp`: `engram_rows`, the n-gram hash that says which rows of the
+  Engram table a position reads. The function's text is moved from `forward.cpp` as it was.
+- `src/taps.h`: `Tap` and `Taps`, with a comment on who fills them (either path's `run_layer`,
+  for `ds-test`) and that in serving the runtime's pointer is null.
+- `src/forward.h` includes the two, so `ds-test` and `ds-completion` include what they did.
+- `hip/rt.h` includes `engram.h` and `taps.h` in place of `forward.h`.
+- The Makefile: `src/engram.cpp` and the two headers in the core lists.
+
+What `hip/` includes from `src/` now: `model.h`, `engram.h`, `taps.h`, `fakequant.h`,
+`cpu_moe.h`, `canon_math.h`, `fatal.h`.
+
+**Checked** (`results/dist/forward-split.txt`; the pin, sclk 6, the page cache full):
+
+| check | result |
+|---|---|
+| `make`, `make HIP=1` | no errors, no new warnings |
+| per-layer gate (`hello-fp32`), CPU path and GPU runtime | 201 rows each, 0 differ from step 168's |
+| end-to-end logits, both paths | the same bytes as step 168's |
+| held-out cpp-matrix, ja-email, summary-json (one run each) | the stored outputs; 54.91, 37.32, 44.98 t/s |
+| `python3 server/test_server.py` | all checks passed |
+
+**Item 34's three small steps are done.** What is left of step 169's list: `fakequant.cpp`
+holds both kinds of code, and `ds-completion` without `--rt` is the reference path, so the
+product's binary still links `forward.cpp` and ggml's CPU backend. Both wait for the person's
+answers (is the CPU-only mode part of the product; where `ds-test` belongs).
+
+**Not done:** the full held-out set (3 of 8 prompts, once); two machines; `--requests` with
+the model (the hash and the taps are not on a path of their own there).

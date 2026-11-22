@@ -23,8 +23,8 @@ CXXFLAGS = -std=c++17 -O3 -g -march=native -fopenmp -Wall -Wextra -Wno-unused-pa
            -I$(FORK)/ggml/include -I$(FORK)/include -Isrc
 LDLIBS   = $(GGML_LIBS) -fopenmp -lpthread -ldl
 
-CORE   = src/model.cpp src/forward.cpp src/fakequant.cpp src/cpu_moe.cpp src/canon_dot.cpp src/sampler.cpp
-CORE_H = src/model.h src/forward.h src/fakequant.h src/cpu_moe.h src/canon_dot.h src/sampler.h
+CORE   = src/model.cpp src/engram.cpp src/forward.cpp src/fakequant.cpp src/cpu_moe.cpp src/canon_dot.cpp src/sampler.cpp
+CORE_H = src/model.h src/engram.h src/taps.h src/forward.h src/fakequant.h src/cpu_moe.h src/canon_dot.h src/sampler.h
 
 # HIP builds: ds-completion and ds-test also carry the own decode runtime (hip/), compiled by
 # hipcc into objects that the g++ link picks up

@@ -14,7 +14,9 @@
 // reference's named intermediates (the same names ds_ref.py records).
 #pragma once
 
+#include "engram.h"  // engram_rows: both paths hash the same way
 #include "model.h"
+#include "taps.h"    // Tap, Taps: what run_layer returns, here and in hip/rt.h
 
 #include <map>
 #include <string>
@@ -37,18 +39,6 @@ struct State {
   std::map<int, ggml_tensor*> comp;                 // [src] compressed KV [head_dim, max_ctx / ratio]
   std::map<int, ggml_tensor*> idx_k;                // [src] index keys [idx_dim, max_ctx / ratio]
 };
-
-// One named intermediate copied out of a graph (for tests and dumps).
-struct Tap {
-  std::vector<int64_t> ne;  // ggml order
-  std::vector<float> f;     // f32 values, or
-  std::vector<int32_t> i;   // i32 values
-};
-using Taps = std::map<std::string, Tap>;
-
-// The engram table rows (absolute, n_cols of them) for the token at position q of `hist`
-// (all tokens so far, including q), for engram slot e.
-std::vector<int32_t> engram_rows(const Hparams& hp, const std::vector<int32_t>& hist, int e, int q);
 
 struct Plan;     // host-side position bookkeeping for one chunk (forward.cpp)
 struct GraphIn;  // the per-graph input tensors (forward.cpp)

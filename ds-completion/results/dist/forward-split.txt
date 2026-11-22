@@ -1,0 +1,20 @@
+# engram_rows and Taps moved out of src/forward.h (README step 171): the gates and three held-out prompts.
+# Commit bebc5e5 + step 171's change (the commit that adds this file); llama.cpp at the pin (b72050d03);
+# sclk 6 on the four GPUs; 490 GB in the page cache; 2026-11-21.
+# M=~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf  F8=~/llms/ds-1017-fp8/dense-fp8.gguf  G=data/golden/hello-fp32
+#
+# 1. bin/ds-test -m $M -g $G  and  ... --e2e cpu.f32;  bin-hip/ds-test -m $M -g $G --runtime $F8  and  ... --e2e rt.f32
+#    against the same of the build before step 168's change ("old" in results/dist/trunk.txt, equal to step 168's own):
+#    cmp of the .f32 files; the per-layer tables row by row, the last column (ms) left out.
+CPU path:    end-to-end logits the same bytes; per-layer table 201 rows, 0 differing
+GPU runtime: end-to-end logits the same bytes; per-layer table 201 rows, 0 differing
+#
+# 2. scripts/run_matrix.py results/cleanup/heldout.matrix --prompts cpp-matrix,ja-email,summary-json --reps 1 --keep-out --out <dir>
+#    each output against results/cache-test/plain-canon-static/<prompt>.out (cmp)
+cpp-matrix: 300 tokens, 54.91 t/s; output the same bytes
+ja-email: 300 tokens, 37.32 t/s; output the same bytes
+summary-json: 98 tokens, 44.98 t/s; output the same bytes
+#
+# 3. python3 server/test_server.py: all checks passed
+#
+# 4. What hip/ includes from src/ (grep '#include "' hip/*): model.h, engram.h, taps.h, fakequant.h, cpu_moe.h, canon_math.h, fatal.h

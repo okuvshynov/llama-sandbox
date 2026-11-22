@@ -289,10 +289,12 @@ three parts (README step 169). The rule the first part should obey, and where it
 Where the product still reaches into the second part (the next steps of `docs/plan.md`,
 "The product and the tools"):
 
-- `hip/rt.h` includes `src/forward.h`, for `engram_rows` and `Taps`.
 - `src/fakequant.cpp` holds the runtime's host functions and the reference path's graph ops.
 - `ds-completion` without `--rt` *is* the CPU reference path, so the product's binary links
   `src/forward.cpp` and ggml's CPU backend.
+
+Since step 171 nothing in `hip/` includes `src/forward.h`: the two names the runtime took from
+it have headers of their own (`src/engram.h`, `src/taps.h`).
 
 The Makefile has the three as targets (step 170): `make product`, `make tests`, `make tools`,
 each also with `HIP=1`; `make` builds all of them, as before.
@@ -306,6 +308,8 @@ each also with `HIP=1`; `make` builds all of them, as before.
 | `apps/record.h` | what `--record` writes beyond the program's own variables: the id hashes, the GPU clock, the storage reads |
 | `apps/fp8pack.cpp` | lossless fp8 repack of the dense weights |
 | `src/model.{h,cpp}` | GGUF loading (zero-copy mmap), the model's schema and hyperparameters |
+| `src/engram.{h,cpp}` | `engram_rows`: which rows of the Engram table a position reads (the n-gram hash), one function for both paths |
+| `src/taps.h` | `Tap`, `Taps`: a layer's named intermediates as `run_layer` returns them on either path, for `ds-test`; in serving the runtime's pointer to them is null |
 | `src/cpu_moe.{h,cpp}` | the exact AVX-512 routed-expert kernel |
 | `src/canon_dot.{h,cpp}`, `src/canon_math.h` | `--canon`: one specification of an expert's arithmetic that the CPU and the GPU kernels both reproduce bit for bit, so an expert gives the same bits wherever it runs |
 | `src/sampler.{h,cpp}` | the next token from the logits: greedy, or temperature and top-p with a random number per (seed, position) (README steps 148-151); `tests/test_sampler.cpp` checks it |
@@ -333,7 +337,7 @@ Also the product's: `scripts/serve.sh` and `scripts/chat.sh` (the two ways to st
 
 | path | what |
 |---|---|
-| `src/forward.{h,cpp}` | the CPU reference path (ggml graphs), used by tests and by `ds-completion` without `--rt`. Two things in it belong to both paths and the runtime includes the header for them: `engram_rows` (which rows of the Engram table a position reads) and `Taps` (a layer's named intermediates, filled only for `ds-test`) |
+| `src/forward.{h,cpp}` | the CPU reference path (ggml graphs), used by tests and by `ds-completion` without `--rt`. The runtime does not include it (step 171) |
 | `tests/ds_test.cpp` | per-layer and end-to-end tests against the goldens |
 | `tests/test_fakequant.cpp`, `tests/test_topk.cpp` | the rounding ops and the indexer's selection against the reference's, bit for bit |
 | `ref/` | the Python reference, golden export, weight checks, logits comparison |

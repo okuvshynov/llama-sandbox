@@ -51,7 +51,7 @@ Three kinds of code live here, and the directories alone do not say which is whi
 
 `make product`, `make tests` and `make tools` build one kind each (`make`: all three).
 The second and third may depend on the product; the product should not depend on them. It
-still does in three small places, listed in the code map; removing them is in
+still does in two places, listed in the code map; removing them is in
 [docs/plan.md](docs/plan.md), "The product and the tools".
 
 ## The documents
