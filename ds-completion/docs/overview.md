@@ -322,7 +322,6 @@ each also with `HIP=1`; `make` builds all of them, as before.
 | `src/fakequant.{h,cpp}` | the reference's fp8/fp4 rounding without ggml: the scalar rules, the host functions the runtime calls, the fp8 repack of `fp8pack` |
 | `src/fatal.h` | where the process is, for the handler that reports a fatal signal |
 | `hip/rt.{h,cpp}` | the GPU runtime: state, layer order, the expert split |
-| `hip/rt_peer.cpp` | a range of layers' stream to and from the host, for `--teacher` (README step 110); the two-machine link it held is gone (step 178) |
 | `hip/rt_trace.cpp` | the runtime's observability: the startup memory ledger, `--profile`'s groups, `--trace` (`hip/rt_internal.h`: the helpers the runtime's files share) |
 | `hip/kernels.{h,hip}` | the runtime's kernels (norms, attention, indexer, hyper-connections, router, dispatch) |
 | `hip/fp8_gemv.{h,hip}` | exact fp8 x fp8 GEMV |

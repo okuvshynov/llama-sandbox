@@ -6687,3 +6687,64 @@ place), `scripts/README.md`, and single lines in `docs/numerics.md`, `docs/recor
 
 **Not done:** the longer golden sets; `-i` sessions and sampling with the new build. The second
 machine is untouched.
+
+## Step 179: the layer range out of the runtime and the program
+
+**The second half of step 178's decision.** With the link gone, the only user of a runtime that
+starts above layer 0, or hands its stream to another, was `--teacher`: the test of two halves
+against the whole model that step 110 wrote for the two machines. It goes with them.
+
+**Removed** (44 lines added, 166 removed; the last commit with it: `519ffd4`):
+
+| where | what |
+|---|---|
+| `apps/ds_completion.cpp` | `--layers`, `--teacher`, `--stream-in`, `--stream-out`, the teacher's branch of `run()`; `Model::load` is called without a list of layers. `ds-ref` loses `--layers` too (the same parser; it never ran a part of the model) |
+| `hip/rt.h` | `Stream`, `stream_in`, `stream_in_tok`, `stream_out`, `layer0()`, `layer1()`; the paragraph on ranges |
+| `hip/rt.cpp` | the first layer `L0` and its branches (the stream in place of the embedding, in `forward_chunk` and `decode`), the copy of the stream to the host after the last layer, the check that a range holds the layers its own read from |
+| `hip/rt_peer.cpp` | the file (the two stream copies were all it still held) |
+
+**Kept, and why.** `ds-test --runtime --layers 3,20` loads layers 0-20 and checks them one by
+one, so a runtime must still stand without the last layers. That is now the whole of it: the
+runtime runs layers 0 .. `n_run` - 1, which is every layer except under `ds-test --layers`; a
+partial one has no head (`has_head()`), uploads no weights of the missing layers, fetches engram
+rows only if an engram layer is loaded (`has_engram`, was `range_engram`), and its `decode()`
+returns no logits. The constructor refuses loaded layers that are not layers 0 .. k.
+`--layers` of `ds-test`, `fp8pack` and `ds-inspect` is theirs and unchanged.
+
+**Checked** (`results/dist/layer-range.txt`; sclk 6; against the programs of `519ffd4`):
+
+- The four options are unknown arguments, in `ds-ref` too.
+- Per layer on the runtime: all layers (200 rows), `--layers 0-5` (30 rows, the runtime without
+  a head) and `--layers 3,20` (10 rows): no row differs. End-to-end logits: the same bytes.
+- `bin/ds-ref`: step 173's output hash.
+- A 2,731-token prompt through the prompt chunks (their two-halves loop was edited): the same
+  output from both programs; prompt speed 84.7 / 86.1 t/s before, 85.9 / 85.1 after.
+- The held-out prompts twice: 16 of 16 outputs are the stored bytes; the second runs' mean is
+  44.91 t/s (step 178: 44.80).
+- A trace, the request test with the model, the server test: as before.
+
+**The two observations of step 178, a second time.**
+
+- *The first runs after a boot:* again. The first repeat's mean is 40.17 t/s, all eight prompts
+  reading 17-77 MB from storage while generating; the second repeat is at the usual speed. And
+  the long prompt's first run on the old program read 68.8 t/s against ~85 on every later run of
+  either program: taken alone it would have read as a 25% gain from this change. After a boot,
+  the first pass of anything is not a measurement.
+- *The starred clock level:* the machine was rebooted between the two steps, and this time the
+  clock was set before any GPU program ran. The star reads 6 at idle and under load, and the
+  records say `[6, 6, 6, 6]`. So: clock set first, star right (this boot and the two before step
+  178's); a GPU program first, star at 1 when idle though level 6 was in effect (step 178's
+  boot). One case of the second kind; it fits the order being the cause and does not prove it.
+  The rule that follows either way: fans and clock first after a boot, before anything else.
+
+**Documents.** QUICKSTART (the option's entry, `--record`'s limits), the overview's code map
+(`hip/rt_peer.cpp` out), `docs/requests.md` and `docs/record.md` (a word each), `docs/plan.md`
+(item 31 and its section: both steps done), `docs/reproduce.md` (row 110: its teacher commands
+need a build of `519ffd4` or earlier).
+
+**What is left of two machines:** steps 110-114 here, their results and the two filed scripts,
+the sections marked removed in `docs/plan.md` and `docs/timing.md`, and the second machine
+itself, as a place for A/B runs of one-machine builds. In the code: nothing.
+
+**Not done:** the longer golden sets; `-i` sessions and sampling with the new build; a last read
+of the documents for what the two steps left (the third step of the plan).

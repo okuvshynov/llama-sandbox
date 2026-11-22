@@ -1,0 +1,65 @@
+# The layer range out of the runtime and the program (README step 179): --layers, --teacher, --stream-in, --stream-out,
+# Runtime's stream_in / stream_out and first layer, hip/rt_peer.cpp. Kept: a runtime of layers 0 .. k without a head,
+# which ds-test --layers builds.
+# Commit 519ffd4 + this step's change (the commit that adds this file); llama.cpp e626db7ca in ~/projects/llama.cpp;
+# sclk 6 on the four GPUs (manual; the star reads 6 at idle in this boot, and the records say [6, 6, 6, 6]);
+# 2026-11-22 13:55 to 15:00, the machine booted at 13:50.
+# "base" = the programs of 519ffd4, built at this path before the change and kept aside.
+# M=~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf  F8=~/llms/ds-1017-fp8/dense-fp8.gguf
+# D=~/llms/dspark/dspark-DeepSeek-V4.1-Flash-1017-BF16.gguf
+#
+# 1. Build: make, make HIP=1: rc 0, no warnings in what was rebuilt.
+#    Code: 44 lines added, 166 removed. bin-hip/ds-completion 17,129,816 -> 17,072,536 bytes.
+#
+# 2. The options are gone (each: rc 2)
+bin-hip/ds-completion -m $M --rt $F8 -p hi --layers 0-19       unknown argument --layers
+bin-hip/ds-completion -m $M --rt $F8 -p hi --teacher           unknown argument --teacher
+bin-hip/ds-completion -m $M --rt $F8 -p hi --stream-in x       unknown argument --stream-in
+bin-hip/ds-completion -m $M --rt $F8 -p hi --stream-out x      unknown argument --stream-out
+bin/ds-ref -m $M -p hi --layers 0-19                           unknown argument --layers
+#
+# 3. Per layer and end to end, the new build against base (the tables: every column but ms)
+bin-hip/ds-test -m $M -g data/golden/hello-fp32 --runtime $F8                    200 rows, 0 differ
+bin-hip/ds-test -m $M -g data/golden/hello-fp32 --runtime $F8 --layers 0-5       30 rows, 0 differ   (layers 0-5 loaded: no head)
+bin-hip/ds-test -m $M -g data/golden/hello-fp32 --runtime $F8 --layers 3,20      10 rows, 0 differ   (layers 0-20 loaded, two reported)
+bin-hip/ds-test -m $M -g data/golden/hello-fp32 --runtime $F8 --e2e <file>       the logits file: the same bytes as base's (cmp)
+#    The partial runtime's line on stderr: "# runtime: layers 0-5 of 40, no head" (base: "# runtime: layers 0-5 of 40").
+#
+# 4. The CPU reference path (apps/ds_completion.cpp is its source too)
+bin/ds-ref -m $M -p "The three largest cities in Ukraine are" -n 24 --record <file>     output.hash fnv1a64:3a40e97fd9b90430 (step 173's), 3.59 t/s
+#
+# 5. Prompt chunks (forward_chunk's two-halves loop was edited): the first 9,000 bytes of docs/steps.md as a prompt
+#    <program> -m $M --rt $F8 --placement placements/study30.txt --canon -f <file> -n 40 --record <file>
+#    2,731 prompt tokens; output.hash fnv1a64:df516e7200ad14c8 from both programs in every run (and cmp of the outputs)
+#    run                      base prompt t/s   new prompt t/s   generation t/s (base, new)
+    first (after the boot)        68.81            85.96
+    again                         84.70            85.94         24.58, 24.65
+    again                         86.08            85.06         24.63, 24.63
+#    base's first run was the first run of a long prompt after the boot; the two repeats, with nothing read from
+#    storage, show no difference between the programs.
+#
+# 6. Held-out prompts: scripts/run_matrix.py results/cleanup/heldout.matrix --reps 2 --keep-out --out <dir>
+#    Each output compared with results/cache-test/plain-canon-static/<prompt>.out (cmp). No run failed.
+#    "read" = megabytes read from storage during the generation (the record's read_bytes.gen).
+#    prompt         tokens  t/s run 1  t/s run 2   read 1  read 2   outputs
+    tcp-udp           300      35.43      39.12     76.0     0.5   both the stored bytes
+    py-lru            300      41.69      46.69     64.5     0.4   both the stored bytes
+    cpp-matrix        300      47.59      54.09     59.8     1.1   both the stored bytes
+    sql-report        300      41.66      47.46     67.3     0.4   both the stored bytes
+    geometry          345      48.48      55.37     70.2     0.6   both the stored bytes
+    zh-travel         300      31.29      34.21     76.6     0.0   both the stored bytes
+    ja-email          300      33.70      37.21     63.2     0.7   both the stored bytes
+    summary-json       98      41.53      45.15     16.8     0.0   both the stored bytes
+#    mean of run 2: 44.91 t/s (step 178: 44.80; step 176: 44.8). Mean of run 1: 40.17: again the first runs after a
+#    boot, all eight reading 17-77 MB from storage while generating (step 178: 41.14, six of eight).
+#
+# 7. A trace
+bin-hip/ds-completion -m $M --rt $F8 --placement placements/study30.txt --dspark $D --spec --canon --cache-loads 800 --cache-period 8 --cache-wait --chat -p "<cpp-matrix's prompt>" -n 60 --trace <file>
+#    rc 0; valid JSON, 28,012 events
+python3 scripts/trace_critpath.py <file>                  rc 0
+#
+# 8. Requests and the server
+python3 results/requests/requests_test.py               all checks passed (with the model)
+python3 server/test_server.py                           all checks passed
+#
+# Not run: the longer golden sets, ds-test on the CPU path (its code did not change), -i sessions, sampling.

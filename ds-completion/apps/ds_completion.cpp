@@ -170,9 +170,6 @@ struct Args {
   bool spec = false;
   bool interactive = false;
   bool requests = false;  // --requests: prompts from stdin, each on an empty context (README step 152)
-  std::vector<int> layers;  // --layers a-b: a range of the model (README step 110)
-  bool teacher = false;
-  std::string stream_in_path, stream_out_path;
   int spec_n = 0;
   std::string spec_log_path;
   std::string record_path;
@@ -208,17 +205,6 @@ static int parse_args(int argc, char** argv, Args& args) {
     else if (a == "--requests") args.requests = true;  // runtime: requests on stdin, replies on stdout (docs/requests.md)
     else if (a == "-i" || a == "--interactive") args.interactive = true;  // runtime, --chat or --think: a session of turns on one context
     else if (a == "-n") args.n_predict = atoi(next());
-    else if (a == "--layers") {  // runtime: only layers a-b (a range hands its stream to the next: --teacher)
-      int la = 0, lb = 0;
-      if (sscanf(next(), "%d-%d", &la, &lb) != 2 || la < 0 || lb < la) { fprintf(stderr, "--layers a-b\n"); return 2; }
-      for (int L = la; L <= lb; L++) args.layers.push_back(L);
-    }
-    // --teacher: the prompt's tokens through verify + commit in chunks of 5, the greedy next id after
-    // each printed (one per line; a range without the head prints none). --stream-out file: each
-    // token's stream after the range's last layer; --stream-in file: the stream a range starts from
-    else if (a == "--teacher") args.teacher = true;
-    else if (a == "--stream-in") args.stream_in_path = next();
-    else if (a == "--stream-out") args.stream_out_path = next();
     else if (a == "-t") args.opt.n_threads = atoi(next());
     else if (a == "--gpu") args.gpu = atoi(next());
     else if (a == "--dspark") args.dspark_path = next();
@@ -273,9 +259,9 @@ static int parse_args(int argc, char** argv, Args& args) {
     fprintf(stderr, "-i needs --chat or --think, and --rt\n");
     return 2;
   }
-  if (args.requests && (args.rt_path.empty() || args.mode != "raw" || !args.prompt.empty() || args.interactive || args.teacher ||
-                        !args.record_path.empty() || !args.layers.empty())) {
-    fprintf(stderr, "--requests needs --rt; not with -p, -f, -i, --chat, --think, --teacher, --record or a part of the layers\n");
+  if (args.requests && (args.rt_path.empty() || args.mode != "raw" || !args.prompt.empty() || args.interactive ||
+                        !args.record_path.empty())) {
+    fprintf(stderr, "--requests needs --rt; not with -p, -f, -i, --chat, --think or --record\n");
     return 2;
   }
   if (args.model_path.empty() || (args.prompt.empty() && !args.interactive && !args.requests)) {
@@ -637,12 +623,12 @@ static int run(int argc, char** argv) {
   for (int sig : {SIGABRT, SIGSEGV, SIGBUS, SIGILL, SIGFPE}) signal(sig, on_fatal);
   Args args;
   if (const int rc = parse_args(argc, argv, args); rc >= 0) return rc;
-  // --record describes one prompt and its generation: not a session or a --teacher run.
+  // --record describes one prompt and its generation: not a session.
   // Opened now, written after the generation: a run that ends early leaves it empty.
   FILE* record = nullptr;
   if (args.record_path.empty() && !args.record_label.empty()) { fprintf(stderr, "--record-label needs --record\n"); return 2; }
   if (!args.record_path.empty()) {
-    if (args.interactive || args.teacher) { fprintf(stderr, "--record: not with -i or --teacher\n"); return 2; }
+    if (args.interactive) { fprintf(stderr, "--record: not with -i\n"); return 2; }
     record = fopen(args.record_path.c_str(), "w");
     if (!record) { fprintf(stderr, "cannot write %s\n", args.record_path.c_str()); return 1; }
   }
@@ -687,7 +673,7 @@ static int run(int argc, char** argv) {
   Model m;
   auto t0 = Clock::now();
   try {
-    m.load(args.model_path, args.layers);
+    m.load(args.model_path);
   } catch (const std::exception& e) {
     fprintf(stderr, "load failed: %s\n", e.what());
     return 1;
@@ -722,8 +708,6 @@ static int run(int argc, char** argv) {
     rt->profile = args.profile;
     if (!args.trace_path.empty()) rt->set_trace(args.trace_path);
     if (!args.route_log.empty()) rt->log_routing(args.route_log);
-    // a range alone computes no token: only the test that hands its stream on runs one
-    if ((!rt->has_head() || rt->layer0() > 0) && !args.teacher) { fprintf(stderr, "--layers: a part of the model runs only with --teacher (--stream-in, --stream-out)\n"); return 2; }
   }
 #else
   std::unique_ptr<Engine> eng(new Engine(m, args.opt));
@@ -733,46 +717,6 @@ static int run(int argc, char** argv) {
   fprintf(stderr, "# loaded in %.1f s; prompt %zu tokens; fake-quant %s; %d threads\n", t_load, toks.size(),
           args.opt.exact_quant ? "on" : "off", args.opt.n_threads);
 
-#ifdef DS_RUNTIME
-  if (args.teacher) {  // README step 110: a layer range checked against the whole model, token for token
-    if (!rt) { fprintf(stderr, "--teacher needs --rt\n"); return 2; }
-    const size_t nh = (size_t)m.hp.n_embd * m.hp.hc_mult, np = m.hp.hc_mult;
-    Stream in;
-    if (!args.stream_in_path.empty()) {
-      FILE* f = fopen(args.stream_in_path.c_str(), "rb");
-      if (!f) { fprintf(stderr, "cannot read %s\n", args.stream_in_path.c_str()); return 1; }
-      in.h.resize(toks.size() * nh);
-      in.pre.resize(toks.size() * np);
-      for (size_t t = 0; t < toks.size(); t++)  // per token: h, then pre
-        if (fread(&in.h[t * nh], 4, nh, f) != nh || fread(&in.pre[t * np], 4, np, f) != np) {
-          fprintf(stderr, "%s holds fewer than %zu tokens\n", args.stream_in_path.c_str(), toks.size());
-          return 1;
-        }
-      fclose(f);
-      rt->stream_in = &in;
-    }
-    FILE* so = args.stream_out_path.empty() ? nullptr : fopen(args.stream_out_path.c_str(), "wb");
-    const auto tt = Clock::now();
-    for (size_t i = 0; i < toks.size(); i += 5) {
-      const std::vector<int32_t> chunk(toks.begin() + i, toks.begin() + std::min(i + 5, toks.size()));
-      const std::vector<int32_t> next = rt->verify(chunk, true);
-      rt->commit((int)chunk.size());
-      for (int32_t id : next) printf("%d\n", id);
-      if (so && !rt->has_head())
-        for (size_t t = 0; t < chunk.size(); t++) {
-          fwrite(&rt->stream_out.h[t * nh], 4, nh, so);
-          fwrite(&rt->stream_out.pre[t * np], 4, np, so);
-        }
-    }
-    if (so) fclose(so);
-    fprintf(stderr, "# teacher: %zu tokens through layers %d-%d in %.2f s\n", toks.size(), rt->layer0(), rt->layer1() - 1,
-            std::chrono::duration<double>(Clock::now() - tt).count());
-    llama_model_free(tok_model);
-    llama_backend_free();
-    rt.reset();
-    return 0;
-  }
-#endif
   // One turn, or with -i a session: every turn's tokens are appended to the same context, as
   // encoding.py renders a chat: the reply's end of sequence, then <｜User｜>line<｜Assistant｜></think>.
   // So a turn's reply is what a fresh run on the whole conversation would print.

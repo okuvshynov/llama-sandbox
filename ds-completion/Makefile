@@ -36,7 +36,7 @@ CORE_H = src/model.h src/engram.h src/taps.h src/options.h src/forward.h src/fak
 # hipcc into objects that the g++ link picks up
 ROCM = /opt/rocm-6.3.4
 ifeq ($(HIP),1)
-RT_OBJ   = $(BIN)/obj/rt.o $(BIN)/obj/rt_trace.o $(BIN)/obj/rt_peer.o $(BIN)/obj/kernels.o $(BIN)/obj/fp8_gemv.o $(BIN)/obj/fp4_moe.o $(BIN)/obj/expert_pool.o \
+RT_OBJ   = $(BIN)/obj/rt.o $(BIN)/obj/rt_trace.o $(BIN)/obj/kernels.o $(BIN)/obj/fp8_gemv.o $(BIN)/obj/fp4_moe.o $(BIN)/obj/expert_pool.o \
            $(BIN)/obj/expert_loader.o $(BIN)/obj/expert_cache.o $(BIN)/obj/dspark.o
 RT_FLAGS = -DDS_RUNTIME -D__HIP_PLATFORM_AMD__ -Ihip -I$(ROCM)/include
 RT_LIBS  = $(RT_OBJ) -L$(ROCM)/lib -Wl,-rpath,$(ROCM)/lib -lamdhip64
@@ -157,10 +157,6 @@ $(BIN)/obj/rt.o: hip/rt.cpp hip/rt.h hip/rt_internal.h hip/expert_cache.h hip/ex
 	$(HIPCC) $(HIPFLAGS) -c -o $@ $<
 
 $(BIN)/obj/rt_trace.o: hip/rt_trace.cpp hip/rt.h hip/rt_internal.h hip/expert_cache.h hip/expert_loader.h hip/dspark.h hip/kernels.h hip/fp8_gemv.h hip/fp4_moe.h hip/expert_pool.h $(CORE_H)
-	@mkdir -p $(BIN)/obj
-	$(HIPCC) $(HIPFLAGS) -c -o $@ $<
-
-$(BIN)/obj/rt_peer.o: hip/rt_peer.cpp hip/rt.h hip/rt_internal.h hip/expert_cache.h hip/expert_loader.h hip/dspark.h hip/kernels.h hip/fp8_gemv.h hip/fp4_moe.h hip/expert_pool.h $(CORE_H)
 	@mkdir -p $(BIN)/obj
 	$(HIPCC) $(HIPFLAGS) -c -o $@ $<
 

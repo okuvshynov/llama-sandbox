@@ -8,7 +8,7 @@ that speaks HTTP renders the prompt, starts the engine as a child and parses the
 
     bin-hip/ds-completion -m $M --rt $F8 [--placement .. --cache-loads .. --dspark $D --spec --canon ..] --requests
 
-Not with `-p`, `-f`, `-i`, `--chat`, `--think`, `--record`, `--teacher`. Everything
+Not with `-p`, `-f`, `-i`, `--chat`, `--think`, `--record`. Everything
 on stdout is the protocol below; the engine's own lines (`# ...`) go to stderr as always.
 
 ## The engine's first line

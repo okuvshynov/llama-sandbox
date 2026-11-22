@@ -35,6 +35,9 @@ the placement. `--canon` makes the output independent of where an expert runs.
   done
   cat /sys/class/drm/card0/device/pp_dpm_sclk   # the line with * is the level in use
   ```
+  Set it right after a boot, before any GPU program runs (`scripts/set_vega_freq.sh` is this
+  loop): once, set after a program had run, the level was in effect but the starred line read 1
+  whenever the GPUs idled, and the records labelled the runs wrongly (README steps 178-179).
 - **Model files** (in `~/llms/`; 488 GB, run from the page cache, so the RAM must hold them):
   - `UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-0000{1..9}-of-00009.gguf` (474 GB; Unsloth's
     [DeepSeek-V4.1-Flash-1017-GGUF](https://huggingface.co/unsloth/DeepSeek-V4.1-Flash-1017-GGUF));
@@ -148,10 +151,6 @@ Options:
   with the Anthropic Messages API in front of it (`docs/server.md`, README step 153).
 - `-n`: max new tokens.
 - `--max-ctx N`: the context's size (default 65,536; "Limits" below).
-- `--layers a-b` with `--teacher` and `--stream-out FILE` / `--stream-in FILE`: a test of a range
-  of layers against the whole model (the values between two layers written to and read from a
-  file; README step 110). A range must hold the layers its own layers read from, which leaves
-  layer 20 as the only cut. Nothing else runs a part of the model.
 - `--prefill-chunk N`: prompt tokens per forward (default and most 512, the fastest for
   long prompts in the fast numerics). The output does not depend on it.
 - `--no-overlap`: prompt chunks without the CPU/GPU overlap (slower; for comparisons).
@@ -195,7 +194,7 @@ Options:
   `label` and never read by the program. Many runs: `scripts/run_matrix.py MATRIX` starts
   prompts x configurations x repeats with a record each, `scripts/records.py` reads them
   (README steps 128-129). A first version, to grow
-  ([docs/record.md](docs/record.md), README steps 115-119). One prompt only (not with `-i`, `--teacher`); a run that does not
+  ([docs/record.md](docs/record.md), README steps 115-119). One prompt only (not with `-i`); a run that does not
   finish leaves the file empty.
 - `--no-quant` (`bin/ds-ref` only): without the reference's fp8/fp4 rounding (a comparison).
 

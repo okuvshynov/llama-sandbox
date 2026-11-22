@@ -58,13 +58,6 @@ struct RtOptions {
   bool cache_wait = false;  // wait at startup until the cache can load (expert_cache.h)
 };
 
-// The residual stream between two layers, for n tokens: what a layer hands to the next one and
-// nothing else (README step 110). h [n][n_embd * hc], pre [n][hc] (the next sublayer's input mix).
-struct Stream {
-  std::vector<float> h, pre;
-  void clear() { h.clear(); pre.clear(); }
-};
-
 class Runtime {
  public:
   // fp8_path is fp8pack's output for the same model
@@ -92,20 +85,10 @@ class Runtime {
   // the tokens the sequence holds, n_past() of them (README step 158: a request that goes on from them)
   const std::vector<int32_t>& tokens() const { return tokens_; }
 
-  // A range of layers (README step 110): the runtime runs the model's loaded layers, a contiguous
-  // range [layer0, layer1) (Model::load's `layers`). A range that does not start at layer 0 takes
-  // each token's stream from stream_in instead of the embedding (set it and stream_in_tok = 0
-  // before prefill / decode / verify; every token run takes the next row); one that does not end
-  // at the last layer has no head and leaves the stream after its last layer, of the tokens of
-  // the last prefill chunk / decode / verify, in stream_out. Tokens are still passed (the engram's history, the
-  // bookkeeping). Two ranges that meet, run one after the other with the stream handed over,
-  // compute exactly what one runtime with all layers computes.
-  int layer0() const { return L0; }
-  int layer1() const { return L1; }
-  bool has_head() const { return L1 == hp.n_layer; }
-  const Stream* stream_in = nullptr;
-  size_t stream_in_tok = 0;
-  Stream stream_out;
+  // The runtime runs the model's loaded layers, which are all of them. The one exception is
+  // ds-test with --layers: it loads layers 0 .. k only (Model::load's `layers`) and checks them
+  // one by one; such a runtime has no head, so its decode() returns no logits.
+  bool has_head() const { return n_run == hp.n_layer; }
 
   // DSpark draft (RtOptions::dspark): after a decode step produced `anchor` (the next token),
   // the draft's block_size guesses for the tokens after it. Does not change the sequence state.
@@ -219,11 +202,9 @@ class Runtime {
   };
   std::vector<LayerState> S;
   int n_past_ = 0;
-  int L0 = 0, L1 = 0;  // the loaded layers
+  int n_run = 0;  // the loaded layers: 0 .. n_run - 1
   void prefill_chunk(const std::vector<int32_t>& chunk);  // prompt tokens, no head
-  bool range_engram = false;  // an engram layer among them (else no rows are fetched)
-  void stream_from_host(int M);  // stream_in's next M rows into h, pre
-  void stream_to_host(int M);    // h, pre of M tokens into stream_out (after a synchronize)
+  bool has_engram = false;  // an engram layer among the loaded ones (else no rows are fetched)
   int mark_past[kMarks] = {-1, -1};  // mark()'s positions
   std::vector<int32_t> tokens_;  // all tokens so far
   hipStream_t s;

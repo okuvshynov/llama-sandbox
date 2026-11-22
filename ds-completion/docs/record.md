@@ -76,7 +76,7 @@ Decided in the discussion this document comes from:
 
 ## What the first version writes
 
-`--record FILE` with a single prompt (not with `-i` or `--teacher`). A whole record
+`--record FILE` with a single prompt (not with `-i`). A whole record
 as the program wrote it, the fastest single-machine settings (`results/record/example.json`):
 
 ```json

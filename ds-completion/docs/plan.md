@@ -57,7 +57,7 @@ Speed
 | 24 | fp8 output head | idea | halves the 2.3 ms head, but is no longer exact vs the reference |
 | 25 | Clock level by phase | idea | sclk 4-6 for decode with CPU experts, 8 once GPU experts dominate |
 | 32 | Further optimization ideas (2026-10-29) | ideas | cache tuning, the dense part of a verify step and TP, speculation tuning, a faster draft: see the section below |
-| 31 | Two machines, the model in two halves | done (steps 110-112), then removed (step 178: the link; the layer range next) | layers 0-19 / 20-39 on two Mac Pros over TCP: held-out 44.60 -> 50.85 t/s, outputs identical. One machine is the scope: "Two machines" below |
+| 31 | Two machines, the model in two halves | done (steps 110-112), then removed (step 178: the link; step 179: the layer range) | layers 0-19 / 20-39 on two Mac Pros over TCP: held-out 44.60 -> 50.85 t/s, outputs identical. One machine is the scope: "Two machines" below |
 
 Features and limits
 
@@ -192,8 +192,9 @@ is one solid, well-tested and clear single-machine implementation. The two-machi
 +14% on short runs and nothing on long ones, was not parallel, was a second branch in every call
 of the runtime, and was the least tested path (nothing after step 112 ran on it: not sampling
 with `--spec`, the server, records). In three commits: the link (`--remote`, `--serve`,
-`hip/peer.h`; step 178), the layer range (`--layers`, `--teacher`, the stream in and out), the
-documents. The last commit with all of it: `efa4e03`. The measurements, the traces and the two
+`hip/peer.h`; step 178), the layer range (`--layers`, `--teacher`, the stream in and out; step
+179), the documents (most of them moved with the two code steps). The last commit with all of
+it: `efa4e03`; with the layer range: `519ffd4`. The measurements, the traces and the two
 scripts stay under `results/split/` and `results/trace/two-machines/`. What follows is the text
 as it stood, for what it says about one machine (the CPU's experts are what a second machine's
 GPU memory bought).
@@ -526,6 +527,8 @@ Step 177: `~/forks/llama.cpp` deleted; the documents reviewed against steps 168-
 "with `--rt`" qualifiers in QUICKSTART, a usage text per program.
 Step 178: the two-machine link out of the code (`--remote`, `--serve`, `hip/peer.h`, the runtime's `peer` branches, the
 clock samples in `--trace`); the last commit with it: efa4e03. Next: the layer range (`--layers`, `--teacher`, the stream).
+Step 179: the layer range out of the runtime and the program (`--layers`, `--teacher`, `--stream-in`, `--stream-out`,
+`hip/rt_peer.cpp`); the runtime runs layers 0 .. k, all of them outside `ds-test --layers`; the last commit with it: 519ffd4.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front
