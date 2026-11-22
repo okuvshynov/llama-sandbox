@@ -16,17 +16,12 @@
 
 #include "engram.h"  // engram_rows: both paths hash the same way
 #include "model.h"
+#include "options.h"  // Options: the CLI fills it for either path
 #include "taps.h"    // Tap, Taps: what run_layer returns, here and in hip/rt.h
 
 #include <map>
 #include <string>
 #include <vector>
-
-struct Options {
-  bool exact_quant = true;  // apply the reference's fp8/fp4 fake quantization (fakequant.h)
-  int max_ctx = 4096;       // capacity of the compressed caches
-  int n_threads = 16;
-};
 
 // Everything a later step needs from earlier tokens.
 struct State {

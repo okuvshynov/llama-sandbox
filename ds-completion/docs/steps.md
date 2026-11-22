@@ -6385,3 +6385,52 @@ ggml's CPU backend. Taking it out changes the command line of the product or add
 so it is its own step, not part of this one.
 
 **Not done:** the full held-out set; two machines.
+
+## Step 173: the CPU reference path as a program of its own
+
+**The decision before it** (the person): the model on the CPU alone is a reference tool, and it
+should be a program of its own, not an option of the product's build.
+
+**The question.** `ds-completion` without `--rt` ran the CPU `Engine`, so the product's binary
+held the reference path. Can the two part with one source file for the command line, and
+with neither path's output changed?
+
+**The change.**
+
+- `apps/ds_completion.cpp` builds two programs. With `-DDS_RUNTIME` (`make HIP=1`):
+  `bin-hip/ds-completion`, the product, the GPU runtime only. `--rt` is required; without it the
+  program says so and names `bin/ds-ref`. Without the macro (`make`): `bin/ds-ref`, the `Engine`
+  only; it refuses `--rt`. Before, the macro added the runtime to a program that always had the
+  engine; now it chooses between them.
+- `src/options.h`: `Options` (threads, context size, the rounding switch) out of `forward.h`,
+  so the product's source does not include the reference path's header.
+- The Makefile: `CORE` without the reference path; `REF` = `forward.cpp`, `fakequant_graph.cpp`,
+  linked by `ds-ref`, `ds-test` and `bench-cpu-moe`. `ds-completion` is in `product` with `HIP=1`
+  only, `ds-ref` in `tests` without it; `make bin/ds-completion` stops with a message.
+- `--no-quant` is `ds-ref`'s.
+
+**Checked** (`results/dist/ds-ref.txt`; the pin, sclk 6):
+
+| check | result |
+|---|---|
+| `make`, `make HIP=1` | no errors, no new warnings |
+| `bin/ds-ref` against the CPU `ds-completion` of the commit before, one prompt, 24 tokens | the same bytes, the same `output.hash`; 3.53 t/s both |
+| per-layer gate and end-to-end logits, CPU path and GPU runtime (`ds-test`) | 201 rows each, 0 differ; the same bytes |
+| held-out cpp-matrix, ja-email, summary-json with `--spec` | the stored outputs; 55.10, 37.25, 45.10 t/s |
+| held-out cpp-matrix, summary-json without `--spec` (the plain loop, which was edited) | the stored outputs; 29.20, 28.17 t/s |
+| `results/requests/requests_test.py` (the model, ~10 min) | all 59 checks |
+| `server/test_server.py` | all checks |
+
+**What the product's binary holds now.** No `Engine` symbol (53 before) and none of the graph
+rounding ops; 16.7 MB against 18.5.
+
+**The prediction's wrong half:** ggml is as much in the binary as before, 967 functions,
+`ggml_graph_compute` among them. Our code no longer calls the graph functions, but the
+tokenizer comes from `libllama.a`, whose model code refers to all of ggml. So "the product
+takes only the tokenizer and the GGUF reader from llama.cpp" is true of what it calls and not
+of what it links.
+
+**Not done:** two machines (`--serve`, `--remote`: untouched code, not run); the full held-out
+set; `-i`. The stale `bin/ds-completion` of earlier builds was removed by hand on this machine:
+on another checkout it stays until `make clean`, and it is the old program. `scripts/` and the
+server start `bin-hip/ds-completion --rt` and are unchanged.

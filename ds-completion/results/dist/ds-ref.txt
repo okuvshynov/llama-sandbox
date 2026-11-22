@@ -1,0 +1,39 @@
+# Two programs from apps/ds_completion.cpp (README step 173): bin-hip/ds-completion (the GPU runtime, --rt required)
+# and bin/ds-ref (the CPU reference path). Commit 1c121ba + step 173's change (the commit that adds this file);
+# llama.cpp at the pin (b72050d03); sclk 6 on the four GPUs; 2026-11-21.
+# M=~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf  F8=~/llms/ds-1017-fp8/dense-fp8.gguf  G=data/golden/hello-fp32
+#
+# 1. The messages
+$ bin-hip/ds-completion -m $M -p hi
+ds-completion needs --rt <dense-fp8.gguf> (QUICKSTART.md); the model on the CPU alone, the reference path, is bin/ds-ref
+$ bin/ds-ref -m $M -p hi --rt $F8
+ds-ref is the CPU reference path; --rt is bin-hip/ds-completion's
+$ make bin/ds-completion
+Makefile:78: *** ds-completion is the GPU runtime's program: make HIP=1 (the CPU reference path: make bin/ds-ref).  Stop.
+#
+# 2. bin/ds-ref against bin/ds-completion of 1c121ba (the CPU build): <program> -m $M -p "The three largest cities in Ukraine are" -n 24 --record <file>
+ds-completion (1c121ba, CPU): # prompt: 8 tokens in 0.98 s = 8.14 t/s; generation: 24 tokens in 6.79 s = 3.53 t/s
+ds-ref                      : # prompt: 8 tokens in 1.00 s = 8.00 t/s; generation: 24 tokens in 6.79 s = 3.53 t/s
+outputs: the same bytes (cmp); output.hash in both records: fnv1a64:3a40e97fd9b90430
+#
+# 3. The gates (ds-test), as results/dist/forward-split.txt's section 1:
+CPU path:    end-to-end logits the same bytes; per-layer table 201 rows, 0 differing
+GPU runtime: end-to-end logits the same bytes; per-layer table 201 rows, 0 differing
+#
+# 4. Held-out prompts, one run each, outputs against results/cache-test/plain-canon-static/<prompt>.out (cmp)
+#    with --spec: scripts/run_matrix.py results/cleanup/heldout.matrix --prompts cpp-matrix,ja-email,summary-json --reps 1 --keep-out --out <dir>
+cpp-matrix: 300 tokens, 55.10 t/s; output the same bytes
+ja-email: 300 tokens, 37.25 t/s; output the same bytes
+summary-json: 98 tokens, 45.10 t/s; output the same bytes
+#    without --spec (a copy of the matrix with: base --rt $F8 --placement placements/study30.txt --canon; config plain)
+cpp-matrix: 300 tokens, 29.20 t/s; output the same bytes
+summary-json: 98 tokens, 28.17 t/s; output the same bytes
+#
+# 5. python3 results/requests/requests_test.py: all checks passed (59; results/requests/requests_test.txt)
+#    python3 server/test_server.py: all checks passed
+#
+# 6. What the programs hold: nm -C <program> | grep -c ' Engine::' ; nm -C ... | grep -c fq_op ; nm ... | grep -c ' [Tt] ggml_' ; size in bytes
+bin-hip/ds-completion of 1c121ba:  Engine 53   graph rounding ops 3   ggml functions 967   18,512,224
+bin-hip/ds-completion:             Engine 0    graph rounding ops 0   ggml functions 967   16,739,888
+bin/ds-ref:                        Engine 53   graph rounding ops 3   ggml functions 967   12,898,752
+#    ggml stays in the product's binary: libllama.a (the tokenizer) refers to it.

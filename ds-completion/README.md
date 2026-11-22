@@ -15,7 +15,7 @@ How to build and run it: [QUICKSTART.md](QUICKSTART.md).
 
 - **One machine:** 44.6 t/s mean (34-55) on the 8 held-out prompts with speculative decoding
   and the adaptive expert cache, every output byte-identical to plain greedy decoding
-  (step 104). CPU only: 3.5 t/s, as the llama.cpp fork.
+  (step 104). The CPU reference path (`bin/ds-ref`): 3.5 t/s, as the llama.cpp fork.
 - **Two machines** (the model in two halves, layers 0-19 and 20-39, the residual stream over
   10 GbE): 50.9 t/s mean (35-63) on the same prompts, the same outputs (steps 110-112).
 - **Exact and deterministic:** fp8 and fp4 weights computed exactly on hardware without them;
@@ -46,13 +46,13 @@ Three kinds of code live here, and the directories alone do not say which is whi
 | | what | where |
 |---|---|---|
 | **The product** | the engine with the GPU runtime (`bin-hip/ds-completion --rt ...`), the HTTP server in front of it, and `fp8pack`, which makes one of its files | `apps/ds_completion.cpp`, `apps/fp8pack.cpp`, `hip/`, `src/` except `forward.*`, `server/ds_server.py`, `scripts/serve.sh`, `scripts/chat.sh`, `placements/` |
-| **What checks it** | a second implementation of the model on the CPU (ggml graphs), the test programs, the official Python reference and the golden data it writes | `src/forward.*`, `tests/`, `ref/`, `server/test_server.py`, `server/fake_engine.py` |
+| **What checks it** | a second implementation of the model on the CPU (ggml graphs) and its program `ds-ref`, the test programs, the official Python reference and the golden data it writes | `src/forward.*`, `tests/`, `ref/`, `server/test_server.py`, `server/fake_engine.py` |
 | **Tools** | benchmarks, the runner of measurements and the readers of records and traces, the inspector, every measurement's raw output | `bench/`, `scripts/` (the rest), `apps/ds_inspect.cpp`, `results/` |
 
 `make product`, `make tests` and `make tools` build one kind each (`make`: all three).
-The second and third may depend on the product; the product should not depend on them. It
-still does in one place, listed in the code map; removing them is in
-[docs/plan.md](docs/plan.md), "The product and the tools".
+The second and third may depend on the product; the product does not depend on them
+(steps 169-173): `ds-completion` has no CPU path and includes nothing of it. The model on the
+CPU alone is its own program, `bin/ds-ref`, built from the same source file.
 
 ## The documents
 

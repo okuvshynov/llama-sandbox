@@ -32,7 +32,7 @@ Decode speed (16 CPU threads; sclk level 2 and 128 generated tokens unless a row
 | mode | decode |
 |---|---|
 | llama.cpp fork (llama-cli, CPU) | 3.5 t/s |
-| ours, CPU only | 3.5 t/s |
+| ours, CPU only (`bin/ds-ref`, the reference path) | 3.5 t/s |
 | ours, own GPU runtime, routed experts on the CPU | ~12 t/s |
 | ours, + most-used experts placed on the 4 GPUs (`--placement`) | 17.7-21.7 t/s |
 | ours, + speculative decoding with the model's DSpark draft (`--dspark ... --spec`) | 16-24 t/s; +22% (geometric mean) on 8 held-out prompts, +7% to +33% |
@@ -286,16 +286,20 @@ three parts (README step 169). The rule the first part should obey, and where it
   should not depend on it.
 - **Tools** measure and inspect; nothing depends on them.
 
-Where the product still reaches into the second part (the next steps of `docs/plan.md`,
-"The product and the tools"):
+The product does not reach into the second part any more (steps 171-173):
 
-- `ds-completion` without `--rt` *is* the CPU reference path, so the product's binary links
-  `src/forward.cpp`, `src/fakequant_graph.cpp` and ggml's CPU backend. Decided (2026-11-21): the
-  CPU-only mode is a reference tool, not part of the product; taking it out of the binary is
-  the next step.
+- Nothing in `hip/` includes `src/forward.h`; the two names the runtime took from it have
+  headers of their own (`src/engram.h`, `src/taps.h`).
+- The rounding functions the runtime calls have no ggml in them; the graph ops are apart
+  (`src/fakequant_graph.*`).
+- `ds-completion` has no CPU path: it needs `--rt`, and the model on the CPU alone is the
+  program `ds-ref`, built from the same `apps/ds_completion.cpp` without the runtime. The
+  Makefile's `REF` list (`forward.cpp`, `fakequant_graph.cpp`) is linked by `ds-ref`, `ds-test`
+  and one benchmark, not by `ds-completion`.
 
-Since step 171 nothing in `hip/` includes `src/forward.h`: the two names the runtime took from
-it have headers of their own (`src/engram.h`, `src/taps.h`).
+What remains shared is by design: one source file for both programs' command line, and the
+loader, the sampler and the CPU expert kernels. And one thing remains linked that the product
+does not use: ggml itself comes in with `libllama.a`, which the tokenizer needs.
 
 The Makefile has the three as targets (step 170): `make product`, `make tests`, `make tools`,
 each also with `HIP=1`; `make` builds all of them, as before.
@@ -304,7 +308,7 @@ each also with `HIP=1`; `make` builds all of them, as before.
 
 | path | what |
 |---|---|
-| `apps/ds_completion.cpp` | the CLI, top to bottom: the options (`Args`, `parse_args`), the record (`write_record`: `--record` writes a run as one JSON object, `docs/record.md`), the two generation loops (`generate_spec`, `generate_plain`), then `run`: load, the turns (one prompt, `-i`'s lines or `--requests`' requests), the summaries |
+| `apps/ds_completion.cpp` | the CLI of two programs: `ds-completion` (with `-DDS_RUNTIME`: the GPU runtime, `--rt` required) and `ds-ref` (without: the CPU reference path). Top to bottom: the options (`Args`, `parse_args`), the record (`write_record`: `--record` writes a run as one JSON object, `docs/record.md`), the two generation loops (`generate_spec`, `generate_plain`), then `run`: load, the turns (one prompt, `-i`'s lines or `--requests`' requests), the summaries |
 | `apps/think_view.h` | how a reply is printed: `--think-show`, the reasoning as one moving line or hidden (README step 147) |
 | `apps/record.h` | what `--record` writes beyond the program's own variables: the id hashes, the GPU clock, the storage reads |
 | `apps/fp8pack.cpp` | lossless fp8 repack of the dense weights |
@@ -338,7 +342,9 @@ Also the product's: `scripts/serve.sh` and `scripts/chat.sh` (the two ways to st
 
 | path | what |
 |---|---|
-| `src/forward.{h,cpp}` | the CPU reference path (ggml graphs), used by tests and by `ds-completion` without `--rt`. The runtime does not include it (step 171) |
+| `src/forward.{h,cpp}` | the CPU reference path (ggml graphs): `ds-ref` and the tests link it, `ds-completion` does not (step 173) |
+| `bin/ds-ref` (from `apps/ds_completion.cpp`, without `-DDS_RUNTIME`) | the reference path as a program: the same command line for prompts, modes, sampling and `--record`; no runtime |
+| `src/options.h` | `Options` (threads, context size, the rounding switch): what the command line fills for either path |
 | `src/fakequant_graph.{h,cpp}` | the same roundings as ggml custom ops, for the reference path's graphs (step 172) |
 | `tests/ds_test.cpp` | per-layer and end-to-end tests against the goldens |
 | `tests/test_fakequant.cpp`, `tests/test_topk.cpp` | the rounding ops and the indexer's selection against the reference's, bit for bit |

@@ -15,26 +15,30 @@
 // token count and hash, the GPU clock setting, the bytes read from storage per phase, the
 // speculative loop's totals, the routed experts' uses, placement and cache totals, and the times
 // the "# ..." lines on stderr report.
-// Without --rt: everything on the CPU through the ggml Engine (forward.cpp), the prompt as one
-// chunk. --rt <dense-fp8.gguf> (bin-hip build): every token through the own runtime (hip/rt.h:
-// dense part on GPU D in exact fp8, routed experts on the CPU or, with --placement, partly on
-// GPUs), the
-// prompt one token at a time.
+// Two programs are built from this file (README step 173):
+//   ds-completion (make HIP=1, -DDS_RUNTIME): the product. --rt <dense-fp8.gguf> is required: every
+//     token through the own runtime (hip/rt.h: dense part on GPU D in exact fp8, routed experts on
+//     the CPU or, with --placement, partly on GPUs). It has no CPU path and does not link one.
+//   ds-ref (make): the CPU reference path as a program. Everything on the CPU through the ggml
+//     Engine (forward.cpp), the prompt as one chunk; no runtime, none of its options.
 
 #include "fatal.h"
-#include "forward.h"
 #include "llama.h"
+#include "options.h"
 #include "record.h"
 #include "sampler.h"
 
 #include <sstream>
 #include "think_view.h"
 
-#ifndef DS_RUNTIME
-class Runtime;  // (write_record takes a null one)
-#endif
 #ifdef DS_RUNTIME
 #include "rt.h"
+class Engine;  // (generate_plain takes a null one: the CPU path is ds-ref's)
+#define DS_PROGRAM "ds-completion"
+#else
+#include "forward.h"
+class Runtime;  // (write_record and generate_plain take a null one)
+#define DS_PROGRAM "ds-ref"
 #endif
 
 #include <algorithm>
@@ -259,6 +263,17 @@ static int parse_args(int argc, char** argv, Args& args) {
   if (args.sampler.temp > 0 && args.spec && !args.remote.empty()) { fprintf(stderr, "--temp with --spec: not with --remote yet (the head's logits are on the back)\n"); return 2; }
   if (args.sampler.temp > 0)
     fprintf(stderr, "# sampling: temperature %g, top-p %g, seed %llu\n", args.sampler.temp, args.sampler.top_p, (unsigned long long)args.sampler.seed);
+#ifdef DS_RUNTIME
+  if (args.rt_path.empty() && !args.model_path.empty()) {
+    fprintf(stderr, "ds-completion needs --rt <dense-fp8.gguf> (QUICKSTART.md); the model on the CPU alone, the reference path, is bin/ds-ref\n");
+    return 2;
+  }
+#else
+  if (!args.rt_path.empty()) {
+    fprintf(stderr, "ds-ref is the CPU reference path; --rt is bin-hip/ds-completion's\n");
+    return 2;
+  }
+#endif
   if (args.interactive && (args.mode == "raw" || args.rt_path.empty())) {
     fprintf(stderr, "-i needs --chat or --think, and --rt\n");
     return 2;
@@ -269,7 +284,7 @@ static int parse_args(int argc, char** argv, Args& args) {
     return 2;
   }
   if (args.model_path.empty() || (args.prompt.empty() && !args.interactive && !args.serve_port && !args.requests)) {
-    fprintf(stderr, "usage: ds-completion -m <model.gguf> (-p \"prompt\" | -f prompt.txt | -i | --requests) [--chat|--think [--effort 1-100|low|high|max] [--think-show all|line|none]] [-n N] [--temp T [--top-p P] [--seed S]] [-t N] [--no-quant] [--max-ctx N] [--rt dense-fp8.gguf [--gpu D] [--placement file [--moe-dies 0,1,2,3] [--cache-loads R [--cache-period N] [--cache-window N] [--cache-min N] [--cache-wait]]] [--canon] [--profile]]\n"
+    fprintf(stderr, "usage: " DS_PROGRAM " -m <model.gguf> (-p \"prompt\" | -f prompt.txt | -i | --requests) [--chat|--think [--effort 1-100|low|high|max] [--think-show all|line|none]] [-n N] [--temp T [--top-p P] [--seed S]] [-t N] [--no-quant] [--max-ctx N] [--rt dense-fp8.gguf [--gpu D] [--placement file [--moe-dies 0,1,2,3] [--cache-loads R [--cache-period N] [--cache-window N] [--cache-min N] [--cache-wait]]] [--canon] [--profile]]\n"
                     "more (--dspark/--spec, --layers/--serve/--remote, --trace, --record, ...): QUICKSTART.md, Options\n");
     return 2;
   }
@@ -550,7 +565,7 @@ static void generate_spec(Runtime* rt, const Args& args, const llama_vocab* voca
 // Plain generation, a token per step, greedy or sampled (--temp): on the runtime (with a draft
 // loaded, in shadow mode), or on the CPU engine. pos: the context's length as the loop starts,
 // which is the first generated token's position (the sampler's random number is keyed by it).
-static void generate_plain([[maybe_unused]] Runtime* rt, Engine* eng, const Args& args, const llama_vocab* vocab, int eos, std::vector<float>& logits,
+static void generate_plain([[maybe_unused]] Runtime* rt, [[maybe_unused]] Engine* eng, const Args& args, const llama_vocab* vocab, int eos, std::vector<float>& logits,
                            uint64_t pos, std::vector<int32_t>& pending, Turn& turn) {
   for (; turn.n_gen < args.n_predict; turn.n_gen++, pos++) {
     if (g_cancel) {
@@ -579,8 +594,9 @@ static void generate_plain([[maybe_unused]] Runtime* rt, Engine* eng, const Args
       }
       continue;
     }
-#endif
+#else
     logits = eng->forward({next});
+#endif
   }
 }
 
@@ -682,11 +698,10 @@ static int run(int argc, char** argv) {
     fprintf(stderr, "# mapped %.0f GB of CPU experts in %.1f s\n", n / 1e9,
             std::chrono::duration<double>(Clock::now() - tm).count());
   }
-  std::unique_ptr<Engine> eng;
 #ifdef DS_RUNTIME
   std::unique_ptr<Runtime> rt;
-  if (!args.rt_path.empty()) {
-    if (!args.opt.exact_quant) { fprintf(stderr, "--no-quant is CPU only\n"); return 2; }
+  if (!args.rt_path.empty()) {  // (always: parse_args requires it)
+    if (!args.opt.exact_quant) { fprintf(stderr, "--no-quant is ds-ref's (the CPU reference path)\n"); return 2; }
     RtOptions ro;
     ro.gpu = args.gpu;
     ro.n_threads = args.opt.n_threads;
@@ -716,9 +731,8 @@ static int run(int argc, char** argv) {
     if (rt->layer0() > 0 && !args.serve_port && !args.teacher) { fprintf(stderr, "--layers not from layer 0 needs --serve (or --teacher --stream-in)\n"); return 2; }
   }
 #else
-  if (!args.rt_path.empty()) { fprintf(stderr, "--rt needs the bin-hip build\n"); return 2; }
+  std::unique_ptr<Engine> eng(new Engine(m, args.opt));
 #endif
-  if (args.rt_path.empty()) eng.reset(new Engine(m, args.opt));
   const double t_load = std::chrono::duration<double>(Clock::now() - t0).count();
   if (record) rd[1] = io_read_bytes();
   fprintf(stderr, "# loaded in %.1f s; prompt %zu tokens; fake-quant %s; %d threads\n", t_load, toks.size(),
@@ -973,7 +987,7 @@ static int run(int argc, char** argv) {
           logits = rt->prefill(std::vector<int32_t>(toks.begin() + save_at, toks.end()));
         }
       } else {
-        logits = rt ? rt->prefill(kept ? std::vector<int32_t>(toks.begin() + kept, toks.end()) : toks) : eng->forward(toks);
+        logits = rt->prefill(kept ? std::vector<int32_t>(toks.begin() + kept, toks.end()) : toks);
       }
     }
 #else
@@ -988,7 +1002,7 @@ static int run(int argc, char** argv) {
 #ifdef DS_RUNTIME
     if (logits.empty()) turn.cancelled = true;  // --requests: the prompt was stopped between its chunks
     else if (args.spec) generate_spec(rt.get(), args, vocab, eos, logits, first, pending, turn);
-    else generate_plain(rt.get(), eng.get(), args, vocab, eos, logits, rt ? rt->n_past() : toks.size(), pending, turn);
+    else generate_plain(rt.get(), nullptr, args, vocab, eos, logits, rt->n_past(), pending, turn);
 #else
     generate_plain(nullptr, eng.get(), args, vocab, eos, logits, toks.size(), pending, turn);
 #endif

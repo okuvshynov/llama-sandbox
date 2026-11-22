@@ -72,14 +72,14 @@ cmake -B build -DBUILD_SHARED_LIBS=OFF -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j 32
 
 cd ~/projects/llama-sandbox/ds-completion
-make && make HIP=1                     # -> bin/ (CPU) and bin-hip/ (GPU); FORK=<dir> for another llama.cpp
+make && make HIP=1                     # -> bin/ (CPU: fp8pack, ds-ref, tests) and bin-hip/ (GPU: ds-completion); FORK=<dir> for another llama.cpp
 M=~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf
 bin/fp8pack -m $M -o ~/llms/ds-1017-fp8/dense-fp8.gguf   # lossless fp8 repack, 6.8 GB, ~20 s
 ```
 
 `make` builds every program: the tests and the benchmarks too. To serve or to chat, the product
 alone is enough and about three times faster to build: `make HIP=1 product && bin-hip/fp8pack -m $M -o ...`
-(`ds-completion` and `fp8pack`; `make tests` and `make tools` are the other two groups, README
+(`ds-completion` and `fp8pack`; `make tests`, with the CPU reference program `ds-ref`, and `make tools` are the other two groups, README
 "The product and the tools around it").
 
 `dense-fp8.gguf` comes out byte for byte the same on every build (its checksum is in the manifest),
@@ -211,9 +211,12 @@ Options:
   (README steps 128-129). A first version, to grow
   ([docs/record.md](docs/record.md), README steps 115-119). One prompt only (not with `-i`, `--serve`, `--teacher`); a run that does not
   finish leaves the file empty.
-- `--no-quant` (CPU path only): without the reference's fp8/fp4 rounding (a comparison).
+- `--no-quant` (`bin/ds-ref` only): without the reference's fp8/fp4 rounding (a comparison).
 
-Without `--rt` (or with `bin/ds-completion`) everything runs on the CPU.
+`ds-completion` needs `--rt` (step 173). The model on the CPU alone, through ggml graphs, is the
+reference path and a program of its own: `bin/ds-ref -m $M -p "..."` (built by `make`; the same
+options for the prompt, the modes, `-n`, `-t`, sampling and `--record`; none of the runtime's).
+Until step 173 this was `bin/ds-completion`, or `bin-hip/ds-completion` without `--rt`.
 
 ## A server
 
@@ -331,7 +334,7 @@ a row says otherwise (the clock does not matter to the CPU rows).
 | **one machine: speculative decoding + adaptive expert cache** | `... --placement placements/study30.txt --dspark ... --spec --canon --cache-loads 800 --cache-period 8` | **33.9-55.0 t/s, mean 44.6** (300 tokens, held-out prompts; README step 104) | output byte-identical to plain decoding with `--canon` |
 | the same, sampled | `... --temp 1 --top-p 0.95 --seed 1` | mean 43.1 against 44.9 greedy in the same session (README step 151) | the plain loop's output for the same seed |
 | own runtime, dense on GPU 0, experts on the CPU | `bin-hip/ds-completion --rt ...` | 12.0-12.5 t/s (sclk 2) | 5.9e-6 / 4.8e-3 (earlier run 1.7e-5 / 6.3e-4) |
-| CPU only | `bin/ds-completion` | 3.5 t/s | 1.3e-5 / 3.9e-3 |
+| CPU only, the reference path | `bin/ds-ref` (`bin/ds-completion` until step 173) | 3.5 t/s | 1.3e-5 / 3.9e-3 |
 | llama.cpp fork (llama-cli, CPU) | - | 3.5 t/s | 2.1e-5 / 1.3e-3 |
 
 The steps between these rows (the static placement, speculation without the cache) and their
