@@ -49,9 +49,9 @@ the placement. `--canon` makes the output independent of where an expert runs.
   again after a reboot: a check right after it may only read the page cache.
 - **llama.cpp**, upstream (its `master` branch), pinned to one commit: `e626db7ca` (2026-11-20),
   the one every check was last run with (step 175). Used for ggml, GGUF reading and the
-  tokenizer, as static libraries in `~/forks/llama.cpp/build/` (the directory's name is from
-  when this was a fork's checkout; `make FORK=<dir>` for another place). No fork and no pull
-  request is needed. Do not run upstream's *own* programs (`llama-cli`) on these GGUF files:
+  tokenizer, as static libraries in `~/projects/llama.cpp/build/` (`make LLAMA_CPP=<dir>` for another
+  place; the Python reference reads the same variable from the environment). No fork and no
+  pull request is needed. Do not run upstream's *own* programs (`llama-cli`) on these GGUF files:
   they read the Engram table's type as another one and generate garbage without an error; we
   decode that table ourselves (step 168, [docs/llama-cpp-upstream.md](docs/llama-cpp-upstream.md)).
 - **For two machines:** a second Mac Pro set up the same way (the same system, the same three
@@ -63,14 +63,14 @@ the placement. `--canon` makes the output independent of where an expert runs.
 
 ```bash
 # llama.cpp: upstream master at the commit this was tested with (step 175)
-git clone https://github.com/ggml-org/llama.cpp ~/forks/llama.cpp
-cd ~/forks/llama.cpp
+git clone https://github.com/ggml-org/llama.cpp ~/projects/llama.cpp
+cd ~/projects/llama.cpp
 git checkout e626db7ca
 cmake -B build -DBUILD_SHARED_LIBS=OFF -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j 32
 
 cd ~/projects/llama-sandbox/ds-completion
-make && make HIP=1                     # -> bin/ (CPU: fp8pack, ds-ref, tests) and bin-hip/ (GPU: ds-completion); FORK=<dir> for a llama.cpp checkout elsewhere
+make && make HIP=1                     # -> bin/ (CPU: fp8pack, ds-ref, tests) and bin-hip/ (GPU: ds-completion); LLAMA_CPP=<dir> for a llama.cpp checkout elsewhere
 M=~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf
 bin/fp8pack -m $M -o ~/llms/ds-1017-fp8/dense-fp8.gguf   # lossless fp8 repack, 6.8 GB, ~20 s
 ```

@@ -6510,10 +6510,63 @@ says so. With it gone, `make` and `make HIP=1` have no warnings.
 **Seen on the way:** one held-out run (`sql-report`, the second) aborted at the process's exit
 with `double free or corruption`, after its output and its numbers were written, in
 `libhsa-runtime64`'s exit handler. That is step 93's abort (not repeated in 56 runs then):
-a second sighting, once in 16 runs here, again after the work. `matrix.py` counts such a run
+a second sighting, once in 16 runs here, again after the work. `run_matrix.py` counts such a run
 as failed, which is right for a gate and worth knowing when one line of a matrix says FAILED.
 
 **Not done:** two machines (the second Mac Pro still has the PR's checkout and build; it needs
 the same switch and a rebuild before the next two-machine run). The Makefile's variable is
 still called `FORK` and the directory `~/forks/llama.cpp`: names only.
+
+## Step 176: the checkout's place, the variable's name, and the Python reference
+
+**The question.** After step 175 two names were left from the time llama.cpp was a pull
+request's commit: the Makefile's variable `FORK` and the directory `~/forks/llama.cpp`. Rename
+both. Predicted: only a path changes, so the same binaries.
+
+**Done.**
+- The checkout is `~/projects/llama.cpp`. A clean upstream checkout was already there (at
+  `ce8caa6e6`, 2026-09-20); its `master` was moved forward to `e626db7ca` and `build/` built
+  with QUICKSTART's two `cmake` lines.
+- The Makefile's variable is `LLAMA_CPP`. `make FORK=<dir>` still sets it, so the commands of
+  older steps run as written.
+
+**The prediction was wrong, harmlessly.** llama.cpp's libraries built in the new directory are
+not the bytes of the old ones (they hold their source's path), so the programs differ in bytes
+from step 175's. Gated by the checks instead (`results/dist/llama-cpp-dir.txt`; sclk 6):
+
+| check | result |
+|---|---|
+| unit tests, `fp8pack` | pass; the bytes of `dense-fp8.gguf` |
+| per layer: `hello-fp32` on both paths, four CPU sets to 1,100 tokens | 0 rows differ |
+| end to end, `hello-fp32` on both paths | logits the stored bytes |
+| `bin/ds-ref`, one prompt | step 173's output hash |
+| held-out prompts, twice each | 16 of 16 outputs the stored bytes; 44.8 t/s mean; no run failed |
+| request test with the model, server test | pass |
+
+The 20,000-token set was not run again: a path changed, not the source.
+
+**Found on the way: the Python reference depended on the PR's `gguf-py`.** `ref/weights.py`,
+which `ref/ds_ref.py` (the golden data's generator) and `ref/check_weights.py` read the GGUF
+with, imported `gguf-py` from `~/forks/llama.cpp` and decoded the Engram table under the PR's
+type `MXFP8`. With upstream's `gguf-py` that failed: `AttributeError: MXFP8`, and the table's
+bytes came 3% short (upstream counts one byte per value). Step 175 did not see it, because its
+"every check" was every check of the programs; nothing in it ran the Python reference. A grep
+for the old path found it.
+
+Fixed the way step 168 fixed the C++: type 43 is read by its layout (33 bytes per 32 values,
+the byte count our own, checked against the shard's size), whichever meaning `gguf-py` gives
+the number. The checkout comes from `LLAMA_CPP` in the environment, with the Makefile's
+default. Checked with `ref/check_weights.py --layers 0 --experts 0`: 7,168 rows of the table
+and layer 0 exact against the Hugging Face checkpoint, 80 lines ok.
+
+**Seen on the way:** `cpp-matrix`'s second run reads 52.3 t/s after 54.9, here and in step 175
+(52.27 after 54.97). Twice the same is not chance; step 168 saw this prompt 3.4% slow once
+and called it session variation. The cause was not looked for.
+
+**Also corrected:** step 175's files named the held-out script `scripts/matrix.py`; it is
+`scripts/run_matrix.py --keep-out`.
+
+**Not done:** `ref/ds_ref.py` itself was not run (golden data not regenerated); it reads the
+table through the same `GGUF.raw` that the check covers. The second Mac Pro: its checkout,
+its build and its place are still the old ones.
 

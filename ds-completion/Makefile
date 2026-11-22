@@ -1,5 +1,5 @@
 # ds-completion: links ggml (and, for the tokenizer only, libllama) from a llama.cpp checkout
-# (FORK, default ~/forks/llama.cpp): upstream, at the commit QUICKSTART.md names (README steps 168, 175).
+# (LLAMA_CPP, default ~/projects/llama.cpp): upstream, at the commit QUICKSTART.md names (README steps 168, 175).
 #
 # src/ and hip/ are the libraries (CPU side, GPU runtime); apps/, tests/ and bench/ the programs.
 #
@@ -7,11 +7,15 @@
 #   make HIP=1    also the own GPU runtime (hip/, ROCm 6.3.4, gfx906) -> bin-hip/
 #   make product, make tests, make tools (each also with HIP=1): one group of programs, below
 # Both link llama.cpp's CPU build (build/, static libraries); ggml's own GPU backend is not used.
-FORK ?= $(HOME)/forks/llama.cpp
+LLAMA_CPP ?= $(HOME)/projects/llama.cpp
+# the variable's name until step 176, in the commands of older steps
+ifdef FORK
+LLAMA_CPP := $(LLAMA_CPP)
+endif
 BUILD = build
-GGML_LIBS = $(FORK)/$(BUILD)/ggml/src/libggml.a $(FORK)/$(BUILD)/ggml/src/libggml-cpu.a \
-            $(FORK)/$(BUILD)/ggml/src/libggml-base.a
-LLAMA_LIB = $(FORK)/$(BUILD)/src/libllama.a
+GGML_LIBS = $(LLAMA_CPP)/$(BUILD)/ggml/src/libggml.a $(LLAMA_CPP)/$(BUILD)/ggml/src/libggml-cpu.a \
+            $(LLAMA_CPP)/$(BUILD)/ggml/src/libggml-base.a
+LLAMA_LIB = $(LLAMA_CPP)/$(BUILD)/src/libllama.a
 ifeq ($(HIP),1)
 BIN = bin-hip
 else
@@ -20,7 +24,7 @@ endif
 
 CXX      = g++
 CXXFLAGS = -std=c++17 -O3 -g -march=native -fopenmp -Wall -Wextra -Wno-unused-parameter \
-           -I$(FORK)/ggml/include -I$(FORK)/include -Isrc
+           -I$(LLAMA_CPP)/ggml/include -I$(LLAMA_CPP)/include -Isrc
 LDLIBS   = $(GGML_LIBS) -fopenmp -lpthread -ldl
 
 CORE   = src/model.cpp src/engram.cpp src/fakequant.cpp src/cpu_moe.cpp src/canon_dot.cpp src/sampler.cpp
@@ -44,7 +48,7 @@ endif
 #   make tests     what checks it: ds-ref (the CPU reference path as a program; without HIP=1), ds-test and
 #                  the unit tests
 #   Not in a group: llama-logits (make bin/llama-logits), llama.cpp's own pipeline on the model. It gives
-#   right logits only when FORK is the DeepSeek-V4.1 PR's commit (docs/llama-cpp-upstream.md): upstream
+#   right logits only when LLAMA_CPP is a checkout of the DeepSeek-V4.1 PR's commit (docs/llama-cpp-upstream.md): upstream
 #   reads this model's Engram table as another type, without an error (README step 175).
 #   make tools     what measures and inspects: ds-inspect, the benchmarks
 # With HIP=1 each is the bin-hip/ build of the same group (and the programs only it has).
@@ -67,12 +71,12 @@ tools: $(TOOLS)
 
 # our own HIP kernels (PLAN.md B1 onwards)
 HIPCC    = $(ROCM)/bin/hipcc
-HIPFLAGS = -std=c++17 -O3 -fPIC --offload-arch=gfx906 -Ihip -Isrc -I$(FORK)/ggml/include
+HIPFLAGS = -std=c++17 -O3 -fPIC --offload-arch=gfx906 -Ihip -Isrc -I$(LLAMA_CPP)/ggml/include
 
 $(BIN)/bench-fp8: bench/bench_fp8.cpp hip/fp8_gemv.hip hip/fp8_gemv.h src/fakequant.cpp
 	@mkdir -p $(BIN)
 	$(HIPCC) $(HIPFLAGS) -fopenmp -o $@ bench/bench_fp8.cpp hip/fp8_gemv.hip src/fakequant.cpp \
-	    -L$(FORK)/$(BUILD)/ggml/src -lggml -lggml-cpu -lggml-base -lpthread -ldl
+	    -L$(LLAMA_CPP)/$(BUILD)/ggml/src -lggml -lggml-cpu -lggml-base -lpthread -ldl
 
 # the CLI, the product: the GPU runtime, no CPU path (README step 173). libllama only for the
 # tokenizer (vocab-only load). Without HIP=1 there is no such program: the CPU path is ds-ref.
@@ -191,7 +195,7 @@ $(BIN)/test-fakequant: tests/test_fakequant.cpp src/fakequant.cpp src/fakequant_
 
 # llama.cpp's own pipeline: the "second opinion" for the reference (steps 2-3). Not in `make`: with
 # upstream llama.cpp it builds and runs but its logits are wrong (the Engram table's type, above);
-# it needs FORK=<a checkout of the PR's commit>, docs/llama-cpp-upstream.md.
+# it needs LLAMA_CPP=<a checkout of the PR's commit>, docs/llama-cpp-upstream.md.
 $(BIN)/llama-logits: ref/llama_logits.cpp
 	@mkdir -p $(BIN)
 	$(CXX) $(CXXFLAGS) -o $@ $< $(LLAMA_LIB) $(LDLIBS)

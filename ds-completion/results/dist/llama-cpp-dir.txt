@@ -1,0 +1,57 @@
+# The llama.cpp checkout in ~/projects/llama.cpp and the Makefile's variable LLAMA_CPP (README step 176).
+# ~/projects/llama.cpp: master moved forward to e626db7caadee98c6174b1c2dc69f3f43075faa0 (upstream, 2026-11-20),
+# built with QUICKSTART's two cmake lines; here `make clean && make && make HIP=1` with the new Makefile.
+# Commit 0e00e97 + this step's change (the commit that adds this file); sclk 6 on the four GPUs; 2026-11-22 03:10 to 04:02.
+# M=~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf  F8=~/llms/ds-1017-fp8/dense-fp8.gguf
+#
+# 1. Build: rc 0. Warnings: hipcc's three occupancy notes on hip/fp8_gemv.hip (as before), nothing else.
+#    The four llama.cpp libraries are not the bytes of the ones built in ~/forks/llama.cpp from the same commit
+#    (they hold their source's path: 12 strings with it in libggml-base.a), and so every program here that was
+#    rebuilt differs in bytes from step 175's. Hence the checks below, not a comparison of hashes.
+#    make -n FORK=/x/y bin/ds-inspect: compiles with -I/x/y/include (the old variable still works).
+#
+# 2. Unit tests and fp8pack
+bin/test-fakequant data/fq                              fp8, fp4, fp4e4: 45312 values each, 0 differ
+bin/test-sampler                                        all checks passed
+~/venvs/ds-ref/bin/python ref/check_topk.py             46 of 46 cases match (bin-hip/test-topk)
+bin/fp8pack -m $M -o <file>                             the same bytes as $F8 (cmp)
+#
+# 3. Per layer: ds-test, every column but the last (ms) against the stored table
+#    command                                                                    stored file                          rows  differing
+bin/ds-test -m $M -g data/golden/hello-fp32                                     step 168's table (old build)          200  0
+bin-hip/ds-test -m $M -g data/golden/hello-fp32 --runtime $F8                   step 168's table (old build)          200  0
+bin/ds-test -m $M -g data/golden/hello-fp32-nq --no-quant                       results/test-hello-fp32-nq.txt        200  0
+bin/ds-test -m $M -g data/golden/readme200                                      results/test-readme200.txt            360  0
+bin/ds-test -m $M -g data/golden/readme200-fp32-nq --no-quant                   results/test-readme200-fp32-nq.txt    200  0
+bin/ds-test -m $M -g data/golden/readme1100                                     results/test-readme1100.txt           200  0
+#    hello-fp32 with --e2e on both paths: the logits files the same bytes as step 168's. The 20,000-token set: not run.
+#
+# 4. bin/ds-ref -m $M -p "The three largest cities in Ukraine are" -n 24: output hash fnv1a64:3a40e97fd9b90430, 3.65 t/s
+#
+# 5. Held-out prompts: scripts/run_matrix.py results/cleanup/heldout.matrix --keep-out --out <dir>, each prompt twice.
+#    Each output compared with results/cache-test/plain-canon-static/<prompt>.out (cmp). No run failed.
+#    prompt         tokens  t/s run 1  t/s run 2  outputs
+    tcp-udp           300      38.99      39.54  both the stored bytes
+    py-lru            300      46.69      46.83  both the stored bytes
+    cpp-matrix        300      54.92      52.36  both the stored bytes
+    sql-report        300      47.23      47.51  both the stored bytes
+    geometry          345      55.07      55.09  both the stored bytes
+    zh-travel         300      34.23      34.07  both the stored bytes
+    ja-email          300      37.19      37.27  both the stored bytes
+    summary-json       98      44.97      45.19  both the stored bytes
+#    mean of the 16 runs 44.8 t/s (step 175: 44.9). cpp-matrix's second run is 52.3 after 54.9 here and 52.27 after
+#    54.97 in step 175: the same in both, so not chance; cause not looked for.
+#
+# 6. Requests and the server
+python3 results/requests/requests_test.py               all checks passed (with the model)
+python3 server/test_server.py                           all checks passed
+#
+# 7. The Python reference's reader of the GGUF (ref/weights.py) with upstream's gguf-py.
+#    Before this step: G.rows('per_layer_token_embd.weight', 0, 1) -> AttributeError: MXFP8, and G.raw of the table
+#    196,613,849,600 bytes (256 x 768,022,850, upstream's one byte per value) of the table's 202,758,032,400.
+#    After: ~/venvs/ds-ref/bin/python ref/check_weights.py --layers 0 --experts 0   (425 s, 2.86 GB fetched)
+== engram table (per_layer_token_embd = layer tables concatenated)
+  ok   layer 1: rows 0..384006167, 3584 rows checked exact
+  ok   layer 14: rows 384006168..768022849, 3584 rows checked exact
+  ok   table has 768022850 rows = sum of layer tables
+    80 lines ok, 0 failed: ALL OK

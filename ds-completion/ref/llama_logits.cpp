@@ -1,6 +1,6 @@
 // llama-logits: llama.cpp's own logits for a fixed token sequence (the "second opinion", steps 2-3).
 //
-// Only right when built against the DeepSeek-V4.1 PR's commit (make bin/llama-logits FORK=<that checkout>,
+// Only right when built against the DeepSeek-V4.1 PR's commit (make bin/llama-logits LLAMA_CPP=<that checkout>,
 // docs/llama-cpp-upstream.md). Upstream llama.cpp, which the rest of this code is built with, has no
 // DeepSeek-V4.1 support that reads these GGUF files right: it takes the Engram table's type 43 for
 // plain fp8 and gives wrong logits without an error. So it is not part of `make` (README step 175).

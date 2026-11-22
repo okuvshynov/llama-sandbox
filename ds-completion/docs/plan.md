@@ -511,6 +511,8 @@ Step 174: the longer golden sets again (CPU path: 200 and 1,100 tokens; the runt
 the stored one, the 20,000-token logits the bytes of 2026-10-29. Not run against the upstream llama.cpp build.
 Step 175: the same and every other check with upstream llama.cpp (`e626db7ca`): all the same. It is now the one pinned
 commit; the PR's commit is history, and `llama-logits` (right only with the PR's commit) is out of `make tests`.
+Step 176: the checkout in `~/projects/llama.cpp`, the Makefile's `FORK` now `LLAMA_CPP`; the Python reference reads the Engram
+table itself (it needed the PR's `gguf-py`, missed in step 175). Checks the same.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front

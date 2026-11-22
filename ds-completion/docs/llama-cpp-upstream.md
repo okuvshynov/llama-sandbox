@@ -224,8 +224,13 @@ numbers. `e626db7ca` is the way back; after a move to a newer one, the gate of t
 Every check was run again with it as the build in `bin/` and `bin-hip/`
 (`results/dist/upstream.txt`): the longer golden sets to 20,000 tokens, the held-out prompts,
 the request and server tests. `bin/llama-logits` is no longer built by `make` or `make tests`;
-`make bin/llama-logits FORK=<a checkout of the PR's commit>` builds it when llama.cpp's own
+`make bin/llama-logits LLAMA_CPP=<a checkout of the PR's commit>` builds it when llama.cpp's own
 logits are wanted again.
+
+**Step 176:** the checkout is `~/projects/llama.cpp` and the Makefile's variable `LLAMA_CPP`
+(`FORK` in the commands above still works). One more user of the PR's code turned up: the
+Python reference (`ref/weights.py`) imported the checkout's `gguf-py` and used its `MXFP8` type
+for the Engram table. It reads the table by its layout now, as `src/model.h` does.
 
 ## Other notes
 

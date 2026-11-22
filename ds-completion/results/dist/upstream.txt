@@ -42,7 +42,7 @@ step  8:   1 tokens ->   3234 (ref   3234)  0.08 s
 # 5. The CPU reference path as a program: bin/ds-ref -m $M -p "The three largest cities in Ukraine are" -n 24
 #    output hash fnv1a64:3a40e97fd9b90430 (step 173's), 3.74 t/s
 #
-# 6. Held-out prompts: scripts/matrix.py results/cleanup/heldout.matrix, each prompt twice (--spec --canon, the
+# 6. Held-out prompts: scripts/run_matrix.py results/cleanup/heldout.matrix --keep-out --out <dir>, each prompt twice (--spec --canon, the
 #    adaptive cache). Each output compared with results/cache-test/plain-canon-static/<prompt>.out (cmp).
 #    prompt         tokens  t/s run 1  t/s run 2  outputs
     tcp-udp           300      39.02      39.52  both the stored bytes
@@ -55,7 +55,7 @@ step  8:   1 tokens ->   3234 (ref   3234)  0.08 s
     summary-json       98      45.00      45.14  both the stored bytes
 #    mean of the 16 runs 44.9 t/s (step 104: 44.6 over the 8 prompts)
 #    * sql-report's second run printed its whole output and its numbers, then aborted at the process's exit
-#      (rc -6; the speed is from its stderr, matrix.py recorded the run as failed):
+#      (rc -6; the speed is from its stderr, run_matrix.py recorded the run as failed):
 #        double free or corruption (fasttop)
 #        # fatal signal 6; phase: after main: static destructors and the libraries' exit; thread: ds-completion (the main thread)
 #        ... libc free <- /opt/rocm-6.3.4/lib/libhsa-runtime64.so.1(+0x6f423) <- libc exit handlers <- __libc_start_main

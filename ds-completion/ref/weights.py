@@ -10,6 +10,7 @@ block layouts (ggml-common.h: kvalues_mxfp4 doubled + e8m0 halved; block_mxfp8).
 bit for bit, the GGUF is the checkpoint and our name mapping is right.
 """
 import json
+import os
 import struct
 import sys
 import time
@@ -22,8 +23,15 @@ from safetensors import safe_open
 HOME = Path.home()
 HF_DIR = HOME / "llms/ds-flash"
 GGUF_DIR = HOME / "llms/UD-Q8_K_XL"
-sys.path.insert(0, str(HOME / "forks/llama.cpp/gguf-py"))  # the fork's gguf-py knows MXFP8
+# gguf-py of the llama.cpp checkout the programs are built with (the Makefile's LLAMA_CPP)
+sys.path.insert(0, str(Path(os.environ.get("LLAMA_CPP", HOME / "projects/llama.cpp")) / "gguf-py"))
 import gguf  # noqa: E402
+
+# The Engram table has ggml type 43. The file was written by the llama.cpp PR's ggml, where 43 is
+# MXFP8: blocks of 33 bytes, one e8m0 scale and 32 e4m3 codes. Upstream gave 43 to plain fp8 (one
+# byte per value), so its gguf-py takes the tensor for 32/33 of its size. As src/model.h does,
+# the table is read here by its layout, whichever meaning gguf-py has (docs/llama-cpp-upstream.md).
+ENGRAM_GGML_TYPE = 43
 
 # ---------------------------------------------------------------- HF side (reference semantics)
 
@@ -192,6 +200,7 @@ class GGUF:
     def __init__(self, d: Path = GGUF_DIR):
         self.shards = [gguf.GGUFReader(p) for p in sorted(d.glob("*.gguf"))]
         self.tensors = {t.name: t for r in self.shards for t in r.tensors}
+        self.shard_of = {t.name: r for r in self.shards for t in r.tensors}
         self.kv = self.shards[0].fields
 
     def field(self, key):
@@ -212,7 +221,13 @@ class GGUF:
         return [int(x) for x in self.tensors[name].shape]
 
     def raw(self, name) -> np.ndarray:
-        return self.tensors[name].data.reshape(-1).view(np.uint8)
+        t = self.tensors[name]
+        if int(t.tensor_type) == ENGRAM_GGML_TYPE:  # our own byte count: see ENGRAM_GGML_TYPE
+            n = int(np.prod([int(x) for x in t.shape])) // 32 * 33
+            data = self.shard_of[name].data
+            assert t.data_offset + n <= len(data), f"{name}: {n} bytes of MXFP8 do not fit in its shard"
+            return data[t.data_offset: t.data_offset + n]
+        return t.data.reshape(-1).view(np.uint8)
 
     def rows(self, name, r0=0, r1=None) -> torch.Tensor:
         """Rows r0..r1 of a 2-D tensor (or of the flattened outer dims), decoded to float32 [rows, ne0]."""
@@ -221,7 +236,8 @@ class GGUF:
         n_rows = int(np.prod([int(x) for x in t.shape[1:]]))
         r1 = n_rows if r1 is None else r1
         typ = t.tensor_type
-        block, tsize = gguf.GGML_QUANT_SIZES[typ]
+        mxfp8 = int(typ) == ENGRAM_GGML_TYPE
+        block, tsize = (32, 33) if mxfp8 else gguf.GGML_QUANT_SIZES[typ]
         row_bytes = ne0 // block * tsize
         b = torch.from_numpy(np.array(self.raw(name)[r0 * row_bytes: r1 * row_bytes]))  # copy: memmap is read-only
         n = r1 - r0
@@ -236,7 +252,7 @@ class GGUF:
             qs = blk[..., 1:].long()
             codes = torch.cat([qs & 0xF, qs >> 4], dim=-1)
             return (KVALUES_MXFP4[codes] * torch.exp2(e - 128).unsqueeze(-1)).view(n, ne0)
-        if typ == T.MXFP8:  # block: e (1) + qs (32 e4m3)
+        if mxfp8:  # block: e (1) + qs (32 e4m3)
             blk = b.view(n, ne0 // 32, 33)
             e = blk[..., 0].float()
             v = blk[..., 1:].contiguous().view(torch.float8_e4m3fn).float()
