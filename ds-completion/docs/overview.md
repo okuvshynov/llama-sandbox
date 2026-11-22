@@ -293,7 +293,9 @@ Where the product still reaches into the second part (the next steps of `docs/pl
 - `src/fakequant.cpp` holds the runtime's host functions and the reference path's graph ops.
 - `ds-completion` without `--rt` *is* the CPU reference path, so the product's binary links
   `src/forward.cpp` and ggml's CPU backend.
-- `make` builds every program of all three parts as one target.
+
+The Makefile has the three as targets (step 170): `make product`, `make tests`, `make tools`,
+each also with `HIP=1`; `make` builds all of them, as before.
 
 ### The product
 

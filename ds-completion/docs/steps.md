@@ -6266,3 +6266,44 @@ steps (this map; Makefile targets; the two names out of `forward.h`) and what is
 
 **Nothing measured, no code changed.** Deferred by the person until the three steps are done:
 whether the CPU-only mode is part of the product, and where `ds-test` belongs.
+
+## Step 170: `make product`, `make tests`, `make tools`
+
+**The question.** Step 169's map says which programs are the product, which check it and which
+are tools; `make` built all of them as one target. Can the build say the same, with `make`
+itself unchanged?
+
+**The change** (the Makefile only): three lists and a target for each.
+
+| target | programs | more with `HIP=1` |
+|---|---|---|
+| `make product` | `ds-completion`, `fp8pack` | |
+| `make tests` | `ds-test`, `test-fakequant`, `test-sampler`, `llama-logits` | `test-topk` |
+| `make tools` | `ds-inspect`, `bench-cpu-moe`, `bench-fp4-decode` | the ten GPU benchmarks |
+
+`all` is the three together.
+
+**Checked** (`results/dist/make-groups.txt`):
+
+- `make -n -B` and `make -n -B HIP=1` name the same outputs as before the change (9 and 30,
+  the GPU objects included), and on the existing tree both say there is nothing to do.
+- From nothing, one job (`-j1`), into a new directory:
+
+| | CPU | `HIP=1` |
+|---|---|---|
+| `make product` | 19 s | 82 s |
+| `make` | 58 s | 240 s |
+
+- The product's programs built alone and built with everything: the same bytes for both CPU
+  programs and for the GPU build's `fp8pack`.
+
+**Not expected:** the GPU build's `ds-completion` differed between the two directories. Every
+object `hipcc` writes differs with the path it is written to: `expert_cache.o` built twice to
+one path gave the same bytes, and to another path different ones (nothing of the path is
+readable in the file; presumably an id the compiler derives from it). So two GPU builds can be
+compared with `cmp` only if made at the same path. It does not touch what the program computes
+(step 168's upstream build, in another directory, gave the stored outputs).
+
+**Not done:** `make -j` was not tried with the new targets. The GPU build's `product` still
+compiles the whole runtime, tracing and two-machine code included: the groups are of programs,
+not of the runtime's parts.

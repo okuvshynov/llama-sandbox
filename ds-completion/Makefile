@@ -5,6 +5,7 @@
 #
 #   make          CPU build -> bin/
 #   make HIP=1    also the own GPU runtime (hip/, ROCm 6.3.4, gfx906) -> bin-hip/
+#   make product, make tests, make tools (each also with HIP=1): one group of programs, below
 # Both link the fork's CPU build (build/, static libraries); ggml's own GPU backend is not used.
 FORK ?= $(HOME)/forks/llama.cpp
 BUILD = build
@@ -35,10 +36,24 @@ RT_FLAGS = -DDS_RUNTIME -D__HIP_PLATFORM_AMD__ -Ihip -I$(ROCM)/include
 RT_LIBS  = $(RT_OBJ) -L$(ROCM)/lib -Wl,-rpath,$(ROCM)/lib -lamdhip64
 endif
 
-all: $(BIN)/ds-completion $(BIN)/ds-inspect $(BIN)/ds-test $(BIN)/test-fakequant $(BIN)/test-sampler $(BIN)/llama-logits $(BIN)/fp8pack $(BIN)/bench-cpu-moe $(BIN)/bench-fp4-decode
+# Three groups (README step 169; docs/overview.md "Code map"). `make` builds all three.
+#   make product   what serves: ds-completion, and fp8pack, which makes dense-fp8.gguf once
+#   make tests     what checks it: ds-test and the unit tests, llama-logits (llama.cpp's own pipeline)
+#   make tools     what measures and inspects: ds-inspect, the benchmarks
+# With HIP=1 each is the bin-hip/ build of the same group (and the programs only it has).
+PRODUCT = $(BIN)/ds-completion $(BIN)/fp8pack
+TESTS   = $(BIN)/ds-test $(BIN)/test-fakequant $(BIN)/test-sampler $(BIN)/llama-logits
+TOOLS   = $(BIN)/ds-inspect $(BIN)/bench-cpu-moe $(BIN)/bench-fp4-decode
 ifeq ($(HIP),1)
-all: $(BIN)/bench-fp8 $(BIN)/bench-kernels $(BIN)/bench-fp4-moe $(BIN)/bench-expert-pool $(BIN)/bench-expert-load $(BIN)/test-topk $(BIN)/bench-register $(BIN)/bench-launch $(BIN)/bench-loader-exit $(BIN)/bench-row-stride $(BIN)/bench-wave-slots
+TESTS  += $(BIN)/test-topk
+TOOLS  += $(BIN)/bench-fp8 $(BIN)/bench-kernels $(BIN)/bench-fp4-moe $(BIN)/bench-expert-pool $(BIN)/bench-expert-load \
+          $(BIN)/bench-register $(BIN)/bench-launch $(BIN)/bench-loader-exit $(BIN)/bench-row-stride $(BIN)/bench-wave-slots
 endif
+
+all: product tests tools
+product: $(PRODUCT)
+tests: $(TESTS)
+tools: $(TOOLS)
 
 # our own HIP kernels (PLAN.md B1 onwards)
 HIPCC    = $(ROCM)/bin/hipcc
@@ -161,4 +176,4 @@ $(BIN)/llama-logits: ref/llama_logits.cpp
 
 clean:
 	rm -rf bin bin-hip bin-asan
-.PHONY: all clean
+.PHONY: all product tests tools clean

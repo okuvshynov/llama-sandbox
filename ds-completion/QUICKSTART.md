@@ -77,6 +77,11 @@ M=~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf
 bin/fp8pack -m $M -o ~/llms/ds-1017-fp8/dense-fp8.gguf   # lossless fp8 repack, 6.8 GB, ~20 s
 ```
 
+`make` builds every program: the tests and the benchmarks too. To serve or to chat, the product
+alone is enough and about three times faster to build: `make HIP=1 product && bin-hip/fp8pack -m $M -o ...`
+(`ds-completion` and `fp8pack`; `make tests` and `make tools` are the other two groups, README
+"The product and the tools around it").
+
 `dense-fp8.gguf` comes out byte for byte the same on every build (its checksum is in the manifest),
 so it doubles as a check of the build and the model files.
 

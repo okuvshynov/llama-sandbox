@@ -49,8 +49,9 @@ Three kinds of code live here, and the directories alone do not say which is whi
 | **What checks it** | a second implementation of the model on the CPU (ggml graphs), the test programs, the official Python reference and the golden data it writes | `src/forward.*`, `tests/`, `ref/`, `server/test_server.py`, `server/fake_engine.py` |
 | **Tools** | benchmarks, the runner of measurements and the readers of records and traces, the inspector, every measurement's raw output | `bench/`, `scripts/` (the rest), `apps/ds_inspect.cpp`, `results/` |
 
+`make product`, `make tests` and `make tools` build one kind each (`make`: all three).
 The second and third may depend on the product; the product should not depend on them. It
-still does in four small places, listed in the code map; removing them is in
+still does in three small places, listed in the code map; removing them is in
 [docs/plan.md](docs/plan.md), "The product and the tools".
 
 ## The documents

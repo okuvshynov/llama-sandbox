@@ -1,0 +1,30 @@
+# The Makefile's three groups (README step 170): what each target builds, the times from nothing, and
+# the programs' bytes. Commit 14ecffd + step 170's Makefile (the commit that adds this file); 2026-11-21;
+# llama.cpp at the pin (b72050d03), g++ 11.4, hipcc of ROCm 6.3.4. No GPU clock: nothing here runs on a GPU.
+#
+# 1. What each target builds: make -n -B [HIP=1] <target>, the -o names, objects left out
+product:        ds-completion fp8pack 
+product HIP=1:  ds-completion fp8pack 
+tests:        ds-test test-fakequant test-sampler llama-logits 
+tests HIP=1:  ds-test test-fakequant test-sampler llama-logits test-topk 
+tools:        ds-inspect bench-cpu-moe bench-fp4-decode 
+tools HIP=1:  ds-inspect bench-cpu-moe bench-fp4-decode bench-fp8 bench-kernels bench-fp4-moe bench-expert-pool bench-expert-load bench-register bench-launch bench-loader-exit bench-row-stride bench-wave-slots 
+all:        9 outputs; all HIP=1: 30 outputs (10 of them objects); the same names as before the change (diff of the sorted lists: empty)
+#
+# 2. From nothing, one job: time make -j1 [HIP=1] BIN=<new dir> [product]
+make product          18.8 s
+make HIP=1 product    82.1 s
+make                  58.3 s
+make HIP=1           240.4 s
+#
+# 3. The product's programs built alone against the same built with everything (cmp, two directories each):
+CPU   ds-completion   the same bytes
+CPU   fp8pack         the same bytes
+HIP=1 fp8pack         the same bytes (and the same as bin-hip/fp8pack)
+HIP=1 ds-completion   different
+#    All 10 objects of the two HIP=1 directories differ (cmp), by 90 to 59,583 bytes.
+#
+# 4. Why: an object written by hipcc depends on its output path.
+#    make HIP=1 BIN=<x1> <x1>/obj/expert_cache.o   twice, the directory removed between: sha256 f6e7ac70ce5c3b8e..., both times
+#    make HIP=1 BIN=<x2> <x2>/obj/expert_cache.o   once:                                 sha256 4d7ea19e152c8a54...
+#    (strings finds nothing of the path in the object.)
