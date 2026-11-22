@@ -24,7 +24,7 @@ typical steps, from the held-out run (README step 57):
 | code (cpp-matrix), mostly 6 tokens verified | 4.48 | 12 ms | ~109 ms | 121 ms | 36.9 |
 | chat (tcp-udp), mostly 2-3 verified | 2.16 | 10 ms | ~65 ms | 75 ms | 28.9 |
 
-Held-out mean today: **44.6 t/s** (34-55; README step 104), **50.9** on two machines (below).
+Held-out mean today: **44.6 t/s** (34-55; README step 104).
 Every change on the way from step 57's 32.0, on one ruler: `results/heldout-history/` (README
 step 72).
 The tables below are from step 57's runs, before steps 66-82. For scale: step 48 measured 28.0 at the same clock before
@@ -154,7 +154,11 @@ the engine's (README steps 152-154):
   their tools block and rules (95% of the stored request's characters come before its
   history: an estimate of ~20 s of each request's 24).
 
-## Two machines (the model in two halves)
+## Two machines (the model in two halves): measured, then removed
+
+What a second identical machine gave (README steps 110-112), kept here for what it says about
+one machine: the cost of the CPU's experts. The code was removed in step 178 (the last commit
+with it: `efa4e03`).
 
 Layers 0-19 on one machine, layers 20-39 with the head and the draft on a second one; per step
 the stream of the verified tokens goes over once (64 KB per token) and a few ids come back
@@ -199,11 +203,8 @@ handoffs and the engram fetch of steps 71 and 73; `compare-step73.txt`: the inde
 die 0's front, the handoffs to and from the CPU, the CPU's experts, the tail and the draft
 (`results/trace/critpath.txt`).
 
-Two machines: each half writes its own trace on its own clock; `scripts/trace_merge.py` puts
-the back's on the front's (clock samples from the small exchanges, the ones with the least
-network delay, a line through them: ~1 us residuals) and writes one file with the front as
-process 1 and the back as process 2 (`results/trace/two-machines/`, README step 112;
-`TRACE=1 scripts/split-measure.sh`). The scripts above read one-machine traces.
+`results/trace/two-machines/` holds the merged traces of the two-machine runs (README step 112);
+the script that merged them, now `results/trace/two-machines/trace_merge.py`, was filed there when that code left in step 178.
 
 ## Background expert loads (the adaptive cache)
 
@@ -255,8 +256,7 @@ so it has 831 slots against 1,765 on each other GPU; 64k context costs only 0.4 
 ## Fixed costs
 
 Model load ~9-20 s (from the page cache; minutes if it must come back from disk), expert upload
-for a placement 5-30 s, the cache's expert registration ~100 s in the background (~30 s per half on
-two machines) (its loads
+for a placement 5-30 s, the cache's expert registration ~100 s in the background (its loads
 start only after it). For short runs these dominate: a 20-token prompt and 100 tokens of answer
 take ~5 s of work after ~20-30 s of startup.
 

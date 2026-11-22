@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """One trace of the model on two machines (README step 112).
 
+Filed here in README step 178, which removed --remote, --serve and the clock samples from
+--trace: it reads the traces of a build of commit efa4e03 or earlier (scripts/trace_merge.py there).
+
 The front (layers 0-19, --remote) and the back (layers 20-39, --serve) each write their own
 --trace, on their own machine's monotonic clock. The front's trace also holds clock samples
 (peerSync): for every small exchange (HELLO, SYNC, DRAFT) its own times when the request left and

@@ -8,7 +8,7 @@ that speaks HTTP renders the prompt, starts the engine as a child and parses the
 
     bin-hip/ds-completion -m $M --rt $F8 [--placement .. --cache-loads .. --dspark $D --spec --canon ..] --requests
 
-Not with `-p`, `-f`, `-i`, `--chat`, `--think`, `--record`, `--serve`, `--teacher`. Everything
+Not with `-p`, `-f`, `-i`, `--chat`, `--think`, `--record`, `--teacher`. Everything
 on stdout is the protocol below; the engine's own lines (`# ...`) go to stderr as always.
 
 ## The engine's first line
@@ -139,4 +139,4 @@ in place of a reply, for a request with a mistake in a value, an empty prompt or
 for `--max-ctx`; the engine then reads the next request. If the header itself cannot be
 followed (an unknown first word, an unknown field, no `bytes=`), the message ends with
 `; closing` and the engine exits, since it cannot know where the next request starts.
-An error inside the engine (for example a lost peer) ends the process as in any other mode.
+An error inside the engine (for example a chunk past `--max-ctx`) ends the process as in any other mode.

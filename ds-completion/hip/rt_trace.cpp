@@ -176,7 +176,6 @@ void Runtime::trace_write() {
   };
   meta(1, "host thread", true);
   meta(3, "steps (host)");
-  if (L0 > 0) meta(4, "messages from the front");
   meta(2, "GPU " + std::to_string(opt.gpu) + " main stream (dense part)");
   for (size_t i = 0; i < dies.size(); i++)
     meta(10 + (int)i, "GPU " + std::to_string(dies[i].dev) + (dies[i].st ? " experts" : " experts (second stream)"));
@@ -191,14 +190,7 @@ void Runtime::trace_write() {
     fprintf(f, ",\n{\"name\":\"%s\",\"ph\":\"X\",\"pid\":1,\"tid\":%d,\"ts\":%.1f,\"dur\":%.1f%s%s%s}", e.name.c_str(), e.tid, a,
             b - a, e.args.empty() ? "" : ",\"args\":{", e.args.c_str(), e.args.empty() ? "" : "}");
   }
-  // for scripts/trace_merge.py (README step 112): this trace's zero on this machine's monotonic
-  // clock, the layers, and the front's clock samples against the back
-  fprintf(f, "\n],\n\"clockEpochUs\":%.1f,\"layers\":[%d,%d],\"peerSync\":[",
-          std::chrono::duration<double, std::micro>(trace_epoch.time_since_epoch()).count(), L0, L1 - 1);
-  if (peer)
-    for (size_t i = 0; i < peer->clock_samples.size(); i++)
-      fprintf(f, "%s[%.1f,%.1f,%.1f,%.1f]", i ? "," : "", peer->clock_samples[i][0], peer->clock_samples[i][1], peer->clock_samples[i][2], peer->clock_samples[i][3]);
-  fprintf(f, "]}\n");
+  fprintf(f, "\n]}\n");
   fclose(f);
   fprintf(stderr, "# trace: %zu events in %s (open in ui.perfetto.dev)\n", trace_evs.size(), trace_path.c_str());
   if (gen_gpu_us > 0) {  // README step 65

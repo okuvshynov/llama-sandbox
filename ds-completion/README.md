@@ -1,7 +1,7 @@
 # ds-completion: DeepSeek-V4.1-Flash inference for the Mac Pro (755 GB RAM, 4x Vega II)
 
 An inference engine for one model, DeepSeek-V4.1-Flash-1017, written from scratch for one
-machine: a Mac Pro 2019 with two Radeon Pro Vega II Duo cards, or two such machines.
+machine: a Mac Pro 2019 with two Radeon Pro Vega II Duo cards.
 
     bin-hip/ds-completion -m <model.gguf> --rt <dense-fp8.gguf> -p "prompt"
 
@@ -13,11 +13,12 @@ How to build and run it: [QUICKSTART.md](QUICKSTART.md).
 
 ## Status (2026-11-22)
 
-- **One machine:** 44.6 t/s mean (34-55) on the 8 held-out prompts with speculative decoding
+- **Speed:** 44.6 t/s mean (34-55) on the 8 held-out prompts with speculative decoding
   and the adaptive expert cache, every output byte-identical to plain greedy decoding
   (step 104). The CPU reference path (`bin/ds-ref`): 3.5 t/s, as llama.cpp with the DeepSeek-V4.1 PR.
-- **Two machines** (the model in two halves, layers 0-19 and 20-39, the residual stream over
-  10 GbE): 50.9 t/s mean (35-63) on the same prompts, the same outputs (steps 110-112).
+- **One machine only.** The model in two halves on two machines (50.9 t/s on the same
+  prompts, the same outputs; steps 110-112) was measured and then removed (step 178): the
+  machines took turns, and it was a second path through every call of the runtime.
 - **Exact and deterministic:** fp8 and fp4 weights computed exactly on hardware without them;
   with `--canon` the output does not depend on where an expert runs. Gated per layer and end to
   end against the official implementation.

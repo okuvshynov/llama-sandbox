@@ -48,7 +48,8 @@ products, but summing in different orders, so an expert's output bits depend on 
 With `--canon` (README steps 28, 31, 80) both sides use one canonical accumulation
 (`src/canon_dot.cpp` on the CPU, the matching kernel in `hip/fp4_moe.hip`): the same bits on any
 die and on the CPU. That is what lets the adaptive cache move experts while decoding, speculation
-match plain decoding under it, and two machines print one machine's bytes; it is the
+match plain decoding under it (and what let two machines print one machine's bytes, README step
+111); it is the
 configuration QUICKSTART.md recommends.
 
 ## Why fp16 and not fp32 after dequantization

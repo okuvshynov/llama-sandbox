@@ -172,8 +172,6 @@ struct Args {
   bool requests = false;  // --requests: prompts from stdin, each on an empty context (README step 152)
   std::vector<int> layers;  // --layers a-b: a range of the model (README step 110)
   bool teacher = false;
-  int serve_port = 0;  // --serve: the back of two processes (README step 111)
-  std::string remote;  // --remote host:port: the front's back
   std::string stream_in_path, stream_out_path;
   int spec_n = 0;
   std::string spec_log_path;
@@ -219,10 +217,6 @@ static int parse_args(int argc, char** argv, Args& args) {
     // each printed (one per line; a range without the head prints none). --stream-out file: each
     // token's stream after the range's last layer; --stream-in file: the stream a range starts from
     else if (a == "--teacher") args.teacher = true;
-    // two processes: the back, `--layers k-39 [--dspark ..] --serve port`, waits for one front,
-    // `--layers 0-(k-1) --remote host:port`, which is used as the whole model would be
-    else if (a == "--serve") args.serve_port = atoi(next());
-    else if (a == "--remote") args.remote = next();
     else if (a == "--stream-in") args.stream_in_path = next();
     else if (a == "--stream-out") args.stream_out_path = next();
     else if (a == "-t") args.opt.n_threads = atoi(next());
@@ -262,7 +256,6 @@ static int parse_args(int argc, char** argv, Args& args) {
   }
   if (args.sampler.temp < 0 || !(args.sampler.top_p > 0 && args.sampler.top_p <= 1)) { fprintf(stderr, "--temp: 0 or more; --top-p: above 0, up to 1\n"); return 2; }
   if (args.sampler.temp == 0 && args.sampler.top_p < 1) { fprintf(stderr, "--top-p needs --temp (without it the choice is greedy)\n"); return 2; }
-  if (args.sampler.temp > 0 && args.spec && !args.remote.empty()) { fprintf(stderr, "--temp with --spec: not with --remote yet (the head's logits are on the back)\n"); return 2; }
   if (args.sampler.temp > 0)
     fprintf(stderr, "# sampling: temperature %g, top-p %g, seed %llu\n", args.sampler.temp, args.sampler.top_p, (unsigned long long)args.sampler.seed);
 #ifdef DS_RUNTIME
@@ -280,15 +273,15 @@ static int parse_args(int argc, char** argv, Args& args) {
     fprintf(stderr, "-i needs --chat or --think, and --rt\n");
     return 2;
   }
-  if (args.requests && (args.rt_path.empty() || args.mode != "raw" || !args.prompt.empty() || args.interactive || args.serve_port || args.teacher ||
-                        !args.record_path.empty() || (!args.layers.empty() && args.remote.empty()))) {
-    fprintf(stderr, "--requests needs --rt; not with -p, -f, -i, --chat, --think, --serve, --teacher, --record or a part of the layers\n");
+  if (args.requests && (args.rt_path.empty() || args.mode != "raw" || !args.prompt.empty() || args.interactive || args.teacher ||
+                        !args.record_path.empty() || !args.layers.empty())) {
+    fprintf(stderr, "--requests needs --rt; not with -p, -f, -i, --chat, --think, --teacher, --record or a part of the layers\n");
     return 2;
   }
-  if (args.model_path.empty() || (args.prompt.empty() && !args.interactive && !args.serve_port && !args.requests)) {
+  if (args.model_path.empty() || (args.prompt.empty() && !args.interactive && !args.requests)) {
 #ifdef DS_RUNTIME
     fprintf(stderr, "usage: ds-completion -m <model.gguf> --rt <dense-fp8.gguf> (-p \"prompt\" | -f prompt.txt | -i | --requests) [--chat|--think [--effort 1-100|low|high|max] [--think-show all|line|none]] [-n N] [--temp T [--top-p P] [--seed S]] [-t N] [--max-ctx N] [--gpu D] [--placement file [--moe-dies 0,1,2,3] [--cache-loads R [--cache-period N] [--cache-window N] [--cache-min N] [--cache-wait]]] [--canon] [--profile]\n"
-                    "more (--dspark/--spec, --layers/--serve/--remote, --trace, --record, ...): QUICKSTART.md, Options\n");
+                    "more (--dspark/--spec, --trace, --record, ...): QUICKSTART.md, Options\n");
 #else
     fprintf(stderr, "usage: ds-ref -m <model.gguf> (-p \"prompt\" | -f prompt.txt) [--chat|--think [--effort 1-100|low|high|max] [--think-show all|line|none]] [-n N] [--temp T [--top-p P] [--seed S]] [-t N] [--no-quant] [--max-ctx N] [--record run.json]\n"
                     "the model on the CPU alone, the reference path; the product is bin-hip/ds-completion (QUICKSTART.md)\n");
@@ -644,12 +637,12 @@ static int run(int argc, char** argv) {
   for (int sig : {SIGABRT, SIGSEGV, SIGBUS, SIGILL, SIGFPE}) signal(sig, on_fatal);
   Args args;
   if (const int rc = parse_args(argc, argv, args); rc >= 0) return rc;
-  // --record describes one prompt and its generation: not a session, a back or a --teacher run.
+  // --record describes one prompt and its generation: not a session or a --teacher run.
   // Opened now, written after the generation: a run that ends early leaves it empty.
   FILE* record = nullptr;
   if (args.record_path.empty() && !args.record_label.empty()) { fprintf(stderr, "--record-label needs --record\n"); return 2; }
   if (!args.record_path.empty()) {
-    if (args.interactive || args.serve_port || args.teacher) { fprintf(stderr, "--record: not with -i, --serve or --teacher\n"); return 2; }
+    if (args.interactive || args.teacher) { fprintf(stderr, "--record: not with -i or --teacher\n"); return 2; }
     record = fopen(args.record_path.c_str(), "w");
     if (!record) { fprintf(stderr, "cannot write %s\n", args.record_path.c_str()); return 1; }
   }
@@ -724,18 +717,13 @@ static int run(int argc, char** argv) {
     ro.cache_min = args.cache_min;
     ro.cache_wait = args.cache_wait;
     ro.dspark = args.dspark_path;
-    if (args.spec && args.dspark_path.empty() && args.remote.empty()) { fprintf(stderr, "--spec needs --dspark\n"); return 2; }
+    if (args.spec && args.dspark_path.empty()) { fprintf(stderr, "--spec needs --dspark\n"); return 2; }
     rt.reset(new Runtime(m, ro, args.rt_path));
     rt->profile = args.profile;
-    if (!args.trace_path.empty()) rt->set_trace(args.trace_path);  // before connect_peer: its exchanges are the trace's first clock samples
+    if (!args.trace_path.empty()) rt->set_trace(args.trace_path);
     if (!args.route_log.empty()) rt->log_routing(args.route_log);
-    if (!args.remote.empty()) {
-      rt->connect_peer(args.remote);
-      if (args.spec && !rt->has_draft()) { fprintf(stderr, "--spec: the back has no draft (--dspark there)\n"); return 2; }
-    }
-    // a range alone computes no token: it needs its other half, or the test that stands in for it
-    if (!rt->has_head() && args.remote.empty() && !args.teacher) { fprintf(stderr, "--layers without the last layer needs --remote (or --teacher)\n"); return 2; }
-    if (rt->layer0() > 0 && !args.serve_port && !args.teacher) { fprintf(stderr, "--layers not from layer 0 needs --serve (or --teacher --stream-in)\n"); return 2; }
+    // a range alone computes no token: only the test that hands its stream on runs one
+    if ((!rt->has_head() || rt->layer0() > 0) && !args.teacher) { fprintf(stderr, "--layers: a part of the model runs only with --teacher (--stream-in, --stream-out)\n"); return 2; }
   }
 #else
   std::unique_ptr<Engine> eng(new Engine(m, args.opt));
@@ -746,14 +734,6 @@ static int run(int argc, char** argv) {
           args.opt.exact_quant ? "on" : "off", args.opt.n_threads);
 
 #ifdef DS_RUNTIME
-  if (args.serve_port) {  // the back: serves one front, then leaves
-    if (!rt) { fprintf(stderr, "--serve needs --rt\n"); return 2; }
-    rt->serve(args.serve_port);
-    llama_model_free(tok_model);
-    llama_backend_free();
-    rt.reset();
-    return 0;
-  }
   if (args.teacher) {  // README step 110: a layer range checked against the whole model, token for token
     if (!rt) { fprintf(stderr, "--teacher needs --rt\n"); return 2; }
     const size_t nh = (size_t)m.hp.n_embd * m.hp.hc_mult, np = m.hp.hc_mult;
@@ -871,7 +851,6 @@ static int run(int argc, char** argv) {
       if (err.empty() && fread(text.data(), 1, bytes, stdin) != (size_t)bytes) break;  // the input ended inside a prompt
       if (err.empty() && n < 1) err = "n: 1 or more";
       if (err.empty() && (so.temp < 0 || !(so.top_p > 0 && so.top_p <= 1))) err = "temp: 0 or more; top_p: above 0, up to 1";
-      if (err.empty() && so.temp > 0 && args.spec && !args.remote.empty()) err = "temp above 0 with --spec: not with --remote yet";
       if (err.empty()) {
         toks = tokenize(vocab, text);
         if (toks.empty()) err = "an empty prompt";
@@ -1064,7 +1043,7 @@ static int run(int argc, char** argv) {
   return 0;
 }
 
-// Errors after startup (a peer that left, a message of the wrong size, a chunk past --max-ctx)
+// Errors after startup (a chunk past --max-ctx, a rewind without a mark)
 // end the run with their message; unwinding closes the runtime, so a --trace is still written.
 int main(int argc, char** argv) {
   try {

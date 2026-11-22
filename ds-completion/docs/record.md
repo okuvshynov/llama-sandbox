@@ -71,12 +71,12 @@ Decided in the discussion this document comes from:
 
 - Two identical machines are available: one can run a known build while the other runs a
   candidate, and both must produce the same values.
-- The model in two halves (README step 111) is one more free input. Not covered by the first
-  version: `--record` refuses `--serve`.
+- The model in two halves (README step 111) was one more free input, never covered by a record;
+  it was removed in step 178.
 
 ## What the first version writes
 
-`--record FILE` with a single prompt (not with `-i`, `--serve` or `--teacher`). A whole record
+`--record FILE` with a single prompt (not with `-i` or `--teacher`). A whole record
 as the program wrote it, the fastest single-machine settings (`results/record/example.json`):
 
 ```json

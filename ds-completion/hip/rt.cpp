@@ -468,11 +468,6 @@ std::vector<int32_t> Runtime::verify(const std::vector<int32_t>& chunk, bool hea
   verifying = true;
   const auto t_v = Clock::now();
   std::vector<int32_t> next = forward_chunk(chunk, head);
-  if (peer) {  // the back's layers and head
-    peer_send_tokens(Peer::VERIFY, chunk, head);
-    peer_answer(Peer::VERIFY, (size_t)M * 4);
-    next = peer->get_vec<int32_t>(M);
-  }
   trace_host(("verify " + std::to_string(M) + " tokens").c_str(), t_v, Clock::now(), 3);
   verifying = false;
   return next;
@@ -592,7 +587,6 @@ void Runtime::rewind(int slot) {
 void Runtime::mark_state(bool restore, int slot) {
   const int HD = hp.head_dim;
   if (slot < 0 || slot >= kMarks) throw std::runtime_error("mark: no such slot");
-  if (peer) peer->send_msg(restore ? Peer::REWIND : Peer::MARK, 0, slot);
   auto copy = [&](float* live, float* saved, size_t n) {
     CHECK(hipMemcpyAsync(restore ? live : saved, restore ? saved : live, n * 4, hipMemcpyDeviceToDevice, s));
   };
@@ -628,7 +622,6 @@ void Runtime::commit(int n_keep) {
   const auto t_c0 = Clock::now();  // README step 86: commit's parts on the steps track
   const int HD = hp.head_dim, M = verify_m;
   if (n_keep < 1 || n_keep > M || n_past_ != verify_p0 + M) throw std::runtime_error("commit without a matching verify");
-  if (peer) peer->send_msg(Peer::COMMIT, 0, n_keep);
   // compressor partial groups: each slot from the last kept position writing it, else as before
   for (auto& [L, rows] : cmp_rows) {
     const int r = m.layers[L].kind.ratio;
@@ -663,16 +656,6 @@ void Runtime::commit(int n_keep) {
 }
 
 DraftResult Runtime::draft(int32_t anchor, bool keep_logits) {
-  if (peer && peer_block > 0) {  // the back's draft
-    const auto t0 = Clock::now();
-    peer->send_msg(Peer::DRAFT, 0, anchor);
-    peer_answer(Peer::DRAFT, (size_t)(peer_block + 1) * 4 + (size_t)peer_block * 4);
-    DraftResult r;
-    r.ids = peer->get_vec<int32_t>(peer_block + 1);
-    r.conf = peer->get_vec<float>(peer_block);
-    trace_host("draft (the back's)", t0, Clock::now(), 3);
-    return r;
-  }
   if (!dspark) throw std::runtime_error("no DSpark draft loaded");
   const auto t0 = Clock::now();
   DraftResult r = dspark->draft(anchor, n_past_ - 1, keep_logits);
@@ -780,11 +763,6 @@ void Runtime::setup_experts() {
 
 Runtime::~Runtime() {
   fatal_phase("runtime: the last synchronize, trace and reports");
-  if (peer) {
-    try { peer_sync(8); peer->send_msg(Peer::BYE, 0, 0); } catch (...) {}
-    fprintf(stderr, "# peer: %ld answers waited for, %.2f s in all (%.2f ms each); %.1f MB sent, %.1f MB received\n", peer->round_trips,
-            peer->wait_ms / 1e3, peer->round_trips ? peer->wait_ms / peer->round_trips : 0.0, peer->sent_bytes / 1e6, peer->recv_bytes / 1e6);
-  }
   (void)hipStreamSynchronize(s);
   trace_write();
   if (attn_check)
@@ -1652,7 +1630,6 @@ void Runtime::prefill_chunk(const std::vector<int32_t>& chunk) {
     for (size_t j = 0; j < n; j++) dspark->seed(p0 + (int)j, dspark->hid_chunk + j * nh);
     CHECK(hipMemcpyAsync(dspark->main_hidden, dspark->hid_chunk + (n - 1) * nh, nh * 4, hipMemcpyDeviceToDevice, s));
   }
-  if (peer) peer_send_tokens(Peer::CHUNK, chunk, in_prefill ? Peer::kInPrefill : 0);  // no answer: the back works while the next chunk runs here
 }
 
 std::vector<float> Runtime::prefill(const std::vector<int32_t>& tokens) {
@@ -1713,18 +1690,10 @@ std::vector<float> Runtime::decode(int32_t tok, bool want_logits) {
   if (!want_logits || !has_head()) {
     mark("end");
     end_step();
-    std::vector<float> logits;
-    if (peer) {  // the back's layers and head
-      peer_send_tokens(Peer::DECODE, {tok}, (want_logits ? Peer::kWantLogits : 0) | (in_prefill ? Peer::kInPrefill : 0));
-      if (want_logits) {
-        peer_answer(Peer::DECODE, (size_t)hp.n_vocab * 4);
-        logits = peer->get_vec<float>(hp.n_vocab);
-      }
-    }
     step_stats();
     last.total_ms = ms_since(t0);
     trace_host("decode (no logits)", t0, Clock::now(), 3);
-    return logits;
+    return {};
   }
   // head: collapse with the last pre-mix, norm, logits
   mark("head");

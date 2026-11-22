@@ -3,8 +3,7 @@
 Status: **done**, **next** (agreed, in order), **planned** (agreed, later), **idea** (not
 decided). Today (sclk 6, 16 CPU threads): `--spec` with the adaptive cache (`--canon
 --cache-loads 800 --cache-period 8`) 44.57 t/s mean on the 8 held-out prompts (33.9-55.0; README
-step 104; every decode change on the same ruler: `results/heldout-history/`); on two machines,
-the model in two halves, 50.85 (README step 111; "Two machines" below). Prompt processing
+step 104; every decode change on the same ruler: `results/heldout-history/`). Prompt processing
 93 t/s (63 `--canon`; 1,989 tokens, README step 68). Where a token's time goes today: docs/timing.md.
 
 This file is the list of items with their status, and the two lists of ideas still open ("Two
@@ -58,7 +57,7 @@ Speed
 | 24 | fp8 output head | idea | halves the 2.3 ms head, but is no longer exact vs the reference |
 | 25 | Clock level by phase | idea | sclk 4-6 for decode with CPU experts, 8 once GPU experts dominate |
 | 32 | Further optimization ideas (2026-10-29) | ideas | cache tuning, the dense part of a verify step and TP, speculation tuning, a faster draft: see the section below |
-| 31 | Two machines, the model in two halves | done (steps 110-112) | layers 0-19 / 20-39 on two Mac Pros over TCP: held-out 44.60 -> 50.85 t/s, outputs identical; ideas after it in "Two machines" below |
+| 31 | Two machines, the model in two halves | done (steps 110-112), then removed (step 178: the link; the layer range next) | layers 0-19 / 20-39 on two Mac Pros over TCP: held-out 44.60 -> 50.85 t/s, outputs identical. One machine is the scope: "Two machines" below |
 
 Features and limits
 
@@ -67,7 +66,7 @@ Features and limits
 | 26 | Context above 4096 with the runtime | done | 65,536 by default, 1M with `--max-ctx`; README steps 34-35 |
 | 27 | Candidate-block selection (>16k tokens) | done (runtime) | the reference's layer-20 path, checked against its own function; the CPU path still stops at 16k |
 | 28 | Full 1017 checkpoint | not needed | item 19 runs from the GGUF; exact references read the release by HTTP ranges (README "Which checkpoint") |
-| 29 | Sampling beyond greedy | started | temperature and top-p for a minimal server (the person's benchmark). Step 148: the sampler as a library with its test. Step 149: `--temp`, `--top-p`, `--seed` in the plain loop, one seed one output on any placement. Step 150: the speculative loop samples too (the plain loop's outputs; held-out mean 41.8 t/s against 44.8 greedy, not with `--remote`). Step 151: that loss was the draws (~1 ms each and the threads' start); a vector `exp` and draws in turn: 43.1 t/s against 44.9 greedy. Step 152: `--requests`, the engine's side of the server (prompts on stdin, each on an empty context; `docs/requests.md`). Step 153: the HTTP front, `server/ds_server.py` (Anthropic Messages; the model's `encoding.py` renders and parses): the benchmark's script runs against it unchanged. Step 154: a request whose client left is cancelled (`SIGUSR1` to the engine). Next: the person's samples, the OpenAI endpoint if wanted. Greedy loops on some long reasoning (README step 48) |
+| 29 | Sampling beyond greedy | started | temperature and top-p for a minimal server (the person's benchmark). Step 148: the sampler as a library with its test. Step 149: `--temp`, `--top-p`, `--seed` in the plain loop, one seed one output on any placement. Step 150: the speculative loop samples too (the plain loop's outputs; held-out mean 41.8 t/s against 44.8 greedy, not with `--remote`). Step 151: that loss was the draws (~1 ms each and the threads' start); a vector `exp` and draws in turn: 43.1 t/s against 44.9 greedy. Step 152: `--requests`, the engine's side of the server (prompts on stdin, each on an empty context; `docs/requests.md`). Step 153: the HTTP front, `server/ds_server.py` (Anthropic Messages; the model's `encoding.py` renders and parses): the benchmark's script runs against it unchanged. Step 154: a request whose client left is cancelled (`SIGUSR1` to the engine). Sampling with `--spec` on two machines, long listed as open, went with the two machines (step 178). Next: the person's samples, the OpenAI endpoint if wanted. Greedy loops on some long reasoning (README step 48) |
 | 33 | Observability of the server | started (steps 1-3 of 4 done, steps 164-166) | a metrics page in the Prometheus format, the engine's choice of context in the protocol and the log, a log of requests as JSON lines: "Observability of the server" below (README step 162) |
 | 34 | The product and the tools | the three small steps done (steps 169-171), `fakequant` in two (172), the CPU path as its own program `ds-ref` (173). Open: where `ds-test` belongs, directory moves, a tokenizer without libllama | say and then make true which code is the product and which checks or measures it: "The product and the tools" below |
 
@@ -185,11 +184,21 @@ line; its own lines per request (speculation, routed experts, speeds) go to the 
 - The request number in the engine's stderr lines: it needs the number in the request's header
   (a new field of the protocol).
 - Setting up a collector (Prometheus) and what to draw: the person's, after step 2.
-- Two machines: the back's numbers are not in any of this.
 
-## Two machines (2026-11-12)
+## Two machines (2026-11-12; removed 2026-11-22)
 
-**Done** (README steps 110-112): a second identical Mac Pro; the model cut at layer 20, the only
+**Removed** (the person, 2026-11-22; README step 178): for this model and this hardware the aim
+is one solid, well-tested and clear single-machine implementation. The two-machine path gave
++14% on short runs and nothing on long ones, was not parallel, was a second branch in every call
+of the runtime, and was the least tested path (nothing after step 112 ran on it: not sampling
+with `--spec`, the server, records). In three commits: the link (`--remote`, `--serve`,
+`hip/peer.h`; step 178), the layer range (`--layers`, `--teacher`, the stream in and out), the
+documents. The last commit with all of it: `efa4e03`. The measurements, the traces and the two
+scripts stay under `results/split/` and `results/trace/two-machines/`. What follows is the text
+as it stood, for what it says about one machine (the CPU's experts are what a second machine's
+GPU memory bought).
+
+**Was done** (README steps 110-112): a second identical Mac Pro; the model cut at layer 20, the only
 cut where nothing but the residual stream crosses (compressed caches and index picks stay within
 each half; the engram is in the front, the draft and the head in the back); the halves as two
 processes over TCP (`hip/peer.h`), the front driving; one merged trace. Held-out mean 44.60 ->
@@ -201,7 +210,7 @@ halves. It is not parallelism: a 6-token code step is front 36.4 ms, then back 3
 draft 9.35 ms, and one machine idles throughout. A long reasoning run, whose cache already had
 97% of the uses on GPUs, runs at the same 57.0 t/s.
 
-**Ideas, not decided, in the order I would look at them:**
+**Ideas, none pursued (closed with the removal):**
 
 | idea | what it could give | what it needs |
 |---|---|---|
@@ -515,6 +524,8 @@ Step 176: the checkout in `~/projects/llama.cpp`, the Makefile's `FORK` now `LLA
 table itself (it needed the PR's `gguf-py`, missed in step 175). Checks the same.
 Step 177: `~/forks/llama.cpp` deleted; the documents reviewed against steps 168-176: the README's example command, the
 "with `--rt`" qualifiers in QUICKSTART, a usage text per program.
+Step 178: the two-machine link out of the code (`--remote`, `--serve`, `hip/peer.h`, the runtime's `peer` branches, the
+clock samples in `--trace`); the last commit with it: efa4e03. Next: the layer range (`--layers`, `--teacher`, the stream).
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front

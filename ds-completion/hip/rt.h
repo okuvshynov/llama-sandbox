@@ -15,7 +15,6 @@
 
 #include "engram.h"  // engram_rows
 #include "taps.h"    // Taps: run_layer, for tests
-#include "peer.h"
 #include "dspark.h"
 #include "expert_cache.h"
 #include "expert_loader.h"
@@ -107,17 +106,11 @@ class Runtime {
   const Stream* stream_in = nullptr;
   size_t stream_in_tok = 0;
   Stream stream_out;
-  // Two ranges in two processes (README step 111, peer.h). The front connects to the back and
-  // from then on prefill / decode / verify / commit / draft / mark / rewind do their part here
-  // and hand the rest to the back, so a caller sees one runtime. The back serves one front until
-  // it leaves.
-  void connect_peer(const std::string& host_port);
-  void serve(int port);
 
   // DSpark draft (RtOptions::dspark): after a decode step produced `anchor` (the next token),
   // the draft's block_size guesses for the tokens after it. Does not change the sequence state.
-  bool has_draft() const { return dspark != nullptr || peer_block > 0; }
-  int draft_block() const { return dspark ? dspark->block_size : peer_block; }
+  bool has_draft() const { return dspark != nullptr; }
+  int draft_block() const { return dspark ? dspark->block_size : 0; }
 
   // Speculative verification (PLAN.md "batched verification"). verify(chunk) runs the chunk at
   // positions n_past().. in one forward and returns the greedy next token after each.
@@ -131,7 +124,7 @@ class Runtime {
   std::vector<int32_t> verify(const std::vector<int32_t>& chunk, bool head = true);
   // For sampling (README step 150): with keep_verify_logits set, verify() also copies the
   // chunk's logits to the host; verify_logits(i) are those after chunk[i], n_vocab of them,
-  // valid until the next verify(). Not with a peer (the head is the back's).
+  // valid until the next verify().
   bool keep_verify_logits = false;
   const float* verify_logits(int i) const { return verify_logits_.data() + (size_t)i * hp.n_vocab; }
   // most tokens one forward runs at once: a prompt chunk (prefill); a verify chunk is at most
@@ -227,12 +220,7 @@ class Runtime {
   std::vector<LayerState> S;
   int n_past_ = 0;
   int L0 = 0, L1 = 0;  // the loaded layers
-  std::unique_ptr<Peer> peer;  // the front's link to the back
-  int peer_block = 0;          // the back's draft block (0: it has no draft)
-  void prefill_chunk(const std::vector<int32_t>& chunk);  // prompt tokens, no head (and the back's part)
-  void peer_send_tokens(Peer::Type type, const std::vector<int32_t>& toks, int32_t arg);  // with stream_out
-  void peer_answer(Peer::Type type, size_t bytes);  // waits for the back's answer header; throws unless it is `type` with `bytes` of payload
-  void peer_sync(int n);
+  void prefill_chunk(const std::vector<int32_t>& chunk);  // prompt tokens, no head
   bool range_engram = false;  // an engram layer among them (else no rows are fetched)
   void stream_from_host(int M);  // stream_in's next M rows into h, pre
   void stream_to_host(int M);    // h, pre of M tokens into stream_out (after a synchronize)

@@ -1,0 +1,57 @@
+# The two-machine link out of the code (README step 178): --remote, --serve, hip/peer.h, the runtime's peer branches,
+# the clock samples in --trace. The layer range (--layers with --teacher, --stream-in/--stream-out) is still there.
+# Commit efa4e03 + this step's change (the commit that adds this file); llama.cpp e626db7ca in ~/projects/llama.cpp;
+# 2026-11-22 12:47 to 13:45, the machine booted at 12:08.
+# GPU clock: level 6 on the four GPUs, set by hand (manual) at 12:47. In this boot the starred level of pp_dpm_sclk reads
+# 1 (1000 MHz) whenever a GPU idles and 6 (1608 MHz) while it works (sampled during a run), so the records of these runs
+# and run_matrix.py's header say "sclk 1 1 1 1": they read the star as a run starts. The speeds below are level 6's.
+# "base" = the programs of efa4e03, built in a second checkout at another path.
+# M=~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf  F8=~/llms/ds-1017-fp8/dense-fp8.gguf
+# D=~/llms/dspark/dspark-DeepSeek-V4.1-Flash-1017-BF16.gguf
+#
+# 1. Build: make, make HIP=1: rc 0, no warnings in what was rebuilt (the runtime's files and the programs; not hip/fp8_gemv.hip).
+#    Code and scripts: 30 lines added, 376 removed. bin-hip/ds-completion 17,194,976 -> 17,129,816 bytes.
+#
+# 2. The options are gone
+bin-hip/ds-completion -m $M --rt $F8 -p hi --remote h:1      unknown argument --remote (rc 2)
+bin-hip/ds-completion -m $M --rt $F8 -p hi --serve 7001      unknown argument --serve (rc 2)
+bin-hip/ds-completion -m $M --rt $F8 --layers 0-19 -p hi     --layers: a part of the model runs only with --teacher (--stream-in, --stream-out)
+#
+# 3. Per layer and end to end, the new build against base
+bin-hip/ds-test -m $M -g data/golden/hello-fp32 --runtime $F8                 200 rows, 0 differ from base's (every column but ms)
+bin-hip/ds-test -m $M -g data/golden/hello-fp32 --runtime $F8 --e2e <file>    the logits file: the same bytes as base's (cmp)
+#
+# 4. The CPU reference path (apps/ds_completion.cpp is its source too)
+bin/ds-ref -m $M -p "The three largest cities in Ukraine are" -n 24 --record <file>     output.hash fnv1a64:3a40e97fd9b90430 (step 173's), 3.72 t/s
+#
+# 5. A range of layers still equals the whole model (results/split/teacher.txt's check, cpp-matrix, static placement)
+#    T = "<｜User｜>" + the prompt + "<｜Assistant｜></think>" + results/cache-test/plain-canon-static/cpp-matrix.out
+#    RUN = bin-hip/ds-completion -m $M --rt $F8 --placement placements/study30.txt --canon -f T --teacher
+RUN > ids.full ; RUN --layers 0-19 --stream-out s.bin ; RUN --layers 20-39 --stream-in s.bin > ids.back      cmp ids.full ids.back: identical, 325 positions
+#
+# 6. Held-out prompts: scripts/run_matrix.py results/cleanup/heldout.matrix --reps 2 --keep-out --out <dir>
+#    Each output compared with results/cache-test/plain-canon-static/<prompt>.out (cmp). No run failed.
+#    "read" = megabytes read from storage during the generation (the record's read_bytes.gen).
+#    prompt         tokens  t/s run 1  t/s run 2   read 1  read 2   outputs
+    tcp-udp           300      39.11      39.01      0.6     0.0   both the stored bytes
+    py-lru            300      42.01      46.83     67.7     0.5   both the stored bytes
+    cpp-matrix        300      53.44      54.70      3.3     2.8   both the stored bytes
+    sql-report        300      41.84      47.49     71.6     0.3   both the stored bytes
+    geometry          345      47.11      54.59     73.5     2.9   both the stored bytes
+    zh-travel         300      31.56      34.01     80.2     0.0   both the stored bytes
+    ja-email          300      34.07      37.10     63.9     0.4   both the stored bytes
+    summary-json       98      39.97      44.63     17.2     0.2   both the stored bytes
+#    mean of run 2: 44.80 t/s (step 176: 44.8 over its 16 runs). Mean of run 1: 41.14: the first runs after a boot,
+#    the six slower prompts each read 17-80 MB from storage while generating (step 117 saw the same once: -12%).
+#    cpp-matrix's second run is not the slow one this time (52.3 after 54.9 in steps 175 and 176).
+#
+# 7. A trace without the clock samples
+bin-hip/ds-completion -m $M --rt $F8 --placement placements/study30.txt --dspark $D --spec --canon --cache-loads 800 --cache-period 8 --cache-wait --chat -p "<cpp-matrix's prompt>" -n 60 --trace <file>
+#    rc 0; the file is valid JSON with the one key traceEvents (27,758 events; before: also clockEpochUs, layers, peerSync)
+python3 scripts/trace_critpath.py <file>                  rc 0, its table of verify steps as before
+#
+# 8. Requests and the server
+python3 results/requests/requests_test.py               all checks passed (with the model)
+python3 server/test_server.py                           all checks passed
+#
+# Not run: the longer golden sets, ds-test on the CPU path (its code did not change), -i sessions, sampling.

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Filed here in README step 178, which removed --remote and --serve: it runs with a build of
+# commit efa4e03 or earlier, from that checkout's scripts/ (the paths below are relative to it).
 # The model in two halves on two machines (README step 111): the back (layers 20-39, the head,
 # the draft) on BACK, started over ssh for every prompt; the front (layers 0-19) here, driving
 # the speculative loop as scripts/spec-measure.sh does. Per prompt: t/s, tokens per step, and

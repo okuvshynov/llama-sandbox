@@ -6611,3 +6611,79 @@ two held-out prompts give the stored bytes at 46.8 and 45.1 t/s; the server test
 `docs/pi.md` and `docs/server.md` beyond the searches (none of them names what changed); the
 scripts kept with old results.
 
+
+## Step 178: the two-machine link out of the code
+
+**The decision** (the person, 2026-11-22, after a review of how two machines were done): for
+this model and this hardware the aim is one solid, well-tested and clear single-machine
+implementation. The model in two halves does not earn its place, and goes: both of its layers,
+the link between two processes (this step) and the range of layers in the runtime (the next).
+
+**What the review found.** The work of steps 110-112 is sound and its measurements stand
+(held-out mean 44.60 -> 50.85 t/s, outputs identical). Against keeping it:
+
+- The gain is GPU room, not parallelism: the machines take turns, one always idle. +14% on
+  300-token runs, 0 on the 3,000-token run whose cache had adapted, +2.5% on 1-2-token steps.
+- It was a second branch in every public call of the runtime (prefill, decode, verify, commit,
+  draft, mark, rewind, the destructor), and "has this process a head, a draft" was a question
+  asked at run time.
+- It was the least tested path. Every step since 112 lists two machines under "not done"; step
+  137 checked it as two processes on one machine only. Sampling with `--spec` was refused on
+  it, `--record` refused a back, the server, the kept context and the saved point never ran on it.
+- It could not run today: the second machine has an older build and the PR's llama.cpp.
+
+**Removed in this step** (30 lines added, 376 removed; the last commit with all of it: `efa4e03`):
+
+| where | what |
+|---|---|
+| `hip/peer.h` | the file: the messages, the TCP link, the clock samples |
+| `hip/rt_peer.cpp` | the front's sends and waits, `connect_peer`, the back's `serve` loop. Left in it for one more step: `stream_from_host` and `stream_to_host`, which `--teacher` uses |
+| `hip/rt.cpp` | the `if (peer)` branches in `verify`, `decode`, `prefill_chunk`, `commit`, `mark_state`, `draft` and the destructor |
+| `hip/rt.h` | `connect_peer`, `serve`, `peer`, `peer_block` and three helpers; `has_draft()` and `draft_block()` now speak of this process's draft only |
+| `hip/rt_trace.cpp` | the track "messages from the front"; the keys `clockEpochUs`, `layers` and `peerSync` after the events (only the merge script read them) |
+| `apps/ds_completion.cpp` | `--remote`, `--serve`, the back's branch of `run()`, and the rules that named them (`--temp` with `--spec`, `--requests`, `--record`, `--spec` without `--dspark`). A part of the model now runs only with `--teacher`, and says so |
+| `scripts/` | `split-measure.sh` and `trace_merge.py` are filed with their results (`results/split/two-machines/`, `results/trace/two-machines/`), each with a line saying it needs a build of `efa4e03` or earlier |
+
+`--layers a-b` with `--teacher` and the stream files still works (checked below): it is the next
+step's.
+
+**Checked** (`results/dist/two-machines-link.txt`; against the programs of `efa4e03` built in a
+second checkout):
+
+- `--remote` and `--serve` are unknown arguments; a range without `--teacher` is refused.
+- Per layer on the runtime (hello-fp32): 200 rows, none differ; the end-to-end logits are the
+  same bytes.
+- `bin/ds-ref` (the same source file): step 173's output hash.
+- The whole model against layers 0-19 then 20-39 through a stream file: identical ids at 325
+  positions.
+- The held-out prompts twice: 16 of 16 outputs are the stored bytes. The second runs' mean is
+  44.80 t/s (step 176: 44.8).
+- A trace is valid JSON with the one key `traceEvents`; `scripts/trace_critpath.py` reads it.
+- The request test with the model and the server test pass.
+
+**Two things seen on the way, neither from this change:**
+
+- *The first runs after a boot are slower.* The first repeat's mean is 41.14 t/s: six of the
+  eight prompts read 17-80 MB from storage while generating and ran 7-14% slower than their
+  second run; the two that read under 4 MB ran at their usual speed. Step 117 saw this once
+  (the engram table out of the page cache). A measurement taken right after a boot needs a
+  first pass that is thrown away, or the record's `read_bytes.gen` checked.
+- *The starred level of `pp_dpm_sclk` is not the setting in this boot.* After the usual two
+  writes (`manual`, then 6) every card reads `1: 1000Mhz *` when idle and `6: 1608Mhz *` while
+  it works (sampled four times a second during a run). The speeds are level 6's. In earlier
+  boots the star read 6 at idle too; the kernel, its command line and the driver's boot
+  messages are the same as the boot before, and the driver lists `GFXCLK_DS` as off. The one
+  difference found: this time a GPU program had run before the clock was set. Not tested. The
+  consequence is for the records: `--record`'s `gpu_sclk` and `run_matrix.py`'s header read the
+  star as a run starts, so these runs are labelled `[1, 1, 1, 1]` (step 116 corrected the same
+  kind of reading for auto). Not changed here.
+
+**Documents.** The current ones no longer offer two machines: README (the status), QUICKSTART
+(the section, the options, the results row, the limits), `docs/overview.md` (the goal, the code
+map), `docs/timing.md` and `docs/plan.md` (their two-machine sections kept as a record, marked
+removed, with why), `docs/reproduce.md` (rows 111-112 name the commit and the scripts' new
+place), `scripts/README.md`, and single lines in `docs/numerics.md`, `docs/record.md` and
+`docs/requests.md`. Steps 110-114 and the results stay as written.
+
+**Not done:** the longer golden sets; `-i` sessions and sampling with the new build. The second
+machine is untouched.

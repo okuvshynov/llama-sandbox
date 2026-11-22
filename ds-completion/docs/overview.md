@@ -8,8 +8,8 @@ is next. First written 2026-10-28; brought up to date at step 156. How to run it
 ## 1. Goal and scope
 
 Text completion with **DeepSeek-V4.1-Flash-1017** on one Mac Pro 2019, as fast as the machine
-allows, with **outputs that match the official reference implementation**. Since step 111 also
-on two of them, the model cut in two halves, with the same outputs.
+allows, with **outputs that match the official reference implementation**. One machine is the whole scope: from step 111 to step 178 the model could also
+run cut in two halves on two of them (below), and that was taken out to keep one path.
 
 - Priorities, in order: correctness, code clarity, performance.
 - Non-goals: other models, other hardware, serving many users at once.
@@ -48,12 +48,15 @@ acceptance: as many drafts are accepted as with greedy decoding.
 Through the server (README step 153): one request of the benchmark it was written for, 1,305
 prompt tokens and 42,960 tokens of reasoning ending in a tool call, at 38.5 t/s: 19 minutes.
 
-Two machines (README steps 110-112; sclk 6, the same prompts): **mean 50.9 t/s** against 44.6
+Two machines (README steps 110-112; sclk 6, the same prompts; measured, then removed in step 178,
+the last commit with the code is `efa4e03`): **mean 50.9 t/s** against 44.6
 (+14%; +12% to +27% on code, math, SQL and JSON, +8% on chat, +2.5% on Chinese and Japanese,
 nothing on a long reasoning run whose cache had adapted), every output byte-identical. Layers 0-19 run on the first machine,
 layers 20-39 with the head and the draft on the second; once per step the residual stream (64 KB
-per token) crosses 10 GbE. Each machine then holds ~88% of its half's experts on GPUs instead of
-~42%: the gain is the CPU's experts, and the network costs ~0.5 ms of an ~83 ms step.
+per token) crossed 10 GbE. Each machine then held ~88% of its half's experts on GPUs instead of
+~42%: the gain was the CPU's experts, and the network cost ~0.5 ms of an ~83 ms step. Why it
+went: the machines took turns (no parallelism), a long run whose cache had adapted gained
+nothing, and nothing built after it (sampling with `--spec`, the server, records) ran on it.
 
 Prompt processing (chunks of 512, README steps 37-45, 68): 93 t/s, 63 with `--canon` (1,989 tokens, sclk 6),
 output byte-identical to token by token (which ran at ~17 t/s). Startup: ~15 s, plus 10-30 s to upload
@@ -234,18 +237,16 @@ other programs can use.
    results in a conversation are read and pi runs small coding tasks since step 157; a request
    that goes on from the last one runs only its new tokens since step 158, which took those
    tasks from 118 to 63 seconds, and a new conversation starts from a point saved at the end
-   of the shared system prompt and tools since step 160), the OpenAI endpoint the benchmark's other script needs,
-   sampling with `--spec` on two machines (a reply is streamed as it is generated since step
+   of the shared system prompt and tools since step 160), the OpenAI endpoint the benchmark's other script needs
+   (a reply is streamed as it is generated since step
    161).
 3. **Where the time is, when optimization resumes** (the list: [docs/plan.md](plan.md)):
    - **die 0's dense part** (~48 ms of a code step): attention over the XGMI pair 0-1 with
      the core split by heads (step 76 split only the output projections: +0.6%, not kept);
      the fp8 GEMV at 2-8 inputs needs a new work split (steps 65, 75);
    - **the CPU's experts** (27 ms of that step): steps 77-82 took a CPU call apart (+3.4%); a
-     CPU weight layout was tried and not kept (steps 83, 91); on two machines they are
-     nearly gone;
-   - **two machines** (+14%): the halves take turns, so one machine is always idle; an
-     overlap between the halves is to be estimated first;
+     CPU weight layout was tried and not kept (steps 83, 91); with twice the GPU memory
+     they are nearly gone (what the two-machine run of step 111 showed);
    - **the draft:** a block of 5 tokens; on code the rule verifies all 5 on about half of
      the steps (step 146 estimated what a perfect draft-length rule would give).
 4. **Long context** (steps 34-35): runs to 1M with `--max-ctx`, gated against the reference at
@@ -321,8 +322,7 @@ each also with `HIP=1`; `make` builds all of them, as before.
 | `src/fakequant.{h,cpp}` | the reference's fp8/fp4 rounding without ggml: the scalar rules, the host functions the runtime calls, the fp8 repack of `fp8pack` |
 | `src/fatal.h` | where the process is, for the handler that reports a fatal signal |
 | `hip/rt.{h,cpp}` | the GPU runtime: state, layer order, the expert split |
-| `hip/rt_peer.cpp` | the runtime as one half of a model on two machines: the front's messages, the back's `serve` (`hip/peer.h`: the protocol) |
-| `hip/peer.h` | two machines: the messages between the front and the back half (TCP) |
+| `hip/rt_peer.cpp` | a range of layers' stream to and from the host, for `--teacher` (README step 110); the two-machine link it held is gone (step 178) |
 | `hip/rt_trace.cpp` | the runtime's observability: the startup memory ledger, `--profile`'s groups, `--trace` (`hip/rt_internal.h`: the helpers the runtime's files share) |
 | `hip/kernels.{h,hip}` | the runtime's kernels (norms, attention, indexer, hyper-connections, router, dispatch) |
 | `hip/fp8_gemv.{h,hip}` | exact fp8 x fp8 GEMV |
@@ -359,6 +359,6 @@ Also the product's: `scripts/serve.sh` and `scripts/chat.sh` (the two ways to st
 |---|---|
 | `apps/ds_inspect.cpp` | load the model, or some layers, through the real loader and show what it found |
 | `bench/bench_*` | benchmarks of each kernel and of the loader, CPU and GPU (the Makefile knows which need `HIP=1`) |
-| `scripts/` | the tools still in use ([scripts/README.md](../scripts/README.md)): the runner of a matrix of runs (`run_matrix.py`) and the reader of their records (`records.py`; README steps 128-129), the chat launcher (`chat.sh`), the held-out measurement (`spec-measure.sh`) and the two-machine one (`split-measure.sh`), the trace tools, `route_stats.py`. A script written for one step lies with its results under `results/` (README step 130) |
+| `scripts/` | the tools still in use ([scripts/README.md](../scripts/README.md)): the runner of a matrix of runs (`run_matrix.py`) and the reader of their records (`records.py`; README steps 128-129), the chat launcher (`chat.sh`), the held-out measurement (`spec-measure.sh`), the trace tools, `route_stats.py`. A script written for one step lies with its results under `results/` (README step 130) |
 | `docs/rocprof.md` | the GPU side under AMD's `rocprofv3`: how to run it, its files, how to read them (README step 140) |
 | `results/` | raw outputs of every measurement quoted in the steps ([docs/reproduce.md](reproduce.md): which command produced which) |

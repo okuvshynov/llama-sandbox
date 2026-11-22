@@ -19,7 +19,8 @@ Items marked **(to confirm)** are not yet pinned down; they are listed at the en
 The RAM must hold the whole GGUF (474 GB) in the page cache next to the work: everything runs
 from mmap, and the routed experts are read from it on every token.
 
-**The second machine** (README steps 110-112; hostnames `tomb`, the first, and `shower`): the
+**The second machine** (README steps 110-112; not used by any program since step 178, which
+removed the model in two halves; hostnames `tomb`, the first, and `shower`): the
 same computer, CPU, RAM and GPUs, without the XGMI bridges (unused); 10 GbE between the two
 (direct or switched, MTU 1500, ping ~0.2 ms). The same software (section 2), the same model
 files at the same paths with the same sha256 (`results/split/sha256.txt`), this repository at
@@ -237,8 +238,8 @@ Unless stated: sclk 2, 16 CPU threads (32 before README step 18), the study30 pl
 | 108 | `chat/` | the commands in `chat/README.txt`: a piped three-turn `scripts/chat.sh` session, then `ds-completion -f chat/whole.txt` with the same options |
 | 109 | `chat/think/` | the commands in `chat/think/README.txt`: `scripts/chat.sh --think` sessions from the `.q` files, `results/chat/chat_ref_prompts.py` (needs the reference's `encoding.py`), then `ds-completion -f` on each `-ref<k>.txt` |
 | 110 | `split/sha256.txt`, `split/teacher.txt`, `spec-measure-sclk6-cacheloads800cacheperiod8-shower/`, `-tomb-baseline/` | on each machine the `sha256sum` line in `split/sha256.txt` and `CACHE="--cache-loads 800 --cache-period 8" scripts/spec-measure.sh` (the second machine: the repo, `~/forks/llama.cpp` built with `-DBUILD_SHARED_LIBS=OFF`, the fp8 file, the same `~/llms` paths); the three `--teacher` commands in `split/teacher.txt` |
-| 111 | `split/two-machines/` | `BACK=oleksandr@192.168.2.2 scripts/split-measure.sh` (the back machine prepared as in step 110, the same commit built there, ssh without a prompt); the one-machine side: `spec-measure-sclk6-cacheloads800cacheperiod8-tomb-baseline/` of step 110. On one machine: the back with `--layers 20-39 --gpu 2 --moe-dies 2,3 --dspark $D --serve 7001`, the front with `--layers 0-19 --gpu 0 --moe-dies 0,1 --remote 127.0.0.1:7001 --spec` |
-| 112 | `trace/two-machines/` | `TRACE=1 PROMPTS="cpp-matrix tcp-udp" scripts/split-measure.sh` (both halves with `--trace`, then `scripts/trace_merge.py FRONT BACK -o MERGED`; the per-step table: the spans named in README step 112, medians over the 6-token and 2-token verify steps) |
+| 111 | `split/two-machines/` | with a build of `efa4e03` or earlier (`--remote` and `--serve` were removed in step 178; the script is now `results/split/two-machines/split-measure.sh`): `BACK=oleksandr@192.168.2.2 scripts/split-measure.sh` (the back machine prepared as in step 110, the same commit built there, ssh without a prompt); the one-machine side: `spec-measure-sclk6-cacheloads800cacheperiod8-tomb-baseline/` of step 110. On one machine: the back with `--layers 20-39 --gpu 2 --moe-dies 2,3 --dspark $D --serve 7001`, the front with `--layers 0-19 --gpu 0 --moe-dies 0,1 --remote 127.0.0.1:7001 --spec` |
+| 112 | `trace/two-machines/` | as step 111's row, a build of `efa4e03` or earlier (the merge script is now `results/trace/two-machines/trace_merge.py`): `TRACE=1 PROMPTS="cpp-matrix tcp-udp" scripts/split-measure.sh` (both halves with `--trace`, then `scripts/trace_merge.py FRONT BACK -o MERGED`; the per-step table: the spans named in README step 112, medians over the 6-token and 2-token verify steps) |
 | 113 | `trace/two-machines/` (collected again) | the command of step 112; the session check: `scripts/chat.sh --think --effort 75 --cache-wait -n 45 < results/chat/think/th45.q`, and the same questions to a front (`--layers 0-19 --remote HOST:7001 --spec --think --effort 75 -i -n 45`) |
 | 114 | - (no results file) | the checks named in README step 114: the held-out command of `scripts/spec-measure.sh` per prompt, with `--profile`, the session of step 113, `--spec` against plain without `--canon`, `--prefill-chunk 512` against `7` on a long prompt, `PROMPTS="cpp-matrix summary-json" scripts/split-measure.sh` |
 | 115 | `record/first.txt`, `record/fast.txt` | the command in each file's header; `first.txt`: twice in a row (run 1 cold: the model out of the page cache; any run after a reboot) |
@@ -299,6 +300,7 @@ Unless stated: sclk 2, 16 CPU threads (32 before README step 18), the study30 pl
 | 175 | `dist/upstream.txt` | `~/forks/llama.cpp` at upstream `e626db7ca`, built with QUICKSTART's two `cmake` lines; `make clean && make && make HIP=1`; then the commands in the file: the unit tests, `fp8pack` and `cmp`, the seven `ds-test` tables and the two `--e2e` runs, `bin/ds-ref`, `scripts/run_matrix.py results/cleanup/heldout.matrix --keep-out --out <dir>` (twice per prompt) and `cmp` with `results/cache-test/plain-canon-static/`, `results/requests/requests_test.py`, `server/test_server.py` (~90 min in all) |
 | 176 | `dist/llama-cpp-dir.txt` | llama.cpp at `e626db7ca` in `~/projects/llama.cpp`, built with QUICKSTART's two `cmake` lines; `make clean && make && make HIP=1`; the commands in the file (step 175's without the 20,000-token set, ~50 min); `~/venvs/ds-ref/bin/python ref/check_weights.py --layers 0 --experts 0` (7 min, 2.9 GB from Hugging Face) |
 | 177 | `dist/review-177.txt` | by hand: the comparisons named in the file; `make && make HIP=1`; the two programs without arguments; the four commands of its part 4 and `server/test_server.py` |
+| 178 | `dist/two-machines-link.txt` | `make && make HIP=1`; a second checkout of `efa4e03` with `make HIP=1 tests` for the base `ds-test`; then the commands in the file (~55 min, 42 of them the held-out prompts twice): `ds-test --runtime` per layer and `--e2e` on both builds (`cmp`; the tables without the ms column), `bin/ds-ref --record`, the three `--teacher` runs, `scripts/run_matrix.py results/cleanup/heldout.matrix --reps 2 --keep-out --out <dir>` and `cmp` with `results/cache-test/plain-canon-static/`, a 60-token `--trace` and `scripts/trace_critpath.py`, `results/requests/requests_test.py`, `server/test_server.py`. The clock: sampled with `grep '\*' /sys/class/drm/card0/device/pp_dpm_sclk` four times a second during a run |
 | 167 | `server/serve.txt` | by hand: `DS_LOGS=<a directory> scripts/serve.sh`, one request with `curl` (the one of `docs/pi.md`, section 1), a minute's wait for `metrics.prom`, Ctrl-C; the file's parts are named in it |
 
 ## 7. Open items (to confirm)
@@ -307,7 +309,8 @@ Unless stated: sclk 2, 16 CPU threads (32 before README step 18), the study30 pl
   manifest pins the bytes meanwhile). Settled since: llama.cpp is upstream at one commit
   (section 2; until step 167 the head of PR #30817, `b72050d03ae14bb3cb5138ecefab3f3f65157d31`).
 - The second machine (`shower`) is as it was at step 167: llama.cpp in `~/forks/llama.cpp` at the
-  PR's commit, and an older build of this repository. Before the next two-machine run: the
-  checkout and build of QUICKSTART there, this repository at the same commit, `make HIP=1`.
+  PR's commit, and an older build of this repository. No program uses two machines since step
+  178; as a second machine for A/B runs of one-machine builds it needs the checkout and build of
+  QUICKSTART and this repository at the commit under test, `make HIP=1`.
 - Turn the hand-typed runs a write-up relies on (steps 4-26) into scripts.
 - An archive of `data/routing/` next to any publication.

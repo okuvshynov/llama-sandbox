@@ -1,7 +1,8 @@
 # ds-completion quickstart
 
-DeepSeek-V4.1-Flash-1017 text completion on the Mac Pro (4x Vega II, 755 GB RAM): on one
-machine, or split over two of them for more speed. Both setups print the same bytes.
+DeepSeek-V4.1-Flash-1017 text completion on the Mac Pro (4x Vega II, 755 GB RAM), on one
+machine. (Until step 178 the model could also be split over two such machines: +14% on the
+held-out prompts, the same bytes; README steps 110-112 and 178.)
 
 - Dense weights (attention, shared experts, head) run on one GPU through our own HIP kernels,
   in exact fp8.
@@ -12,9 +13,6 @@ machine, or split over two of them for more speed. Both setups print the same by
   text only.
 - As a program for one prompt, as an interactive session (`-i`), or behind an HTTP server
   with the Anthropic Messages API ("A server" below).
-- With two machines the model is cut in the middle: layers 0-19 on the first (the **front**),
-  layers 20-39 with the head and the draft on the second (the **back**), each with its own four
-  GPUs for its half's experts.
 
 Words used below: a **die** is one of the four GPU chips (two per Vega II Duo card). **sclk** is
 the GPU clock level, 0-8. A **placement** is a file ranking the routed experts by use; the top
@@ -54,10 +52,6 @@ the placement. `--canon` makes the output independent of where an expert runs.
   pull request is needed. Do not run upstream's *own* programs (`llama-cli`) on these GGUF files:
   they read the Engram table's type as another one and generate garbage without an error; we
   decode that table ourselves (step 168, [docs/llama-cpp-upstream.md](docs/llama-cpp-upstream.md)).
-- **For two machines:** a second Mac Pro set up the same way (the same system, the same three
-  model files at the same `~/llms/` paths with the same checksums, this repository at the same
-  commit, built; run the checksum line on both), the same GPU clock level on both, and a network
-  between them (10 GbE here; a step moves 64 KB per token). See "Two machines" below.
 
 ## Build and prepare (once)
 
@@ -145,8 +139,7 @@ Options:
   uses `line`. README step 147.
 - `--temp T [--top-p P] [--seed S]`: sample the next token instead of taking the most likely
   one (the default, `--temp 0`). The model card's settings are `--temp 1 --top-p 0.95`. One seed
-  gives one output, whatever the placement (with `--canon`) and with or without `--spec`. Not
-  with `--spec` on two machines yet. README steps 148-151.
+  gives one output, whatever the placement (with `--canon`) and with or without `--spec`. README steps 148-151.
 - neither: the prompt is raw text after BOS.
 - `--requests` (in place of a prompt): prompts from stdin, one after another, each
   with the reply of an empty context; the reply's tokens as lines on stdout. For a server's front. The
@@ -155,13 +148,10 @@ Options:
   with the Anthropic Messages API in front of it (`docs/server.md`, README step 153).
 - `-n`: max new tokens.
 - `--max-ctx N`: the context's size (default 65,536; "Limits" below).
-- `--layers a-b`: only that range of layers ("Two machines" below). A range must
-  hold the layers its own layers read from, which leaves layer 20 as the only cut (checked;
-  README step 110).
-- `--serve PORT`: the back: a range up to the last layer; waits for one front, then exits.
-- `--remote HOST:PORT`: the front: a range from layer 0; connects to the back.
-- `--teacher` with `--stream-out FILE` / `--stream-in FILE`: a test of a range against the whole
-  model on one machine (the values between two layers written to and read from a file).
+- `--layers a-b` with `--teacher` and `--stream-out FILE` / `--stream-in FILE`: a test of a range
+  of layers against the whole model (the values between two layers written to and read from a
+  file; README step 110). A range must hold the layers its own layers read from, which leaves
+  layer 20 as the only cut. Nothing else runs a part of the model.
 - `--prefill-chunk N`: prompt tokens per forward (default and most 512, the fastest for
   long prompts in the fast numerics). The output does not depend on it.
 - `--no-overlap`: prompt chunks without the CPU/GPU overlap (slower; for comparisons).
@@ -169,9 +159,7 @@ Options:
   CPU for the host thread and the HIP runtime and is much slower (README step 18).
 - `--profile`: a per-step time breakdown, the CPU's misses per layer and what they cost (README
   step 50).
-- `--trace FILE`: a Chrome trace of every step (open in ui.perfetto.dev; README step 51). On two
-  machines each half writes its own; `scripts/trace_merge.py FRONT BACK -o MERGED` makes one
-  trace on the front's clock (`TRACE=1 scripts/split-measure.sh` does all of it; README step 112).
+- `--trace FILE`: a Chrome trace of every step (open in ui.perfetto.dev; README step 51).
 - Time per kernel on the device, HIP call counts, memory copies: AMD's `rocprofv3` in front of the
   command ([docs/rocprof.md](docs/rocprof.md), README steps 140-141). It slows generation by 21-26%;
   with hardware counters (`--pmc`) to 4-7 t/s.
@@ -180,7 +168,7 @@ Options:
 - `--moe-dies 0,1,2,3`: the dies that hold experts (default all four).
 - `--dspark FILE`: the DSpark draft GGUF (8.5 GB on GPU 0). Alone: shadow mode, drafts are
   measured but not used.
-- `--spec`: speculative decoding (needs `--dspark`, or `--remote` to a back that has it); the number of guesses verified per step
+- `--spec`: speculative decoding (needs `--dspark`); the number of guesses verified per step
   is chosen from the draft's confidence. `--spec-n N` fixes it; `--spec-log FILE` writes
   per-step data.
 - `--canon` ([docs/numerics.md](docs/numerics.md)): placement-invariant expert numerics: the output no longer depends on where the
@@ -207,7 +195,7 @@ Options:
   `label` and never read by the program. Many runs: `scripts/run_matrix.py MATRIX` starts
   prompts x configurations x repeats with a record each, `scripts/records.py` reads them
   (README steps 128-129). A first version, to grow
-  ([docs/record.md](docs/record.md), README steps 115-119). One prompt only (not with `-i`, `--serve`, `--teacher`); a run that does not
+  ([docs/record.md](docs/record.md), README steps 115-119). One prompt only (not with `-i`, `--teacher`); a run that does not
   finish leaves the file empty.
 - `--no-quant` (`bin/ds-ref` only): without the reference's fp8/fp4 rounding (a comparison).
 
@@ -220,7 +208,7 @@ Until step 173 this was `bin/ds-completion`, or `bin-hip/ds-completion` without 
 
 `server/ds_server.py` (Python 3, standard library only) starts the engine with `--requests`
 and serves the Anthropic Messages API (README steps 152-154; [docs/server.md](docs/server.md)).
-Everything after `--` is the engine's command, the one-machine command above with `--requests`
+Everything after `--` is the engine's command, the command above with `--requests`
 in place of the prompt:
 
 ```bash
@@ -270,56 +258,6 @@ harness with `server/pi-models.json` (the setup: [docs/pi.md](docs/pi.md)).
 
 The engine's side alone, for another front: `--requests`, [docs/requests.md](docs/requests.md).
 
-## Two machines
-
-The model in two halves (README steps 110-112): **~50.9 t/s** mean on the held-out prompts
-(35-63) against 44.6 on one machine, the same bytes. The second machine is set up as the first
-("What it needs", "Build and prepare"). Start the back there first:
-
-```bash
-# on the second machine: the back (layers 20-39, the head, the draft)
-cd ~/projects/llama-sandbox/ds-completion
-M=~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf
-bin-hip/ds-completion -m $M --rt ~/llms/ds-1017-fp8/dense-fp8.gguf \
-    --placement placements/study30.txt --canon --cache-loads 800 --cache-period 8 \
-    --layers 20-39 --dspark ~/llms/dspark/dspark-DeepSeek-V4.1-Flash-1017-BF16.gguf --serve 7001
-```
-
-It loads (~1 min), prints `waiting for the front`, serves one front and exits when that front
-is done. Then, on the first machine:
-
-```bash
-# the front (layers 0-19): the one-machine command without --dspark, plus --layers and --remote
-cd ~/projects/llama-sandbox/ds-completion
-M=~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf
-bin-hip/ds-completion -m $M --rt ~/llms/ds-1017-fp8/dense-fp8.gguf \
-    --placement placements/study30.txt --canon --cache-loads 800 --cache-period 8 \
-    --layers 0-19 --remote <second machine>:7001 --spec \
-    -f prompt.txt --think --effort max -n 60000        # prompt.txt: your own file
-```
-
-- **The front is used as the whole model is:** `-p` / `-f`, `--chat` / `--think`, `--spec`. An
-  interactive session: the front's command with `--chat -i` (or `--think -i`) in place of `-f ...`
-  (`scripts/chat.sh` runs one machine only).
-- **What must agree:** the layer cut (checked when the front connects: nothing else is), the
-  model files and the build (not checked: the checksum line and the same commit on both), and
-  `--canon` on both halves. The placement and cache options may differ; with `--canon` they do
-  not change the output.
-- **What to expect:** the gain is the routed experts that ran on the CPU: each machine holds
-  ~88% of its half's experts on GPUs instead of ~42%. Per held-out prompt: +12% to +27% on code,
-  math, SQL and JSON, +8% on chat, +2.5% on Chinese and Japanese (1-2 tokens per step), and
-  nothing on a long reasoning run whose cache had already adapted (57.0 t/s either way). The
-  cache's registration takes ~30 s per half (half the experts each).
-- **The network:** the back listens on every interface at the port given (7001 is only this
-  page's choice; open it in a firewall between the two); plain TCP, no authentication, no
-  encryption: a private network only.
-- **If something goes wrong:** a front that finds no back ends with `peer: cannot connect to
-  ...`; if one side dies the other ends with `peer: the connection closed ...`; a back still
-  waiting for a front stops with Ctrl-C. In every case start the back again before the next run.
-- `scripts/split-measure.sh` runs the held-out set this way (it starts the back over ssh, so it
-  needs `ssh` to the second machine without a password prompt); `TRACE=1` gives one merged trace
-  of both machines (README step 112).
-
 ## Current results (2026-11-18)
 
 The two top rows were measured with `--cache-wait` (the run starts after the cache's
@@ -328,8 +266,7 @@ a row says otherwise (the clock does not matter to the CPU rows).
 
 | mode | command | decode | KL vs reference*: median / mean without the near-tie step |
 |---|---|---|---|
-| **two machines, the model in two halves** | the two commands of "Two machines" above | **35.0-62.9 t/s, mean 50.9** (300 tokens, held-out prompts; README step 111) | output byte-identical to one machine with `--canon` |
-| **one machine: speculative decoding + adaptive expert cache** | `... --placement placements/study30.txt --dspark ... --spec --canon --cache-loads 800 --cache-period 8` | **33.9-55.0 t/s, mean 44.6** (300 tokens, held-out prompts; README step 104) | output byte-identical to plain decoding with `--canon` |
+| **speculative decoding + adaptive expert cache** | `... --placement placements/study30.txt --dspark ... --spec --canon --cache-loads 800 --cache-period 8` | **33.9-55.0 t/s, mean 44.6** (300 tokens, held-out prompts; README step 104) | output byte-identical to plain decoding with `--canon` |
 | the same, sampled | `... --temp 1 --top-p 0.95 --seed 1` | mean 43.1 against 44.9 greedy in the same session (README step 151) | the plain loop's output for the same seed |
 | dense on GPU 0, every routed expert on the CPU | `bin-hip/ds-completion --rt ...` without `--placement` | 12.0-12.5 t/s (sclk 2) | 5.9e-6 / 4.8e-3 (earlier run 1.7e-5 / 6.3e-4) |
 | CPU only, the reference path | `bin/ds-ref` (`bin/ds-completion` until step 173) | 3.5 t/s | 1.3e-5 / 3.9e-3 |
@@ -351,9 +288,6 @@ Means over all 17 steps: 1.8e-2 to 2.5e-2 for every mode.
   output byte-identical to token-by-token processing; ~7.7 t/s with `bin/ds-ref`. The
   runtime's mean KL varies run to run with fp8 rounding flips (README step 10); every exact mode
   scatters the same way.
-- **Where a step goes on two machines** (README step 112's merged trace): a 6-token code step
-  with its draft ~83 ms (~93 on one machine, below): the front's layers ~36 ms, the back's ~36
-  ms, the draft ~9 ms, the network ~0.5 ms; neither half waits for the CPU's experts.
 - **Where a step goes** (`--spec`, cache, sclk 6; the traces of README steps 105 and 155): a 6-token
   code verify step ~85 ms (medians): die 0's dense part ~48 ms, its wait for the CPU's experts
   ~27 ms, its wait for the other dies ~5 ms, outside the layers ~5 ms; the draft before it ~8 ms
@@ -365,9 +299,6 @@ Means over all 17 steps: 1.8e-2 to 2.5e-2 for every mode.
 ## Limits
 
 - `-i` sessions: one line per turn, no system prompt, no tool calls.
-- Two machines: the back serves one front and exits; the connection is plain TCP without
-  authentication or encryption; only the layer cut is checked between the halves; the two
-  machines take turns, so the gain is bounded by what the CPU's experts cost on one.
 - Context: 65,536 tokens by default (prompt + generation), up to the model's
   1,048,576 with `--max-ctx N` (~6.4 KB of GPU 0 memory per position). A 30k-token prompt takes
   ~5-8 min at 63-97 t/s (it took ~30 min token by token). `bin/ds-ref` (the CPU reference path): 4,096 by
@@ -379,7 +310,6 @@ Means over all 17 steps: 1.8e-2 to 2.5e-2 for every mode.
 - Greedy decoding (the default) can fall into a repetition loop on long reasoning (README
   step 48: a proof prompt repeats one line after ~800 tokens; the model's behaviour, not a
   bug). Sampling (`--temp 1 --top-p 0.95`, the model card's settings) is the way around it.
-- Sampling with `--spec` on two machines is refused (the logits are on the back).
 - The server: one request at a time, no forced tool use, no images, one context and one saved
   point kept between requests, tool calls streamed only when complete, the Anthropic API only.
 
