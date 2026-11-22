@@ -1,0 +1,42 @@
+# The longer golden sets again (README step 174): ds-test per layer on the CPU reference path and, for 20,000 tokens,
+# on the GPU runtime, per layer and end to end, each against the file stored when the set was first run.
+# Commit c68cd43 (nothing changed for this step but the documents); llama.cpp at the pin (b72050d03);
+# sclk 6 on the four GPUs; 2026-11-21 23:38 to 2026-11-22 00:21.
+# M=~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf  F8=~/llms/ds-1017-fp8/dense-fp8.gguf
+#
+# 1. Per layer. Compared row by row with the stored table, every column but the last (ms).
+#    command                                                                    stored file                          rows  differing  time
+bin/ds-test -m $M -g data/golden/hello-fp32-nq --no-quant                       results/test-hello-fp32-nq.txt        200  0            3 s
+bin/ds-test -m $M -g data/golden/readme200                                      results/test-readme200.txt            360  0           28 s
+bin/ds-test -m $M -g data/golden/readme200-fp32-nq --no-quant                   results/test-readme200-fp32-nq.txt    200  0           25 s
+bin/ds-test -m $M -g data/golden/readme1100                                     results/test-readme1100.txt           200  0          170 s
+bin-hip/ds-test -m $M -g data/golden/readme20k-s --runtime $F8 --dump-topk <f>  results/rt-readme20k.txt (sclk 2)     360  0          31 min
+#    The top-k dump of the last: the same bytes as data/ds/readme20k-topk.bin of 2026-10-29 (cmp).
+#    Also run, with no stored table to compare: bin/ds-test -m $M -g data/golden/hello (680 rows, rc 0, 8 s).
+#
+# 2. End to end, 20,000 tokens: bin-hip/ds-test -m $M -g data/golden/readme20k-s --runtime $F8 --e2e <file>
+step  0: 20000 tokens ->     28 (ref     28)  464.94 s
+step  1:   1 tokens ->  12919 (ref  12919)  0.07 s
+step  2:   1 tokens ->   3234 (ref   3234)  0.07 s
+step  3:   1 tokens ->  12139 (ref  12139)  0.07 s
+step  4:   1 tokens ->     15 (ref     15)  0.07 s
+step  5:   1 tokens ->  87606 (ref  87606)  0.07 s
+step  6:   1 tokens ->     14 (ref     14)  0.07 s
+step  7:   1 tokens ->  12919 (ref  12919)  0.07 s
+step  8:   1 tokens ->   3234 (ref   3234)  0.08 s
+#    The logits file: the same bytes as data/ds/readme20k-rt.f32 of 2026-10-29 (cmp; made at sclk 2, results/rt-readme20k-e2e.txt,
+#    where step 0 took 1684.14 s).
+#
+# 3. ~/venvs/ds-ref/bin/python ref/compare_logits.py data/ref/readme20k-s.pt <file>
+#    (the same lines as results/compare-readme20k-ref-vs-rt.txt, and the summary line that script prints now)
+step   pos     ref   other  top5         KL  max|d|/std
+   0     0      28      28     5   1.13e-04       0.816
+   1 20000   12919   12919     4   4.56e-02       0.321
+   2 20001    3234    3234     4   2.23e-06       0.829
+   3 20002   12139   12139     4   6.01e-02       0.307
+   4 20003      15      15     4   2.62e-05       0.353
+   5 20004   87606   87606     5   4.87e-04       1.293
+   6 20005      14      14     5   9.61e-03       2.076
+   7 20006   12919   12919     4   7.75e-02       0.390
+   8 20007    3234    3234     4   1.14e-06       1.173
+# argmax agrees 9/9, mean KL 2.15e-02, max KL 7.75e-02

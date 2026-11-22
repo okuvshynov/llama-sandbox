@@ -507,6 +507,8 @@ the same. Next: `ds-completion` without the reference path (a build option or a 
 Step 173: two programs from `apps/ds_completion.cpp`: `bin-hip/ds-completion` (the product: `--rt` required, no CPU path, no
 `Engine` in the binary, 18.5 -> 16.7 MB) and `bin/ds-ref` (the CPU reference path; the old CPU build's bytes on a prompt).
 Gates, held-out with and without `--spec`, the request test's 59 checks: the same. ggml is still linked, through libllama.
+Step 174: the longer golden sets again (CPU path: 200 and 1,100 tokens; the runtime: 20,000): every per-layer table equal to
+the stored one, the 20,000-token logits the bytes of 2026-10-29. Not run against the upstream llama.cpp build.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front

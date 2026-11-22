@@ -6434,3 +6434,38 @@ of what it links.
 set; `-i`. The stale `bin/ds-completion` of earlier builds was removed by hand on this machine:
 on another checkout it stays until `make clean`, and it is the old program. `scripts/` and the
 server start `bin-hip/ds-completion --rt` and are unchanged.
+
+## Step 174: the longer golden sets again
+
+**The question.** Steps 168 to 173 moved code between files and programs and were each gated on
+the shortest golden set (`hello-fp32`: a 10-token prompt, 5 steps) and on stored outputs. The
+longer sets were last run weeks ago: the 20,000-token one on 2026-10-29 (step 35), with an
+early runtime and the GPU clock at level 2. Do they still give their numbers? Predicted: the
+CPU path yes; the runtime's errors against the reference might differ slightly from then.
+
+**Run** (`results/gates-long.txt`; commit c68cd43, the pin, sclk 6): `ds-test` per layer on four
+sets with the CPU reference path, and on `readme20k-s` with the GPU runtime, per layer and end
+to end.
+
+| set | path | rows | differ from the stored table |
+|---|---|---|---|
+| `hello-fp32-nq` | CPU | 200 | 0 |
+| `readme200` | CPU | 360 | 0 |
+| `readme200-fp32-nq` | CPU | 200 | 0 |
+| `readme1100` | CPU | 200 | 0 |
+| `readme20k-s`, 20,000 tokens | runtime | 360 | 0 |
+
+(Every column but the time.) At 20,000 tokens also: the 9 steps' tokens are the reference's;
+the logits file is byte for byte `data/ds/readme20k-rt.f32` of 2026-10-29, and the top-k dump
+`data/ds/readme20k-topk.bin`; `ref/compare_logits.py` against the reference prints the stored
+table (argmax 9 of 9, mean KL 2.15e-02, max 7.75e-02).
+
+**So the prediction was too careful:** the runtime computes at 20,000 tokens exactly what it
+did three weeks and some 140 steps ago, and at clock level 6 what it did at level 2.
+
+**Seen on the way:** the 20,000-token prompt took 465 s in the end-to-end run, 1,684 s then
+(prompt processing in chunks came after step 35).
+
+**Not done:** the same with the upstream llama.cpp build (step 168 gated it on the short set
+only). `data/golden/hello` (the reference as released) ran without an error, 680 rows, but no
+stored table of it was found to compare with.
