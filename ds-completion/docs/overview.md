@@ -31,7 +31,7 @@ Decode speed (16 CPU threads; sclk level 2 and 128 generated tokens unless a row
 
 | mode | decode |
 |---|---|
-| llama.cpp fork (llama-cli, CPU) | 3.5 t/s |
+| llama.cpp with the DeepSeek-V4.1 PR (llama-cli, CPU) | 3.5 t/s |
 | ours, CPU only (`bin/ds-ref`, the reference path) | 3.5 t/s |
 | ours, own GPU runtime, routed experts on the CPU | ~12 t/s |
 | ours, + most-used experts placed on the 4 GPUs (`--placement`) | 17.7-21.7 t/s |
@@ -66,7 +66,7 @@ Accuracy, against the official implementation run on the CPU in fp32:
   outputs within ~1e-7 at decode, i.e. equal up to fp32 summation order. Larger errors appear only
   where an fp8 rounding step flips at a near tie, and they appear in every exact implementation.
 - **End to end:** the top token matches the reference at 16 of 17 steps (the miss is a near
-  tie), the same for every mode, the llama.cpp fork included. Median KL ~1e-5.
+  tie), the same for every mode, llama.cpp with the DeepSeek-V4.1 PR included. Median KL ~1e-5.
 - **Deterministic:** repeated runs give bit-identical output.
 - **Speculative decoding changes nothing in the output:** it is byte-identical to plain greedy
   decoding on every prompt tested (18 prompts; 4 of them at 5 fixed draft lengths too), because every batched kernel
@@ -265,7 +265,7 @@ barely fit in two machines' RAM).
   the C++ program?
 - Is the remaining correctness risk acceptable: near-tie fp8 rounding flips make the top token
   differ from the reference occasionally (1 of 17 steps on the test prompt), in every
-  implementation we compared, the llama.cpp fork included.
+  implementation we compared, llama.cpp with the DeepSeek-V4.1 PR included.
 
 ## 9. Code map
 

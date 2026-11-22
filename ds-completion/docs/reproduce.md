@@ -33,7 +33,8 @@ it; it reproduces them to the byte at the same speed (44.33 against 44.60 t/s he
 | OS | Ubuntu 22.04 LTS, kernel `6.10.5-1-t2-jammy` (t2linux, for the Mac's T2 chip) |
 | ROCm | 6.3.4 in `/opt/rocm-6.3.4` (HIP 6.3.42134; gfx906 is past its support window but works) |
 | compiler | g++ 11.4.0; hipcc (AMD clang 18, from ROCm 6.3.4) |
-| llama.cpp fork | `~/forks/llama.cpp`, branch `deepseek41`: commit `b72050d03` "model : add DeepSeek-V4.1-Flash (deepseek41)" (Unsloth) on top of upstream `797de63b2`, plus one uncommitted line in `ggml/src/ggml-cuda/vendors/hip.h` (`#define __ballot_sync(mask, var) __ballot(var)`, for the fork's own HIP build, which nothing here uses since step 11: the second machine's fork was built without it). CPU build in `build/` (static libraries). Used for ggml, GGUF reading, the tokenizer and the CPU baseline. (the head of llama.cpp PR #30817; QUICKSTART.md) Every result in this repository was made with this build. Since step 168 the code also builds against upstream (`e626db7ca` tested: the same gates and held-out outputs, `results/dist/trunk.txt`), which QUICKSTART now names; the CPU baseline (`llama-cli`) and `bin/llama-logits` need this commit, upstream misreads the files. |
+| llama.cpp | upstream (`master`) at `e626db7caadee98c6174b1c2dc69f3f43075faa0` (2026-11-20), in `~/forks/llama.cpp`; CPU build in `build/` (static libraries), QUICKSTART's two `cmake` lines. Used for ggml, GGUF reading and the tokenizer. Every check was run with it in step 175 (`results/dist/upstream.txt`). |
+| llama.cpp, until step 167 | the same directory on branch `deepseek41`: commit `b72050d03` "model : add DeepSeek-V4.1-Flash (deepseek41)" (Unsloth; the head of llama.cpp PR #30817) on top of upstream `797de63b2`. The results of steps 1 to 167 and step 174 were made with this build, and they are what "the fork" means in older steps and results files. Still needed for one thing: llama.cpp's own implementation on these files (the CPU baseline `llama-cli` of steps 2-3, `bin/llama-logits`), which upstream reads wrong ([llama-cpp-upstream.md](llama-cpp-upstream.md)). |
 | Python (reference) | venv `~/venvs/ds-ref`, Python 3.10.12: `pip install -r ref/requirements.txt` (a `pip freeze`: torch 2.14.1+cpu, numpy 2.2.6, safetensors 0.8.0, sympy 1.14.0, tokenizers 0.23.3, huggingface_hub 2.3.0, ...) |
 | perf (counters, step 79) | Ubuntu's `linux-tools-generic` (perf 5.15) run as `/usr/lib/linux-tools/5.15.0-202-generic/perf` (the `/usr/bin/perf` wrapper refuses the 6.10 kernel); user-space core events with `perf_event_paranoid` 2 |
 
@@ -68,9 +69,9 @@ right after a copy may only read the page cache.
 ## 4. Build
 
 ```bash
-# the fork: a CPU build with static libraries in build/, at the commit and with the cmake lines of QUICKSTART.md "Build and prepare"
+# llama.cpp: upstream, a CPU build with static libraries in build/, at the commit and with the cmake lines of QUICKSTART.md "Build and prepare"
 cd ~/projects/llama-sandbox/ds-completion
-make            # bin/: CPU programs (links the fork's static CPU libraries)
+make            # bin/: CPU programs (links llama.cpp's static CPU libraries)
 make HIP=1      # bin-hip/: the same plus the own GPU runtime and the GPU benchmarks
 M=~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf
 F8=~/llms/ds-1017-fp8/dense-fp8.gguf
@@ -85,7 +86,7 @@ Run from this directory (placement files are relative paths). How to run: [QUICK
 |---|---|---|---|
 | `data/ref/` | reference runs (`.pt`): the official model math on the CPU (`ref/ds_ref.py`) | `~/venvs/ds-ref/bin/python ref/ds_ref.py --prompt "..." --chat --n-decode 16 [--fp32] [--no-quant] --out data/ref/x.pt` (prompts: README step 2; the 20k-token run: step 35) | minutes to ~1 h (20k tokens: 42 min, ~500 GB of RAM, a 35 GB file) |
 | `data/golden/` | per-layer golden activations and logits for the gates | `ref/export_golden.py data/ref/x.pt data/golden/x` | minutes |
-| `data/ds/`, `data/llama/` | our and the fork's logits for the comparisons | `bin/ds-test ... --e2e`, `bin/llama-logits` (README steps 2-3) | minutes |
+| `data/ds/`, `data/llama/` | our and llama.cpp's logits for the comparisons | `bin/ds-test ... --e2e`; `bin/llama-logits` (README steps 2-3; `make bin/llama-logits FORK=<a checkout of the PR's commit>`, not part of `make` since step 175) | minutes |
 | `data/fq/` | fake-quant test vectors | `ref/make_fq_test.py` | seconds |
 | `data/routing/study/` | routing logs of the 30 study prompts (plain): inputs of `placements/study30.txt` and the simulations | `results/routing-study.sh` (prompts in `prompts/routing-study.tsv`) | ~1 h |
 | `data/routing/oracle/` | routing logs of the 2 oracle prompts | README step 15 | minutes |
@@ -295,12 +296,13 @@ Unless stated: sclk 2, 16 CPU threads (32 before README step 18), the study30 pl
 | 172 | `dist/fakequant-split.txt` | `make && make HIP=1`; `bin/test-fakequant data/fq`; the gates and the three held-out prompts as step 171's row; `bin/fp8pack -m $M -o <file>` and `cmp` with `dense-fp8.gguf` |
 | 173 | `dist/ds-ref.txt`, `requests/requests_test.txt` (again) | `make && make HIP=1`; `bin/ds-ref -m $M -p "The three largest cities in Ukraine are" -n 24 --record <file>` against the same with the CPU `ds-completion` of 1c121ba (`cmp`, the records' `output.hash`); the gates and the three held-out prompts as step 171's row; two prompts without `--spec` (a copy of the held-out matrix with `base --rt $F8 --placement placements/study30.txt --canon`); `python3 results/requests/requests_test.py` (~10 min); `python3 server/test_server.py`; `nm -C <program> \| grep -c ' Engine::'` |
 | 174 | `gates-long.txt` | the six `ds-test` commands in the file (CPU: seconds to 3 min; the runtime at 20,000 tokens: ~31 min per layer, ~8 min end to end), each table against the stored one named beside it; `cmp` of the logits and the top-k dump with `data/ds/readme20k-rt.f32` and `data/ds/readme20k-topk.bin`; `~/venvs/ds-ref/bin/python ref/compare_logits.py data/ref/readme20k-s.pt <file>` |
+| 175 | `dist/upstream.txt` | `~/forks/llama.cpp` at upstream `e626db7ca`, built with QUICKSTART's two `cmake` lines; `make clean && make && make HIP=1`; then the commands in the file: the unit tests, `fp8pack` and `cmp`, the seven `ds-test` tables and the two `--e2e` runs, `bin/ds-ref`, `scripts/matrix.py results/cleanup/heldout.matrix --out <dir>` twice per prompt and `cmp` with `results/cache-test/plain-canon-static/`, `results/requests/requests_test.py`, `server/test_server.py` (~90 min in all) |
 | 167 | `server/serve.txt` | by hand: `DS_LOGS=<a directory> scripts/serve.sh`, one request with `curl` (the one of `docs/pi.md`, section 1), a minute's wait for `metrics.prom`, Ctrl-C; the file's parts are named in it |
 
 ## 7. Open items (to confirm)
 
 - The Hugging Face revisions of the two Unsloth GGUFs and the draft's repository (the sha256
-  manifest pins the bytes meanwhile). Settled since: the fork is the head of llama.cpp PR #30817
-  (`b72050d03ae14bb3cb5138ecefab3f3f65157d31`, QUICKSTART.md), built for the CPU only.
+  manifest pins the bytes meanwhile). Settled since: llama.cpp is upstream at one commit
+  (section 2; until step 167 the head of PR #30817, `b72050d03ae14bb3cb5138ecefab3f3f65157d31`).
 - Turn the hand-typed runs a write-up relies on (steps 4-26) into scripts.
 - An archive of `data/routing/` next to any publication.

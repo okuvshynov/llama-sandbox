@@ -15,7 +15,7 @@ How to build and run it: [QUICKSTART.md](QUICKSTART.md).
 
 - **One machine:** 44.6 t/s mean (34-55) on the 8 held-out prompts with speculative decoding
   and the adaptive expert cache, every output byte-identical to plain greedy decoding
-  (step 104). The CPU reference path (`bin/ds-ref`): 3.5 t/s, as the llama.cpp fork.
+  (step 104). The CPU reference path (`bin/ds-ref`): 3.5 t/s, as llama.cpp with the DeepSeek-V4.1 PR.
 - **Two machines** (the model in two halves, layers 0-19 and 20-39, the residual stream over
   10 GbE): 50.9 t/s mean (35-63) on the same prompts, the same outputs (steps 110-112).
 - **Exact and deterministic:** fp8 and fp4 weights computed exactly on hardware without them;
@@ -72,7 +72,7 @@ build, every option, the current results, the limits).
 | [docs/requests.md](docs/requests.md), [docs/server.md](docs/server.md) | `--requests`, the protocol between the engine and a front; the HTTP front |
 | [docs/pi.md](docs/pi.md) | the pi coding harness on this engine: the setup, step by step |
 | [docs/rocprof.md](docs/rocprof.md) | the GPU side under AMD's profiler |
-| [docs/llama-cpp-upstream.md](docs/llama-cpp-upstream.md) | llama.cpp: upstream or the PR's commit, what upstream reads wrong in these files, and how we came not to depend on it |
+| [docs/llama-cpp-upstream.md](docs/llama-cpp-upstream.md) | llama.cpp: why it was a pull request's commit until step 167, what upstream reads wrong in these files, and how we came to build against upstream alone |
 | [scripts/README.md](scripts/README.md) | the tools still in use |
 
 Until step 156 the documents of `docs/` with a lower-case name of one word stood in this

@@ -1,0 +1,68 @@
+# Every check again with upstream llama.cpp as the only llama.cpp (README step 175).
+# ~/forks/llama.cpp at e626db7caadee98c6174b1c2dc69f3f43075faa0 (upstream master, 2026-11-20), built with
+# QUICKSTART's two cmake lines; then `make clean && make && make HIP=1` here: bin/ and bin-hip/ are that build.
+# Commit 2acdcaa (the commit that adds this file changes documents, Makefile comments and the list of
+# `make tests`, no program's source); sclk 6 on the four GPUs; 2026-11-22 01:06 to 02:37.
+# M=~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf  F8=~/llms/ds-1017-fp8/dense-fp8.gguf
+#
+# 1. Build: make, make HIP=1: rc 0. Warnings: two deprecations in ref/llama_logits.cpp, nothing else.
+#
+# 2. Unit tests and fp8pack
+bin/test-fakequant data/fq                              fp8, fp4, fp4e4: 45312 values each, 0 differ
+bin/test-sampler                                        all checks passed
+~/venvs/ds-ref/bin/python ref/check_topk.py             46 of 46 cases match (bin-hip/test-topk)
+bin/fp8pack $M <file>                                   the same bytes as $F8 (cmp)
+#
+# 3. Per layer: ds-test, every column but the last (ms) against the stored table
+#    command                                                                    stored file                          rows  differing
+bin/ds-test -m $M -g data/golden/hello-fp32                                     step 168's table (old build)          200  0
+bin-hip/ds-test -m $M -g data/golden/hello-fp32 --runtime $F8                   step 168's table (old build)          200  0
+bin/ds-test -m $M -g data/golden/hello-fp32-nq --no-quant                       results/test-hello-fp32-nq.txt        200  0
+bin/ds-test -m $M -g data/golden/readme200                                      results/test-readme200.txt            360  0
+bin/ds-test -m $M -g data/golden/readme200-fp32-nq --no-quant                   results/test-readme200-fp32-nq.txt    200  0
+bin/ds-test -m $M -g data/golden/readme1100                                     results/test-readme1100.txt           200  0
+bin-hip/ds-test -m $M -g data/golden/readme20k-s --runtime $F8 --dump-topk <f>  results/rt-readme20k.txt              360  0
+#    The top-k dump of the last: the same bytes as data/ds/readme20k-topk.bin (cmp). It took 31 min.
+#    hello-fp32 with --e2e on both paths: the logits files the same bytes as step 168's (old build).
+#
+# 4. End to end, 20,000 tokens: bin-hip/ds-test -m $M -g data/golden/readme20k-s --runtime $F8 --e2e <file>
+step  0: 20000 tokens ->     28 (ref     28)  474.59 s
+step  1:   1 tokens ->  12919 (ref  12919)  0.08 s
+step  2:   1 tokens ->   3234 (ref   3234)  0.08 s
+step  3:   1 tokens ->  12139 (ref  12139)  0.07 s
+step  4:   1 tokens ->     15 (ref     15)  0.08 s
+step  5:   1 tokens ->  87606 (ref  87606)  0.08 s
+step  6:   1 tokens ->     14 (ref     14)  0.08 s
+step  7:   1 tokens ->  12919 (ref  12919)  0.07 s
+step  8:   1 tokens ->   3234 (ref   3234)  0.08 s
+#    The logits file: the same bytes as data/ds/readme20k-rt.f32 (cmp).
+#    ~/venvs/ds-ref/bin/python ref/compare_logits.py data/ref/readme20k-s.pt <file>: the lines of
+#    results/compare-readme20k-ref-vs-rt.txt; argmax agrees 9/9, mean KL 2.15e-02, max KL 7.75e-02
+#
+# 5. The CPU reference path as a program: bin/ds-ref -m $M -p "The three largest cities in Ukraine are" -n 24
+#    output hash fnv1a64:3a40e97fd9b90430 (step 173's), 3.74 t/s
+#
+# 6. Held-out prompts: scripts/matrix.py results/cleanup/heldout.matrix, each prompt twice (--spec --canon, the
+#    adaptive cache). Each output compared with results/cache-test/plain-canon-static/<prompt>.out (cmp).
+#    prompt         tokens  t/s run 1  t/s run 2  outputs
+    tcp-udp           300      39.02      39.52  both the stored bytes
+    py-lru            300      46.60      46.80  both the stored bytes
+    cpp-matrix        300      54.97      52.27  both the stored bytes
+    sql-report        300      47.53     47.36*  both the stored bytes
+    geometry          345      55.61      55.13  both the stored bytes
+    zh-travel         300      34.16      34.17  both the stored bytes
+    ja-email          300      37.25      37.21  both the stored bytes
+    summary-json       98      45.00      45.14  both the stored bytes
+#    mean of the 16 runs 44.9 t/s (step 104: 44.6 over the 8 prompts)
+#    * sql-report's second run printed its whole output and its numbers, then aborted at the process's exit
+#      (rc -6; the speed is from its stderr, matrix.py recorded the run as failed):
+#        double free or corruption (fasttop)
+#        # fatal signal 6; phase: after main: static destructors and the libraries' exit; thread: ds-completion (the main thread)
+#        ... libc free <- /opt/rocm-6.3.4/lib/libhsa-runtime64.so.1(+0x6f423) <- libc exit handlers <- __libc_start_main
+#      The abort of step 93 (in ROCm's exit, after the work; not repeated in 56 runs then). Once in the 16 runs here.
+#
+# 7. Requests and the server
+python3 results/requests/requests_test.py               59 checks, all passed (with the model, bin-hip/ds-completion --requests)
+python3 server/test_server.py                           all checks passed
+#
+# 8. After the change of this step (llama-logits out of `make tests`): make tests, make, make HIP=1: rc 0, no warnings.

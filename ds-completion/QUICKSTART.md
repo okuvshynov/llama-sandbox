@@ -47,13 +47,13 @@ the placement. `--canon` makes the output independent of where an expert runs.
   them: `cd ~/llms && grep -v '^#' ~/projects/llama-sandbox/checksums/DS-V4.1-Flash-1017.sha256 | sha256sum -c`
   (paths relative to the model directory; `dense-fp8.gguf` after making it). After a copy, check
   again after a reboot: a check right after it may only read the page cache.
-- **llama.cpp**, upstream at a tested commit (`e626db7ca`, 2026-11-20) or the DeepSeek-V4.1 PR's
-  commit: this code gives the same results with both (step 168). Used for ggml, GGUF reading and
-  the tokenizer, as static libraries in `~/forks/llama.cpp/build/`. Upstream's *own* programs
-  (`llama-cli`, and our `bin/llama-logits`, which runs llama.cpp's implementation) read these GGUF
-  files silently wrong and generate garbage: their Engram table's type 43 is the PR's MXFP8,
-  upstream's plain fp8. We decode that table ourselves; for llama.cpp's own programs on these
-  files, build the PR's commit ([docs/llama-cpp-upstream.md](docs/llama-cpp-upstream.md)).
+- **llama.cpp**, upstream (its `master` branch), pinned to one commit: `e626db7ca` (2026-11-20),
+  the one every check was last run with (step 175). Used for ggml, GGUF reading and the
+  tokenizer, as static libraries in `~/forks/llama.cpp/build/` (the directory's name is from
+  when this was a fork's checkout; `make FORK=<dir>` for another place). No fork and no pull
+  request is needed. Do not run upstream's *own* programs (`llama-cli`) on these GGUF files:
+  they read the Engram table's type as another one and generate garbage without an error; we
+  decode that table ourselves (step 168, [docs/llama-cpp-upstream.md](docs/llama-cpp-upstream.md)).
 - **For two machines:** a second Mac Pro set up the same way (the same system, the same three
   model files at the same `~/llms/` paths with the same checksums, this repository at the same
   commit, built; run the checksum line on both), the same GPU clock level on both, and a network
@@ -62,9 +62,7 @@ the placement. `--canon` makes the output independent of where an expert runs.
 ## Build and prepare (once)
 
 ```bash
-# llama.cpp: upstream, at the commit this was tested with (step 168). The PR's commit works the
-# same and is the one for llama.cpp's own programs on these files: b72050d03ae14bb3cb5138ecefab3f3f65157d31
-# (the head of PR #30817; `git fetch origin <hash>` first, GitHub serves it)
+# llama.cpp: upstream master at the commit this was tested with (step 175)
 git clone https://github.com/ggml-org/llama.cpp ~/forks/llama.cpp
 cd ~/forks/llama.cpp
 git checkout e626db7ca
@@ -72,7 +70,7 @@ cmake -B build -DBUILD_SHARED_LIBS=OFF -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j 32
 
 cd ~/projects/llama-sandbox/ds-completion
-make && make HIP=1                     # -> bin/ (CPU: fp8pack, ds-ref, tests) and bin-hip/ (GPU: ds-completion); FORK=<dir> for another llama.cpp
+make && make HIP=1                     # -> bin/ (CPU: fp8pack, ds-ref, tests) and bin-hip/ (GPU: ds-completion); FORK=<dir> for a llama.cpp checkout elsewhere
 M=~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf
 bin/fp8pack -m $M -o ~/llms/ds-1017-fp8/dense-fp8.gguf   # lossless fp8 repack, 6.8 GB, ~20 s
 ```
@@ -335,7 +333,7 @@ a row says otherwise (the clock does not matter to the CPU rows).
 | the same, sampled | `... --temp 1 --top-p 0.95 --seed 1` | mean 43.1 against 44.9 greedy in the same session (README step 151) | the plain loop's output for the same seed |
 | own runtime, dense on GPU 0, experts on the CPU | `bin-hip/ds-completion --rt ...` | 12.0-12.5 t/s (sclk 2) | 5.9e-6 / 4.8e-3 (earlier run 1.7e-5 / 6.3e-4) |
 | CPU only, the reference path | `bin/ds-ref` (`bin/ds-completion` until step 173) | 3.5 t/s | 1.3e-5 / 3.9e-3 |
-| llama.cpp fork (llama-cli, CPU) | - | 3.5 t/s | 2.1e-5 / 1.3e-3 |
+| llama.cpp with the DeepSeek-V4.1 PR (llama-cli, CPU; steps 2-3) | - | 3.5 t/s | 2.1e-5 / 1.3e-3 |
 
 The steps between these rows (the static placement, speculation without the cache) and their
 numbers: docs/overview.md, section 2.

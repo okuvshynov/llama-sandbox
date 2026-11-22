@@ -1,12 +1,12 @@
 # ds-completion: links ggml (and, for the tokenizer only, libllama) from a llama.cpp checkout
-# (~/forks/llama.cpp): upstream or the DeepSeek-V4.1 PR's commit (QUICKSTART.md, README step 168).
+# (FORK, default ~/forks/llama.cpp): upstream, at the commit QUICKSTART.md names (README steps 168, 175).
 #
 # src/ and hip/ are the libraries (CPU side, GPU runtime); apps/, tests/ and bench/ the programs.
 #
 #   make          CPU build -> bin/
 #   make HIP=1    also the own GPU runtime (hip/, ROCm 6.3.4, gfx906) -> bin-hip/
 #   make product, make tests, make tools (each also with HIP=1): one group of programs, below
-# Both link the fork's CPU build (build/, static libraries); ggml's own GPU backend is not used.
+# Both link llama.cpp's CPU build (build/, static libraries); ggml's own GPU backend is not used.
 FORK ?= $(HOME)/forks/llama.cpp
 BUILD = build
 GGML_LIBS = $(FORK)/$(BUILD)/ggml/src/libggml.a $(FORK)/$(BUILD)/ggml/src/libggml-cpu.a \
@@ -42,11 +42,14 @@ endif
 #   make product   what serves: ds-completion (HIP=1 only: it is the GPU runtime's program), and fp8pack,
 #                  which makes dense-fp8.gguf once
 #   make tests     what checks it: ds-ref (the CPU reference path as a program; without HIP=1), ds-test and
-#                  the unit tests, llama-logits (llama.cpp's own pipeline)
+#                  the unit tests
+#   Not in a group: llama-logits (make bin/llama-logits), llama.cpp's own pipeline on the model. It gives
+#   right logits only when FORK is the DeepSeek-V4.1 PR's commit (docs/llama-cpp-upstream.md): upstream
+#   reads this model's Engram table as another type, without an error (README step 175).
 #   make tools     what measures and inspects: ds-inspect, the benchmarks
 # With HIP=1 each is the bin-hip/ build of the same group (and the programs only it has).
 PRODUCT = $(BIN)/fp8pack
-TESTS   = $(BIN)/ds-test $(BIN)/test-fakequant $(BIN)/test-sampler $(BIN)/llama-logits
+TESTS   = $(BIN)/ds-test $(BIN)/test-fakequant $(BIN)/test-sampler
 TOOLS   = $(BIN)/ds-inspect $(BIN)/bench-cpu-moe $(BIN)/bench-fp4-decode
 ifeq ($(HIP),1)
 PRODUCT += $(BIN)/ds-completion
@@ -186,7 +189,9 @@ $(BIN)/test-fakequant: tests/test_fakequant.cpp src/fakequant.cpp src/fakequant_
 	@mkdir -p $(BIN)
 	$(CXX) $(CXXFLAGS) -o $@ tests/test_fakequant.cpp src/fakequant.cpp src/fakequant_graph.cpp $(LDLIBS)
 
-# the fork's own llama.cpp pipeline: the "second opinion" for the reference
+# llama.cpp's own pipeline: the "second opinion" for the reference (steps 2-3). Not in `make`: with
+# upstream llama.cpp it builds and runs but its logits are wrong (the Engram table's type, above);
+# it needs FORK=<a checkout of the PR's commit>, docs/llama-cpp-upstream.md.
 $(BIN)/llama-logits: ref/llama_logits.cpp
 	@mkdir -p $(BIN)
 	$(CXX) $(CXXFLAGS) -o $@ $< $(LLAMA_LIB) $(LDLIBS)

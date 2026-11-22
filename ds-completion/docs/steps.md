@@ -6469,3 +6469,51 @@ did three weeks and some 140 steps ago, and at clock level 6 what it did at leve
 **Not done:** the same with the upstream llama.cpp build (step 168 gated it on the short set
 only). `data/golden/hello` (the reference as released) ran without an error, 680 rows, but no
 stored table of it was found to compare with.
+
+## Step 175: upstream llama.cpp as the only llama.cpp
+
+**The question.** Since step 168 the code builds against upstream llama.cpp and against the
+DeepSeek-V4.1 PR's commit, and the documents named both. Upstream was gated on the shortest
+golden set and the held-out outputs only (step 174's "not done"). Does everything else hold
+with upstream, so that the PR's commit can leave the instructions? Predicted: yes; from
+llama.cpp the code takes the tokenizer, the GGUF reader and ggml's CPU operations, and none of
+those differ where we use them.
+
+**Run** (`results/dist/upstream.txt`; commit 2acdcaa, sclk 6). `~/forks/llama.cpp` moved to
+upstream `master` at `e626db7ca` and was built with QUICKSTART's two `cmake` lines; here
+`make clean && make && make HIP=1`, so `bin/` and `bin-hip/` are the upstream build. Then
+every check there is, 90 minutes:
+
+| check | result |
+|---|---|
+| unit tests (`test-fakequant`, `test-sampler`, `test-topk`) | pass |
+| `fp8pack` | the bytes of `dense-fp8.gguf` |
+| per layer, CPU path: `hello-fp32`, `hello-fp32-nq`, `readme200`, `readme200-fp32-nq`, `readme1100` | 0 rows differ from the stored tables |
+| per layer, runtime: `hello-fp32`, `readme20k-s` (20,000 tokens) | 0 rows differ; the top-k dump the stored bytes |
+| end to end: `hello-fp32` on both paths, `readme20k-s` on the runtime | logits files the stored bytes |
+| `bin/ds-ref`, one prompt | step 173's output hash |
+| held-out prompts, twice each | 16 of 16 outputs the stored bytes; 44.9 t/s mean |
+| request test with the model, server test | 59 checks and all checks pass |
+
+**So upstream is the one llama.cpp now.** QUICKSTART and `docs/reproduce.md` name
+`e626db7ca`, a commit of upstream's main branch, and no fork or pull request. The PR's commit
+stays in `docs/llama-cpp-upstream.md` as history and in the older steps, whose results were
+made with it.
+
+**`bin/llama-logits` left `make tests`.** It runs llama.cpp's own implementation of the model
+(the "second opinion" of steps 2-3). Built with upstream it compiles, runs and gives wrong
+logits without an error, because upstream reads the Engram table's type as another one (step
+168). A check that is silently wrong does not belong in the default build:
+`make bin/llama-logits FORK=<a checkout of the PR's commit>` still builds it, and its source
+says so. With it gone, `make` and `make HIP=1` have no warnings.
+
+**Seen on the way:** one held-out run (`sql-report`, the second) aborted at the process's exit
+with `double free or corruption`, after its output and its numbers were written, in
+`libhsa-runtime64`'s exit handler. That is step 93's abort (not repeated in 56 runs then):
+a second sighting, once in 16 runs here, again after the work. `matrix.py` counts such a run
+as failed, which is right for a gate and worth knowing when one line of a matrix says FAILED.
+
+**Not done:** two machines (the second Mac Pro still has the PR's checkout and build; it needs
+the same switch and a rebuild before the next two-machine run). The Makefile's variable is
+still called `FORK` and the directory `~/forks/llama.cpp`: names only.
+

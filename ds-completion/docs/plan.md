@@ -509,6 +509,8 @@ Step 173: two programs from `apps/ds_completion.cpp`: `bin-hip/ds-completion` (t
 Gates, held-out with and without `--spec`, the request test's 59 checks: the same. ggml is still linked, through libllama.
 Step 174: the longer golden sets again (CPU path: 200 and 1,100 tokens; the runtime: 20,000): every per-layer table equal to
 the stored one, the 20,000-token logits the bytes of 2026-10-29. Not run against the upstream llama.cpp build.
+Step 175: the same and every other check with upstream llama.cpp (`e626db7ca`): all the same. It is now the one pinned
+commit; the PR's commit is history, and `llama-logits` (right only with the PR's commit) is out of `make tests`.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front

@@ -1,11 +1,12 @@
 # llama.cpp: upstream, the DSV4.1 PR commit, and the one tensor between them
 
-**Now (2026-11-21, step 168): ds-completion builds against upstream or the PR's commit, with the
-same results.** The one tensor upstream reads wrong in our files (the Engram table) is decoded by
-our own code, on the GPU runtime and on the CPU path, and checked at load. Tested upstream commit:
-`e626db7ca`; QUICKSTART names it. llama.cpp's *own* programs on these files (`llama-cli`, our
-`bin/llama-logits`) still need the PR's commit: "The move" at the end. The sections between are
-the history, as written at the time.
+**Now (2026-11-22, step 175): ds-completion builds against upstream llama.cpp, pinned to one
+commit of its main branch (`e626db7ca`; QUICKSTART names it).** The one tensor upstream reads
+wrong in our files (the Engram table) is decoded by our own code, on the GPU runtime and on the
+CPU path, and checked at load (step 168). The PR's commit also still works, with the same
+results, and only llama.cpp's *own* programs on these files (`llama-cli`, our
+`bin/llama-logits`) need it: "The move" at the end. The sections between are the history, as
+written at the time.
 
 **Decision (2026-11-09), replaced by the above: keep the fork at `b72050d03`.** Upstream llama.cpp merged DeepSeek-V4.1
 support, but it cannot read the GGUF files we use (Unsloth's DeepSeek-V4.1-Flash-1017 UD-Q8_K_XL):
@@ -218,6 +219,13 @@ repository before this step was made with the pin, and this machine's build stay
 
 **Following upstream from here:** a later commit can break the build or move the CPU path's
 numbers. `e626db7ca` is the way back; after a move to a newer one, the gate of this section.
+
+**Since step 175 (2026-11-22)** upstream `e626db7ca` is the only llama.cpp the instructions name.
+Every check was run again with it as the build in `bin/` and `bin-hip/`
+(`results/dist/upstream.txt`): the longer golden sets to 20,000 tokens, the held-out prompts,
+the request and server tests. `bin/llama-logits` is no longer built by `make` or `make tests`;
+`make bin/llama-logits FORK=<a checkout of the PR's commit>` builds it when llama.cpp's own
+logits are wanted again.
 
 ## Other notes
 
