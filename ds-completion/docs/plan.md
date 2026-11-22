@@ -513,6 +513,8 @@ Step 175: the same and every other check with upstream llama.cpp (`e626db7ca`): 
 commit; the PR's commit is history, and `llama-logits` (right only with the PR's commit) is out of `make tests`.
 Step 176: the checkout in `~/projects/llama.cpp`, the Makefile's `FORK` now `LLAMA_CPP`; the Python reference reads the Engram
 table itself (it needed the PR's `gguf-py`, missed in step 175). Checks the same.
+Step 177: `~/forks/llama.cpp` deleted; the documents reviewed against steps 168-176: the README's example command, the
+"with `--rt`" qualifiers in QUICKSTART, a usage text per program.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front

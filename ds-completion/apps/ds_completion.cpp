@@ -1,15 +1,17 @@
 // ds-completion: DeepSeek-V4.1-Flash text completion.
 //
-//   ds-completion -m <model-00001-of-000NN.gguf> (-p "prompt" | -f prompt.txt) [--chat | --think [--effort 75]] [-n 128]
+//   ds-completion -m <model-00001-of-000NN.gguf> --rt <dense-fp8.gguf> (-p "prompt" | -f prompt.txt | -i | --requests)
+//                 [--chat | --think [--effort 75]] [-n 128] [-t 16] [--max-ctx 65536] [--record run.json [--record-label k=v,...]]
+//                 [--gpu D] [--placement file [--moe-dies 0,1,2,3] [--cache-loads R [--cache-period N] [--cache-window N] [--cache-min N] [--cache-wait]]] [--canon] [--profile]
+//   ds-ref        -m <model-00001-of-000NN.gguf> (-p "prompt" | -f prompt.txt) [--chat | --think [--effort 75]] [-n 128]
 //                 [-t 16] [--no-quant] [--max-ctx 4096] [--record run.json [--record-label k=v,...]]
-//                 [--rt <dense-fp8.gguf> [--gpu D] [--placement file [--moe-dies 0,1,2,3] [--cache-loads R [--cache-period N] [--cache-window N] [--cache-min N] [--cache-wait]]] [--canon] [--profile]]
 //
 // The prompt is fed as one chunk (prefill), then one token per step, greedy. --chat wraps the
 // prompt as one user turn in the model's chat format without thinking, --think with it (the
 // strings encoding/encoding.py produces; --effort is its reasoning effort, 1-100, default 75);
 // otherwise the prompt is raw text after BOS. -f reads the prompt from a file.
 // Only the tokenizer comes from libllama (vocab-only load).
-// --requests (with --rt, in place of a prompt): prompts from stdin, each on an empty context,
+// --requests (ds-completion, in place of a prompt): prompts from stdin, each on an empty context,
 // the replies' tokens as lines on stdout (docs/requests.md; README step 152).
 // --record FILE: the run as one JSON object (docs/record.md): a few of its arguments, the prompt's
 // token count and hash, the GPU clock setting, the bytes read from storage per phase, the
@@ -284,8 +286,13 @@ static int parse_args(int argc, char** argv, Args& args) {
     return 2;
   }
   if (args.model_path.empty() || (args.prompt.empty() && !args.interactive && !args.serve_port && !args.requests)) {
-    fprintf(stderr, "usage: " DS_PROGRAM " -m <model.gguf> (-p \"prompt\" | -f prompt.txt | -i | --requests) [--chat|--think [--effort 1-100|low|high|max] [--think-show all|line|none]] [-n N] [--temp T [--top-p P] [--seed S]] [-t N] [--no-quant] [--max-ctx N] [--rt dense-fp8.gguf [--gpu D] [--placement file [--moe-dies 0,1,2,3] [--cache-loads R [--cache-period N] [--cache-window N] [--cache-min N] [--cache-wait]]] [--canon] [--profile]]\n"
+#ifdef DS_RUNTIME
+    fprintf(stderr, "usage: ds-completion -m <model.gguf> --rt <dense-fp8.gguf> (-p \"prompt\" | -f prompt.txt | -i | --requests) [--chat|--think [--effort 1-100|low|high|max] [--think-show all|line|none]] [-n N] [--temp T [--top-p P] [--seed S]] [-t N] [--max-ctx N] [--gpu D] [--placement file [--moe-dies 0,1,2,3] [--cache-loads R [--cache-period N] [--cache-window N] [--cache-min N] [--cache-wait]]] [--canon] [--profile]\n"
                     "more (--dspark/--spec, --layers/--serve/--remote, --trace, --record, ...): QUICKSTART.md, Options\n");
+#else
+    fprintf(stderr, "usage: ds-ref -m <model.gguf> (-p \"prompt\" | -f prompt.txt) [--chat|--think [--effort 1-100|low|high|max] [--think-show all|line|none]] [-n N] [--temp T [--top-p P] [--seed S]] [-t N] [--no-quant] [--max-ctx N] [--record run.json]\n"
+                    "the model on the CPU alone, the reference path; the product is bin-hip/ds-completion (QUICKSTART.md)\n");
+#endif
     return 2;
   }
   return -1;

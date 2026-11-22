@@ -3,7 +3,7 @@
 An inference engine for one model, DeepSeek-V4.1-Flash-1017, written from scratch for one
 machine: a Mac Pro 2019 with two Radeon Pro Vega II Duo cards, or two such machines.
 
-    ./ds-completion -m <model> -p "prompt"
+    bin-hip/ds-completion -m <model.gguf> --rt <dense-fp8.gguf> -p "prompt"
 
 Priorities, in order: correctness (outputs that match the official reference implementation),
 clarity, performance. Non-goals: other models, other quantizations, other hardware, serving
@@ -11,7 +11,7 @@ many users at once.
 
 How to build and run it: [QUICKSTART.md](QUICKSTART.md).
 
-## Status (2026-11-18)
+## Status (2026-11-22)
 
 - **One machine:** 44.6 t/s mean (34-55) on the 8 held-out prompts with speculative decoding
   and the adaptive expert cache, every output byte-identical to plain greedy decoding
@@ -21,10 +21,13 @@ How to build and run it: [QUICKSTART.md](QUICKSTART.md).
 - **Exact and deterministic:** fp8 and fp4 weights computed exactly on hardware without them;
   with `--canon` the output does not depend on where an expert runs. Gated per layer and end to
   end against the official implementation.
+- **Depends on** llama.cpp for the tokenizer, the GGUF reader and, in the reference path, ggml:
+  upstream, at one commit of its main branch (steps 168, 175); ROCm 6.3.4; Python's standard
+  library for the server.
 - **Prompt processing** in chunks of 512: 93 t/s on a 1,989-token prompt, 63 with `--canon`
   (steps 37-45, 68).
 - **Long context:** 65,536 tokens by default, up to 1M; gated against the reference at 20,000
-  tokens (steps 34-35).
+  tokens (steps 34-35, again in 174-175).
 - **Sampling:** temperature and top-p with a seed; one seed gives one output with or without
   speculative decoding (steps 148-151). Greedy is the default.
 - **Interactive sessions** (`-i`, `scripts/chat.sh`): chat and thinking mode over several
@@ -45,8 +48,8 @@ Three kinds of code live here, and the directories alone do not say which is whi
 
 | | what | where |
 |---|---|---|
-| **The product** | the engine with the GPU runtime (`bin-hip/ds-completion --rt ...`), the HTTP server in front of it, and `fp8pack`, which makes one of its files | `apps/ds_completion.cpp`, `apps/fp8pack.cpp`, `hip/`, `src/` except `forward.*`, `server/ds_server.py`, `scripts/serve.sh`, `scripts/chat.sh`, `placements/` |
-| **What checks it** | a second implementation of the model on the CPU (ggml graphs) and its program `ds-ref`, the test programs, the official Python reference and the golden data it writes | `src/forward.*`, `tests/`, `ref/`, `server/test_server.py`, `server/fake_engine.py` |
+| **The product** | the engine with the GPU runtime (`bin-hip/ds-completion --rt ...`), the HTTP server in front of it, and `fp8pack`, which makes one of its files | `apps/ds_completion.cpp`, `apps/fp8pack.cpp`, `hip/`, `src/` except `forward.*` and `fakequant_graph.*`, `server/ds_server.py`, `scripts/serve.sh`, `scripts/chat.sh`, `placements/` |
+| **What checks it** | a second implementation of the model on the CPU (ggml graphs) and its program `ds-ref`, the test programs, the official Python reference and the golden data it writes | `src/forward.*`, `src/fakequant_graph.*`, `tests/`, `ref/`, `server/test_server.py`, `server/fake_engine.py` |
 | **Tools** | benchmarks, the runner of measurements and the readers of records and traces, the inspector, every measurement's raw output | `bench/`, `scripts/` (the rest), `apps/ds_inspect.cpp`, `results/` |
 
 `make product`, `make tests` and `make tools` build one kind each (`make`: all three).

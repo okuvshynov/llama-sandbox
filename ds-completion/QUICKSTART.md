@@ -132,7 +132,7 @@ Options:
 - `-m FILE`: the model's first GGUF shard. `--rt FILE`: the GPU runtime, with the fp8 file.
 - `-p "text"` or `-f prompt.txt`: the prompt, inline or from a file (as is).
 - `--chat`: one user turn, no thinking.
-- `-i` / `--interactive` (with `--chat` or `--think`, and `--rt`): an interactive session, one user line per turn on
+- `-i` / `--interactive` (with `--chat` or `--think`): an interactive session, one user line per turn on
   one context; `-p` is then optional (the first turn), `-n` is per reply (reasoning included). An
   empty line ends it. With `--think`, earlier turns' reasoning is dropped from the context, as the
   reference does. `scripts/chat.sh [--think [--effort max]]` runs it with the fast configuration
@@ -148,14 +148,14 @@ Options:
   gives one output, whatever the placement (with `--canon`) and with or without `--spec`. Not
   with `--spec` on two machines yet. README steps 148-151.
 - neither: the prompt is raw text after BOS.
-- `--requests` (with `--rt`, in place of a prompt): prompts from stdin, one after another, each
+- `--requests` (in place of a prompt): prompts from stdin, one after another, each
   with the reply of an empty context; the reply's tokens as lines on stdout. For a server's front. The
   protocol: `docs/requests.md`. README steps 152, 158.
   `python3 server/ds_server.py [--port 8080] -- <this command with --requests>` puts an HTTP server
   with the Anthropic Messages API in front of it (`docs/server.md`, README step 153).
 - `-n`: max new tokens.
-- `--max-ctx N`: the context's size (default 65,536 with `--rt`; "Limits" below).
-- `--layers a-b` (with `--rt`): only that range of layers ("Two machines" below). A range must
+- `--max-ctx N`: the context's size (default 65,536; "Limits" below).
+- `--layers a-b`: only that range of layers ("Two machines" below). A range must
   hold the layers its own layers read from, which leaves layer 20 as the only cut (checked;
   README step 110).
 - `--serve PORT`: the back: a range up to the last layer; waits for one front, then exits.
@@ -165,7 +165,7 @@ Options:
 - `--prefill-chunk N`: prompt tokens per forward (default and most 512, the fastest for
   long prompts in the fast numerics). The output does not depend on it.
 - `--no-overlap`: prompt chunks without the CPU/GPU overlap (slower; for comparisons).
-- `-t`: CPU threads; the default 16 (one per physical core) is best with `--rt`. 32 leaves no
+- `-t`: CPU threads; the default 16 (one per physical core) is best. 32 leaves no
   CPU for the host thread and the HIP runtime and is much slower (README step 18).
 - `--profile`: a per-step time breakdown, the CPU's misses per layer and what they cost (README
   step 50).
@@ -331,7 +331,7 @@ a row says otherwise (the clock does not matter to the CPU rows).
 | **two machines, the model in two halves** | the two commands of "Two machines" above | **35.0-62.9 t/s, mean 50.9** (300 tokens, held-out prompts; README step 111) | output byte-identical to one machine with `--canon` |
 | **one machine: speculative decoding + adaptive expert cache** | `... --placement placements/study30.txt --dspark ... --spec --canon --cache-loads 800 --cache-period 8` | **33.9-55.0 t/s, mean 44.6** (300 tokens, held-out prompts; README step 104) | output byte-identical to plain decoding with `--canon` |
 | the same, sampled | `... --temp 1 --top-p 0.95 --seed 1` | mean 43.1 against 44.9 greedy in the same session (README step 151) | the plain loop's output for the same seed |
-| own runtime, dense on GPU 0, experts on the CPU | `bin-hip/ds-completion --rt ...` | 12.0-12.5 t/s (sclk 2) | 5.9e-6 / 4.8e-3 (earlier run 1.7e-5 / 6.3e-4) |
+| dense on GPU 0, every routed expert on the CPU | `bin-hip/ds-completion --rt ...` without `--placement` | 12.0-12.5 t/s (sclk 2) | 5.9e-6 / 4.8e-3 (earlier run 1.7e-5 / 6.3e-4) |
 | CPU only, the reference path | `bin/ds-ref` (`bin/ds-completion` until step 173) | 3.5 t/s | 1.3e-5 / 3.9e-3 |
 | llama.cpp with the DeepSeek-V4.1 PR (llama-cli, CPU; steps 2-3) | - | 3.5 t/s | 2.1e-5 / 1.3e-3 |
 
@@ -346,9 +346,9 @@ Means over all 17 steps: 1.8e-2 to 2.5e-2 for every mode.
 
 - **The runtime is also gated per layer:** attention and FFN output within ~1e-7 of the fp32 +
   fake-quant reference. It has no inexact op left, and repeated runs are bit-identical.
-- **Prompt processing** (`--rt`, chunks of 512, the CPU's experts overlapped with the GPU's
+- **Prompt processing** (chunks of 512, the CPU's experts overlapped with the GPU's
   work; README steps 37-45, 68): 93 t/s, 63 with `--canon` (1,989 tokens; 97 / 73 at 6,106; sclk 6),
-  output byte-identical to token-by-token processing; ~7.7 t/s on the CPU path. The
+  output byte-identical to token-by-token processing; ~7.7 t/s with `bin/ds-ref`. The
   runtime's mean KL varies run to run with fp8 rounding flips (README step 10); every exact mode
   scatters the same way.
 - **Where a step goes on two machines** (README step 112's merged trace): a 6-token code step
@@ -359,7 +359,7 @@ Means over all 17 steps: 1.8e-2 to 2.5e-2 for every mode.
   ~27 ms, its wait for the other dies ~5 ms, outside the layers ~5 ms; the draft before it ~8 ms
   more. The prompt: the CPU's experts and the GPU's work overlap and the slower
   sets the pace (TIMING.md).
-- **GPU memory with `--rt`:** 6.41 GiB fp8 + 1.75 GiB small weights + ~1 GB of prompt-chunk
+- **GPU memory:** 6.41 GiB fp8 + 1.75 GiB small weights + ~1 GB of prompt-chunk
   buffers on die 0; the rest holds experts (and the 8.5 GB draft with `--dspark`).
 
 ## Limits
@@ -368,14 +368,14 @@ Means over all 17 steps: 1.8e-2 to 2.5e-2 for every mode.
 - Two machines: the back serves one front and exits; the connection is plain TCP without
   authentication or encryption; only the layer cut is checked between the halves; the two
   machines take turns, so the gain is bounded by what the CPU's experts cost on one.
-- Context with `--rt`: 65,536 tokens by default (prompt + generation), up to the model's
+- Context: 65,536 tokens by default (prompt + generation), up to the model's
   1,048,576 with `--max-ctx N` (~6.4 KB of GPU 0 memory per position). A 30k-token prompt takes
-  ~5-8 min at 63-97 t/s (it took ~30 min token by token). Without `--rt` (the CPU path): 4,096 by
+  ~5-8 min at 63-97 t/s (it took ~30 min token by token). `bin/ds-ref` (the CPU reference path): 4,096 by
   default, at most 16k (no candidate-block selection there).
 - The dense part uses one GPU; the others only hold experts with `--placement`.
 - At exit the process sometimes aborts (signal 6, exit code 134) inside the GPU runtime's
   shutdown, after `main` has returned: the output and the timing lines are complete by then
-  (README step 96; unexplained).
+  (README steps 93 and 96; unexplained; seen again once in 16 runs in step 175).
 - Greedy decoding (the default) can fall into a repetition loop on long reasoning (README
   step 48: a proof prompt repeats one line after ~800 tokens; the model's behaviour, not a
   bug). Sampling (`--temp 1 --top-p 0.95`, the model card's settings) is the way around it.

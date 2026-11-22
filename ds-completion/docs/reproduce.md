@@ -298,6 +298,7 @@ Unless stated: sclk 2, 16 CPU threads (32 before README step 18), the study30 pl
 | 174 | `gates-long.txt` | the six `ds-test` commands in the file (CPU: seconds to 3 min; the runtime at 20,000 tokens: ~31 min per layer, ~8 min end to end), each table against the stored one named beside it; `cmp` of the logits and the top-k dump with `data/ds/readme20k-rt.f32` and `data/ds/readme20k-topk.bin`; `~/venvs/ds-ref/bin/python ref/compare_logits.py data/ref/readme20k-s.pt <file>` |
 | 175 | `dist/upstream.txt` | `~/forks/llama.cpp` at upstream `e626db7ca`, built with QUICKSTART's two `cmake` lines; `make clean && make && make HIP=1`; then the commands in the file: the unit tests, `fp8pack` and `cmp`, the seven `ds-test` tables and the two `--e2e` runs, `bin/ds-ref`, `scripts/run_matrix.py results/cleanup/heldout.matrix --keep-out --out <dir>` (twice per prompt) and `cmp` with `results/cache-test/plain-canon-static/`, `results/requests/requests_test.py`, `server/test_server.py` (~90 min in all) |
 | 176 | `dist/llama-cpp-dir.txt` | llama.cpp at `e626db7ca` in `~/projects/llama.cpp`, built with QUICKSTART's two `cmake` lines; `make clean && make && make HIP=1`; the commands in the file (step 175's without the 20,000-token set, ~50 min); `~/venvs/ds-ref/bin/python ref/check_weights.py --layers 0 --experts 0` (7 min, 2.9 GB from Hugging Face) |
+| 177 | `dist/review-177.txt` | by hand: the comparisons named in the file; `make && make HIP=1`; the two programs without arguments; the four commands of its part 4 and `server/test_server.py` |
 | 167 | `server/serve.txt` | by hand: `DS_LOGS=<a directory> scripts/serve.sh`, one request with `curl` (the one of `docs/pi.md`, section 1), a minute's wait for `metrics.prom`, Ctrl-C; the file's parts are named in it |
 
 ## 7. Open items (to confirm)
@@ -305,5 +306,8 @@ Unless stated: sclk 2, 16 CPU threads (32 before README step 18), the study30 pl
 - The Hugging Face revisions of the two Unsloth GGUFs and the draft's repository (the sha256
   manifest pins the bytes meanwhile). Settled since: llama.cpp is upstream at one commit
   (section 2; until step 167 the head of PR #30817, `b72050d03ae14bb3cb5138ecefab3f3f65157d31`).
+- The second machine (`shower`) is as it was at step 167: llama.cpp in `~/forks/llama.cpp` at the
+  PR's commit, and an older build of this repository. Before the next two-machine run: the
+  checkout and build of QUICKSTART there, this repository at the same commit, `make HIP=1`.
 - Turn the hand-typed runs a write-up relies on (steps 4-26) into scripts.
 - An archive of `data/routing/` next to any publication.

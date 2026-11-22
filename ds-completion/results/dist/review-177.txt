@@ -1,0 +1,25 @@
+# A review of the documents against the state after steps 168-176, and the checks of its one code change:
+# a usage text per program in apps/ds_completion.cpp (README step 177).
+# Commit 6143913 + this step's change (the commit that adds this file); sclk 6 on the four GPUs; 2026-11-22.
+# M=~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf  F8=~/llms/ds-1017-fp8/dense-fp8.gguf
+#
+# 1. What was compared
+#    the options apps/ds_completion.cpp parses against the ones QUICKSTART.md names: the same set
+#    every path in backticks in README.md, QUICKSTART.md, docs/overview.md, docs/reproduce.md (sections 1-5), docs/server.md,
+#      docs/pi.md, docs/requests.md, docs/timing.md, the Makefile: all exist (bin/llama-logits: built on demand)
+#    grep for fork, FORK, pin, b72050d, "without --rt", bin/ds-completion, forward.h in the current documents and the scripts
+#
+# 2. Found and corrected: the list is in docs/steps.md, step 177.
+#
+# 3. make && make HIP=1: rc 0, no warnings from g++.
+bin/ds-ref                (no arguments)   usage: ds-ref -m <model.gguf> (-p "prompt" | -f prompt.txt) ... [--no-quant] [--max-ctx N] [--record run.json]
+bin-hip/ds-completion     (no arguments)   usage: ds-completion -m <model.gguf> --rt <dense-fp8.gguf> (-p "prompt" | -f prompt.txt | -i | --requests) ...
+#
+# 4. The same results
+bin/ds-test -m $M -g data/golden/hello-fp32 --e2e <f>                     logits the bytes of step 168's
+bin-hip/ds-test -m $M -g data/golden/hello-fp32 --runtime $F8 --e2e <f>   logits the bytes of step 168's
+bin/ds-ref -m $M -p "The three largest cities in Ukraine are" -n 24       output hash fnv1a64:3a40e97fd9b90430 (step 173's)
+python3 scripts/run_matrix.py results/cleanup/heldout.matrix --prompts py-lru,summary-json --reps 1 --keep-out --out <dir>
+    py-lru        300 tokens  46.84 t/s  the bytes of results/cache-test/plain-canon-static/py-lru.out
+    summary-json   98 tokens  45.13 t/s  the bytes of results/cache-test/plain-canon-static/summary-json.out
+python3 server/test_server.py                                             all checks passed

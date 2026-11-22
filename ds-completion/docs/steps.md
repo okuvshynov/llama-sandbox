@@ -6570,3 +6570,44 @@ and called it session variation. The cause was not looked for.
 table through the same `GGUF.raw` that the check covers. The second Mac Pro: its checkout,
 its build and its place are still the old ones.
 
+## Step 177: the documents against the state after steps 168-176
+
+**The question.** Nine steps changed what the programs are called (`ds-ref`), what
+`ds-completion` needs (`--rt`, always), what `make` builds, and where llama.cpp comes from and
+lies. Do the front page, QUICKSTART, the code map and the programs' own help say the same?
+Predicted: a few leftovers.
+
+**First:** `~/forks/llama.cpp` was deleted (the PR's build and branch with it; the commit is
+on GitHub, `docs/llama-cpp-upstream.md` has the commands). The build did not notice.
+
+**How it was reviewed** (`results/dist/review-177.txt`): the options the program parses
+against the ones QUICKSTART names (the same set); every path named in the current documents
+against the tree (all there); a search for the old names (`fork`, `FORK`, the pin, "without
+`--rt`", `bin/ds-completion`, `forward.h`); and a read of README, QUICKSTART, the code map and
+the setup sections of `docs/reproduce.md`.
+
+**Found and corrected:**
+
+| where | what it said | now |
+|---|---|---|
+| `README.md`, the first command | `./ds-completion -m <model> -p "prompt"`: runs nothing since step 173 | with `--rt <dense-fp8.gguf>`, from `bin-hip/` |
+| `README.md`, the map | the product is `src/` except `forward.*` | except `forward.*` and `fakequant_graph.*` (step 172) |
+| `README.md`, status | nothing on what it depends on | one line: upstream llama.cpp at one commit, ROCm, Python's standard library |
+| `QUICKSTART.md`, options and limits | eight statements qualified by "with `--rt`" (`-i`, `--requests`, `--max-ctx`, `--layers`, `-t`, prompt processing, GPU memory, context) | unqualified: the program has no other mode. "Without `--rt` (the CPU path)" is `bin/ds-ref` |
+| `QUICKSTART.md`, results | a row "own runtime, ... `--rt ...`" as one mode among others | "every routed expert on the CPU: without `--placement`" |
+| `QUICKSTART.md`, limits | the exit abort: step 96 | steps 93 and 96, and step 175's sighting |
+| `apps/ds_completion.cpp` | one usage text and one header for both programs: `ds-completion` was offered `--no-quant`, `ds-ref` was offered `--rt` and the cache options | a usage text per program |
+| `docs/reproduce.md`, open items | nothing on the second machine | it is as at step 167 (the PR's checkout in the old place, an older build) and what it needs |
+
+**Looked at and left:** `docs/overview.md`'s code map and plan item 34 are current. The
+Makefile's comments were rewritten in steps 170-176. "Fork", "the pin" and `FORK=` inside old
+steps, old plan lines and results headers describe their own time and stay.
+
+**Checked** after the one code change (the usage text): both programs print their own; the
+short set's logits on both paths are the stored bytes; `ds-ref`'s output hash is step 173's;
+two held-out prompts give the stored bytes at 46.8 and 45.1 t/s; the server test passes.
+
+**Not looked at in this review:** `docs/timing.md`, `docs/numerics.md`, `docs/record.md`,
+`docs/pi.md` and `docs/server.md` beyond the searches (none of them names what changed); the
+scripts kept with old results.
+
