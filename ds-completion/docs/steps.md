@@ -6170,3 +6170,60 @@ any of the three costs in speed was not measured.
 **Not done:** nothing rotates or removes the directories. pi itself was not run here. The
 documents' section on installing pi still describes a build from its sources (step 159); how
 the system-wide one was installed is not recorded.
+
+## Step 168: the Engram table decoded by our own code, and upstream llama.cpp
+
+**The question.** Step 163 found that one tensor ties us to the llama.cpp PR's commit: the
+Engram table, type 43, MXFP8 in the PR and in our files, plain fp8 upstream. It left two steps:
+our own decoder on both paths with a check at load, then the gates against upstream. Predicted:
+the GPU runtime gives the same bytes; the CPU path may move, since it runs ggml's CPU kernels
+and upstream has a month of changes to them.
+
+**First, the build before the change** (9a57d22, the pin; the machine had been restarted, the
+model files read through first; sclk 6): the held-out matrix of step 138 again. 16 of 16
+outputs the stored ones, the mean of the 8 prompts 44.78 t/s (step 138: 44.70).
+
+**The change** (five files):
+
+- `src/model.h`, `src/model.cpp`: `mxfp8_to_float` (a block is 33 bytes: one e8m0 scale, 32 e4m3
+  codes; value = e4m3(code) x 2^(scale - 127), a table of the 256 codes) and `mxfp8_row_bytes`.
+  The tensor's type is asked for as the number 43 (`kEngramGgmlType`), not as a name only the
+  PR has.
+- A check at load: the tensor's place in its shard, up to the next tensor or the file's end,
+  must hold 33 bytes per 32 values. The number 43 does not say which format it is; the size does.
+- `hip/rt.cpp`, `fetch_engram_rows`: our decoder and row size in place of the type's `to_float`
+  and `nb[1]`.
+- `src/forward.cpp`, `Engine::engram`: the rows are gathered and decoded on the host into the
+  chunk's plan and enter the graph as an input tensor, in place of `ggml_get_rows` on the table.
+- `apps/ds_inspect.cpp`: the table's size from the layout.
+
+**Measured** (`results/dist/trunk.txt`). Three builds: before the change on the pin ("old"),
+the change on the pin, the change on upstream `e626db7ca` (every program of `make` and
+`make HIP=1`; the only new warnings are two deprecations in `ref/llama_logits.cpp`).
+
+| check | the change, pin | the change, upstream |
+|---|---|---|
+| per-layer gate, `hello-fp32`, CPU path | 201 rows, 0 differ from old | 0 differ |
+| per-layer gate, GPU runtime | 0 differ | 0 differ |
+| end-to-end logits (5 steps), both paths | the same bytes as old | the same bytes |
+| held-out, 8 prompts x 2 | 16 of 16 the stored outputs | 16 of 16 |
+| `fp8pack` | | the same bytes as `dense-fp8.gguf`, 19.1 s |
+
+The prediction was half wrong: the CPU path did not move either. On this gate, at least: it is
+5 steps of a 10-token prompt, and the longer golden sets were not run against upstream.
+
+**Speed** is as step 138's on both builds, within about 2%, with one exception that was looked
+at: cpp-matrix on the pin build gave 52.60 and 52.78 t/s (-3.4%), while the upstream build,
+with the same change, gave 55.28. Three more runs of the pin binary right after: 54.87, 55.03,
+54.99. The slow pair belongs to that session, not to the change; what caused it was not found.
+
+**Decision.** QUICKSTART names upstream `e626db7ca` for a new setup. The PR's commit stays in
+the documents for what still needs it: llama.cpp's own reading of these files (`llama-cli` as
+the CPU baseline, `bin/llama-logits`), which upstream gets wrong with no error. This machine's
+build stays on the pin, and every earlier result was made with it.
+
+**Not done:** the longer golden sets against upstream; a file that fails the size check (it
+was only seen to pass on the real one); two machines and `--requests` with the upstream build;
+`llama-logits` does not refuse to run when built against upstream. A serving-only build would
+need only the tokenizer and the GGUF reader of llama.cpp (the ggml graphs are the CPU path's);
+not tried.

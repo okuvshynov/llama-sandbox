@@ -1,6 +1,13 @@
-# llama.cpp: why ds-completion stays on the DSV4.1 PR commit
+# llama.cpp: upstream, the DSV4.1 PR commit, and the one tensor between them
 
-**Decision (2026-11-09): keep the fork at `b72050d03`.** Upstream llama.cpp merged DeepSeek-V4.1
+**Now (2026-11-21, step 168): ds-completion builds against upstream or the PR's commit, with the
+same results.** The one tensor upstream reads wrong in our files (the Engram table) is decoded by
+our own code, on the GPU runtime and on the CPU path, and checked at load. Tested upstream commit:
+`e626db7ca`; QUICKSTART names it. llama.cpp's *own* programs on these files (`llama-cli`, our
+`bin/llama-logits`) still need the PR's commit: "The move" at the end. The sections between are
+the history, as written at the time.
+
+**Decision (2026-11-09), replaced by the above: keep the fork at `b72050d03`.** Upstream llama.cpp merged DeepSeek-V4.1
 support, but it cannot read the GGUF files we use (Unsloth's DeepSeek-V4.1-Flash-1017 UD-Q8_K_XL):
 it loads them without an error and generates garbage. These files and that commit belong together.
 When a newer DeepSeek model (Flash or full) is quantized with the merged code, we move to upstream.
@@ -166,9 +173,55 @@ of `results/spec-heldout/prompts.txt` (as `scripts/spec-measure.sh` runs it, wit
 `--cache-loads 800 --cache-period 8`, without `--spec-log`), each output against the stored
 one with `cmp`; `bin-trunk/fp8pack -m $M -o <file>` and `cmp` with `dense-fp8.gguf`.
 
+## The move (2026-11-21, step 168)
+
+The trial's two steps, done:
+
+- **The decoder** (`src/model.h`, `src/model.cpp`): `mxfp8_to_float` and `mxfp8_row_bytes`. A
+  block is 33 bytes, one e8m0 scale then 32 e4m3 codes; value = e4m3(code) x 2^(scale - 127),
+  exact in fp32, the same values as the PR's `dequantize_row_mxfp8`.
+- **Both paths use it.** The GPU runtime (`hip/rt.cpp`, `fetch_engram_rows`) in place of the
+  type's `to_float` and `nb[1]`. The CPU path (`src/forward.cpp`, `Engine::engram`) gathers and
+  decodes the rows on the host and gives them to its graph as an input, in place of
+  `ggml_get_rows` on the table.
+- **The type is the number 43**, and the loader checks what the number cannot say: the tensor's
+  place in its file (up to the next tensor or the file's end) must hold 33 bytes per 32 values,
+  or the load fails with a message. Plain fp8 under the same number would be smaller.
+- `ds-inspect` prints the table's size from the layout, not from `ggml_nbytes`.
+
+Nothing in the code reads the table through ggml now; the rule is in a comment at the tensor
+(`src/model.h`).
+
+**Checked** (`results/dist/trunk.txt`; three builds: before the change on the pin, the change on
+the pin, the change on upstream `e626db7ca`):
+
+| check | the change, pin | the change, upstream |
+|---|---|---|
+| `make`, `make HIP=1`: every program | no warnings | builds; two deprecation warnings in `ref/llama_logits.cpp` |
+| per-layer gate (`hello-fp32`), CPU path and GPU runtime | 201 rows each, equal to before | equal |
+| end-to-end logits, both paths | the same bytes | the same bytes |
+| the 8 held-out prompts, 2 runs each | 16 of 16 the stored outputs | 16 of 16 |
+| `fp8pack` regenerates `dense-fp8.gguf` | (not run again) | byte-identical, 19.1 s |
+
+So the month of upstream changes to ggml's CPU kernels did not move the CPU path on this gate.
+Speeds are within about 2% of step 138's on both; one prompt read 3.4% slow on the pin build
+and normal in three repeats (the file's section 4).
+
+**What still needs the PR's commit:** llama.cpp's own reading of these files. `bin/llama-logits`
+(`ref/llama_logits.cpp`) and the CPU baseline (`llama-cli`, `llama-completion`) run llama.cpp's
+implementation of the model, which upstream gets wrong for a type-43 Engram table. Built
+against upstream, `llama-logits` compiles and would give wrong logits with no error.
+
+**Not checked:** the longer golden sets against upstream; the size check against a file that
+fails it; two machines and `--requests` with the upstream build. Every result in this
+repository before this step was made with the pin, and this machine's build stays on it.
+
+**Following upstream from here:** a later commit can break the build or move the CPU path's
+numbers. `e626db7ca` is the way back; after a move to a newer one, the gate of this section.
+
 ## Other notes
 
 - The other files are not affected: `dense-fp8.gguf` (`fp8pack`) is all `I8`, the DSpark draft
   `F32`, `BF16` and `MXFP4`, all with the same meaning upstream.
-- Our code does not build against upstream as is: `src/model.cpp` names `GGML_TYPE_MXFP8`.
-  It is the only compile error in the programs the trial built (above).
+- Before step 168 our code did not build against upstream: `src/model.cpp` named
+  `GGML_TYPE_MXFP8`, the only compile error.

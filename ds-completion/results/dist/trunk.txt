@@ -1,0 +1,83 @@
+# ds-completion with its own decoder of the Engram table (README step 168), built against the pinned llama.cpp
+# (b72050d03) and against upstream master e626db7ca (2026-11-20): the gates and the held-out prompts.
+# Commit 9a57d22 + step 168's change (the commit that adds this file); sclk 6 on the four GPUs; 2026-11-21.
+# The machine had been restarted: the model files were read through first (488 GB in the page cache).
+# Three builds: "old" = 9a57d22 against the pin (bin/, bin-hip/ as built before the change);
+#               "pin" = the change against the pin (make && make HIP=1);
+#               "trunk" = the change against upstream (make FORK=<upstream> BIN=bin-trunk && make HIP=1 FORK=<upstream> BIN=bin-trunk-hip;
+#                         upstream built with QUICKSTART's two cmake lines; every program of `make` and `make HIP=1` built).
+#
+# 1. The gates, per build (G=data/golden/hello-fp32, 5 steps; F8=dense-fp8.gguf):
+#      <bin>/ds-test -m $M -g $G                       and  ... --e2e cpu.f32     (the CPU path, ggml graphs)
+#      <bin-hip>/ds-test -m $M -g $G --runtime $F8     and  ... --e2e rt.f32      (the GPU runtime)
+#    The --e2e files (the logits of the 5 steps, 2,585,600 bytes) compared with cmp; the per-layer tables row by row,
+#    the last column (ms) left out.
+CPU path    old vs pin: end-to-end logits same bytes; per-layer tables: 201 rows, 0 differing
+CPU path    old vs trunk: end-to-end logits same bytes; per-layer tables: 201 rows, 0 differing
+GPU runtime old vs pin: end-to-end logits same bytes; per-layer tables: 201 rows, 0 differing
+GPU runtime old vs trunk: end-to-end logits same bytes; per-layer tables: 201 rows, 0 differing
+the 5 steps' tokens, every build and path (old-cpu-e2e.txt):
+step  0:  10 tokens ->  19923 (ref  19923)
+step  1:   1 tokens ->      3 (ref      3)
+step  2:   1 tokens ->    342 (ref    342)
+step  3:   1 tokens ->   4571 (ref   4571)
+step  4:   1 tokens ->   4843 (ref   4843)
+
+# 2. The held-out prompts: scripts/run_matrix.py results/cleanup/heldout.matrix --keep-out --out <dir>, 2 runs per prompt;
+#    for trunk the same matrix with a line "bin <bin-trunk-hip>/ds-completion". Each output against
+#    results/cache-test/plain-canon-static/<prompt>.out with cmp. "before": the same matrix with the old build, the same
+#    day, before the change (also 16 of 16 the same).
+before: 16 outputs, 0 differing
+pin   : 16 outputs, 0 differing
+trunk : 16 outputs, 0 differing
+
+# 3. Speed against step 138's records (results/cleanup/heldout/, 2026-11-16; set "heldout" below):
+#    scripts/records.py results/cleanup/heldout/*.json <before>/*.json <pin>/*.json <trunk>/*.json \
+#        --name-label '/(?P<set>heldout|before|pin|trunk)/[a-z]+-(?P<prompt>[^/]+)-(?P<rep>\d)\.json$' --by prompt,set --show counters.gen_tps --vs set=heldout
+prompt        set      runs  counters.gen_tps  spread       vs heldout
+cpp-matrix    heldout     2             54.54    0.2%
+geometry      heldout     2             54.94    0.5%
+ja-email      heldout     2             36.84    1.3%
+py-lru        heldout     2             46.51    0.0%
+sql-report    heldout     2             46.93    0.3%
+summary-json  heldout     2             44.74    0.3%
+tcp-udp       heldout     2             38.96    0.5%
+zh-travel     heldout     2             34.11    0.4%
+cpp-matrix    before      2             54.61    0.2%  ~ (spread 0.2%)
+geometry      before      2             54.77    0.1%  ~ (spread 0.5%)
+ja-email      before      2             37.13    0.3%  ~ (spread 1.3%)
+py-lru        before      2             46.61    0.2%            +0.2%
+sql-report    before      2             47.01    0.3%  ~ (spread 0.3%)
+summary-json  before      2             44.84    0.1%  ~ (spread 0.3%)
+tcp-udp       before      2             39.14    1.5%  ~ (spread 1.5%)
+zh-travel     before      2             34.12    0.6%  ~ (spread 0.6%)
+cpp-matrix    pin         2             52.69    0.3%            -3.4%
+geometry      pin         2             55.57    0.5%            +1.2%
+ja-email      pin         2             37.29    0.4%  ~ (spread 1.3%)
+py-lru        pin         2             46.77    0.2%            +0.5%
+sql-report    pin         2             47.79    0.4%            +1.8%
+summary-json  pin         2              45.3    0.2%            +1.3%
+tcp-udp       pin         2             39.44    1.3%  ~ (spread 1.3%)
+zh-travel     pin         2             34.19    0.4%  ~ (spread 0.4%)
+cpp-matrix    trunk       2             55.28    1.1%            +1.4%
+geometry      trunk       2             55.44    0.3%            +0.9%
+ja-email      trunk       2             37.26    0.2%  ~ (spread 1.3%)
+py-lru        trunk       2             46.89    0.9%  ~ (spread 0.9%)
+sql-report    trunk       2              47.4    0.5%            +1.0%
+summary-json  trunk       2             45.13    0.3%            +0.9%
+tcp-udp       trunk       2             39.26    0.6%            +0.8%
+zh-travel     trunk       2             34.14    0.2%  ~ (spread 0.4%)
+# vs heldout: a difference of the means, printed if larger than the spread of both groups' repeats; ~: inside it; ?: a side has one run, no spread; =: equal
+
+# 4. cpp-matrix with the pin build was 3.4% under step 138's in section 3 (52.60 and 52.78 t/s). Three more runs of the same
+#    binary right after (scripts/run_matrix.py results/cleanup/heldout.matrix --prompts cpp-matrix --reps 3 --out <dir>):
+    300 tokens, 54.87 t/s
+    300 tokens, 55.03 t/s
+    300 tokens, 54.99 t/s
+#    So the pair was slow for a reason of that session, not found; the change is not it (trunk has the same change).
+#
+# 5. bin-trunk/fp8pack -m $M -o <file>: "wrote 330 tensors, every value exact" in 19.1 s; cmp with ~/llms/ds-1017-fp8/dense-fp8.gguf: the same bytes.
+#
+# Not run: the longer golden sets against upstream; a file whose Engram table is not MXFP8 (the size check at load);
+# two machines and --requests with the trunk build. bin-trunk/llama-logits builds, but it is llama.cpp's own reading of
+# the model, which upstream gets wrong for these files (docs/llama-cpp-upstream.md): it needs the pinned commit.

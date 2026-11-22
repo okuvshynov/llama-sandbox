@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cinttypes>
+#include <cmath>
 #include <cstring>
 #include <set>
 #include <thread>
@@ -285,7 +286,25 @@ void Model::load(const std::string& first, const std::vector<int>& want_layers) 
     int64_t rows = 0;
     for (size_t c = 0; c < h.engram_offsets.size(); c++)
       rows = std::max<int64_t>(rows, (int64_t)(h.engram_offsets[c] + h.engram_primes[c]));
-    engram_table = req("per_layer_token_embd.weight", GGML_TYPE_MXFP8, {h.engram_dim, rows});
+    engram_table = req("per_layer_token_embd.weight", (ggml_type)kEngramGgmlType, {h.engram_dim, rows});
+    // The type id alone does not say MXFP8 (model.h): the tensor's place in its file must hold 33
+    // bytes per 32 values. A table of plain fp8 (what id 43 means upstream) would be smaller.
+    if (h.engram_dim % 32) throw err("the Engram table's rows are not a multiple of 32 values");
+    const size_t need = mxfp8_row_bytes(h.engram_dim) * (size_t)rows;
+    for (const Shard& s : shards) {
+      const char* b = (const char*)s.map;
+      const char* p = (const char*)engram_table->data;
+      if (p < b || p >= b + s.size) continue;
+      size_t room = (size_t)(b + s.size - p);  // up to the next tensor of the shard, or its end
+      const size_t data0 = gguf_get_data_offset(s.g);
+      for (int64_t i = 0; i < gguf_get_n_tensors(s.g); i++) {
+        const size_t off = data0 + gguf_get_tensor_offset(s.g, i);
+        if (off > (size_t)(p - b)) room = std::min(room, off - (size_t)(p - b));
+      }
+      if (room < need)
+        throw err("the Engram table is not MXFP8 (33 bytes per 32 values): it has " + std::to_string(room) + " bytes in its file, " +
+                  std::to_string(need) + " are needed (docs/llama-cpp-upstream.md)");
+    }
   }
 
   layers.assign(h.n_layer, Layer{});
@@ -350,6 +369,24 @@ void Model::load(const std::string& first, const std::vector<int>& want_layers) 
       if (!loaded.count(L)) continue;
     }
     if (!claimed.count(name)) throw err("unexpected tensor (not in the schema): " + name);
+  }
+}
+
+void mxfp8_to_float(const void* src, float* dst, int64_t n) {
+  static const struct Codes {
+    float v[256];
+    Codes() {
+      for (int c = 0; c < 256; c++) {  // e4m3 (fn): sign, 4 exponent bits (bias 7), 3 of mantissa; 0x7f / 0xff: NaN
+        const int e = (c >> 3) & 15, m = c & 7;
+        const float a = e == 15 && m == 7 ? NAN : e == 0 ? std::ldexp((float)m, -9) : std::ldexp((float)(8 + m), e - 10);
+        v[c] = (c & 0x80) ? -a : a;
+      }
+    }
+  } codes;
+  const uint8_t* b = (const uint8_t*)src;
+  for (int64_t i = 0; i < n / 32; i++, b += 33) {
+    const float d = b[0] == 0xff ? NAN : std::ldexp(1.0f, (int)b[0] - 127);
+    for (int j = 0; j < 32; j++) dst[i * 32 + j] = codes.v[b[1 + j]] * d;
   }
 }
 

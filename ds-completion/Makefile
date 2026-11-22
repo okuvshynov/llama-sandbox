@@ -1,5 +1,5 @@
-# ds-completion: links ggml (and, for the tokenizer only, libllama) from the llama.cpp fork that
-# carries DeepSeek-V4.1 support (~/forks/llama.cpp).
+# ds-completion: links ggml (and, for the tokenizer only, libllama) from a llama.cpp checkout
+# (~/forks/llama.cpp): upstream or the DeepSeek-V4.1 PR's commit (QUICKSTART.md, README step 168).
 #
 # src/ and hip/ are the libraries (CPU side, GPU runtime); apps/, tests/ and bench/ the programs.
 #

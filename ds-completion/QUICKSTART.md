@@ -47,10 +47,13 @@ the placement. `--canon` makes the output independent of where an expert runs.
   them: `cd ~/llms && grep -v '^#' ~/projects/llama-sandbox/checksums/DS-V4.1-Flash-1017.sha256 | sha256sum -c`
   (paths relative to the model directory; `dense-fp8.gguf` after making it). After a copy, check
   again after a reboot: a check right after it may only read the page cache.
-- **llama.cpp at the DeepSeek-V4.1 PR commit**, not upstream: upstream reads these GGUF files
-  silently wrong and generates garbage (their Engram table's type 43 is the PR's MXFP8, upstream's
-  plain fp8; [docs/llama-cpp-upstream.md](docs/llama-cpp-upstream.md)). Used for ggml, GGUF
-  reading and the tokenizer, as static libraries in `~/forks/llama.cpp/build/`.
+- **llama.cpp**, upstream at a tested commit (`e626db7ca`, 2026-11-20) or the DeepSeek-V4.1 PR's
+  commit: this code gives the same results with both (step 168). Used for ggml, GGUF reading and
+  the tokenizer, as static libraries in `~/forks/llama.cpp/build/`. Upstream's *own* programs
+  (`llama-cli`, and our `bin/llama-logits`, which runs llama.cpp's implementation) read these GGUF
+  files silently wrong and generate garbage: their Engram table's type 43 is the PR's MXFP8,
+  upstream's plain fp8. We decode that table ourselves; for llama.cpp's own programs on these
+  files, build the PR's commit ([docs/llama-cpp-upstream.md](docs/llama-cpp-upstream.md)).
 - **For two machines:** a second Mac Pro set up the same way (the same system, the same three
   model files at the same `~/llms/` paths with the same checksums, this repository at the same
   commit, built; run the checksum line on both), the same GPU clock level on both, and a network
@@ -59,11 +62,12 @@ the placement. `--canon` makes the output independent of where an expert runs.
 ## Build and prepare (once)
 
 ```bash
-# llama.cpp, pinned by hash (the head of PR #30817, the code these GGUF files were made with)
+# llama.cpp: upstream, at the commit this was tested with (step 168). The PR's commit works the
+# same and is the one for llama.cpp's own programs on these files: b72050d03ae14bb3cb5138ecefab3f3f65157d31
+# (the head of PR #30817; `git fetch origin <hash>` first, GitHub serves it)
 git clone https://github.com/ggml-org/llama.cpp ~/forks/llama.cpp
 cd ~/forks/llama.cpp
-git fetch origin b72050d03ae14bb3cb5138ecefab3f3f65157d31
-git checkout -b deepseek41 b72050d03ae14bb3cb5138ecefab3f3f65157d31
+git checkout e626db7ca
 cmake -B build -DBUILD_SHARED_LIBS=OFF -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j 32
 

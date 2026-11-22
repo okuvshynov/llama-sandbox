@@ -455,6 +455,9 @@ Step 166: item 33's third step: `--log FILE` (a JSON line per request, 30 keys),
 comes first), which ends the saved point. Next: more of the engine in the `end` line.
 Step 167: `scripts/serve.sh`: the server with the fastest settings and every log in a directory per start, for the person's
 runs with pi; what those logs show decides what comes next.
+Step 168: the Engram table decoded by our own code on both paths, with a size check at load: the code builds against
+the pinned llama.cpp and against upstream `e626db7ca` with the same gates and held-out outputs. QUICKSTART names upstream;
+the PR's commit stays for llama.cpp's own programs. Open: a serving build without ggml's CPU backend.
 constructor in parts.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits

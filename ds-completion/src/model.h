@@ -78,6 +78,9 @@ struct Layer {
 struct Model {
   Hparams hp;
   std::vector<Layer> layers;
+  // engram_table: [engram_dim, rows] in the file's MXFP8 (below); read with mxfp8_to_float and
+  // mxfp8_row_bytes, never through ggml (its nbytes, row stride and get_rows follow the type id,
+  // which means something else in upstream ggml)
   ggml_tensor *tok_embd, *output, *output_norm, *engram_table;
 
   // Opens all shards next to `first_shard` (…-00001-of-000NN.gguf) and binds the tensors of the
@@ -111,3 +114,13 @@ struct Model {
 };
 
 std::string fmt_bytes(double b);
+
+// The Engram table as the GGUF files hold it (README step 168). The files were made with the
+// llama.cpp PR's ggml, where tensor type 43 is MXFP8: blocks of 33 bytes, one e8m0 scale and then
+// 32 e4m3 codes, value = e4m3(code) * 2^(scale - 127), exact in fp32. Upstream ggml gave id 43 to
+// plain fp8 (1 byte per value, no scale) and has no MXFP8 (docs/llama-cpp-upstream.md). So the
+// table is decoded here and the code depends on neither meaning: it builds against both.
+constexpr int kEngramGgmlType = 43;
+inline size_t mxfp8_row_bytes(int64_t n) { return (size_t)n / 32 * 33; }  // of a row of n values (a multiple of 32)
+// n values (a multiple of 32) from n / 32 blocks; the same values as the PR's dequantize_row_mxfp8
+void mxfp8_to_float(const void* src, float* dst, int64_t n);

@@ -952,12 +952,11 @@ void Runtime::fetch_engram_rows(const std::vector<int32_t>& chunk, int p0) {
   const int n_cols = hp.engram_cols(), D = hp.engram_dim, n_slots = (int)hp.engram_layers.size();
   const size_t n = (size_t)n_cols * D;  // one token's rows of one slot
   const ggml_tensor* tab = m.engram_table;  // host mmap, mxfp8
-  const auto to_float = ggml_get_type_traits(tab->type)->to_float;
   // the rows by pread from the page cache: through the mapping, nearly every row was a minor page
   // fault (~7 us each, ~200 per 5-token fetch; README step 73)
   size_t tab_off = 0;
   const int tab_fd = m.file_of(tab->data, tab_off);
-  const size_t row_bytes = tab->nb[1];
+  const size_t row_bytes = mxfp8_row_bytes(D);  // (not tab->nb[1]: model.h)
   std::vector<char> row(row_bytes);
   std::vector<int32_t> hs = tokens_;  // the history up to and including each chunk token
   for (size_t t = 0; t < chunk.size(); t++) {
@@ -968,7 +967,7 @@ void Runtime::fetch_engram_rows(const std::vector<int32_t>& chunk, int p0) {
         const char* src = (const char*)tab->data + (size_t)rows[c] * row_bytes;
         if (tab_fd >= 0 && pread(tab_fd, row.data(), row_bytes, (off_t)(tab_off + (size_t)rows[c] * row_bytes)) == (ssize_t)row_bytes)
           src = row.data();
-        to_float(src, h_erows + ((size_t)e * kChunk + t) * n + (size_t)c * D, D);
+        mxfp8_to_float(src, h_erows + ((size_t)e * kChunk + t) * n + (size_t)c * D, D);
       }
     }
   }

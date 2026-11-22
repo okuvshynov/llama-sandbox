@@ -116,7 +116,7 @@ int main(int argc, char** argv) {
   printf("\nloaded %d layers: dense %s (of which shared experts %s), routed experts %s; head %s, embd %s,"
          " engram table %s\n", n_loaded, fmt_bytes(dense_all).c_str(), fmt_bytes(shared_all).c_str(),
          fmt_bytes(exp_all).c_str(), fmt_bytes(head).c_str(), fmt_bytes(nb(m.tok_embd)).c_str(),
-         fmt_bytes(nb(m.engram_table)).c_str());
+         fmt_bytes(mxfp8_row_bytes(h.engram_dim) * (double)m.engram_table->ne[1]).c_str());  // (not ggml's nbytes: model.h)
   const double per_tok = dense_all + exp_all * (double)h.n_expert_used / h.n_expert + head;
   printf("decode reads per token (these layers + head): %s = dense %s + %d of %d experts %s + head %s\n",
          fmt_bytes(per_tok).c_str(), fmt_bytes(dense_all).c_str(), h.n_expert_used, h.n_expert,

@@ -56,7 +56,7 @@ build, every option, the current results, the limits).
 | [docs/requests.md](docs/requests.md), [docs/server.md](docs/server.md) | `--requests`, the protocol between the engine and a front; the HTTP front |
 | [docs/pi.md](docs/pi.md) | the pi coding harness on this engine: the setup, step by step |
 | [docs/rocprof.md](docs/rocprof.md) | the GPU side under AMD's profiler |
-| [docs/llama-cpp-upstream.md](docs/llama-cpp-upstream.md) | why the llama.cpp fork stays at one commit, and a trial build against upstream |
+| [docs/llama-cpp-upstream.md](docs/llama-cpp-upstream.md) | llama.cpp: upstream or the PR's commit, what upstream reads wrong in these files, and how we came not to depend on it |
 | [scripts/README.md](scripts/README.md) | the tools still in use |
 
 Until step 156 the documents of `docs/` with a lower-case name of one word stood in this

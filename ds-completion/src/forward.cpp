@@ -46,6 +46,7 @@ struct Plan {
   std::vector<int64_t> win_slots;   // [min(T, W)] ring slots for those rows
   std::map<int, RatioPlan> ratio;
   std::vector<std::vector<int32_t>> engram_ids;  // [engram slot][T * n_cols] rows of the table
+  std::vector<std::vector<float>> engram_vals;   // [engram slot][T * n_cols * D] those rows' values (filled by the engine)
   std::vector<float> one_hot_pre;   // [hc, T]: the first block's pre-mix (copy 0)
 };
 
@@ -317,10 +318,19 @@ ggml_tensor* Engine::engram(Graph& g, int L, ggml_tensor* h) {
   const Layer& l = lay[L];
   const int e = l.kind.engram, T = plan->T, E = hp.n_embd, HC = hp.hc_mult;
   const int n_cols = hp.engram_cols(), D = hp.engram_dim;
-  ggml_tensor* ids = g.input("engram_ids." + std::to_string(e), GGML_TYPE_I32, {(int64_t)n_cols * T},
-                             &plan->engram_ids[e]);
+  // The table's rows are gathered and decoded on the host (model.h, mxfp8_to_float: the table is
+  // not read through ggml) and enter the graph as an input: [n_cols * D, T]
+  if (plan->engram_vals.size() != plan->engram_ids.size()) plan->engram_vals.resize(plan->engram_ids.size());
+  std::vector<float>& vals = plan->engram_vals[e];
+  if (vals.empty()) {
+    const std::vector<int32_t>& ids = plan->engram_ids[e];
+    const size_t row_bytes = mxfp8_row_bytes(D);
+    vals.resize(ids.size() * (size_t)D);
+    for (size_t i = 0; i < ids.size(); i++)
+      mxfp8_to_float((const char*)m.engram_table->data + (size_t)ids[i] * row_bytes, vals.data() + i * (size_t)D, D);
+  }
   // the table rows are fp8 x 2^k already, but act_quant may still move tiny blocks (amax < 1e-4)
-  ggml_tensor* rows = ggml_reshape_2d(c, ggml_get_rows(c, m.engram_table, ids), (int64_t)n_cols * D, T);
+  ggml_tensor* rows = g.input("engram_rows." + std::to_string(e), GGML_TYPE_F32, {(int64_t)n_cols * D, T}, &vals);
   ggml_tensor* kv = ggml_mul_mat(c, l.engram_kv, fq8(g, rows));  // [E * (HC + 1), T]
   ggml_tensor* key = ggml_cont(c, ggml_view_3d(c, kv, E, HC, T, E * sizeof(float), kv->nb[1], 0));
   ggml_tensor* val = ggml_view_3d(c, kv, E, 1, T, E * sizeof(float), kv->nb[1], (size_t)HC * E * sizeof(float));
