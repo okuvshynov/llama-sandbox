@@ -6227,3 +6227,42 @@ was only seen to pass on the real one); two machines and `--requests` with the u
 `llama-logits` does not refuse to run when built against upstream. A serving-only build would
 need only the tokenizer and the GGUF reader of llama.cpp (the ggml graphs are the CPU path's);
 not tried.
+
+## Step 169: which code is the product
+
+**The question.** The project began as an experiment and now serves requests. The code that
+does so stands among what was built to get there: a second implementation on the CPU, tests
+against the reference, benchmarks, analysis scripts. All of it is kept. Can a line be drawn
+between the product and the rest, in the documents first, without moving a file?
+
+**How it was read:** the Makefile (what each program is built from), the includes, and which
+llama.cpp functions each source file calls. Not from a link map.
+
+**The line.**
+
+- **The product** is what runs under `scripts/serve.sh`: `bin-hip/ds-completion --rt`, the
+  server, and `fp8pack`. About 10,000 lines: `hip/` (6,700), the program (1,300), the loader,
+  the CPU expert kernels, the sampler. On this path no ggml graph is built or computed. From
+  llama.cpp it calls the tokenizer, the `gguf_*` reader, tensor metadata (`ggml_nbytes` and
+  the like) and two conversions at load.
+- **What checks it:** `src/forward.cpp` (the model as ggml graphs on the CPU), `tests/`,
+  `ref/`, the server's test with its fake engine.
+- **Tools:** `bench/`, most of `scripts/`, `ds-inspect`, `results/`.
+
+**Where the line does not hold yet** (four places):
+
+1. `hip/rt.h` includes `src/forward.h`, for `engram_rows` (the Engram hash) and `Taps`. A tap
+   is a layer's named intermediate copied out for `ds-test`; in serving the pointer is null and
+   every `tap()` returns on its first line. The hook belongs in the layer code; only the
+   type's definition stands in the wrong header.
+2. `src/fakequant.cpp` holds the runtime's host functions and the reference path's graph ops.
+3. `ds-completion` without `--rt` is the CPU reference path, so the product's binary links
+   `forward.cpp` and ggml's CPU backend.
+4. `make` builds all 9 programs (20 with `HIP=1`) as one target.
+
+**Written:** a section in `README.md`; `docs/overview.md`'s code map in three parts, the same
+rows as before, with the rule and the four places; item 34 in `docs/plan.md` with three small
+steps (this map; Makefile targets; the two names out of `forward.h`) and what is deferred.
+
+**Nothing measured, no code changed.** Deferred by the person until the three steps are done:
+whether the CPU-only mode is part of the product, and where `ds-test` belongs.

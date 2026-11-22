@@ -38,6 +38,21 @@ How to build and run it: [QUICKSTART.md](QUICKSTART.md).
   reasoning and the text as they are generated (step 161). `GET /metrics` has counters and
   gauges in the Prometheus format (step 165).
 
+## The product and the tools around it
+
+Three kinds of code live here, and the directories alone do not say which is which
+(file by file: [docs/overview.md](docs/overview.md), "Code map"):
+
+| | what | where |
+|---|---|---|
+| **The product** | the engine with the GPU runtime (`bin-hip/ds-completion --rt ...`), the HTTP server in front of it, and `fp8pack`, which makes one of its files | `apps/ds_completion.cpp`, `apps/fp8pack.cpp`, `hip/`, `src/` except `forward.*`, `server/ds_server.py`, `scripts/serve.sh`, `scripts/chat.sh`, `placements/` |
+| **What checks it** | a second implementation of the model on the CPU (ggml graphs), the test programs, the official Python reference and the golden data it writes | `src/forward.*`, `tests/`, `ref/`, `server/test_server.py`, `server/fake_engine.py` |
+| **Tools** | benchmarks, the runner of measurements and the readers of records and traces, the inspector, every measurement's raw output | `bench/`, `scripts/` (the rest), `apps/ds_inspect.cpp`, `results/` |
+
+The second and third may depend on the product; the product should not depend on them. It
+still does in four small places, listed in the code map; removing them is in
+[docs/plan.md](docs/plan.md), "The product and the tools".
+
 ## The documents
 
 Two in this directory: this page and [QUICKSTART.md](QUICKSTART.md) (what it needs, how to

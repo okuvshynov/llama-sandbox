@@ -69,6 +69,38 @@ Features and limits
 | 28 | Full 1017 checkpoint | not needed | item 19 runs from the GGUF; exact references read the release by HTTP ranges (README "Which checkpoint") |
 | 29 | Sampling beyond greedy | started | temperature and top-p for a minimal server (the person's benchmark). Step 148: the sampler as a library with its test. Step 149: `--temp`, `--top-p`, `--seed` in the plain loop, one seed one output on any placement. Step 150: the speculative loop samples too (the plain loop's outputs; held-out mean 41.8 t/s against 44.8 greedy, not with `--remote`). Step 151: that loss was the draws (~1 ms each and the threads' start); a vector `exp` and draws in turn: 43.1 t/s against 44.9 greedy. Step 152: `--requests`, the engine's side of the server (prompts on stdin, each on an empty context; `docs/requests.md`). Step 153: the HTTP front, `server/ds_server.py` (Anthropic Messages; the model's `encoding.py` renders and parses): the benchmark's script runs against it unchanged. Step 154: a request whose client left is cancelled (`SIGUSR1` to the engine). Next: the person's samples, the OpenAI endpoint if wanted. Greedy loops on some long reasoning (README step 48) |
 | 33 | Observability of the server | started (steps 1-3 of 4 done, steps 164-166) | a metrics page in the Prometheus format, the engine's choice of context in the protocol and the log, a log of requests as JSON lines: "Observability of the server" below (README step 162) |
+| 34 | The product and the tools | started (step 1 of 3 done, step 169) | say and then make true which code is the product and which checks or measures it: "The product and the tools" below |
+
+## The product and the tools (2026-11-21)
+
+**Why.** The project grew from experiments, and the code that serves requests stands among the
+second implementation, the tests and the benchmarks. All of them stay; what is missing is a
+line between them that a reader, a build and a packager can rely on.
+
+**The rule.** The product is what runs under `scripts/serve.sh`: `ds-completion --rt`, the
+server, `fp8pack`. What checks it (the CPU reference path, the tests, the Python reference) and
+the tools (benchmarks, measurement scripts) may depend on it; it should not depend on them.
+The map, file by file: `docs/overview.md`, "Code map".
+
+**Small steps, each its own commit, none changing what a program computes:**
+
+| step | what | status |
+|---|---|---|
+| 1 | the map in `README.md` and `docs/overview.md`, with the places where the rule does not hold yet | done (step 169) |
+| 2 | Makefile targets: the product alone, the tests, the benchmarks; `all` stays everything | |
+| 3 | `engram_rows` and `Taps` out of `src/forward.h` into a header of their own, so `hip/` includes nothing of the reference path | |
+
+Checked after 2 and 3: the programs build, the short gate and a held-out prompt give the same bytes.
+
+**Deferred until those are done** (each is a decision, not a cleanup):
+
+- `src/fakequant.cpp` in two files (the runtime's host functions; the reference path's graph ops).
+- `ds-completion` without `--rt` as a build option or a program of its own: a serving build would
+  then take only the tokenizer and the GGUF reader from llama.cpp. Is the CPU-only mode part of
+  the product?
+- Moving directories (`src/forward.*`, the analysis scripts): it breaks paths the documents and
+  the results' headers name; the moment for it is a move to a repository of its own, if that comes.
+- Where `ds-test` belongs: it gates both paths.
 
 ## Observability of the server (2026-11-19)
 
@@ -458,6 +490,9 @@ runs with pi; what those logs show decides what comes next.
 Step 168: the Engram table decoded by our own code on both paths, with a size check at load: the code builds against
 the pinned llama.cpp and against upstream `e626db7ca` with the same gates and held-out outputs. QUICKSTART names upstream;
 the PR's commit stays for llama.cpp's own programs. Open: a serving build without ggml's CPU backend.
+Step 169: item 34's first step: which code is the product, which checks it and which are tools, written in `README.md`
+and `docs/overview.md`'s code map (now in three parts), with the four places where the product still depends on the rest.
+Next: Makefile targets.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front

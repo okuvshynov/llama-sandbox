@@ -274,28 +274,45 @@ the GPU runtime library, neither has a `main`; `apps/` has the programs one runs
 test programs, `bench/` the benchmarks. `scripts/` has the tools still in use; a script written
 for one step lies with its results.
 
+The directories do not say what is the product and what stands around it, so the map is in
+three parts (README step 169). The rule the first part should obey, and where it does not yet:
+
+- **The product** is what runs when `scripts/serve.sh` or `scripts/chat.sh` runs:
+  `bin-hip/ds-completion --rt ...`, the server in front of it, and `fp8pack`, which makes one
+  of its files once. On this path no ggml graph is built or computed; from llama.cpp it takes
+  the tokenizer, the GGUF reader and tensor metadata.
+- **What checks it** is the second implementation and the programs that compare: the CPU
+  reference path, the tests, the Python reference. It may depend on the product; the product
+  should not depend on it.
+- **Tools** measure and inspect; nothing depends on them.
+
+Where the product still reaches into the second part (the next steps of `docs/plan.md`,
+"The product and the tools"):
+
+- `hip/rt.h` includes `src/forward.h`, for `engram_rows` and `Taps`.
+- `src/fakequant.cpp` holds the runtime's host functions and the reference path's graph ops.
+- `ds-completion` without `--rt` *is* the CPU reference path, so the product's binary links
+  `src/forward.cpp` and ggml's CPU backend.
+- `make` builds every program of all three parts as one target.
+
+### The product
+
 | path | what |
 |---|---|
 | `apps/ds_completion.cpp` | the CLI, top to bottom: the options (`Args`, `parse_args`), the record (`write_record`: `--record` writes a run as one JSON object, `docs/record.md`), the two generation loops (`generate_spec`, `generate_plain`), then `run`: load, the turns (one prompt, `-i`'s lines or `--requests`' requests), the summaries |
 | `apps/think_view.h` | how a reply is printed: `--think-show`, the reasoning as one moving line or hidden (README step 147) |
 | `apps/record.h` | what `--record` writes beyond the program's own variables: the id hashes, the GPU clock, the storage reads |
-| `apps/ds_inspect.cpp` | load the model, or some layers, through the real loader and show what it found |
-| `src/canon_dot.{h,cpp}`, `src/canon_math.h` | `--canon`: one specification of an expert's arithmetic that the CPU and the GPU kernels both reproduce bit for bit, so an expert gives the same bits wherever it runs |
-| `src/fatal.h` | where the process is, for the handler that reports a fatal signal |
-| `src/model.{h,cpp}` | GGUF loading (zero-copy mmap), the model's schema and hyperparameters |
-| `src/forward.{h,cpp}` | the CPU reference path (ggml graphs), used by tests and `bin/ds-completion` |
-| `src/cpu_moe.{h,cpp}` | the exact AVX-512 routed-expert kernel |
-| `src/fakequant.{h,cpp}` | the reference's fp8/fp4 rounding |
-| `src/sampler.{h,cpp}` | the next token from the logits: greedy, or temperature and top-p with a random number per (seed, position) (README steps 148-151); `tests/test_sampler.cpp` checks it |
 | `apps/fp8pack.cpp` | lossless fp8 repack of the dense weights |
-| `tests/ds_test.cpp` | per-layer and end-to-end tests against the goldens |
-| `tests/test_fakequant.cpp`, `tests/test_topk.cpp` | the rounding ops and the indexer's selection against the reference's, bit for bit |
+| `src/model.{h,cpp}` | GGUF loading (zero-copy mmap), the model's schema and hyperparameters |
+| `src/cpu_moe.{h,cpp}` | the exact AVX-512 routed-expert kernel |
+| `src/canon_dot.{h,cpp}`, `src/canon_math.h` | `--canon`: one specification of an expert's arithmetic that the CPU and the GPU kernels both reproduce bit for bit, so an expert gives the same bits wherever it runs |
+| `src/sampler.{h,cpp}` | the next token from the logits: greedy, or temperature and top-p with a random number per (seed, position) (README steps 148-151); `tests/test_sampler.cpp` checks it |
+| `src/fakequant.{h,cpp}` | the reference's fp8/fp4 rounding. Two halves in one file: host functions the runtime calls, and ggml graph ops only the CPU reference path uses |
+| `src/fatal.h` | where the process is, for the handler that reports a fatal signal |
 | `hip/rt.{h,cpp}` | the GPU runtime: state, layer order, the expert split |
 | `hip/rt_peer.cpp` | the runtime as one half of a model on two machines: the front's messages, the back's `serve` (`hip/peer.h`: the protocol) |
+| `hip/peer.h` | two machines: the messages between the front and the back half (TCP) |
 | `hip/rt_trace.cpp` | the runtime's observability: the startup memory ledger, `--profile`'s groups, `--trace` (`hip/rt_internal.h`: the helpers the runtime's files share) |
-| `docs/requests.md` | `--requests`: the protocol between the engine and a server's front (README step 152) |
-| `docs/server.md`, `server/` | the HTTP front: `ds_server.py` (Anthropic Messages over `--requests`), and its test without a model (`test_server.py` with `fake_engine.py`; README steps 153-154) |
-| `docs/rocprof.md` | the GPU side under AMD's `rocprofv3`: how to run it, its files, how to read them (README step 140) |
 | `hip/kernels.{h,hip}` | the runtime's kernels (norms, attention, indexer, hyper-connections, router, dispatch) |
 | `hip/fp8_gemv.{h,hip}` | exact fp8 x fp8 GEMV |
 | `hip/fp4_moe.{h,hip}` | exact fp4 routed-expert kernel (4 launches) |
@@ -303,9 +320,31 @@ for one step lies with its results.
 | `hip/expert_cache.{h,cpp}` | the adaptive cache: which experts to swap in and out, from recent use |
 | `hip/expert_loader.{h,cpp}` | the background loads into pool slots, one thread per die |
 | `hip/dspark.{h,cpp}` | the DSpark draft (3 layers, Markov and confidence heads) |
-| `hip/peer.h` | two machines: the messages between the front and the back half (TCP) |
-| `bench/bench_*` | benchmarks of each kernel and of the loader, CPU and GPU (the Makefile knows which need `HIP=1`) |
-| `ref/` | the Python reference, golden export, weight checks, logits comparison |
-| `scripts/` | the tools still in use ([scripts/README.md](../scripts/README.md)): the runner of a matrix of runs (`run_matrix.py`) and the reader of their records (`records.py`; README steps 128-129), the chat launcher (`chat.sh`), the held-out measurement (`spec-measure.sh`) and the two-machine one (`split-measure.sh`), the trace tools, `route_stats.py`. A script written for one step lies with its results under `results/` (README step 130) |
+| `docs/requests.md` | `--requests`: the protocol between the engine and a server's front (README step 152) |
+| `docs/server.md`, `server/` | the HTTP front: `ds_server.py` (Anthropic Messages over `--requests`), and its test without a model (`test_server.py` with `fake_engine.py`; README steps 153-154) |
 | `placements/` | ranked expert placements (`study30.txt` is the default) |
+
+Also the product's: `scripts/serve.sh` and `scripts/chat.sh` (the two ways to start it),
+`server/ds_server.py`, and DeepSeek's `encoding.py` from the model's directory.
+
+### What checks it: the reference path and the tests
+
+| path | what |
+|---|---|
+| `src/forward.{h,cpp}` | the CPU reference path (ggml graphs), used by tests and by `ds-completion` without `--rt`. Two things in it belong to both paths and the runtime includes the header for them: `engram_rows` (which rows of the Engram table a position reads) and `Taps` (a layer's named intermediates, filled only for `ds-test`) |
+| `tests/ds_test.cpp` | per-layer and end-to-end tests against the goldens |
+| `tests/test_fakequant.cpp`, `tests/test_topk.cpp` | the rounding ops and the indexer's selection against the reference's, bit for bit |
+| `ref/` | the Python reference, golden export, weight checks, logits comparison |
+
+`server/test_server.py` with `server/fake_engine.py` (the front without a model) and
+`results/requests/requests_test.py` (`--requests` with the model) belong here too.
+
+### Tools
+
+| path | what |
+|---|---|
+| `apps/ds_inspect.cpp` | load the model, or some layers, through the real loader and show what it found |
+| `bench/bench_*` | benchmarks of each kernel and of the loader, CPU and GPU (the Makefile knows which need `HIP=1`) |
+| `scripts/` | the tools still in use ([scripts/README.md](../scripts/README.md)): the runner of a matrix of runs (`run_matrix.py`) and the reader of their records (`records.py`; README steps 128-129), the chat launcher (`chat.sh`), the held-out measurement (`spec-measure.sh`) and the two-machine one (`split-measure.sh`), the trace tools, `route_stats.py`. A script written for one step lies with its results under `results/` (README step 130) |
+| `docs/rocprof.md` | the GPU side under AMD's `rocprofv3`: how to run it, its files, how to read them (README step 140) |
 | `results/` | raw outputs of every measurement quoted in the steps ([docs/reproduce.md](reproduce.md): which command produced which) |
