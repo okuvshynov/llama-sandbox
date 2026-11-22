@@ -458,7 +458,6 @@ runs with pi; what those logs show decides what comes next.
 Step 168: the Engram table decoded by our own code on both paths, with a size check at load: the code builds against
 the pinned llama.cpp and against upstream `e626db7ca` with the same gates and held-out outputs. QUICKSTART names upstream;
 the PR's commit stays for llama.cpp's own programs. Open: a serving build without ggml's CPU backend.
-constructor in parts.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front
