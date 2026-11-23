@@ -6854,3 +6854,43 @@ sometimes GiB.
 **Not read:** `docs/steps.md` and `docs/process.md` (history), the bodies of the CPU kernels
 and the benchmarks, numbers that stand in one document only.
 
+## Step 183: a request header that was not understood closes the engine, wherever the mistake stands
+
+Found in step 182's reading, the first of its code findings to be fixed. In `--requests` mode a
+header whose bad field came **after** `bytes=` (`gen n=3 bytes=5 foo=1`) was answered with an
+error line and the engine went on, but without reading the 5 bytes of the prompt: it then read
+the prompt as the next header. With the bad field before `bytes=`, the engine closed, as the
+document said. And `bytes=five` set the length to 0 the same way. The server always sends a
+well-formed header with `bytes=` last, so it never met this; another front could.
+
+**The fix** (`apps/ds_completion.cpp`): any header that was not understood (an unknown first
+word, a field that is unknown or not a number, no `bytes=`) is answered with `error ...;
+closing`, and the engine exits without reading further. A value out of range (`n=0`,
+`top_p=7`) in a well-formed header is as before: the prompt is read, an error line, the next
+request follows. This is what `docs/requests.md` already said; the two places that decided
+are now one.
+
+**Tested** (`results/requests/requests_test.py`, a new part; `--headers-only` runs it alone in
+~80 s): eight headers, each on an engine of its own without experts on GPUs (it loads in ~9 s),
+each followed by a good request. Six must give one error line ending in `; closing` and
+nothing after it; two must give an error line and then the next request's tokens.
+
+| | the program before | after |
+|---|---|---|
+| an unknown field after `bytes=` | went on, the prompt unread | closes |
+| a value that is not a number, after `bytes=` | went on, the prompt unread | closes |
+| `bytes=five` | went on with a length of 0 | closes |
+| an unknown field or a bad number before `bytes=`; no `bytes=` | closes | closes |
+| `n=0`, `top_p=7` | error, then the next request | the same |
+
+(`results/requests/headers-before.txt`: 3 of 8 fail on step 182's program; all 8 pass now.)
+
+**Checked** (sclk 6): the whole request test with the model, 67 checks (59 before, and the 8),
+all passed: every reply's hash is its single run's. `server/test_server.py` passes. Not run
+again: the test with `--no-spec` (`requests_test-plain.txt` is step 173's), the held-out
+matrix (the change is in the reading of a request's header only).
+
+Still open from step 182's list: `ds-ref` taking the runtime's options, the unused code, the
+Makefile's prerequisites, the usage texts, the units. Next, as decided in step 181: the
+testing process.
+

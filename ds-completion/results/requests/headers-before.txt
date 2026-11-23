@@ -1,0 +1,13 @@
+# The header cases of results/requests/requests_test.py --headers-only on the program before the fix (README step 183):
+# DS_BIN=<bin-hip/ds-completion built at 0aa67be> python3 results/requests/requests_test.py --headers-only; sclk 6; 2026-11-23
+# (the same cases on the fixed program: the last 8 checks of requests_test.txt)
+# headers: one engine per case: <ds-completion of 0aa67be> -m ~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf --rt ~/llms/ds-1017-fp8/dense-fp8.gguf --requests
+FAIL  an unknown field after bytes=: closes: "error bad field foo=1" (exit code 0)
+ok    an unknown field before bytes=: closes: "error bad field foo=1; closing" (exit code 0)
+FAIL  a value that is not a number, after bytes=: closes: "error bad field temp=x" (exit code 0)
+ok    a value that is not a number, before bytes=: closes: "error bad field n=abc; closing" (exit code 0)
+FAIL  a length that is not a number: closes: "error bad field bytes=five" (exit code 0)
+ok    no bytes=: closes: "error no bytes= in the request; closing" (exit code 0)
+ok    n=0 after bytes= (a value out of range): goes on: "error n: 1 or more", then 2 tokens of the next request (exit code 0)
+ok    top_p=7 (a value out of range): goes on: "error temp: 0 or more; top_p: above 0, up to 1", then 2 tokens of the next request (exit code 0)
+FAILED

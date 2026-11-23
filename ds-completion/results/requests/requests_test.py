@@ -15,7 +15,10 @@ requests, and prompts that go on from the context (step 158): kept=N, and the re
 same request on an empty context (keep=0); conversations that share a system prompt
 (step 160): a saved point at its end (saved=N), returned to by the later ones; the engine's
 account of its choice of context (step 164): ctx, common and how in the "prompt" line, and its
-"# context:" lines on stderr. Exit code 1 if a check fails.
+"# context:" lines on stderr; headers that cannot be followed (step 183): the engine says so and
+closes, wherever the bad field stands, and never reads a prompt as a header. Those run on engines
+of their own without experts on GPUs (~10 s each); --headers-only runs only them.
+Exit code 1 if a check fails.
 """
 import json
 import os
@@ -48,8 +51,48 @@ def fnv1a64_ids(ids):
     return 'fnv1a64:%016x' % h
 
 
+def headers(check):
+    """README step 183: a header that was not understood ends the session, with one error line;
+    a value out of range does not. One engine per case: a case ends its engine."""
+    P = 'Hello'  # 5 bytes
+    good = f'gen n=2 bytes=5\n{P}'
+    cases = [  # (the input, closes?, what)
+        (f'gen n=3 bytes=5 foo=1\n{P}{good}', True, 'an unknown field after bytes='),
+        (f'gen n=3 foo=1 bytes=5\n{P}{good}', True, 'an unknown field before bytes='),
+        (f'gen n=3 bytes=5 temp=x\n{P}{good}', True, 'a value that is not a number, after bytes='),
+        (f'gen n=abc bytes=5\n{P}{good}', True, 'a value that is not a number, before bytes='),
+        (f'gen n=3 bytes=five\n{P}{good}', True, 'a length that is not a number'),
+        (f'gen n=3\n{good}', True, 'no bytes='),
+        (f'gen bytes=5 n=0\n{P}{good}', False, 'n=0 after bytes= (a value out of range)'),
+        (f'gen n=2 top_p=7 bytes=5\n{P}{good}', False, 'top_p=7 (a value out of range)'),
+    ]
+    cmd = [os.environ.get('DS_BIN', 'bin-hip/ds-completion'), '-m', M, '--rt', F8, '--requests']
+    print('# headers: one engine per case: ' + ' '.join(c.replace(HOME, '~') for c in cmd), flush=True)
+    for text, closes, what in cases:
+        e = subprocess.run(cmd, input=text.encode(), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        lines = e.stdout.decode(errors='replace').split('\n')
+        lines = [l for l in lines[1:] if l]  # (after "ready")
+        errs = [l for l in lines if l.startswith('error ')]
+        toks = sum(l.startswith('tok ') for l in lines)
+        if closes:  # one error line that says so, and nothing after it: the next request is not read
+            ok = e.returncode == 0 and len(lines) == 1 and len(errs) == 1 and errs[0].endswith('; closing')
+        else:       # one error line, then the next request's reply
+            ok = e.returncode == 0 and len(errs) == 1 and 'closing' not in errs[0] and lines[0] == errs[0] and toks == 2 and lines[-1].startswith('end ')
+        check(ok, f'{what}: {"closes" if closes else "goes on"}: "{errs[0] if errs else lines[:1]}"' + ('' if closes else f', then {toks} tokens of the next request') + f' (exit code {e.returncode})')
+
+
 def main():
     spec = '--no-spec' not in sys.argv[1:]
+    if '--headers-only' in sys.argv[1:]:
+        failed = 0
+
+        def check_h(ok, what):
+            nonlocal failed
+            failed += not ok
+            print(('ok    ' if ok else 'FAIL  ') + what, flush=True)
+        headers(check_h)
+        print('FAILED' if failed else 'all checks passed')
+        return 1 if failed else 0
     prompts = {}
     for l in open('results/spec-heldout/prompts.txt', encoding='utf-8'):
         name, mode, n, text = l.rstrip('\n').split('|', 3)
@@ -283,6 +326,7 @@ def main():
     pos = [i for i, l in enumerate(lines) if not l.startswith('# context: they part') and not l.startswith('# context: the prompt ends')]
     for l in lines[pos[k - 1]:pos[k + 1]]:
         print('#   ' + l)
+    headers(check)
     print('FAILED' if failed else 'all checks passed')
     return 1 if failed else 0
 

@@ -791,26 +791,26 @@ static int run(int argc, char** argv) {
           if (!end || end == v.c_str() || *end) err = "bad field " + w;
         }
       }
-      if (err.empty() && bytes < 0) {  // without the length the input cannot be followed any further
-        printf("error no bytes= in the request; closing\n");
+      if (err.empty() && bytes < 0) err = "no bytes= in the request";
+      if (!err.empty()) {
+        // A header that was not understood (an unknown first word, a field that is unknown or not a
+        // number, no length): where its prompt ends is not known, or not to be trusted, so the input
+        // cannot be followed any further. (Until step 183 a bad field after bytes= was answered
+        // without reading the prompt, which was then read as the next header.)
+        printf("error %s; closing\n", err.c_str());
         fflush(stdout);
         break;
       }
-      std::string text(err.empty() ? bytes : 0, '\0');
-      if (err.empty() && fread(text.data(), 1, bytes, stdin) != (size_t)bytes) break;  // the input ended inside a prompt
-      if (err.empty() && n < 1) err = "n: 1 or more";
+      std::string text(bytes, '\0');
+      if (fread(text.data(), 1, bytes, stdin) != (size_t)bytes) break;  // the input ended inside a prompt
+      if (n < 1) err = "n: 1 or more";
       if (err.empty() && (so.temp < 0 || !(so.top_p > 0 && so.top_p <= 1))) err = "temp: 0 or more; top_p: above 0, up to 1";
       if (err.empty()) {
         toks = tokenize(vocab, text);
         if (toks.empty()) err = "an empty prompt";
         else if ((int)toks.size() >= args.opt.max_ctx) err = "the prompt is " + std::to_string(toks.size()) + " tokens; --max-ctx is " + std::to_string(args.opt.max_ctx);
       }
-      if (!err.empty()) {
-        if (bytes < 0) {  // (a request line that was not understood: its length is not known)
-          printf("error %s; closing\n", err.c_str());
-          fflush(stdout);
-          break;
-        }
+      if (!err.empty()) {  // a value out of range, or the prompt: its bytes were read, the next request follows
         printf("error %s\n", err.c_str());
         fflush(stdout);
         continue;

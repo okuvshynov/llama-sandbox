@@ -138,5 +138,8 @@ call's arguments written out again, the reasoning left out), or another request 
 in place of a reply, for a request with a value out of range (`n` below 1, `temp`, `top_p`), an empty prompt or one too long
 for `--max-ctx`; the engine then reads the next request. If the header itself cannot be
 followed (an unknown first word, a field that is unknown or not a number, no `bytes=`), the message ends with
-`; closing` and the engine exits, since it cannot know where the next request starts.
+`; closing` and the engine exits, since it cannot know where the next request starts, or
+cannot trust what it read: this holds wherever in the header the mistake stands, and the prompt
+that follows is not read (README step 183; before it, a bad field after `bytes=` got an error
+without `; closing`, and the engine then read the prompt as the next header).
 An error inside the engine (for example a chunk past `--max-ctx`) ends the process as in any other mode.

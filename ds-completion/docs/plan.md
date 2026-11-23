@@ -571,6 +571,8 @@ Step 181: sessions, sampling and the longer golden sets on the build after the r
 loads of the model). Next: the testing process (item 35).
 Step 182: the documents, comments and names against the tree: ~70 corrections of text, the Makefile's `FORK` alias; the code
 findings listed in `results/dist/review-182.txt` section 3 for steps of their own. Next: the testing process (item 35).
+Step 183: `--requests`: a header that was not understood closes the engine wherever the mistake stands (a bad field after
+`bytes=` left the prompt unread); eight header cases in the request test. Next: the testing process (item 35).
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front
