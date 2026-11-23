@@ -1,0 +1,82 @@
+# scripts/check.py default, its second half (README step 188): tests/outputs_check.py, the product's outputs
+# against stored token ids, one engine load and one fresh session. And the whole run.
+# Commit b883f68 + this step's change (the commit that adds this file); sclk 6; 2026-11-23; the model in the page cache.
+#
+# 1. python3 tests/outputs_check.py (as the run made it: data/check/default-20261123-103359/11-outputs.txt)
+# /usr/bin/python3 tests/outputs_check.py
+# engine: bin-hip/ds-completion -m ~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf --rt ~/llms/ds-1017-fp8/dense-fp8.gguf --placement placements/study30.txt --canon --cache-loads 800 --cache-period 8 --ca
+# "ready" after 119 s
+ok    tcp-udp      greedy  300 tokens fnv1a64:e84010b498310b61, the reference's;  39.0 t/s
+ok    py-lru       greedy  300 tokens fnv1a64:ccdf68228376b5ca, the reference's;  46.9 t/s
+ok    cpp-matrix   greedy  300 tokens fnv1a64:55214691a828a176, the reference's;  60.1 t/s
+ok    sql-report   greedy  300 tokens fnv1a64:f316e2fad109b2e0, the reference's;  49.9 t/s
+ok    geometry     greedy  345 tokens fnv1a64:39009bbaad3bdfec, the reference's;  54.9 t/s
+ok    zh-travel    greedy  300 tokens fnv1a64:6fa28c9df3b39c7c, the reference's;  34.2 t/s
+ok    ja-email     greedy  300 tokens fnv1a64:cb2c332218b24ed0, the reference's;  38.1 t/s
+ok    summary-json greedy   98 tokens fnv1a64:963abaf982b15a33, the reference's;  41.2 t/s
+ok    tcp-udp      sampled 300 tokens fnv1a64:92a19b9a44f4e8f7
+ok    cpp-matrix   sampled 300 tokens fnv1a64:3426536c97f68ad8
+ok    geometry with n=5: the first five ids of its full reply, stop=length
+ok    a chat turn: 6 tokens, stop=eos
+ok    the second turn goes on from the context (how=continue, kept 18 of 27 prompt tokens); with keep=0 it starts empty (how=empty)
+ok    the two replies are equal (6 tokens)
+ok    the second turn's reply
+ok    the engine exits with code 0 when its input ends
+# held-out greedy in this process: mean 45.6 t/s (34.2 to 60.1); 201 s with the load
+ok    a session of three turns with thinking (-i, a fresh process; results/chat/think/th20.q): the bytes of results/chat/think/th20.out; 21 s with its load
+all checks passed
+#
+# 2. The whole run
+scripts/check.py default
+ok    build: make  0.0 s
+ok    build: make HIP=1  22.1 s
+ok    fakequant: the rounding ops against the reference's, bit for bit  0.0 s
+ok    sampler: temperature, top-p, one seed one sequence  19.0 s
+ok    top-k: the selection kernels against torch and the reference  2.2 s
+ok    kernels: M tokens per launch against one, bit for bit  0.8 s
+ok    server: ds_server.py against a fake engine  8.1 s
+ok    logits, the runtime, hello-fp32  4.5 s
+ok    logits, the runtime, readme200  11.9 s
+ok    logits, the runtime, readme1100  34.2 s
+ok    logits, the CPU reference path, hello-fp32  3.4 s
+ok    logits, the CPU reference path, readme200  21.8 s
+ok    outputs: the product in one load, and one session  221.2 s
+all checks passed (349 s)
+#    (the first build line: nothing to build; the second rebuilt hip/rt.cpp after the control below. Without a
+#    build: ~5 min 27 s: unit 30 s, logits 76 s, outputs 221 s.)
+#
+# 3. The expectation: python3 tests/outputs_check.py --store wrote tests/outputs/expected.json (12 replies' token ids,
+#    16,766 bytes). The eight greedy replies have the output_hash of results/record/reference/heldout-output.tsv; the two
+#    sampled ones the output.hash of results/sampler/spec-heldout/s1-<prompt>-1.json (step 150's).
+#
+# 4. A negative control, the same as step 187's: hip/rt.cpp line 981, eps -> eps + 1e-3f
+scripts/check.py default
+ok    build: make  0.0 s
+ok    build: make HIP=1  22.0 s
+ok    fakequant: the rounding ops against the reference's, bit for bit  0.0 s
+ok    sampler: temperature, top-p, one seed one sequence  19.1 s
+ok    top-k: the selection kernels against torch and the reference  2.3 s
+ok    kernels: M tokens per launch against one, bit for bit  0.8 s
+ok    server: ds_server.py against a fake engine  8.1 s
+FAIL  logits, the runtime, hello-fp32  4.7 s
+FAIL  logits, the runtime, readme200  11.0 s
+FAIL  logits, the runtime, readme1100  33.3 s
+ok    logits, the CPU reference path, hello-fp32  3.3 s
+ok    logits, the CPU reference path, readme200  21.5 s
+FAIL  outputs: the product in one load, and one session  224.7 s
+FAILED: 4 of 11 checks (351 s)
+FAILED: 4 of 11 checks (351 s)                                  exit code 1
+#    Inside the outputs check: 7 of the 8 greedy replies are not the reference's (tcp-udp's 300 tokens are), both
+#    sampled replies differ (at token 35 and at token 41 of 300), the session's bytes differ. So a comparison of
+#    outputs sees this change on most prompts and not on one; the logits see it on every set. Reverted (git diff empty).
+#
+# 5. Where a run's ~140 s "load" goes (found while timing the session; the same session, the same bytes each time)
+#    bin-hip/ds-completion -m $M --rt $F8 --canon --chat -i --think --think-show all --effort 75 -n 20 < results/chat/think/th20.q
+    as above                                                        15.4 s
+    + --placement placements/study30.txt                            17.8 s
+    + --dspark $D --spec                                            20.8 s
+    + --cache-loads 800 --cache-period 8 (scripts/chat.sh)         126.1 s
+#    The last one's stderr: "loaded in 13.0 s"; "expert cache: ... 0 loads started"; "expert loader: 288.8 GB of expert
+#    tensors registered in 105.0 s (direct loads from now)". The model loads in 13 s. Registering the expert tensors
+#    for the cache's loads takes 105 s: --cache-wait waits for it before the prompt, and without --cache-wait the
+#    process waits for it at its exit, even when it started no load.

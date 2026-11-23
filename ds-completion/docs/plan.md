@@ -98,8 +98,8 @@ few fixed runs, each one command of `scripts/check.py` with one verdict:
 | run | when | what | time | state |
 |---|---|---|---|---|
 | `unit` | after every change | no model files: the rounding ops, the sampler, the selection kernels, the batched kernels, the server against a fake engine | 30 s | done, step 186 |
-| `default` | after every change | the model, loads kept to a minimum. Two verdicts: logits against stored bytes on golden token sequences (`ds-test --e2e`: a 12-token set and a long prompt; it starts in seconds); and the product's outputs in one load: one engine with `--requests` and the full configuration (placement, cache, draft, speculation, `--canon`) takes the held-out prompts, a sampled seed, a conversation that goes on, each reply's hash against a manifest in git. One short `-i` session in a fresh process for the two paths `--requests` does not take | 5-10 min allowed; the first part is 105 s with `unit` | the logits part done (step 187); the outputs part next |
-| `speed` | when a change is about speed (small gains were the common case) | the held-out prompts' tokens per second in fresh processes, as the documents quote it: the second repeat, against a stored baseline and the repeats' spread | ~40 min today; the loads are most of it | planned |
+| `default` | after every change | the model, loads kept to a minimum. Two verdicts: logits against stored bytes on golden token sequences (`ds-test --e2e`: a 12-token set and a long prompt; it starts in seconds); and the product's outputs in one load: one engine with `--requests` and the full configuration (placement, cache, draft, speculation, `--canon`) takes the held-out prompts, a sampled seed, a conversation that goes on, each reply's hash against a manifest in git. One short `-i` session in a fresh process for the two paths `--requests` does not take | ~5.5 min | done, steps 187-188 |
+| `speed` | when a change is about speed (small gains were the common case) | the held-out prompts' tokens per second in fresh processes, as the documents quote it: the second repeat, against a stored baseline and the repeats' spread | ~40 min today, ~28 of them the registration of expert tensors for the cache (step 188) | next |
 | `complete` | overnight, and before anything is called done | everything else: the 20,000-token logits, the CPU reference path's sets, the sessions, the sampling matrices, the request test in both modes, the draft against the reference, the weights | ~4 h today | planned |
 | localizers | only when a verdict failed | the per-layer table, per token, near-ties, traces: not part of any run; a failed check prints the command to run next | | the hint is in `check.py`'s output |
 
@@ -596,6 +596,8 @@ Step 186: the runs decided: `unit`, `default`, `speed`, `complete`, and localize
 no model files). Next: `default`.
 Step 187: `check.py default`, the logits half: five `ds-test --e2e` runs against stored sha256, golden sets cut to tokens
 and logits in git (`tests/e2e/`, 9.5 MB); 105 s with `unit`. Next: the outputs half (one engine, `--requests`).
+Step 188: the outputs half (`tests/outputs_check.py`: 12 requests to one engine, one fresh session; token ids stored); `default`
+is 13 checks in ~5.5 min. The "load" is 13 s; 105 s more are the registration of expert tensors for the cache. Next: `speed`.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front

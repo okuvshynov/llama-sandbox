@@ -7045,3 +7045,58 @@ toolchain and of 16 threads.
 
 Next: the second half, one engine with `--requests` and the full configuration.
 
+## Step 188: `check.py default`, its second half: the product's outputs in one load
+
+The logits (step 187) cover the arithmetic. This half covers what stands around it in the
+product, and with it `default` is whole: **13 checks, about 5.5 minutes, one command, one
+verdict.**
+
+`tests/outputs_check.py` starts one engine with the fastest settings (placement, adaptive
+cache, the draft and speculation, `--canon`) in `--requests` mode and sends it in turn: the
+eight held-out prompts greedy; two of them sampled (temperature 1, top-p 0.95, seed 1); one
+with `n=5`; a chat turn and a second turn that goes on from the kept context, and the same
+request with `keep=0`. Then one fresh process: an interactive session with thinking, three
+turns. Every reply's token ids must be those in `tests/outputs/expected.json`.
+
+- **Ids are stored, not hashes** (17 KB for 12 replies), so a failed check says which token
+  differs first: step 185 found the hash to be a verdict with nothing behind it.
+- **Tied to the reference outputs:** the eight greedy replies must have the hashes of
+  `results/record/reference/heldout-output.tsv` (plain greedy decoding on a fixed placement),
+  and `--store` refuses a greedy reply that has not. The two sampled ones are step 150's.
+
+| part | time |
+|---|---|
+| unit | 30 s |
+| logits, five runs | 76 s |
+| the engine: its start 119 s, then 12 requests | 204 s |
+| the session in a fresh process | 21 s |
+| `scripts/check.py default`, nothing to build | ~5 min 30 s |
+
+**The control of step 187 again** (one eps in the runtime): the three runtime logits checks
+fail, and in the outputs check 7 of the 8 greedy replies, both sampled ones and the session.
+One greedy reply of 300 tokens is unchanged by it. Outputs see such a change often, logits
+always.
+
+**Found while timing the session: where the "load" goes** (`results/dist/check-default-outputs.txt`).
+The same session takes 15 s with no experts on GPUs, 18 s with the placement, 21 s with the
+draft and speculation, and 126 s with `--cache-loads`. The model loads in 13 s. The other 105 s
+are the registration of the 289 GB of expert tensors with HIP for the cache's direct loads:
+`--cache-wait` waits for it before the prompt, and a run without `--cache-wait` waits for it
+at its exit, even if it started no load (that session: "0 loads started"). So:
+
+- the "~140 s load" of steps 181-187 is ~13 s of load and the registration (139 s in step
+  181's records against 116 s in step 151's: the registration is what grew; why is open);
+- every `scripts/chat.sh` session, however short, takes two minutes to end;
+- for `speed` (eight fresh processes, twice) the registration is ~28 of ~41 minutes.
+
+The session in `default` therefore runs without the cache (the same bytes under `--canon`);
+the cache is exercised by the engine's 12 requests.
+
+**What `default` does not cover** (all of it in `complete`'s list): prompts past 1,102 tokens;
+`-i` together with the cache; `-p` and `-f` as the way in (the engine part enters through
+`--requests`; the generation loops are the same code); cancels, the saved point, the server
+with the real engine; fresh-process speed.
+
+Next: `speed` as its own run, and with it the registration: whether a process must wait for
+it at exit, and what it costs at the start.
+

@@ -142,8 +142,10 @@ checkpoint or a change in the reference.
 
 ### 3.3 The product's outputs against stored outputs
 
-Each run of `ds-completion` here is one process: ~140 s to load (with `--cache-wait`; ~116 s
-until step 151, the cause of the change not known) for 8-10 s of generation. Without
+Each run of `ds-completion` here is one process: ~140 s before it generates (with `--cache-wait`; ~116 s
+until step 151, the cause of the change not known) for 8-10 s of generation. Step 188 found what
+the 140 s are: the model loads in ~13 s; registering the 289 GB of expert tensors for the cache's
+loads takes ~105 s more, at the start with `--cache-wait` and at the exit without it. Without
 `--cache-wait` a load is 10-35 s (the placement's upload; step 181's plain sampling runs);
 without experts on GPUs ~9 s.
 
@@ -304,7 +306,7 @@ change. A few fixed runs, each one command with one verdict and an exit code:
 | run | command | when | contents | time |
 |---|---|---|---|---|
 | unit | `scripts/check.py unit` | after every change | everything of 3.1: no model files | 30 s (47 s with a build) |
-| default | `scripts/check.py default` | after every change | `unit`, then (step 187) the logits of the runtime at 12, 202 and 1,102 tokens and of the CPU reference path at 12 and 202, each file's sha256 against `tests/e2e/expected.txt`; to come: the product's outputs in one load | 105 s so far; 5-10 min allowed |
+| default | `scripts/check.py default` | after every change | `unit`; the logits of the runtime at 12, 202 and 1,102 tokens and of the CPU reference path at 12 and 202, each file's sha256 against `tests/e2e/expected.txt` (step 187); the product's outputs: one engine with the fastest settings takes the held-out prompts, two sampled, a second turn, and one fresh session, every reply's token ids against `tests/outputs/expected.json` (step 188) | ~5.5 min |
 | speed | (not built yet) | a change about speed | the held-out prompts' tokens per second | |
 | complete | (not built yet) | overnight | the rest of section 3 | |
 | localizers | by hand | when a verdict failed | section 3.6's "where" column | |

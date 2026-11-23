@@ -82,12 +82,13 @@ so it doubles as a check of the build and the model files.
 
 ## Check
 
-    scripts/check.py default   # builds; the checks without the model (30 s); the logits against stored hashes (75 s)
-    scripts/check.py unit      # only the part without the model
+    scripts/check.py default   # ~5.5 min: builds; the checks without the model; logits against stored hashes;
+                               # the product's outputs (held-out prompts, sampling, a second turn, a session) against stored ids
+    scripts/check.py unit      # only the part without the model, 30 s
 
 `default` after every change: it ends with "all checks passed" or names what failed and what
-to run next. Its second part (the product's outputs in one load) is being built; what there
-is beyond it, test by test: [docs/testing.md](docs/testing.md).
+to run next. What there is beyond it (long context, the sessions and sampling matrices,
+speed), test by test: [docs/testing.md](docs/testing.md).
 
 ## Run
 

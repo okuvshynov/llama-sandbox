@@ -140,7 +140,7 @@ the engine's (README steps 152-154):
 | its reply: 42,960 tokens of reasoning and a tool call | 1,117 s at 38.5 t/s (2.97 tokens per step) |
 | a 3,008-token prompt | 40 s (74 t/s) |
 | replies on the held-out prompts in `--requests` mode | as single runs (38.9 / 47.9 / 51.2 against 38.9 / 50.8 / 52.0 t/s) |
-| the engine ready after its start | ~116 s with `--cache-wait` (the experts' registration); 139 s in step 181's records, the cause not looked for (PLAN "The testing process") |
+| the engine ready after its start | ~116 s with `--cache-wait`; 139 s in step 181's records. Of it the load is ~13 s; the rest is the registration of the expert tensors for the cache (105 s in step 188, which also found that a run without `--cache-wait` waits for it at its exit) |
 
 - **Requests wait in line:** one at a time, so a second client's 19-minute request starts
   when the first one ends.

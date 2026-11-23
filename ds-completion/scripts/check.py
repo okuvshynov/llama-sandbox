@@ -5,12 +5,16 @@
   scripts/check.py default     unit, then the checks with the model: after every change
   scripts/check.py default --store    the same, and what the checks wrote becomes what is expected
 
-default so far (README step 187) has its first half: the logits of the runtime and of the CPU
-reference path on golden token sequences (12, 202 and 1,102 tokens; tests/e2e/), each file's
-sha256 against tests/e2e/expected.txt. Its second half (the product's outputs in one load) and
-the runs speed and complete are to come (docs/plan.md, "The testing process").
---store is for a change that is meant to move the logits (a toolchain, the numerics): only after
-the difference was compared with the reference (ref/compare_logits.py). It prints old and new.
+default has two halves after unit. The arithmetic (README step 187): the logits of the runtime
+and of the CPU reference path on golden token sequences (12, 202 and 1,102 tokens; tests/e2e/),
+each file's sha256 against tests/e2e/expected.txt. And what stands around the arithmetic in the
+product (step 188; tests/outputs_check.py): one engine with the fastest settings takes the
+held-out prompts, sampled ones and a second turn, then one fresh interactive session; every
+reply's token ids against tests/outputs/expected.json.
+The runs speed and complete are to come (docs/plan.md, "The testing process").
+--store is for a change that is meant to move the logits or the outputs (a toolchain, the
+numerics): only after the difference was compared with the reference (ref/compare_logits.py).
+It prints old and new; a greedy reply that is not the project's reference is never stored.
 What says where a difference is (ds-test's per-layer table, traces) is not part of any run: a
 failed check names the command to run next.
 
@@ -37,6 +41,7 @@ ENCODING = HOME + '/llms/ds-flash/encoding/encoding.py'  # the model's chat form
 
 MODEL = HOME + '/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf'
 F8 = HOME + '/llms/ds-1017-fp8/dense-fp8.gguf'
+DRAFT = HOME + '/llms/dspark/dspark-DeepSeek-V4.1-Flash-1017-BF16.gguf'
 EXPECTED = 'tests/e2e/expected.txt'  # lines: <key> <sha256>
 
 
@@ -68,6 +73,8 @@ UNIT = [
 DEFAULT = UNIT + [
     logits('runtime', 'hello-fp32'), logits('runtime', 'readme200'), logits('runtime', 'readme1100'),
     logits('cpu', 'hello-fp32'), logits('cpu', 'readme200'),
+    ('outputs: the product in one load, and one session', [sys.executable, 'tests/outputs_check.py'], [MODEL, F8, DRAFT],
+     'its output names the reply and the first token that differs, and says how to narrow it down'),
 ]
 RUNS = {'unit': UNIT, 'default': DEFAULT}
 
@@ -115,7 +122,7 @@ def main():
     for i, (name, cmd, needs, then, *key) in enumerate(RUNS[run]):
         log = f'{out}/{i + 1:02d}-{name.split(":")[0].replace(" ", "-").replace(",", "")}.txt'
         made = log[:-4] + '.f32'
-        cmd = [c.replace('{out}', made) for c in cmd]
+        cmd = [c.replace('{out}', made) for c in cmd] + (['--store'] if store and cmd[-1].endswith('outputs_check.py') else [])
         missing = [f for f in needs if not os.path.exists(f)]
         t0 = time.time()
         if missing:  # a check that cannot run has not passed
