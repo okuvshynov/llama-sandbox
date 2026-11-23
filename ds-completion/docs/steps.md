@@ -7100,3 +7100,47 @@ with the real engine; fresh-process speed.
 Next: `speed` as its own run, and with it the registration: whether a process must wait for
 it at exit, and what it costs at the start.
 
+## Step 189: the registration of the expert tensors, looked at
+
+Step 188 found that the "load" of a run is ~13 s of load and ~105 s of registering the 289 GB
+of expert tensors with HIP, which the adaptive cache's loads need. Before building the `speed`
+run, whose time is mostly that: what does the registration cost, what changes it, and who
+has to wait for it? (`results/register/registration.txt`.)
+
+**Measured.**
+
+- *It does not vary within a boot, and it does between boots.* 130 stored runs of 16-17
+  November: 115.4 to 116.3 s to the first token. Step 181's boot: 138.4 to 138.8. Today: 119.
+  So "the load grew from 116 to 139 s" (steps 181-188) was a difference between two boots,
+  not a change in the code. Why boots differ is open.
+- *Threads do not help.* 6 GiB registered by 1, 4 and 16 threads: 2.17, 2.14, 2.10 GB/s. The
+  calls are serialized below us.
+- *The flags do not matter* (read-only, portable, both, none: 2.87-2.90 GB/s).
+- *It is all in the kernel:* no user time; 57% of the wall time the calling thread is in the
+  kernel, the rest it waits.
+- *Two things help a little:* mapping the pages first (2.2 -> 2.9 GB/s) and larger pieces (2.8;
+  but step 43 chose 64 MB pieces so that one call does not hold the memory-map lock for long).
+  Together perhaps 100 s where it is 105-130.
+
+So from our side the rate is fixed. What can change is how much is registered, and when.
+
+**Changed here, the one thing that needs no decision:** a process that ends before the
+registration is over now stops it, where it used to wait for it. A `scripts/chat.sh` session
+of three short turns: **126 s -> 21 s**, the same bytes. (It registered 289 GB, loaded nothing
+from them, and unregistered them.) `scripts/check.py default` passes.
+
+**What remains, and needs a decision** (not done):
+
+1. *Loads before the registration is complete.* A 300-token run starts ~1,850 loads, at most
+   35 GB of the 289: 12% of what is registered before the first load may start. The cache
+   could use each piece as soon as it is registered, with the pieces in the order of the
+   placement's ranking (the experts just below the cut are the likeliest to be loaded). Then a
+   server or a session has a working cache seconds after its start, and `--cache-wait` keeps
+   its meaning for measurements.
+2. *Registering only what is loaded,* expert by expert at its first load (6.5 ms each): no
+   start-up cost at all, but the first loads are slower, which changes the short runs' speed.
+3. *The `speed` run.* With `--cache-wait` each of its 16 processes waits ~105-125 s: 28-33 of
+   its ~41 minutes. Either accept it (the numbers stay comparable with every earlier step), or
+   measure in one process with the cache put back to its start between prompts (new numbers,
+   a new baseline).
+

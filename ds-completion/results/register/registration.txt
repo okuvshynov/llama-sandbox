@@ -1,0 +1,41 @@
+# The registration of the expert tensors with HIP: what it costs and what changes it (README step 189).
+# Commit 45bc12e + this step's change (the commit that adds this file); sclk 6; 2026-11-23; booted 08:47.
+# The two programs are beside this file; built with
+#   g++ -O2 -std=c++17 -D__HIP_PLATFORM_AMD__ -I/opt/rocm-6.3.4/include <file>.cpp -o <name> -L/opt/rocm-6.3.4/lib -Wl,-rpath,/opt/rocm-6.3.4/lib -lamdhip64 -lpthread
+#
+# 1. In the stored results: "expert tensors registered in N s" in results/ (507 runs): 24.7 to 165.6 s, median 102.6.
+#    Within one boot it does not vary: load_s of runs with --cache-wait is 115.4 to 116.3 s in nine sets of records of
+#    2026-11-16/17 (130 runs). Other boots: 138.4 to 138.8 s (2026-11-22, step 181), and today "ready" after 119 s.
+#    So the 116 -> 139 s of step 181 is a difference between boots, not a change of the code. Why boots differ: open.
+#
+# 2. ./reg_threads <shard 3 of the model> 6      (6 GiB of page-cache memory per case, a new region for each)
+64 MB pieces, 1 thread (as the loader)               populate  0.00 s, register   2.96 s =  2.17 GB/s (2.17 GB/s with the populate)
+the same again (a second region)                     populate  0.00 s, register   2.98 s =  2.16 GB/s (2.16 GB/s with the populate)
+1024 MB pieces, 1 thread                             populate  0.00 s, register   2.31 s =  2.79 GB/s (2.79 GB/s with the populate)
+64 MB pieces, 4 threads                              populate  0.00 s, register   3.02 s =  2.14 GB/s (2.14 GB/s with the populate)
+64 MB pieces, 16 threads                             populate  0.00 s, register   3.06 s =  2.10 GB/s (2.10 GB/s with the populate)
+populated first by 16 threads; 64 MB, 1 thread       populate  0.33 s, register   2.24 s =  2.88 GB/s (2.51 GB/s with the populate)
+populated first by 16 threads; 64 MB, 16 threads     populate  0.42 s, register   2.28 s =  2.82 GB/s (2.38 GB/s with the populate)
+unregister 582 pieces: 0.00 s
+#    Threads do not help (1, 4, 16: the same): the calls are serialized somewhere below us. Mapping the pages first
+#    (MADV_POPULATE_READ) or larger pieces give 2.2 -> 2.8-2.9 GB/s: 289 GB in ~100 s where it is ~105-130 s.
+#    (Larger pieces are what step 43 left: one call holds the memory-map lock for its whole duration.)
+#
+# 3. ./reg_flags <shard 4>      (6 GiB per case, populated first, 64 MB pieces, one thread)
+read-only | portable (the loader's)     2.22 s = 2.90 GB/s; cpu user 0.01 s, system 1.26 s
+read-only                               2.24 s = 2.87 GB/s; cpu user 0.00 s, system 1.29 s
+portable                                2.22 s = 2.90 GB/s; cpu user 0.00 s, system 1.27 s
+default (0)                             2.23 s = 2.89 GB/s; cpu user 0.00 s, system 1.27 s
+#    The flags change nothing. No user time: 57% of the wall time is the calling thread in the kernel, the rest it
+#    waits. Kernel: intel_iommu=on iommu=pt.
+#    So from user code the rate is fixed at ~2.2-2.9 GB/s. What can change is how much is registered, and when.
+#
+# 4. The change of this step: a process that ends before the registration is over stops it (it joined it before).
+#    scripts/chat.sh --think --think-show all --effort 75 -n 20 < results/chat/think/th20.q
+    before (45bc12e)      126.1 s    "288.8 GB of expert tensors registered in 105.0 s"; "0 loads started"
+    after                  21.2 s    "the registration of the expert tensors stopped after 4.0 s (the run ended first)"
+#    The same bytes (results/chat/think/th20.out). scripts/check.py default after it: all checks passed (326 s).
+#
+# 5. How much of the 289 GB a run reads through the registration: a 20-token session started 0 loads; step 181's
+#    300-token held-out runs started ~1,850 loads each (1,846 in one): 1,850 x 18.8 MB = 35 GB at most, 12% of what
+#    is registered before the first of them can start.

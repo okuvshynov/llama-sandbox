@@ -85,7 +85,7 @@ void load_expert(LoadStage& st, ExpertPool& p, int slot, const Layer& l, int e, 
   }
 }
 
-size_t register_expert_tensors(const Model& m) {
+size_t register_expert_tensors(const Model& m, const std::atomic<bool>* stop) {
   std::vector<std::pair<uintptr_t, uintptr_t>> r;
   for (const Layer& l : m.layers)
     if (l.loaded && l.gate_exps)
@@ -107,6 +107,10 @@ size_t register_expert_tensors(const Model& m) {
   for (auto& [a, b] : merged)
     for (uintptr_t p = a; p < b; p += kPiece) {
       const uintptr_t e = std::min(b, p + kPiece);
+      if (stop && stop->load()) {  // the process is ending: not another ~100 s for memory nobody will read
+        for (auto& [p2, e2] : done) (void)hipHostUnregister((void*)p2);
+        return 0;
+      }
       if (hipHostRegister((void*)p, e - p, hipHostRegisterReadOnly | hipHostRegisterPortable) != hipSuccess) {
         (void)hipGetLastError();
         for (auto& [p2, e2] : done) (void)hipHostUnregister((void*)p2);  // undo the ones that worked
@@ -141,11 +145,13 @@ ExpertLoader::ExpertLoader(const Model& m_, std::vector<ExpertPool*> pools_, boo
     reg_thread = std::thread([this] {
       pthread_setname_np(pthread_self(), "load-register");
       const auto t0 = std::chrono::steady_clock::now();
-      const size_t n = register_expert_tensors(m);
+      const size_t n = register_expert_tensors(m, &stop);
       const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
       if (n) {
         fprintf(stderr, "# expert loader: %.1f GB of expert tensors registered in %.1f s (direct loads from now)\n", n / 1e9, s);
         registered = true;
+      } else if (stop) {
+        fprintf(stderr, "# expert loader: the registration of the expert tensors stopped after %.1f s (the run ended first)\n", s);
       } else {
         fprintf(stderr, "# expert loader: registering the expert tensors failed; pinned loads\n");
       }

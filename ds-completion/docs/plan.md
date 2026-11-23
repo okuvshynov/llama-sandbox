@@ -598,6 +598,9 @@ Step 187: `check.py default`, the logits half: five `ds-test --e2e` runs against
 and logits in git (`tests/e2e/`, 9.5 MB); 105 s with `unit`. Next: the outputs half (one engine, `--requests`).
 Step 188: the outputs half (`tests/outputs_check.py`: 12 requests to one engine, one fresh session; token ids stored); `default`
 is 13 checks in ~5.5 min. The "load" is 13 s; 105 s more are the registration of expert tensors for the cache. Next: `speed`.
+Step 189: the registration measured (2.2-2.9 GB/s whatever the threads or flags; constant within a boot, 116-139 s between
+boots); a process that ends first stops it (a chat session 126 -> 21 s). Open, the person's: loads before it is complete,
+and how `speed` measures.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front

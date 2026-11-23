@@ -145,7 +145,8 @@ checkpoint or a change in the reference.
 Each run of `ds-completion` here is one process: ~140 s before it generates (with `--cache-wait`; ~116 s
 until step 151, the cause of the change not known) for 8-10 s of generation. Step 188 found what
 the 140 s are: the model loads in ~13 s; registering the 289 GB of expert tensors for the cache's
-loads takes ~105 s more, at the start with `--cache-wait` and at the exit without it. Without
+loads takes ~105 s more at the start with `--cache-wait` (until step 189 also at the exit without it;
+a run that ends first now stops it). Without
 `--cache-wait` a load is 10-35 s (the placement's upload; step 181's plain sampling runs);
 without experts on GPUs ~9 s.
 

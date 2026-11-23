@@ -9,8 +9,10 @@
 //   pinned  a host memcpy into pinned staging first (pool_load's path): ~2.2 ms of CPU and
 //           2 x 18.8 MB of memory traffic per load, which slows the CPU expert kernel ~7% at
 //           100 loads/s against ~1% direct
-// Registering the 289 GB of expert tensors takes ~40 s, so it runs on a background thread and
-// the loaders use the pinned path until it is done.
+// Registering the 289 GB of expert tensors takes ~100-125 s (2.2-2.9 GB/s, all of it in the
+// driver: more threads, larger pieces or other flags do not change it, README step 189), so it
+// runs on a background thread; the cache starts no load until it is done, and a process that
+// ends before that stops it (it does not wait for it).
 //
 // At most 2 matrices are in flight per loader: copies queued on a die delay its other copies
 // (the per-layer staging) whatever the stream's priority.
@@ -47,8 +49,9 @@ void load_expert(LoadStage& st, ExpertPool& pool, int slot, const Layer& l, int 
 // Registers every loaded layer's expert tensors with HIP (read-only; neighbouring tensors'
 // page-aligned ranges merged), in 64 MB pieces so no call holds the memory-map lock for long; a
 // copy from the registered memory must not span two pieces (load_expert splits it). Returns the
-// bytes registered, 0 on failure.
-size_t register_expert_tensors(const Model& m);
+// bytes registered, 0 on failure. stop: checked before every piece; once it is set, what was
+// registered is unregistered again and the result is 0 (the process is ending).
+size_t register_expert_tensors(const Model& m, const std::atomic<bool>* stop = nullptr);
 // undoes it (every piece); the number of pieces unregistered
 size_t unregister_expert_tensors();
 
