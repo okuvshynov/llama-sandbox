@@ -70,7 +70,7 @@ Features and limits
 | 29 | Sampling beyond greedy | started | temperature and top-p for a minimal server (the person's benchmark). Step 148: the sampler as a library with its test. Step 149: `--temp`, `--top-p`, `--seed` in the plain loop, one seed one output on any placement. Step 150: the speculative loop samples too (the plain loop's outputs; held-out mean 41.8 t/s against 44.8 greedy, not with `--remote`). Step 151: that loss was the draws (~1 ms each and the threads' start); a vector `exp` and draws in turn: 43.1 t/s against 44.9 greedy. Step 152: `--requests`, the engine's side of the server (prompts on stdin, each on an empty context; `docs/requests.md`). Step 153: the HTTP front, `server/ds_server.py` (Anthropic Messages; the model's `encoding.py` renders and parses): the benchmark's script runs against it unchanged. Step 154: a request whose client left is cancelled (`SIGUSR1` to the engine). Sampling with `--spec` on two machines, long listed as open, went with the two machines (step 178). Next: the person's samples, the OpenAI endpoint if wanted. Greedy loops on some long reasoning (README step 48) |
 | 33 | Observability of the server | started (steps 1-3 of 4 done, steps 164-166) | a metrics page in the Prometheus format, the engine's choice of context in the protocol and the log, a log of requests as JSON lines: "Observability of the server" below (README step 162) |
 | 34 | The product and the tools | the three small steps done (steps 169-171), `fakequant` in two (172), the CPU path as its own program `ds-ref` (173). Open: where `ds-test` belongs, directory moves, a tokenizer without libllama | say and then make true which code is the product and which checks or measures it: "The product and the tools" below |
-| 35 | The testing process: the same guarantees in less time | started: the runs decided and `unit` done (step 186) | a full pass is ~3.5 h, most of it loads of the model, with overlapping runs and comparisons written by hand per step: "The testing process" below |
+| 35 | The testing process: the same guarantees in less time | done as a split (steps 186-190): `unit`, `default`, `speed`, `complete`; each to be improved | a full pass is ~3.5 h, most of it loads of the model, with overlapping runs and comparisons written by hand per step: "The testing process" below |
 
 ## The testing process (2026-11-22)
 
@@ -99,8 +99,8 @@ few fixed runs, each one command of `scripts/check.py` with one verdict:
 |---|---|---|---|---|
 | `unit` | after every change | no model files: the rounding ops, the sampler, the selection kernels, the batched kernels, the server against a fake engine | 30 s | done, step 186 |
 | `default` | after every change | the model, loads kept to a minimum. Two verdicts: logits against stored bytes on golden token sequences (`ds-test --e2e`: a 12-token set and a long prompt; it starts in seconds); and the product's outputs in one load: one engine with `--requests` and the full configuration (placement, cache, draft, speculation, `--canon`) takes the held-out prompts, a sampled seed, a conversation that goes on, each reply's hash against a manifest in git. One short `-i` session in a fresh process for the two paths `--requests` does not take | ~5.5 min | done, steps 187-188 |
-| `speed` | when a change is about speed (small gains were the common case) | the held-out prompts' tokens per second in fresh processes, as the documents quote it: the second repeat, against a stored baseline and the repeats' spread | ~40 min today, ~28 of them the registration of expert tensors for the cache (step 188) | next |
-| `complete` | overnight, and before anything is called done | everything else: the 20,000-token logits, the CPU reference path's sets, the sessions, the sampling matrices, the request test in both modes, the draft against the reference, the weights | ~4 h today | planned |
+| `speed` | when a change is about speed (small gains were the common case) | the held-out prompts' tokens per second in fresh processes, as the documents quote it: the second repeat's mean against `tests/speed/baseline.tsv` (2%: slower fails, within is "the same"); every output the stored bytes | 36 min, ~28 of them the registration of expert tensors for the cache (step 189) | done as it is measured today, step 190 |
+| `complete` | overnight, and before anything is called done | `default`, then: the 20,000-token logits, the CPU path at 1,102 tokens, the request test in both modes, six sessions and ten single runs, the three sampling matrices, `ds-ref`'s output, a long prompt from a file, and `speed` | ~4 h | done, step 190 |
 | localizers | only when a verdict failed | the per-layer table, per token, near-ties, traces: not part of any run; a failed check prints the command to run next | | the hint is in `check.py`'s output |
 
 What this needs, in the order of work: the expected logits and the token ids of the golden
@@ -112,6 +112,12 @@ Known limits of `default`, accepted: no context past 16k tokens (the 20,000-toke
 minutes: `complete`); its speeds are of one process with an adapted cache, comparable between
 default runs only; stored logits are bytes of one toolchain, so a ROCm or compiler change is
 decided by `complete`'s comparison with the reference and then stored again on purpose.
+
+**To improve, now that the runs exist** (the person, 2026-11-23: iterate after the split is in place): the
+registration (loads before it is complete; step 189) and with it `speed`'s 36 minutes; `complete`'s
+repeated runs (the held-out greedy runs appear in `speed` and in a sampling matrix; a session and
+its ten single runs); the draft against the reference as a check with a verdict; the code
+findings of step 182's review.
 
 **A rule from the description** (step 185; testing.md 3.6): a tier runs verdicts (bytes, hashes, a test's
 exit code); what says where a difference is (the per-layer table, per token, the traces) runs
@@ -601,6 +607,8 @@ is 13 checks in ~5.5 min. The "load" is 13 s; 105 s more are the registration of
 Step 189: the registration measured (2.2-2.9 GB/s whatever the threads or flags; constant within a boot, 116-139 s between
 boots); a process that ends first stops it (a chat session 126 -> 21 s). Open, the person's: loads before it is complete,
 and how `speed` measures.
+Step 190: `check.py speed` and `check.py complete`, both as things are measured today (the person: build the split first,
+improve each run after); progress lines of the long checks in the run's own output. The four runs exist.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front

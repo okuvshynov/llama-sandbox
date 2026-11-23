@@ -1,0 +1,64 @@
+# scripts/check.py speed and scripts/check.py complete (README step 190).
+# Commit 3b7bb76 + this step's change (the commit that adds this file); sclk 6; 2026-11-23; booted 08:47.
+#
+# 1. scripts/check.py speed --store      (2,138 s = 36 min; 16 runs of results/cleanup/heldout.matrix)
+#    The verdict printed below was computed again from the run's records (python3 tests/speed_check.py --out <its runs>
+#    --store): the run itself said FAIL, because the check then refused a second repeat that read more than 1 MB from
+#    storage while generating, and cpp-matrix reads ~1.1 MB in every second repeat (step 179: 1.1). The limit is 8 MB
+#    now (a cold first pass reads 17-77 MB per prompt).
+ok    16 of 16 outputs are the stored bytes (results/cache-test/plain-canon-static/)
+#   prompt          t/s   baseline   difference     (first repeat, read from storage while generating)
+    cpp-matrix    52.54      52.54     +0.0%               (54.90, 0.0 MB)
+    geometry      55.60      55.60     +0.0%               (55.62, 0.0 MB)
+    ja-email      37.35      37.35     +0.0%               (37.31, 0.1 MB)
+    py-lru        47.29      47.29     +0.0%               (46.79, 0.0 MB)
+    sql-report    47.72      47.72     +0.0%               (47.59, 1.0 MB)
+    summary-json  45.17      45.17     +0.0%               (45.30, 0.0 MB)
+    tcp-udp       39.23      39.23     +0.0%               (39.07, 0.0 MB)
+    zh-travel     34.19      34.19     +0.0%               (34.23, 0.0 MB)
+ok    the GPU clock level: [6, 6, 6, 6] (the baseline's: [6, 6, 6, 6])
+ok    the second repeat read at most 1.2 MB from storage while generating (over 8 MB: not a measurement, run it again)
+ok    mean 44.88 t/s against the baseline's 44.88: +0.0%, the same within 2%, no difference claimed
+all checks passed
+#    The baseline (tests/speed/baseline.tsv) is this run: mean 44.88 t/s (steps 179, 180: 44.91, 44.88).
+#
+# 2. scripts/check.py complete: built, NOT yet run as a whole. Started once and stopped by the person during its 12th
+#    check (the 20,000-token logits; to be run overnight). What it did until then:
+# scripts/check.py complete; commit 3b7bb76+changes; sclk 6,6,6,6; 2026-11-23 11:41; outputs in data/check/com
+ok    build: make  0.0 s
+ok    build: make HIP=1  0.0 s
+ok    fakequant: the rounding ops against the reference's, bit for bit  0.0 s
+ok    sampler: temperature, top-p, one seed one sequence  19.3 s
+ok    top-k: the selection kernels against torch and the reference  2.2 s
+ok    kernels: M tokens per launch against one, bit for bit  0.8 s
+ok    server: ds_server.py against a fake engine  8.1 s
+ok    logits, the runtime, hello-fp32  4.6 s
+ok    logits, the runtime, readme200  11.6 s
+ok    logits, the runtime, readme1100  32.4 s
+ok    logits, the CPU reference path, hello-fp32  3.3 s
+ok    logits, the CPU reference path, readme200  21.7 s
+ok    outputs: the product in one load, and one session  220.2 s
+#    (stopped here: "logits, the runtime, readme20k-s" was running)
+#    Its other checks, each run on its own in this step or before:
+#      the request test with speculation               step 183: 67 checks passed, 12 min
+#      tests/sessions_check.py                         its two comparisons on step 181's kept outputs: 16 of 16 true; three
+#                                                      wrong pairings (reply 2 as reply 3, a session cut short): all false.
+#                                                      The script itself (16 starts) was not run.
+#      tests/matrix_check.py                           results/sampler/plain.matrix --prompts tcp-udp: 6 of 6 hashes, 267 s.
+#                                                      Not run: the three matrices as complete runs them.
+#      tests/record_check.py                           bin/ds-ref: fnv1a64:3a40e97fd9b90430, ok; the long prompt from
+#                                                      tests/long-prompt.txt: fnv1a64:df516e7200ad14c8, ok; a wrong expected
+#                                                      hash: FAIL, exit code 1
+#      logits, runtime, readme20k-s                    expected hash = sha256 of data/ds/readme20k-rt.f32 (the stored bytes
+#                                                      step 181's run equalled); the check itself not finished
+#      logits, CPU path, readme1100                    NOT run: nothing is expected for it yet (its first run needs --store)
+#
+# 3. Progress in the run's own output (asked for during the speed run, whose output showed nothing for 36 minutes):
+#    a line when a check starts, and the long checks' own lines indented. From the complete run above:
+      | # engine: bin-hip/ds-completion -m ~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf --rt ~/llms/ds-1017-fp8/dense-fp8
+      | # "ready" after 118 s
+      | ok    tcp-udp      greedy  300 tokens fnv1a64:e84010b498310b61, the reference's;  39.1 t/s
+      | ok    py-lru       greedy  300 tokens fnv1a64:ccdf68228376b5ca, the reference's;  47.0 t/s
+      | ok    cpp-matrix   greedy  300 tokens fnv1a64:55214691a828a176, the reference's;  60.1 t/s
+      | ok    sql-report   greedy  300 tokens fnv1a64:f316e2fad109b2e0, the reference's;  50.7 t/s
+      | ok    geometry     greedy  345 tokens fnv1a64:39009bbaad3bdfec, the reference's;  55.0 t/s

@@ -85,10 +85,12 @@ so it doubles as a check of the build and the model files.
     scripts/check.py default   # ~5.5 min: builds; the checks without the model; logits against stored hashes;
                                # the product's outputs (held-out prompts, sampling, a second turn, a session) against stored ids
     scripts/check.py unit      # only the part without the model, 30 s
+    scripts/check.py speed     # 36 min: the held-out prompts' tokens per second against the stored baseline
+    scripts/check.py complete  # ~4 h, overnight: default, long context, sessions, sampling, the request test, speed
 
 `default` after every change: it ends with "all checks passed" or names what failed and what
-to run next. What there is beyond it (long context, the sessions and sampling matrices,
-speed), test by test: [docs/testing.md](docs/testing.md).
+to run next. `speed` for a change about speed; `complete` before anything is called done. Each run is a
+fixed list: there is nothing to choose. What each check is: [docs/testing.md](docs/testing.md).
 
 ## Run
 

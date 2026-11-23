@@ -1,0 +1,10 @@
+# tests/speed_check.py --store: the second repeat's generation speed (t/s) per held-out prompt; commit 3b7bb76; 2026-11-23
+# sclk [6, 6, 6, 6]
+cpp-matrix 52.536
+geometry 55.596
+ja-email 37.347
+py-lru 47.286
+sql-report 47.716
+summary-json 45.175
+tcp-udp 39.231
+zh-travel 34.189

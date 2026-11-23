@@ -308,12 +308,13 @@ change. A few fixed runs, each one command with one verdict and an exit code:
 |---|---|---|---|---|
 | unit | `scripts/check.py unit` | after every change | everything of 3.1: no model files | 30 s (47 s with a build) |
 | default | `scripts/check.py default` | after every change | `unit`; the logits of the runtime at 12, 202 and 1,102 tokens and of the CPU reference path at 12 and 202, each file's sha256 against `tests/e2e/expected.txt` (step 187); the product's outputs: one engine with the fastest settings takes the held-out prompts, two sampled, a second turn, and one fresh session, every reply's token ids against `tests/outputs/expected.json` (step 188) | ~5.5 min |
-| speed | (not built yet) | a change about speed | the held-out prompts' tokens per second | |
-| complete | (not built yet) | overnight | the rest of section 3 | |
+| speed | `scripts/check.py speed` | a change about speed | the eight held-out prompts, each in a fresh process with the fastest settings, twice; the second repeat's mean against `tests/speed/baseline.tsv`: slower by more than 2% fails, within 2% is "the same", faster says so. Also: every output the stored bytes, the clock level the baseline's, the second repeat not reading from storage (step 190) | 36 min |
+| complete | `scripts/check.py complete` | overnight, and before anything is called done | `default`; the logits at 20,000 tokens (runtime) and at 1,102 (CPU path); the request test with and without speculation; six sessions and ten single runs on their conversations; the three sampling matrices; `ds-ref`'s output; a 2,731-token prompt from a file; `speed` (step 190) | ~4 h |
 | localizers | by hand | when a verdict failed | section 3.6's "where" column | |
 
-`check.py` builds first (`make`, `make HIP=1`: a stale program is a wrong verdict), prints one
-line per check, keeps every check's output under `data/check/`, and for a failed check prints
+`check.py` builds first (`make`, `make HIP=1`: a stale program is a wrong verdict), prints a
+line when a check starts and, for the checks that take minutes, their own lines as they come
+(indented), then one line per check with its verdict and time, keeps every check's output under `data/check/`, and for a failed check prints
 where its output is and what to run next. A check whose needed file is missing fails; it is
 not skipped.
 
@@ -321,6 +322,16 @@ not skipped.
 the token ids and the reference's logits, made by `ref/trim_golden.py`), so they need only the
 model and `dense-fp8.gguf`. `scripts/check.py default --store` replaces the expected hashes: for
 a change meant to move the logits, after the difference was compared with the reference.
+
+**Not in any run** (by hand, when their subject changes): what gives no verdict, i.e. the
+localizers of 3.6 (the per-layer tables, `--per-token`, `check_topk_ties.py`, traces) and the
+draft against the reference (`compare_dspark.py`: numbers to read); `ref/check_weights.py`,
+which reads the checkpoint from Hugging Face (when the model files change); pi on the real
+server.
+
+`--store` on `default`, `speed` or `complete` makes what the checks gave the new expectation:
+the logits' hashes, the outputs' token ids (never a greedy reply that is not the reference's),
+the speed baseline. For a change that is meant to move them.
 
 What `unit` needs outside the repository: ROCm and the GPUs (two checks run kernels),
 `~/venvs/ds-ref` (torch, for the reference's own top-k) and the model's `encoding.py` in

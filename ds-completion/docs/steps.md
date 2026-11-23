@@ -7144,3 +7144,60 @@ from them, and unregistered them.) `scripts/check.py default` passes.
    measure in one process with the cache put back to its start between prompts (new numbers,
    a new baseline).
 
+## Step 190: `check.py speed` and `check.py complete`: the four runs exist
+
+The person, on step 189's open questions: leave the registration and the way speed is
+measured as they are; build the reorganized testing first; once unit, default, speed and
+complete are separate, improve each. So both runs are built from what is measured today.
+
+**`scripts/check.py speed`** (`tests/speed_check.py`; 36 min): the measurement the documents
+quote, unchanged: the eight held-out prompts, each in a fresh process with the fastest
+settings, twice (`results/cleanup/heldout.matrix`). What is new is the verdict:
+
+- the second repeat's mean against `tests/speed/baseline.tsv`: more than 2% slower fails;
+  within 2% is "the same within 2%, no difference claimed" (the mean has moved ~0.5% between
+  runs of the same code: 44.80, 44.91, 44.88, 44.88); more than 2% faster says so, and
+  `--store` makes it the baseline. Per prompt the difference is printed, marked past 5%;
+- every output must be the stored bytes: a faster wrong answer is not a result;
+- not a measurement, so a failure whatever the numbers: a clock level other than the
+  baseline's, or a second repeat that read from storage while generating (over 8 MB).
+
+The baseline is this step's run: mean **44.88 t/s**, 16 of 16 outputs the stored bytes.
+
+**`scripts/check.py complete`** (~4 h): `default`, then what `default` leaves out, then `speed`:
+
+| check | by |
+|---|---|
+| the runtime's logits at 20,000 tokens; the CPU path's at 1,102 | `ds-test --e2e` on cut sets, hashes |
+| the request protocol on one engine, with and without speculation | `results/requests/requests_test.py` |
+| six sessions against their stored replies; ten single runs on the conversations | `tests/sessions_check.py` |
+| sampling: the plain loop; with speculation; on the held-out prompts | `tests/matrix_check.py` on the three matrices, hashes against the stored records |
+| `ds-ref`'s output; a 2,731-token prompt from a file | `tests/record_check.py`, one hash each |
+| speed | as above |
+
+**Not run as a whole.** `complete` was started and stopped by the person in its 12th check,
+to be run overnight; until then 11 checks had passed (`default`'s). Its other parts were tried
+one by one (`results/dist/check-speed-complete.txt`): the session comparisons on step 181's
+kept outputs (16 of 16, and three wrong pairings refused), the matrix check on one prompt,
+the two single-run checks with a control. Two things its first whole run will meet: the CPU
+path's logits at 1,102 tokens have no expected hash yet (that check fails until `--store`),
+and `tests/sessions_check.py` has not run as a script.
+
+**Not in any run,** by decision: what gives no verdict (the per-layer tables and the other
+localizers; the draft against the reference), `ref/check_weights.py` (it reads the checkpoint
+over the network), pi on the real server.
+
+**Progress** (the person, during the speed run: its output showed nothing for 36 minutes; one
+had to look into the run's directory). `check.py` now prints a line when a check starts, and
+for the checks that take minutes it passes their own lines through, indented.
+
+**A mistake of mine in the first speed run:** the limit for "read from storage in the second
+repeat" was 1 MB, and one prompt reads 1.1 MB in every second repeat. The run measured for 36
+minutes and then said FAIL. The records were kept, so the verdict was computed again from
+them with the limit at 8 MB; nothing was measured twice. A check that can refuse a
+measurement should be tried on stored measurements before it is trusted with a new one.
+
+**Where the testing stands** (PLAN item 35): four runs, each one command and one verdict, and
+nothing to choose per change: `unit` 30 s, `default` 5.5 min, `speed` 36 min, `complete` ~4 h.
+What to improve in each is listed in the plan.
+
