@@ -74,6 +74,8 @@ Features and limits
 
 ## The testing process (2026-11-22)
 
+The current state, test by test, with terms, needs and times: [testing.md](testing.md) (step 184).
+
 **Why.** After the two-machine code left, gating three commits took ~3.5 h of runs (steps
 179-181). A run is ~140 s of load for ~8 s of generation; several runs repeat each other; each
 step wrote its own comparison code, and one of them raised a false alarm (step 181).
@@ -573,6 +575,7 @@ Step 182: the documents, comments and names against the tree: ~70 corrections of
 findings listed in `results/dist/review-182.txt` section 3 for steps of their own. Next: the testing process (item 35).
 Step 183: `--requests`: a header that was not understood closes the engine wherever the mistake stands (a bad field after
 `bytes=` left the prompt unread); eight header cases in the request test. Next: the testing process (item 35).
+Step 184: `docs/testing.md`: the testing as it is, before it changes. Next: item 35 from that page.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front

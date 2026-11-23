@@ -1,0 +1,24 @@
+# The short tests, timed for docs/testing.md (README step 184). Each command once, wall time, the model in the
+# page cache. Commit 31dbf9d (the programs built at it); sclk 6; 2026-11-23; the machine booted at 08:47.
+# M=~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf  F8=~/llms/ds-1017-fp8/dense-fp8.gguf
+# command                                                                            rc   seconds   last line / result
+bin/test-fakequant data/fq                                                            0     0.0    ALL BIT-EXACT
+bin/test-sampler                                                                      0    80.2    all checks passed
+~/venvs/ds-ref/bin/python ref/check_topk.py                                           0     2.5    46 of 46 cases match
+python3 server/test_server.py                                                         0     8.1    all checks passed
+bin-hip/bench-kernels --bitwise                                                       0     0.8    every line bit-identical
+bin/ds-test -m $M -g data/golden/hello-fp32                                           0     8.7    200 rows
+bin/ds-test -m $M -g data/golden/hello                                                0     7.5    680 rows
+bin-hip/ds-test -m $M -g data/golden/hello-fp32 --runtime $F8                         0     5.0    200 rows
+bin-hip/ds-test -m $M -g data/golden/hello-fp32 --runtime $F8 --e2e <file>            0     4.6
+bin/ds-test -m $M -g data/golden/hello-fp32 --e2e <file>                              0     3.3
+~/venvs/ds-ref/bin/python ref/compare_logits.py data/ref/hello-fp32.pt <rt file>      0     1.5    argmax agrees 5/5, mean KL 7.25e-05, max KL 2.55e-04
+bin/ds-ref -m $M -p "The three largest cities in Ukraine are" -n 24                   0    13.2
+python3 results/requests/requests_test.py --headers-only                              0    65.8    all checks passed (8 engines)
+#
+# The load of bin-hip/ds-completion (--record's load_s) in step 181's records (data/step181/, not kept):
+#   results/sampler/plain.matrix, 18 runs (no draft; one configuration with --cache-wait):   mean 30.8 s, 9.7 to 136.0
+#   results/sampler/step151/spec.matrix, 15 runs (the draft, --cache-wait):                  mean 138.5 s, 138.4 to 138.7
+#   results/sampler/spec-heldout.matrix, 16 runs:                                            mean 138.6 s, 138.4 to 138.8
+# The variants of the golden sets: the "variant" field of data/ref/<name>.pt (None = the real reference).
+# Every other time in docs/testing.md is from the results file of the step it names.

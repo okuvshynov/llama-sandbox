@@ -71,6 +71,7 @@ build, every option, the current results, the limits).
 | [docs/numerics.md](docs/numerics.md) | operand types, how they map to the GPUs, accumulation |
 | [docs/plan.md](docs/plan.md) | the items and their status, the plans and cost models |
 | [docs/process.md](docs/process.md) | how the work was approached: the method, the decision log, predictions against outcomes, mistakes |
+| [docs/testing.md](docs/testing.md) | what checks the engine today: the terms (golden set, variant, table, held-out), every test with its target, what it needs and how long it takes |
 | [docs/reproduce.md](docs/reproduce.md) | how to rebuild the setup and which command produced which results file |
 | [docs/record.md](docs/record.md) | `--record`: a run as one JSON object |
 | [docs/requests.md](docs/requests.md), [docs/server.md](docs/server.md) | `--requests`, the protocol between the engine and a front; the HTTP front |

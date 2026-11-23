@@ -6894,3 +6894,33 @@ Still open from step 182's list: `ds-ref` taking the runtime's options, the unus
 Makefile's prerequisites, the usage texts, the units. Next, as decided in step 181: the
 testing process.
 
+## Step 184: the testing as it is, written down
+
+Before the testing process changes (PLAN item 35), the person asked for a description of its
+current state: `docs/testing.md`. No code changed.
+
+What the page has: what "correct" means here as a chain of seven links, each with the test
+that checks it; the terms (the reference against our CPU reference path, a golden set, a
+variant, teacher-forced, a table, stored bytes, `--canon`, held-out, a record, a gate); every
+test with its target, what it is compared with, what it needs, its time and whether it says
+pass or fail itself; what each needed thing is and whether it is in git; which sets of tests
+the last ten steps ran; and what is thin, double or by hand, as facts.
+
+**Measured for it** (`results/dist/testing-times.txt`): the short tests, once each. The unit
+tests and the server test: 0 to 8 s, except `bin/test-sampler`, 80 s (its timing loops; the
+documents said "a few seconds"). `ds-test` on a 12-token golden set: 3 to 9 s on either path,
+per layer or end to end, since it maps the model and uploads only the dense weights.
+
+**What writing it showed** (none of it new code, all of it of use for item 35):
+
+- Of 27 tests, 9 say pass or fail themselves; 18 print something a person compares.
+- `ds-test` has no verdict at all: its gate is "the table equals the stored one".
+- The golden sets (73 GB), the stored logits and the rounding test's data are not in git: a
+  clean checkout cannot run the tests that compare with the reference.
+- The whole comparison with the reference on the small set, both paths, per layer and end to
+  end, is under a minute. The four hours are the product's outputs against stored outputs: 52
+  loads of ~140 s for a few minutes of generation.
+- The draft has not been compared with the reference since step 19, as far as the steps say.
+
+Next: item 35, starting from this page.
+
