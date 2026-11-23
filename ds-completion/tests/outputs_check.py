@@ -21,7 +21,7 @@ results/chat/think/th20.out. Without the cache because its start is what takes l
 loads in ~13 s, and registering the 289 GB of expert tensors for the cache's loads takes ~105 s
 more, which --cache-wait waits for at the start and any run with --cache-loads at its exit.
 
-Every reply's token ids must be those in tests/outputs/expected.json. Ids are stored, not a hash,
+Every reply's token ids must be those in tests/data/outputs/expected.json. Ids are stored, not a hash,
 so that a failed check can say which token differs first. The eight greedy replies are tied to
 the project's reference: their fnv1a64 must be the output_hash of
 results/record/reference/heldout-output.tsv (plain greedy decoding on a fixed placement).
@@ -42,7 +42,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 M = HOME + '/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf'
 F8 = HOME + '/llms/ds-1017-fp8/dense-fp8.gguf'
 D = HOME + '/llms/dspark/dspark-DeepSeek-V4.1-Flash-1017-BF16.gguf'
-EXPECTED = 'tests/outputs/expected.json'
+EXPECTED = 'tests/data/outputs/expected.json'
 BOS, EOS = '<｜begin▁of▁sentence｜>', '<｜end▁of▁sentence｜>'
 S1 = 'temp=1 top_p=0.95 seed=1'
 SAMPLED = ['tcp-udp', 'cpp-matrix']

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""server/ds_server.py against a fake engine (server/fake_engine.py): no model, a few seconds.
+"""server/ds_server.py against a fake engine (tests/fake_engine.py): no model, a few seconds.
 
-  python3 server/test_server.py            exit code 1 if a check fails
+  python3 tests/test_server.py            exit code 1 if a check fails
 
 What is checked: the prompt the engine receives for a request (the model's encoding.py
 renders it: system, tools, effort, thinking), the message built from a canned reply (thinking,
@@ -21,7 +21,8 @@ import urllib.error
 import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
+SERVER = os.path.join(os.path.dirname(HERE), 'server')
+sys.path.insert(0, SERVER)
 import ds_server  # noqa: E402
 
 ENC = os.path.expanduser('~/llms/ds-flash/encoding/encoding.py')
@@ -69,7 +70,7 @@ def main():
     replies, reqlog = os.path.join(tmp, 'replies.json'), os.path.join(tmp, 'requests.log')
     json.dump(REPLIES, open(replies, 'w', encoding='utf-8'), ensure_ascii=False)
     req_log, dump_dir = os.path.join(tmp, 'requests.jsonl'), os.path.join(tmp, 'dump')
-    srv = subprocess.Popen([sys.executable, os.path.join(HERE, 'ds_server.py'), '--port', '0', '--encoding', ENC, '--seed', '7', '--ping', '1', '--progress', '1',
+    srv = subprocess.Popen([sys.executable, os.path.join(SERVER, 'ds_server.py'), '--port', '0', '--encoding', ENC, '--seed', '7', '--ping', '1', '--progress', '1',
                             '--log', req_log, '--dump', dump_dir, '--',
                             sys.executable, os.path.join(HERE, 'fake_engine.py'), replies, reqlog, '--requests'],
                            stdout=subprocess.PIPE, stderr=open(os.path.join(tmp, 'server.err'), 'w'))

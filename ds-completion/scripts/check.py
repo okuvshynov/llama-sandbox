@@ -8,12 +8,12 @@
   scripts/check.py default|speed|complete --store    the same, and what the checks gave becomes what is expected
 
 default has two halves after unit. The arithmetic (README step 187): the runtime's logits on
-golden token sequences (12, 202 and 1,102 tokens; tests/e2e/), each file's sha256 against tests/e2e/expected.txt. And what stands around the arithmetic in the
+golden token sequences (12, 202 and 1,102 tokens; tests/data/e2e/), each file's sha256 against tests/data/e2e/expected.txt. And what stands around the arithmetic in the
 product (step 188; tests/outputs_check.py): one engine with the fastest settings takes the
 held-out prompts, sampled ones and a second turn, then one fresh interactive session; every
-reply's token ids against tests/outputs/expected.json.
+reply's token ids against tests/data/outputs/expected.json.
 speed (step 190; tests/speed_check.py) is the measurement the documents quote: each held-out
-prompt in a fresh process, twice, the second repeat's mean against tests/speed/baseline.tsv.
+prompt in a fresh process, twice, the second repeat's mean against tests/data/speed/baseline.tsv.
 complete (step 190) adds what default leaves out: the logits at 20,000 tokens;
 the request test in both modes; six sessions and ten single runs on their
 conversations; the three sampling matrices; a 2,731-token prompt from a file.
@@ -54,12 +54,12 @@ ENCODING = HOME + '/llms/ds-flash/encoding/encoding.py'  # the model's chat form
 MODEL = HOME + '/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf'
 F8 = HOME + '/llms/ds-1017-fp8/dense-fp8.gguf'
 DRAFT = HOME + '/llms/dspark/dspark-DeepSeek-V4.1-Flash-1017-BF16.gguf'
-EXPECTED = 'tests/e2e/expected.txt'  # lines: <key> <sha256>
+EXPECTED = 'tests/data/e2e/expected.txt'  # lines: <key> <sha256>
 
 
 def logits(name):
     """ds-test --e2e on a cut golden set (ref/trim_golden.py): the runtime's logits of every step, as bytes"""
-    cmd = ['bin-hip/ds-test', '-m', MODEL, '-g', f'tests/e2e/{name}', '--runtime', F8, '--e2e', '{out}']
+    cmd = ['bin-hip/ds-test', '-m', MODEL, '-g', f'tests/data/e2e/{name}', '--runtime', F8, '--e2e', '{out}']
     then = (f'how far from the reference: {PY_REF.replace(HOME, "~")} ref/compare_logits.py data/ref/{name}.pt <the file>; '
             f'which layer: {cmd[0]} -m $M -g data/golden/{name} --runtime $F8 against the same from the last good commit')
     return (f'logits, the runtime, {name}', cmd, [MODEL, F8], then, f'runtime/{name}')
@@ -76,7 +76,7 @@ UNIT = [
      'its output names the case; hip/kernels.hip (k_topk, k_candidate_blocks)'),
     ('kernels: M tokens per launch against one, bit for bit', ['bin-hip/bench-kernels', '--bitwise'], [],
      'its output names the kernel; hip/kernels.hip'),
-    ('server: ds_server.py against a fake engine', [sys.executable, 'server/test_server.py'], [ENCODING],
+    ('server: ds_server.py against a fake engine', [sys.executable, 'tests/test_server.py'], [ENCODING],
      'its output names the check; server/ds_server.py'),
 ]
 DEFAULT = UNIT + [
@@ -91,8 +91,8 @@ SPEED = [('speed: the held-out prompts in fresh processes, twice', [PY, 'tests/s
 PROD = ['bin-hip/ds-completion', '-m', MODEL, '--rt', F8, '--placement', 'placements/study30.txt', '--canon']
 COMPLETE = DEFAULT + [
     logits('readme20k-s'),
-    ('requests: the protocol on one engine, with speculation', [PY, 'results/requests/requests_test.py'], FULL, 'its output names the check; docs/requests.md'),
-    ('requests: the same in the plain loop', [PY, 'results/requests/requests_test.py', '--no-spec'], [MODEL, F8], 'its output names the check'),
+    ('requests: the protocol on one engine, with speculation', [PY, 'tests/requests_test.py'], FULL, 'its output names the check; docs/requests.md'),
+    ('requests: the same in the plain loop', [PY, 'tests/requests_test.py', '--no-spec'], [MODEL, F8], 'its output names the check'),
     ('sessions: six sessions and ten single runs on their conversations', [PY, 'tests/sessions_check.py'], FULL, 'its output names the session or run and where what it printed is'),
     ('sampling: the plain loop, one seed across repeats, placements and the cache',
      [PY, 'tests/matrix_check.py', 'results/sampler/plain.matrix', 'results/sampler/plain', '--prompts', 'tcp-udp,cpp-matrix,geometry'], [MODEL, F8], 'its output names the run'),
@@ -100,7 +100,7 @@ COMPLETE = DEFAULT + [
      [PY, 'tests/matrix_check.py', 'results/sampler/step151/spec.matrix', 'results/sampler/step151/spec', '--prompts', 'tcp-udp,cpp-matrix,geometry'], FULL, 'its output names the run'),
     ('sampling: with speculation on the held-out prompts',
      [PY, 'tests/matrix_check.py', 'results/sampler/spec-heldout.matrix', 'results/sampler/step151/spec-heldout'], FULL, 'its output names the run'),
-    ('a long prompt from a file: 2,731 tokens in chunks of 512', [PY, 'tests/record_check.py', 'fnv1a64:df516e7200ad14c8'] + PROD + ['-f', 'tests/long-prompt.txt', '-n', '40'],
+    ('a long prompt from a file: 2,731 tokens in chunks of 512', [PY, 'tests/record_check.py', 'fnv1a64:df516e7200ad14c8'] + PROD + ['-f', 'tests/data/long-prompt.txt', '-n', '40'],
      [MODEL, F8], 'the logits check on readme1100 (the same chunks); then the prompt cut shorter'),
 ] + SPEED
 RUNS = {'unit': UNIT, 'default': DEFAULT, 'speed': SPEED, 'complete': COMPLETE}

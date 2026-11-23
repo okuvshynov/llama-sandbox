@@ -1,7 +1,7 @@
 # `--requests`: prompts on stdin, replies on stdout
 
 README step 152. One engine process, loaded once, answers one request after another. A
-request's reply is what a single run of that prompt prints (`results/requests/requests_test.py`
+request's reply is what a single run of that prompt prints (`tests/requests_test.py`
 checks that): it runs on an empty context, or goes on from the last request's context where
 that changes nothing but the time ("A kept context" below, step 158). It is the engine's side of a server: a front
 that speaks HTTP renders the prompt, starts the engine as a child and parses the reply.

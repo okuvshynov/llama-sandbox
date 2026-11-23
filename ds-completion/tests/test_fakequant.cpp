@@ -2,7 +2,7 @@
 // the reference's (ref/kernel_cpu.py), on the inputs of ref/make_fq_test.py. Must be bit-identical.
 //
 //   test-fakequant [dir]      dir: in.f32 and the reference's fp8.f32, fp4.f32, fp4e4.f32
-//                             (default tests/fq, which is in git; README step 186). Exit code 1 if a value differs.
+//                             (default tests/data/fq, which is in git; README step 186). Exit code 1 if a value differs.
 //
 // fp8        fq_fp8_host, the function the CPU experts and the canonical sums call
 // fp8 split  fq_fp8_split: its codes times its scale must be the same values
@@ -43,7 +43,7 @@ static void fp4_blocks(const float* x, float* y, int64_t n, int B, bool e4m3_sca
 }
 
 int main(int argc, char** argv) {
-  const std::string dir = argc > 1 ? argv[1] : "tests/fq";
+  const std::string dir = argc > 1 ? argv[1] : "tests/data/fq";
   const std::vector<float> in = load((dir + "/in.f32").c_str());
   const int64_t n = (int64_t)in.size();
   if (n == 0 || n % 64) { fprintf(stderr, "%s/in.f32: %ld values, not rows of 64\n", dir.c_str(), (long)n); return 1; }

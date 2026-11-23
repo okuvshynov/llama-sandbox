@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A stand-in for `ds-completion --requests` (docs/requests.md) for server/test_server.py:
+"""A stand-in for `ds-completion --requests` (docs/requests.md) for tests/test_server.py:
 no model. It answers the i-th request with the i-th entry of a JSON file, a list of
 {"text": ..., "stop": "eos"|"length", "delay": seconds, "kept": tokens, "saved": tokens} (SIGUSR1 during the
 delay cancels the reply, as the engine does; "how" in the prompt line is continue with kept tokens, else

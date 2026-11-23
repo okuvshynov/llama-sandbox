@@ -103,11 +103,11 @@ checkpoint access. **verdict**: "auto" = the test itself exits non-zero on a fai
 
 | test | target | compared with | needs | time | verdict |
 |---|---|---|---|---|---|
-| `bin/test-fakequant` | the host rounding functions the runtime calls (`src/fakequant.cpp`: `fq_fp8_host`, `fq_fp8_split`) and the scalar fp4 rules, put together as the reference does; no ggml (step 192; before it, the reference path's graph ops only) | `ref/kernel_cpu.py`'s outputs on 45,440 values per function, with ties of both grids (`tests/fq/`, made by `ref/make_fq_test.py`): bit-identical | nothing (`tests/fq/` is in git since step 186) | < 1 s | auto |
+| `bin/test-fakequant` | the host rounding functions the runtime calls (`src/fakequant.cpp`: `fq_fp8_host`, `fq_fp8_split`) and the scalar fp4 rules, put together as the reference does; no ggml (step 192; before it, the reference path's graph ops only) | `ref/kernel_cpu.py`'s outputs on 45,440 values per function, with ties of both grids (`tests/data/fq/`, made by `ref/make_fq_test.py`): bit-identical | nothing (`tests/data/fq/` is in git since step 186) | < 1 s | auto |
 | `bin/test-sampler` | `src/sampler.*`: temperature, top-p, one seed gives one draw sequence, distributions (chi-square) | its own specification | nothing | 19 s (80 s until step 186: the comparison sorted the whole vocabulary for every draw) | auto |
 | `ref/check_topk.py` (runs `bin-hip/test-topk`) | the indexer's selection kernels: top-k, candidate blocks | torch's `topk` and the reference's `select_candidate_blocks` on 46 cases | GPU, py | 3 s | auto |
 | `bin-hip/bench-kernels --bitwise` | the batched (M-token) kernels | the one-token kernels: bit-identical | GPU | 1 s | auto |
-| `python3 server/test_server.py` | `server/ds_server.py`: prompts rendered, replies parsed, streams, refusals, cancels, metrics, logs | canned replies from `server/fake_engine.py` | the model's `encoding.py` (`~/llms/ds-flash/encoding/`) | 8 s | auto |
+| `python3 tests/test_server.py` | `server/ds_server.py`: prompts rendered, replies parsed, streams, refusals, cancels, metrics, logs | canned replies from `tests/fake_engine.py` | the model's `encoding.py` (`~/llms/ds-flash/encoding/`) | 8 s | auto |
 
 ### 3.2 Against the reference, on golden sets
 
@@ -164,10 +164,10 @@ without experts on GPUs ~9 s.
 
 | test | target | compared with | needs | time | verdict |
 |---|---|---|---|---|---|
-| `python3 results/requests/requests_test.py` | `--requests` on one engine: replies greedy and sampled, a short `n`, mistakes in values, cancels, a context kept or saved between requests, the engine's account of it | each reply's hash with the stored hash of a single run (`results/record/reference/heldout-output.tsv`, `results/sampler/spec-heldout/`) | M, F8, D, GPU | 12 min, 2 of them the load (step 183); 67 checks | auto |
+| `python3 tests/requests_test.py` | `--requests` on one engine: replies greedy and sampled, a short `n`, mistakes in values, cancels, a context kept or saved between requests, the engine's account of it | each reply's hash with the stored hash of a single run (`results/record/reference/heldout-output.tsv`, `results/sampler/spec-heldout/`) | M, F8, D, GPU | 12 min, 2 of them the load (step 183); 67 checks | auto |
 | the same with `--no-spec` | the plain loop behind requests | as above | M, F8, GPU | ~10 min | auto |
 | `... --headers-only` | headers that cannot be followed | the protocol's rule | M, F8, GPU | 66 s (8 engines without experts on GPUs) | auto |
-| `server/test_server.py` | see 3.1 | | | 8 s | auto |
+| `tests/test_server.py` | see 3.1 | | | 8 s | auto |
 | pi on the server (`docs/pi.md`) | a real client, tools, long conversations | by eye; `results/server/pi*.txt` | everything, pi | by hand, last at step 161 | by hand |
 
 ### 3.5 Speed and timing (measurements, not tests)
@@ -240,11 +240,11 @@ What this shows about the current practice:
 | the GPUs, ROCm 6.3.4, the clock set (sclk 6, by hand with sudo after a boot) | | | everything on `bin-hip/`; the clock matters for speed only |
 | golden sets (G) | `data/golden/`, 73 GB; `data/ref/*.pt` behind them | **no** (`data/` is ignored) | `ds-test` |
 | stored logits and dumps | `data/ds/*.f32`, `readme20k-topk.bin` | **no** | the byte-for-byte end-to-end checks |
-| `tests/fq/` | inputs and expected outputs of the rounding test | yes (since step 186; `data/fq/` before) | `test-fakequant` |
+| `tests/data/fq/` | inputs and expected outputs of the rounding test | yes (since step 186; `data/fq/` before) | `test-fakequant` |
 | stored tables | `results/test-*.txt`, `results/rt-readme20k.txt` | yes | `ds-test` gates |
 | stored outputs, hashes and records | `results/cache-test/plain-canon-static/`, `results/record/reference/heldout-output.tsv`, `results/sampler/`, `results/chat/` | yes | 3.3, 3.4 |
 | `~/venvs/ds-ref` (torch, numpy) | the reference's environment | no (`ref/requirements.txt`) | making golden sets, `compare_logits.py`, `check_topk.py`, `check_weights.py`, the draft's comparison |
-| the official code and `encoding.py` | `~/llms/ds-flash/` | no | making golden sets; `server/test_server.py` and the server (`encoding.py`) |
+| the official code and `encoding.py` | `~/llms/ds-flash/` | no | making golden sets; `tests/test_server.py` and the server (`encoding.py`) |
 | the network | Hugging Face | | `ref/check_weights.py` only |
 | the previous build's programs | built in a second checkout or copied before a change | | every "against the previous build" comparison |
 
@@ -289,7 +289,7 @@ Stated as facts about the current state; what to do about them is the plan's sub
 - **Per layer and end to end at 20,000 tokens** take 32 and 9 minutes on the same data.
 - **Not in git:** the whole golden sets and the stored logits files. A clean checkout cannot
   make `ds-test`'s per-layer tables until they are made again with the reference. (Since step 187 the
-  end-to-end runs need only the cut sets in `tests/e2e/`, and hashes take the place of stored logits files.) (The rounding test's data: in git since step 186.)
+  end-to-end runs need only the cut sets in `tests/data/e2e/`, and hashes take the place of stored logits files.) (The rounding test's data: in git since step 186.)
 - **Not covered by any test today:** `-i` beyond the six stored sessions; `--think-show`
   (checked once, step 147); `--profile`, `--log-routing` and `--spec-log` outputs; the
   metrics and logs of the real server (only against the fake engine); a context above 20,000
@@ -306,8 +306,8 @@ change. A few fixed runs, each one command with one verdict and an exit code:
 | run | command | when | contents | time |
 |---|---|---|---|---|
 | unit | `scripts/check.py unit` | after every change | everything of 3.1: no model files | 30 s (47 s with a build) |
-| default | `scripts/check.py default` | after every change | `unit`; the logits of the runtime at 12, 202 and 1,102 tokens, each file's sha256 against `tests/e2e/expected.txt` (step 187); the product's outputs: one engine with the fastest settings takes the held-out prompts, two sampled, a second turn, and one fresh session, every reply's token ids against `tests/outputs/expected.json` (step 188) | ~5.5 min |
-| speed | `scripts/check.py speed` | a change about speed | the eight held-out prompts, each in a fresh process with the fastest settings, twice; the second repeat's mean against `tests/speed/baseline.tsv`: slower by more than 2% fails, within 2% is "the same", faster says so. Also: every output the stored bytes, the clock level the baseline's, the second repeat not reading from storage (step 190) | 36 min |
+| default | `scripts/check.py default` | after every change | `unit`; the logits of the runtime at 12, 202 and 1,102 tokens, each file's sha256 against `tests/data/e2e/expected.txt` (step 187); the product's outputs: one engine with the fastest settings takes the held-out prompts, two sampled, a second turn, and one fresh session, every reply's token ids against `tests/data/outputs/expected.json` (step 188) | ~5.5 min |
+| speed | `scripts/check.py speed` | a change about speed | the eight held-out prompts, each in a fresh process with the fastest settings, twice; the second repeat's mean against `tests/data/speed/baseline.tsv`: slower by more than 2% fails, within 2% is "the same", faster says so. Also: every output the stored bytes, the clock level the baseline's, the second repeat not reading from storage (step 190) | 36 min |
 | complete | `scripts/check.py complete` | overnight, and before anything is called done | `default`; the logits at 20,000 tokens; the request test with and without speculation; six sessions and ten single runs on their conversations; the three sampling matrices; a 2,731-token prompt from a file; `speed` (step 190) | ~4 h |
 | localizers | by hand | when a verdict failed | section 3.6's "where" column | |
 
@@ -317,7 +317,7 @@ line when a check starts and, for the checks that take minutes, their own lines 
 where its output is and what to run next. A check whose needed file is missing fails; it is
 not skipped.
 
-`default`'s logits checks read cut golden sets that are in git (`tests/e2e/<name>/`: per step
+`default`'s logits checks read cut golden sets that are in git (`tests/data/e2e/<name>/`: per step
 the token ids and the reference's logits, made by `ref/trim_golden.py`), so they need only the
 model and `dense-fp8.gguf`. `scripts/check.py default --store` replaces the expected hashes: for
 a change meant to move the logits, after the difference was compared with the reference.

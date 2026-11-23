@@ -338,7 +338,7 @@ each also with `HIP=1`; `make` builds all of them, as before.
 | `hip/expert_loader.{h,cpp}` | the background loads into pool slots, one thread per die |
 | `hip/dspark.{h,cpp}` | the DSpark draft (3 layers, Markov and confidence heads) |
 | `docs/requests.md` | `--requests`: the protocol between the engine and a server's front (README step 152) |
-| `docs/server.md`, `server/` | the HTTP front: `ds_server.py` (Anthropic Messages over `--requests`), and its test without a model (`test_server.py` with `fake_engine.py`; README steps 153-154), `pi-models.json` for the pi harness (docs/pi.md) |
+| `docs/server.md`, `server/` | the HTTP front: `ds_server.py` (Anthropic Messages over `--requests`; its test without a model is `tests/test_server.py` with `tests/fake_engine.py`, README steps 153-154), `pi-models.json` for the pi harness (docs/pi.md) |
 | `placements/` | ranked expert placements (`study30.txt` is the default) |
 
 Also the product's: `scripts/serve.sh` and `scripts/chat.sh` (the two ways to start it),
@@ -350,12 +350,12 @@ Also the product's: `scripts/serve.sh` and `scripts/chat.sh` (the two ways to st
 |---|---|
 | `tests/ds_test.cpp` | per-layer and end-to-end tests against the goldens |
 | `tests/test_fakequant.cpp`, `tests/test_topk.cpp` | the host rounding functions (`src/fakequant.cpp`) and the indexer's selection against the reference's, bit for bit |
-| `tests/e2e/`, `tests/fq/` | what the checks compare with, in git: golden sets cut to tokens and logits with the expected hashes (`ref/trim_golden.py`, step 187); the rounding test's vectors; `tests/outputs/expected.json`, the expected token ids of `tests/outputs_check.py` (step 188); `tests/speed/baseline.tsv` |
+| `tests/data/e2e/`, `tests/data/fq/` | what the checks compare with, in git: golden sets cut to tokens and logits with the expected hashes (`ref/trim_golden.py`, step 187); the rounding test's vectors; `tests/data/outputs/expected.json`, the expected token ids of `tests/outputs_check.py` (step 188); `tests/data/speed/baseline.tsv` |
 | `tests/*_check.py` | the checks `scripts/check.py` runs that are more than one command: the product's outputs in one load (`outputs_check.py`), tokens per second (`speed_check.py`), sessions (`sessions_check.py`), a matrix against stored records (`matrix_check.py`), one run against a hash (`record_check.py`) (steps 188, 190) |
 | `ref/` | the Python reference, golden export, weight checks, logits comparison |
 
-`server/test_server.py` with `server/fake_engine.py` (the front without a model) and
-`results/requests/requests_test.py` (`--requests` with the model) belong here too.
+`tests/test_server.py` with `tests/fake_engine.py` (the front without a model) and
+`tests/requests_test.py` (`--requests` with the model) belong here too.
 
 ### Tools
 

@@ -1,7 +1,7 @@
 bin/
 bin-hip/
 __pycache__/
-data/
+/data/
 bin-asan/
 # the gate's cut golden sets (ref/trim_golden.py): a few MB each, and the point of them is to be in git
-!tests/e2e/*/data.bin
+!tests/data/e2e/*/data.bin

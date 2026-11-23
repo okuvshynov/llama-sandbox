@@ -7340,3 +7340,30 @@ line went on to `git rm` the sources and delete a binary, because the two were j
 step that succeeded. Nothing was lost (the deletion was the plan, and git had the files), but
 a deletion should not be chained after something that can fail.
 
+## Step 195: the directories, 1: every test under `tests/`
+
+The person: the sources are spread over `apps`, `bench`, `hip`, `server`, `src`, `tests`
+(`ref` and `scripts` are apart enough); organize the rest better. Agreed plan, three moves,
+each a commit of its own with `scripts/check.py default` after it:
+
+1. every test under `tests/`, its data under `tests/data/` (this step);
+2. `hip/` into `src/`: with the CPU reference path gone, `src/` is no longer "what two
+   implementations share" but the host half of the one runtime, split from the other half by
+   compiler;
+3. `bench/` to `tools/`, with `ds_inspect`.
+
+After them a directory says what a file is for: `src/` the engine, `apps/` the product's
+programs, `server/` the server, `tests/` what checks them, `tools/` what measures and inspects.
+
+**Moved here** (no file's content changed but for paths):
+
+| from | to |
+|---|---|
+| `tests/e2e/`, `tests/fq/`, `tests/outputs/`, `tests/speed/`, `tests/long-prompt.txt` | `tests/data/...` |
+| `server/test_server.py`, `server/fake_engine.py` | `tests/` (the test finds `server/ds_server.py` from its own place) |
+| `results/requests/requests_test.py` | `tests/requests_test.py` (a test that lived among results; its results files stay) |
+
+`scripts/check.py default`: all checks passed (312 s); the request test's header cases
+(`--headers-only`): all passed. Older steps and results files name the old paths: they describe
+the tree of their commits.
+

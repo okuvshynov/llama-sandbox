@@ -2,12 +2,12 @@
 """A golden set cut down to what an end-to-end run reads: per step the token ids and the
 reference's logits (README step 187). No torch.
 
-    python3 ref/trim_golden.py data/golden/readme1100 tests/e2e/readme1100
+    python3 ref/trim_golden.py data/golden/readme1100 tests/data/e2e/readme1100
 
 A golden set (export_golden.py) holds every layer's tensors: 0.1 to 65 GB, not in git.
 `ds-test --e2e` reads only each step's `tokens` (what to run) and `logits` (to print the
 reference's choice beside ours): 4 bytes per token and 517 KB per step. The cut set has the same
-format (index.txt, data.bin), so `ds-test -g tests/e2e/<name> --e2e FILE` runs on it, and it is
+format (index.txt, data.bin), so `ds-test -g tests/data/e2e/<name> --e2e FILE` runs on it, and it is
 small enough for git. The per-layer table needs the whole set: `ds-test` on a cut set without
 --e2e stops with "golden lacks step 0 layer 0".
 """

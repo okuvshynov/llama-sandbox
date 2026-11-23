@@ -10,7 +10,7 @@ with --cache-wait, the draft and speculation, --canon), twice. The first repeat 
 (after a boot prompts read from storage while generating, README step 178); the second is the
 measurement. ~41 minutes, most of it the 16 starts (README step 189).
 
-Verdict, on the mean of the second repeat against tests/speed/baseline.tsv:
+Verdict, on the mean of the second repeat against tests/data/speed/baseline.tsv:
   slower by more than 2%   FAIL
   within 2%                the same (run to run the mean moves ~0.5%; no difference is claimed)
   faster by more than 2%   ok, and it says so: --store makes it the baseline
@@ -29,7 +29,7 @@ import sys
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MATRIX, STORED_OUT, BASELINE = 'results/cleanup/heldout.matrix', 'results/cache-test/plain-canon-static', 'tests/speed/baseline.tsv'
+MATRIX, STORED_OUT, BASELINE = 'results/cleanup/heldout.matrix', 'results/cache-test/plain-canon-static', 'tests/data/speed/baseline.tsv'
 TOL, TOL_PROMPT, READ_MAX = 0.02, 0.05, 8 << 20
 
 

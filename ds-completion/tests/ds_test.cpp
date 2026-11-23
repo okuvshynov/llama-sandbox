@@ -10,7 +10,7 @@
 //       read the caches their source layer wrote. The runtime takes one token at a time: the
 //       prompt step is teacher-forced token by token and each row pools that layer's errors
 //       over the prompt's tokens (tokens the golden did not keep run free, untested).
-//   ds-test -m <model> -g tests/e2e/hello-fp32 --runtime <dense-fp8.gguf> --e2e data/ds/hello.f32
+//   ds-test -m <model> -g tests/data/e2e/hello-fp32 --runtime <dense-fp8.gguf> --e2e data/ds/hello.f32
 //       End to end: the full forward on the reference's token sequence, the logits of every
 //       step written as [steps][n_vocab] f32 (compare with ref/compare_logits.py).
 //   --max-ctx N: capacity of the compressed caches (65536 by default, as ds-completion).

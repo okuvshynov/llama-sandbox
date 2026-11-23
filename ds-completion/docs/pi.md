@@ -52,7 +52,7 @@ Three parts, which need not be on one machine:
 
 5. Check it without pi (the model-free test, then one real request):
 
-       python3 server/test_server.py                   # "all checks passed", a few seconds
+       python3 tests/test_server.py                    # "all checks passed", a few seconds
        curl -s http://127.0.0.1:8080/v1/messages -H 'content-type: application/json' -d \
          '{"max_tokens": 50, "messages": [{"role": "user", "content": "Reply with the single word: yes"}]}'
 

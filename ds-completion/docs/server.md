@@ -208,6 +208,6 @@ from the saved point (step 160).
 
 ## Tests
 
-`server/test_server.py`: the server against `server/fake_engine.py` (no model, seconds).
+`tests/test_server.py`: the server against `tests/fake_engine.py` (no model, seconds).
 With the model: `results/server/endgame.txt`, `results/server/pi.txt`, and
 `results/server/stream_check.py` (a stream against the same request without it).

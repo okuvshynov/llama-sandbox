@@ -99,7 +99,7 @@ few fixed runs, each one command of `scripts/check.py` with one verdict:
 |---|---|---|---|---|
 | `unit` | after every change | no model files: the rounding ops, the sampler, the selection kernels, the batched kernels, the server against a fake engine | 30 s | done, step 186 |
 | `default` | after every change | the model, loads kept to a minimum. Two verdicts: logits against stored bytes on golden token sequences (`ds-test --e2e`: a 12-token set and a long prompt; it starts in seconds); and the product's outputs in one load: one engine with `--requests` and the full configuration (placement, cache, draft, speculation, `--canon`) takes the held-out prompts, a sampled seed, a conversation that goes on, each reply's hash against a manifest in git. One short `-i` session in a fresh process for the two paths `--requests` does not take | ~5.5 min | done, steps 187-188 |
-| `speed` | when a change is about speed (small gains were the common case) | the held-out prompts' tokens per second in fresh processes, as the documents quote it: the second repeat's mean against `tests/speed/baseline.tsv` (2%: slower fails, within is "the same"); every output the stored bytes | 36 min, ~28 of them the registration of expert tensors for the cache (step 189) | done as it is measured today, step 190 |
+| `speed` | when a change is about speed (small gains were the common case) | the held-out prompts' tokens per second in fresh processes, as the documents quote it: the second repeat's mean against `tests/data/speed/baseline.tsv` (2%: slower fails, within is "the same"); every output the stored bytes | 36 min, ~28 of them the registration of expert tensors for the cache (step 189) | done as it is measured today, step 190 |
 | `complete` | overnight, and before anything is called done | `default`, then: the 20,000-token logits, the request test in both modes, six sessions and ten single runs, the three sampling matrices, a long prompt from a file, and `speed` | ~4 h | done, step 190 |
 | localizers | only when a verdict failed | the per-layer table, per token, near-ties, traces: not part of any run; a failed check prints the command to run next | | the hint is in `check.py`'s output |
 
@@ -199,7 +199,7 @@ line; its own lines per request (speculation, routed experts, speeds) go to the 
    One stderr line per request with the same; when the prompt parts from the context before
    its end, the index of the first token that differs, the id on each side, and the text of a
    few tokens around it on each side. Both tests read the protocol's lines as key=value pairs,
-   so new fields do not break them; `results/requests/requests_test.py` gains checks of the
+   so new fields do not break them; `tests/requests_test.py` gains checks of the
    new fields on the cases it already has. First because it is the only step that gives what
    cannot be had today: the others put together what is already logged.
 2. **Done (step 165)**, but for `ds_context_tokens`, which waits for step 4 (the server cannot tell
@@ -207,7 +207,7 @@ line; its own lines per request (speculation, routed experts, speeds) go to the 
    **`GET /metrics`** in the Prometheus text format, written by hand (the server uses only the
    standard library), from what the server already knows. It does not take the engine's lock,
    so it answers while a request runs. `/health` looks at the engine's process. Tested with
-   `server/fake_engine.py`.
+   `tests/fake_engine.py`.
 
    | metric | kind | labels |
    |---|---|---|
@@ -601,7 +601,7 @@ keep the localizers for a failed one.
 Step 186: the runs decided: `unit`, `default`, `speed`, `complete`, and localizers on demand; `scripts/check.py unit` (30 s,
 no model files). Next: `default`.
 Step 187: `check.py default`, the logits half: five `ds-test --e2e` runs against stored sha256, golden sets cut to tokens
-and logits in git (`tests/e2e/`, 9.5 MB); 105 s with `unit`. Next: the outputs half (one engine, `--requests`).
+and logits in git (`tests/data/e2e/`, 9.5 MB); 105 s with `unit`. Next: the outputs half (one engine, `--requests`).
 Step 188: the outputs half (`tests/outputs_check.py`: 12 requests to one engine, one fresh session; token ids stored); `default`
 is 13 checks in ~5.5 min. The "load" is 13 s; 105 s more are the registration of expert tensors for the cache. Next: `speed`.
 Step 189: the registration measured (2.2-2.9 GB/s whatever the threads or flags; constant within a boot, 116-139 s between
@@ -617,6 +617,7 @@ Step 193: `ds-ref` and the CPU path's checks removed; `apps/ds_completion.cpp` b
 Next: `src/forward.*`, `src/fakequant_graph.*`, the CPU mode of `ds-test`.
 Step 194: done: the sources and `ds-test`'s CPU mode removed (793 + 138 lines); `ds-test` is the runtime's test, HIP=1 only.
 The CPU reference path is gone: one implementation, checked against the official reference.
+Step 195: the directories (the person): every test under `tests/`, data under `tests/data/`. Next: `hip/` into `src/`; `bench/` to `tools/`.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front
