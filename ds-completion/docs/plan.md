@@ -104,6 +104,11 @@ Tiers chosen by what changed (the Makefile's groups: the CPU tables for `src/for
 server test for `server/`); one program that runs a tier and prints pass or fail per check
 against stored hashes, so no step writes its own comparison.
 
+**A rule from the description** (step 185; testing.md 3.6): a tier runs verdicts (bytes, hashes, a test's
+exit code); what says where a difference is (the per-layer table, per token, the traces) runs
+when its verdict fails. Where a verdict has nothing behind it (a hash without the ids), the
+record or the tool should keep enough to find the first difference.
+
 **To check first:** that outputs through `--requests` are the fresh process's bytes on all
 held-out prompts (with `--canon` they should be: the output does not depend on the cache's
 state); what cannot vary per request (the placement, `--spec-n`: their own loads); why the
@@ -576,6 +581,8 @@ findings listed in `results/dist/review-182.txt` section 3 for steps of their ow
 Step 183: `--requests`: a header that was not understood closes the engine wherever the mistake stands (a bad field after
 `bytes=` left the prompt unread); eight header cases in the request test. Next: the testing process (item 35).
 Step 184: `docs/testing.md`: the testing as it is, before it changes. Next: item 35 from that page.
+Step 185: `docs/testing.md` 3.6: each test gives a verdict or says where a difference is; a tier should run verdicts and
+keep the localizers for a failed one.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front

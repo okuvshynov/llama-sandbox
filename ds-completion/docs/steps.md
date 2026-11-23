@@ -6924,3 +6924,24 @@ per layer or end to end, since it maps the model and uploads only the dense weig
 
 Next: item 35, starting from this page.
 
+## Step 185: verdicts and localizers
+
+The person's observation on step 184's page: some tests give a binary outcome, and some give
+debugging information (which layer exactly was wrong). `docs/testing.md` has it now as a term
+and as section 3.6: for every test, whether it gives a verdict, and what it says about where;
+then the tests as a ladder from the cheapest verdict down to the cause (an output's bytes ->
+the logits on a golden set -> the per-layer table -> per token). No code changed, nothing run.
+
+What the split shows about the practice:
+
+- Localizers are run as gates: the per-layer tables at every step, though the logits' bytes
+  are the sharper verdict on the same data. At 20,000 tokens, 32 minutes of localizer for what
+  a 9-minute verdict answers.
+- Some verdicts have no localizer behind them: a sampled run's hash that differs says nothing
+  more, since a record keeps the hash and not the ids.
+- Some localizers have no verdict in front of them: the draft against the reference, a trace.
+- The ladder was in people's heads, not in a tool.
+
+For item 35 this gives a rule the first draft of the plan lacked: a tier runs verdicts; a
+localizer runs when its verdict fails.
+

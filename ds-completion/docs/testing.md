@@ -78,6 +78,9 @@ plain greedy output was established once, and every faster path must print the s
 - **A record** (`--record FILE`, [record.md](record.md)). A run as one JSON object: its
   arguments, the output's hash, speeds, counters. `scripts/run_matrix.py` makes them for
   prompts x configurations x repeats from a **matrix** file; `scripts/records.py` reads them.
+- **A verdict and a localizer.** A test's result is either a verdict (same or not, pass or
+  fail) or an account of where a difference is (which layer, which token, how far off). Few
+  tests give both: section 3.6.
 - **A gate.** Whatever a step ran to show its change broke nothing. Until now each step chose
   its gates and wrote its comparisons by hand.
 - **The first pass after a boot** is not a measurement: prompts read from storage while
@@ -169,6 +172,58 @@ without experts on GPUs ~9 s.
 | the held-out matrix's second repeat | generation speed, mean of eight prompts (44.6-45.1 t/s) | the previous step's mean; run-to-run 1-3% | part of 3.3's 41 min |
 | `--trace FILE` on one prompt, `scripts/trace_critpath.py` | that a trace is still written and read; where a step's time goes | the previous trace (`scripts/trace_compare.py`) | ~3 min |
 | the benchmarks (`bench/`) | one kernel or the loader | their own earlier numbers | seconds to minutes each, run when their code changes |
+
+### 3.6 Two kinds of result: a verdict, and where it went wrong
+
+The tests above answer two different questions, and most answer only one of them.
+
+- **A verdict** (a detector): same or not, pass or fail. It is cheap to read and can be very
+  sharp (two logits files equal byte for byte), but when it fails it says little: "the
+  output differs at byte 412".
+- **Where** (a localizer): which layer, which part of it, which token, which step, how far
+  off. It is what one reads after a verdict failed, and it costs more to run and to read. By
+  itself it gives no verdict: someone has to say what counts as wrong.
+
+| test | a verdict | where |
+|---|---|---|
+| the unit tests, the kernels' `--bitwise`, the server test, the request test | yes | the name of the check or case that failed |
+| `cmp` of an output with stored bytes (held-out, sessions, the long prompt) | yes | the first byte that differs, nothing about why |
+| a stored `output.hash` (sampling, the request test, `ds-ref`) | yes | nothing: not even the first token that differs |
+| `ds-test --e2e` logits against stored bytes | yes, the sharpest: the arithmetic, not what was sampled from it | the step, with `compare_logits.py`: argmax, KL, largest difference |
+| `ds-test` per layer (the table) | none of its own (by hand: equal to the stored table) | the step, the layer, and the part: attention in / out, FFN in / out, the stream out, the router's weights, the experts chosen, the selection |
+| `ds-test --per-token` | none | as above per prompt token |
+| `ds-test --determinism` | yes (two engines, bit for bit) | the layer and tensor |
+| `ds-test --runtime --placement FILE` | none | as the table, with experts on GPUs: a placement's effect per layer |
+| `ref/check_topk_ties.py` | none | whether a selection that differs is a near-tie, and by how much |
+| `ref/dspark_check.py` | none | the draft itself, or the hidden states the main model hands it |
+| `--trace` with `trace_critpath.py` / `trace_compare.py`, `--profile`, `--spec-log` | none | where a step's time went; which drafts were accepted |
+| `scripts/records.py` on two sets of records | a comparison outside the repeats' spread | the prompt and configuration, not the cause |
+| the engine's `# context:` lines, the server's `--log` and `--dump` | none | what a request did and why |
+
+Read as a ladder, from the cheapest verdict down to the cause:
+
+| a verdict fails | then | then |
+|---|---|---|
+| an output's bytes or hash | `--e2e` logits on a golden set, both paths: is the arithmetic off, or the loop around it (speculation, cache, chunks, session)? | arithmetic: the per-layer table, then `--per-token`; the loop: `--spec-log`, the `# context:` lines, the same run without `--spec` / without the cache |
+| logits against stored bytes | `compare_logits.py`: at the reference's noise level or a real difference? | the per-layer table on the same set |
+| the selection (the table's `topk` column) | `check_topk_ties.py` | `check_topk.py` on the kernel alone |
+| the draft's acceptance or speed with `--spec` | `--spec-log`, `compare_dspark.py` | `dspark_check.py` |
+| speed | `trace_critpath.py` against the previous trace | `--profile`, the benchmark of the kernel named |
+
+What this shows about the current practice:
+
+- **Localizers are run as gates.** The per-layer tables are produced at every step and compared
+  with stored tables by hand, although the byte comparison of the logits is the sharper verdict
+  on the same data and the table is needed only when that fails. At 20,000 tokens that is 32
+  minutes of localizer for a question the 9-minute verdict answers.
+- **Some verdicts have no localizer behind them.** A sampled run's hash that differs says
+  nothing more: the record keeps the hash, not the ids, so finding the first token that
+  differs means running both programs again with their outputs kept. The same for a session
+  whose bytes differ: which turn is visible, which step of it is not.
+- **Some localizers have no verdict in front of them.** Nothing checks the draft against the
+  reference unless someone runs `compare_dspark.py`; nothing says a trace is "wrong".
+- **The ladder is in people's heads** (and now here), not in a tool: after a failed `cmp`
+  the next command is chosen by whoever is at the keyboard.
 
 ## 4. What each test needs
 
