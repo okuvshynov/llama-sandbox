@@ -611,6 +611,8 @@ Step 190: `check.py speed` and `check.py complete`, both as things are measured 
 improve each run after); progress lines of the long checks in the run's own output. The four runs exist.
 Step 191: the CPU path's expected logits at 1,102 tokens stored; against the reference 4 of 5 argmaxes (a near-tie on a bf16
 set; an fp32 set of that length would decide it).
+Step 192: the CPU reference path is to be removed (the person): first the rounding test moved to the runtime's host functions.
+Next: its checks and `ds-ref` out; then `src/forward.*`, `src/fakequant_graph.*`, the CPU mode of `ds-test`.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front

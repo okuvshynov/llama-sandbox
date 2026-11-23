@@ -71,7 +71,7 @@ def logits(path, name):
 # EXPECTED of the file the command writes at {out}])
 UNIT = [
     ('fakequant: the rounding ops against the reference\'s, bit for bit', ['bin/test-fakequant'], [],
-     'its output names the first values that differ; the functions are in src/fakequant_graph.cpp'),
+     'its output names the first values that differ; the functions are in src/fakequant.cpp'),
     ('sampler: temperature, top-p, one seed one sequence', ['bin/test-sampler'], [],
      'its output names the check; src/sampler.cpp'),
     ('top-k: the selection kernels against torch and the reference', [PY_REF, 'ref/check_topk.py'], [PY_REF],

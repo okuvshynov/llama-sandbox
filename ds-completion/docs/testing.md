@@ -101,7 +101,7 @@ checkpoint access. **verdict**: "auto" = the test itself exits non-zero on a fai
 
 | test | target | compared with | needs | time | verdict |
 |---|---|---|---|---|---|
-| `bin/test-fakequant` | the fp8 / fp4 rounding ops of the reference path's graphs (`src/fakequant_graph.cpp`); the runtime's host functions in `src/fakequant.cpp` are not called by it | `ref/kernel_cpu.py`'s outputs on 45,312 values per function (`tests/fq/`, made by `ref/make_fq_test.py`): bit-identical | nothing (`tests/fq/` is in git since step 186) | < 1 s | auto |
+| `bin/test-fakequant` | the host rounding functions the runtime calls (`src/fakequant.cpp`: `fq_fp8_host`, `fq_fp8_split`) and the scalar fp4 rules, put together as the reference does; no ggml (step 192; before it, the reference path's graph ops only) | `ref/kernel_cpu.py`'s outputs on 45,440 values per function, with ties of both grids (`tests/fq/`, made by `ref/make_fq_test.py`): bit-identical | nothing (`tests/fq/` is in git since step 186) | < 1 s | auto |
 | `bin/test-sampler` | `src/sampler.*`: temperature, top-p, one seed gives one draw sequence, distributions (chi-square) | its own specification | nothing | 19 s (80 s until step 186: the comparison sorted the whole vocabulary for every draw) | auto |
 | `ref/check_topk.py` (runs `bin-hip/test-topk`) | the indexer's selection kernels: top-k, candidate blocks | torch's `topk` and the reference's `select_candidate_blocks` on 46 cases | GPU, py | 3 s | auto |
 | `bin-hip/bench-kernels --bitwise` | the batched (M-token) kernels | the one-token kernels: bit-identical | GPU | 1 s | auto |

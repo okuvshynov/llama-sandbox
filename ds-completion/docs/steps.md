@@ -7230,3 +7230,42 @@ all a stored hash can say, and the comparison above is the kind of look `--store
 **Open:** an fp32 golden set at ~1,100 tokens (the reference, ~10 minutes), to tell the
 near-tie from a difference; until then the 4 of 5 stands as an observation.
 
+## Step 192: removing the CPU reference path, 1: the rounding test tests what the runtime calls
+
+The person asked whether the CPU reference path (`ds-ref`, `src/forward.cpp`: the model as ggml
+graphs, the first implementation) is needed at all. It is not, for checking the product: the
+runtime is compared with the reference's golden sets directly, nothing in `ds-completion`
+links it since step 173, and on the 1,102-token set it is the less faithful of the two (step
+191). Decision: remove it. Three steps, `scripts/check.py default` after each: this one; then
+its checks and `ds-ref`; then its sources.
+
+**First, what would be left testing nothing.** `test-fakequant` compared only the reference
+path's graph ops (`src/fakequant_graph.cpp`) with the reference. The functions the runtime
+calls on the host (`fq_fp8_host` in the CPU experts, `fq_fp8_split` in the canonical sums) were
+not called by any test (a finding of step 182's review). Now the test calls those, and the
+scalar fp4 rules put together as the reference does; it links no ggml.
+
+| | before | after |
+|---|---|---|
+| fp8 | graph op | `fq_fp8_host`; and `fq_fp8_split` (codes times scale) |
+| fp4, fp4e4 | graph ops | `fq_e2m1_round`, `fq_e4m3_round`, `fq_pow2_ceil` composed in the test |
+| result | 3 x 45,312 values, 0 differ | 4 x 45,440 values, 0 differ |
+
+**A control found a hole in the data.** Two wrong versions of `src/fakequant.cpp`, built
+beside the tree:
+
+| the change | before the new rows | after |
+|---|---|---|
+| ties rounded away from zero (`roundf` for `nearbyintf`) | fp8: **0 differ**; fp4 96 | fp8 64, fp4 96, fp4e4 104 |
+| the fp8 scale's floor 1e-3 for 1e-4 | fp8 1,312 | the same |
+
+The fp8 comparison could not see a wrong tie rule: `ref/make_fq_test.py` promised "exact ties
+of the e4m3 / e2m1 grids", and its tie rows were e2m1 ties, which under the fp8 scale land on
+e4m3 values exactly. Two rows of e4m3 ties were added (blocks whose largest value fixes the
+scale, then odd multiples of half a step in several binades), made by the reference; the
+45,312 earlier values of each file are unchanged, byte for byte. The reference rounds those
+ties to even, as we do.
+
+The runtime's fp4 rounding itself is in GPU kernels and stays covered by the logits checks.
+`scripts/check.py unit`: all checks passed (31 s).
+

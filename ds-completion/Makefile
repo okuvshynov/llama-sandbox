@@ -185,9 +185,9 @@ $(BIN)/test-sampler: tests/test_sampler.cpp src/sampler.cpp src/sampler.h
 	@mkdir -p $(BIN)
 	$(CXX) $(CXXFLAGS) -o $@ tests/test_sampler.cpp src/sampler.cpp
 
-$(BIN)/test-fakequant: tests/test_fakequant.cpp src/fakequant.cpp src/fakequant_graph.cpp src/fakequant.h src/fakequant_graph.h
+$(BIN)/test-fakequant: tests/test_fakequant.cpp src/fakequant.cpp src/fakequant.h
 	@mkdir -p $(BIN)
-	$(CXX) $(CXXFLAGS) -o $@ tests/test_fakequant.cpp src/fakequant.cpp src/fakequant_graph.cpp $(LDLIBS)
+	$(CXX) $(CXXFLAGS) -o $@ tests/test_fakequant.cpp src/fakequant.cpp
 
 # llama.cpp's own pipeline: the "second opinion" for the reference (steps 2-3). Not in `make`: with
 # upstream llama.cpp it builds and runs but its logits are wrong (the Engram table's type, above);
