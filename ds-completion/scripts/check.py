@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
 """The checks of this repository as a few fixed runs (docs/testing.md, "The runs"; README step 186).
 
-  scripts/check.py unit        no model files, under a minute: after every change
+  scripts/check.py unit        no model files, under a minute
+  scripts/check.py default     unit, then the checks with the model: after every change
+  scripts/check.py default --store    the same, and what the checks wrote becomes what is expected
 
-To come (docs/plan.md, "The testing process"): default (the model, one load, 5-10 minutes: after
-every change), speed (the held-out prompts' tokens per second), complete (everything, overnight).
+default so far (README step 187) has its first half: the logits of the runtime and of the CPU
+reference path on golden token sequences (12, 202 and 1,102 tokens; tests/e2e/), each file's
+sha256 against tests/e2e/expected.txt. Its second half (the product's outputs in one load) and
+the runs speed and complete are to come (docs/plan.md, "The testing process").
+--store is for a change that is meant to move the logits (a toolchain, the numerics): only after
+the difference was compared with the reference (ref/compare_logits.py). It prints old and new.
 What says where a difference is (ds-test's per-layer table, traces) is not part of any run: a
 failed check names the command to run next.
 
@@ -22,12 +28,31 @@ import subprocess
 import sys
 import time
 
+import hashlib
+
 HOME = os.path.expanduser('~')
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PY_REF = HOME + '/venvs/ds-ref/bin/python'               # torch: the reference's own top-k (ref/check_topk.py)
 ENCODING = HOME + '/llms/ds-flash/encoding/encoding.py'  # the model's chat format, which the server test renders with
 
-# (name, command, the files outside the repository it needs, what to run next if it fails)
+MODEL = HOME + '/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf'
+F8 = HOME + '/llms/ds-1017-fp8/dense-fp8.gguf'
+EXPECTED = 'tests/e2e/expected.txt'  # lines: <key> <sha256>
+
+
+def logits(path, name):
+    """ds-test --e2e on a cut golden set (ref/trim_golden.py): the logits of every step, as bytes"""
+    rt = path == 'runtime'
+    key = f'{path}/{name}'
+    cmd = ['bin-hip/ds-test' if rt else 'bin/ds-test', '-m', MODEL, '-g', f'tests/e2e/{name}'] + (['--runtime', F8] if rt else []) + ['--e2e', '{out}']
+    full = f'data/golden/{name}'
+    then = (f'how far from the reference: {PY_REF.replace(HOME, "~")} ref/compare_logits.py data/ref/{name}.pt <the file>; '
+            f'which layer: {cmd[0]} -m $M -g {full}' + (' --runtime $F8' if rt else '') + ' against the same from the last good commit')
+    return (f'logits, {"the runtime" if rt else "the CPU reference path"}, {name}', cmd, [MODEL] + ([F8] if rt else []), then, key)
+
+
+# (name, command, the files outside the repository it needs, what to run next if it fails[, the key in
+# EXPECTED of the file the command writes at {out}])
 UNIT = [
     ('fakequant: the rounding ops against the reference\'s, bit for bit', ['bin/test-fakequant'], [],
      'its output names the first values that differ; the functions are in src/fakequant_graph.cpp'),
@@ -40,7 +65,15 @@ UNIT = [
     ('server: ds_server.py against a fake engine', [sys.executable, 'server/test_server.py'], [ENCODING],
      'its output names the check; server/ds_server.py'),
 ]
-RUNS = {'unit': UNIT}
+DEFAULT = UNIT + [
+    logits('runtime', 'hello-fp32'), logits('runtime', 'readme200'), logits('runtime', 'readme1100'),
+    logits('cpu', 'hello-fp32'), logits('cpu', 'readme200'),
+]
+RUNS = {'unit': UNIT, 'default': DEFAULT}
+
+
+def expected():
+    return dict(l.split() for l in open(EXPECTED) if l.strip() and not l.startswith('#')) if os.path.exists(EXPECTED) else {}
 
 
 def sclk():
@@ -55,7 +88,8 @@ def sclk():
 
 
 def main():
-    if len(sys.argv) != 2 or sys.argv[1] not in RUNS:
+    store = '--store' in sys.argv[2:]
+    if len(sys.argv) < 2 or sys.argv[1] not in RUNS or [a for a in sys.argv[2:] if a != '--store']:
         print(__doc__.split('\n\n')[1], file=sys.stderr)
         return 2
     run = sys.argv[1]
@@ -77,8 +111,11 @@ def main():
             return 1
 
     failed = 0
-    for i, (name, cmd, needs, then) in enumerate(RUNS[run]):
-        log = f'{out}/{i + 1:02d}-{name.split(":")[0].replace(" ", "-")}.txt'
+    want, stored = expected(), {}
+    for i, (name, cmd, needs, then, *key) in enumerate(RUNS[run]):
+        log = f'{out}/{i + 1:02d}-{name.split(":")[0].replace(" ", "-").replace(",", "")}.txt'
+        made = log[:-4] + '.f32'
+        cmd = [c.replace('{out}', made) for c in cmd]
         missing = [f for f in needs if not os.path.exists(f)]
         t0 = time.time()
         if missing:  # a check that cannot run has not passed
@@ -89,11 +126,30 @@ def main():
                 f.write('# ' + ' '.join(c.replace(HOME, '~') for c in cmd) + '\n')
                 f.flush()
                 rc = subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT).returncode
+        why = "missing: " + ", ".join(missing) if missing else "exit code " + str(rc)
+        if rc == 0 and key:  # the file the check wrote, against the expected hash
+            got = hashlib.sha256(open(made, 'rb').read()).hexdigest()
+            stored[key[0]] = got
+            if want.get(key[0]) != got and not store:
+                rc, why = 1, f'sha256 {got[:16]}..., expected {(want.get(key[0]) or "nothing stored")[:16]}... ({EXPECTED}); the file is kept: {made}'
+            elif want.get(key[0]) != got:
+                print(f'      stored: {key[0]} {(want.get(key[0]) or "-")[:16]}... -> {got[:16]}...')
+            if rc == 0:
+                os.remove(made)  # (kept only when it is not what was expected)
         print(f'{"ok  " if rc == 0 else "FAIL"}  {name}  {time.time() - t0:.1f} s', flush=True)
         if rc != 0:
             failed += 1
-            print(f'      {"missing: " + ", ".join(missing) if missing else "exit code " + str(rc)}; output: {log}')
+            print(f'      {why}')
+            print(f'      output: {log}')
             print(f'      next: {then}', flush=True)
+    if store and not failed and stored:
+        want.update(stored)
+        with open(EXPECTED, 'w') as f:
+            f.write('# The sha256 of what each check of scripts/check.py writes: ds-test --e2e logits, [steps][n_vocab] f32,\n'
+                    '# 16 threads, this toolchain (ROCm 6.3.4, the compilers of docs/reproduce.md). Written by check.py --store.\n')
+            for k in sorted(want):
+                f.write(f'{k} {want[k]}\n')
+        print(f'      {EXPECTED} written: {len(want)} entries')
     print(f'{"FAILED: " + str(failed) + " of " + str(len(RUNS[run])) + " checks" if failed else "all checks passed"} ({time.time() - t_all:.0f} s)')
     return 1 if failed else 0
 

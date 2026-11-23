@@ -353,6 +353,7 @@ Also the product's: `scripts/serve.sh` and `scripts/chat.sh` (the two ways to st
 | `src/fakequant_graph.{h,cpp}` | the same roundings as ggml custom ops, for the reference path's graphs (step 172) |
 | `tests/ds_test.cpp` | per-layer and end-to-end tests against the goldens |
 | `tests/test_fakequant.cpp`, `tests/test_topk.cpp` | the rounding ops and the indexer's selection against the reference's, bit for bit |
+| `tests/e2e/`, `tests/fq/` | what the checks compare with, in git: golden sets cut to tokens and logits with the expected hashes (`ref/trim_golden.py`, step 187); the rounding test's vectors |
 | `ref/` | the Python reference, golden export, weight checks, logits comparison |
 
 `server/test_server.py` with `server/fake_engine.py` (the front without a model) and

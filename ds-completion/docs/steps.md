@@ -6999,3 +6999,49 @@ a self-test at the draft's load and no unit test.
 Next: `default`. First the expected logits and token ids of the golden sets into git, and the
 end-to-end runs of the runtime on the longer sets timed.
 
+## Step 187: `check.py default`, its first half: logits against stored hashes
+
+The run for after every change (step 186's plan), in two parts. This step has the first: the
+arithmetic. The second, the product's outputs in one load, is next.
+
+`scripts/check.py default` runs `unit` and then `ds-test --e2e` five times: the runtime on
+golden token sequences of 12, 202 and 1,102 tokens, the CPU reference path on the first two.
+Each run writes the logits of every step; the file's sha256 must be the one in
+`tests/e2e/expected.txt`. `ds-test` maps the model and uploads only the dense weights, so
+these start in seconds.
+
+| check | time |
+|---|---|
+| unit (five checks) | 30 s |
+| the runtime: `hello-fp32`, `readme200`, `readme1100` | 4.5, 11.7, 33.7 s |
+| the CPU reference path: `hello-fp32`, `readme200` | 3.3, 21.6 s |
+| all, with nothing to build | 105 s |
+
+**What had to exist for it:**
+
+- *The golden sets in git, cut down.* An end-to-end run reads of a golden set only each step's
+  token ids and the reference's logits. `ref/trim_golden.py` writes those in the same format:
+  `tests/e2e/<name>/`, 2.6 to 4.7 MB each, 9.5 MB together, against 137 MB to 3.8 GB. `ds-test
+  --e2e` writes the same bytes on a cut set as on the whole one. The whole sets stay under
+  `data/` for the per-layer table.
+- *Expected hashes* (`tests/e2e/expected.txt`), written by `check.py default --store`, which
+  prints old and new and is meant for a change that should move the logits, after a look at
+  the difference against the reference. What was stored here was first compared with the
+  reference (argmax 5/5, 9/9, 5/5; KL as at earlier steps) and made three times in separate
+  processes with the same hash.
+
+**A negative control** (`results/dist/check-default-logits.txt`): the eps of the query's norm
+in `hip/rt.cpp` plus 1e-3. The three runtime checks fail, the two of the CPU path pass. And
+following the failed check's hint: against the reference that build still agrees on every
+argmax (mean KL 5e-4 where it was 7e-5). **A comparison of output bytes would have passed
+it;** the logits' bytes did not. This is the reason for this half.
+
+**Fixed on the way:** `ds-test` without `--e2e` on a cut set ended in a segmentation fault;
+it now says the set serves `--e2e` only.
+
+**Limits, as planned:** no prompt past 1,102 tokens here (the 20,000-token set is `complete`'s);
+the CPU path on `readme1100` (114 s) is left to `complete` too. The stored hashes are of this
+toolchain and of 16 threads.
+
+Next: the second half, one engine with `--requests` and the full configuration.
+

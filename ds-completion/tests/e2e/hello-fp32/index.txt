@@ -1,0 +1,17 @@
+# source data/ref/hello-fp32.pt (cut by ref/trim_golden.py from data/golden/hello-fp32: tokens and logits only)
+# prompt 0 128803 19923 14 1192 477 440 33 128804 128822
+# start_pos 0 0
+0 -1 tokens i32 1 10 0
+0 -1 logits f32 1 129280 40
+# start_pos 1 10
+1 -1 tokens i32 1 1 517160
+1 -1 logits f32 1 129280 517164
+# start_pos 2 11
+2 -1 tokens i32 1 1 1034284
+2 -1 logits f32 1 129280 1034288
+# start_pos 3 12
+3 -1 tokens i32 1 1 1551408
+3 -1 logits f32 1 129280 1551412
+# start_pos 4 13
+4 -1 tokens i32 1 1 2068532
+4 -1 logits f32 1 129280 2068536

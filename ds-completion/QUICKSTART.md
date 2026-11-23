@@ -82,10 +82,12 @@ so it doubles as a check of the build and the model files.
 
 ## Check
 
-    scripts/check.py unit      # builds, then the checks that need no model files: 30 s, "all checks passed"
+    scripts/check.py default   # builds; the checks without the model (30 s); the logits against stored hashes (75 s)
+    scripts/check.py unit      # only the part without the model
 
-After every change. The run with the model (`default`) is being built; what there is until
-then, test by test: [docs/testing.md](docs/testing.md).
+`default` after every change: it ends with "all checks passed" or names what failed and what
+to run next. Its second part (the product's outputs in one load) is being built; what there
+is beyond it, test by test: [docs/testing.md](docs/testing.md).
 
 ## Run
 

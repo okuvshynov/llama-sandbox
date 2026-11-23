@@ -6,7 +6,7 @@ results file); docs/reproduce.md names each by its path.
 
 | | |
 |---|---|
-| `check.py` | the checks as fixed runs with one verdict each: `check.py unit` (no model files, 30 s; step 186); `default`, `speed`, `complete` to come (docs/testing.md section 7) |
+| `check.py` | the checks as fixed runs with one verdict each: `check.py unit` (no model files, 30 s; step 186), `check.py default` (unit and the logits against stored hashes, 105 s; step 187; its outputs part, `speed` and `complete` to come) (docs/testing.md section 7) |
 | `run_matrix.py` | start prompts x configurations x repeats from a matrix file, one `--record` file per run (step 129); `--keep-out` also keeps each output (step 138) |
 | `records.py` | read records: groups, the spread of repeats, a comparison, a condition (step 128) |
 | `chat.sh` | an interactive chat with the fastest single-machine settings |

@@ -1,0 +1,54 @@
+# scripts/check.py default, its first half (README step 187): unit, then the logits of the runtime and of the CPU
+# reference path on golden token sequences, each file's sha256 against tests/e2e/expected.txt.
+# Commit fc221eb + this step's change (the commit that adds this file); sclk 6; 2026-11-23; the model in the page cache.
+#
+# 1. The cut golden sets (ref/trim_golden.py: per step the token ids and the reference's logits)
+python3 ref/trim_golden.py data/golden/hello-fp32 tests/e2e/hello-fp32       10 tensors, 2,585,656 bytes   (the whole set: 137 MB)
+python3 ref/trim_golden.py data/golden/readme200  tests/e2e/readme200        18 tensors, 4,654,912 bytes   (2.0 GB)
+python3 ref/trim_golden.py data/golden/readme1100 tests/e2e/readme1100       10 tensors, 2,590,016 bytes   (3.8 GB)
+#    ds-test --e2e on a cut set writes the bytes it writes on the whole set (cmp): the runtime on all three, the CPU
+#    path on hello-fp32. Each file also made three times in separate processes: the same sha256.
+#
+# 2. What is expected, against the reference (the files of the run that was stored)
+#    ~/venvs/ds-ref/bin/python ref/compare_logits.py data/ref/<set>.pt <file>
+    runtime/hello-fp32     argmax agrees 5/5, mean KL 7.25e-05, max KL 2.55e-04
+    runtime/readme200      argmax agrees 9/9, mean KL 1.74e-06, max KL 9.27e-06
+    runtime/readme1100     argmax agrees 5/5, mean KL 1.30e-02, max KL 2.42e-02
+#    (hello-fp32 is the fp32 variant of the reference, the other two the real one: bf16.)
+#
+# 3. The run
+scripts/check.py default
+ok    build: make  0.0 s
+ok    build: make HIP=1  22.1 s
+ok    fakequant: the rounding ops against the reference's, bit for bit  0.0 s
+ok    sampler: temperature, top-p, one seed one sequence  19.1 s
+ok    top-k: the selection kernels against torch and the reference  2.1 s
+ok    kernels: M tokens per launch against one, bit for bit  0.8 s
+ok    server: ds_server.py against a fake engine  8.1 s
+ok    logits, the runtime, hello-fp32  4.5 s
+ok    logits, the runtime, readme200  11.7 s
+ok    logits, the runtime, readme1100  33.7 s
+ok    logits, the CPU reference path, hello-fp32  3.3 s
+ok    logits, the CPU reference path, readme200  21.6 s
+all checks passed (127 s)                                       exit code 0
+#    Without a build: 105 s, 75 of them the five logits checks. Not in it: the CPU path on readme1100 (114 s).
+#
+# 4. Before anything was stored: the five logits checks FAIL ("expected nothing stored"), exit code 1.
+#
+# 5. A negative control: hip/rt.cpp line 981, the eps of the query's norm: eps -> eps + 1e-3f; rebuilt by the run
+scripts/check.py default
+FAIL  logits, the runtime, hello-fp32  4.6 s
+      sha256 96f8f8022da31605..., expected 933c496807856cf1... (tests/e2e/expected.txt); the file is kept: <file>
+      output: <file>
+      next: how far from the reference: ~/venvs/ds-ref/bin/python ref/compare_logits.py data/ref/hello-fp32.pt <the file>; which layer: bin-hip/ds-test -m $M -g data/golden/hello-fp32 --runtime $F8 against the same from the last good commit
+FAIL  logits, the runtime, readme200  11.4 s
+FAIL  logits, the runtime, readme1100  33.4 s
+ok    logits, the CPU reference path, hello-fp32  3.2 s
+ok    logits, the CPU reference path, readme200  21.5 s
+FAILED: 3 of 10 checks (126 s)                                  exit code 1
+#    The hint followed for the first: argmax agrees 5/5, mean KL 5.25e-04, max KL 1.54e-03 (7.25e-05 and 2.55e-04
+#    before the change). So this change keeps every greedy token of that set: a check of output bytes would have
+#    passed it. The file reverted (git diff empty), the run of 3 after it.
+#
+# 6. bin-hip/ds-test -g tests/e2e/hello-fp32 --runtime $F8 (a cut set without --e2e): a segmentation fault before
+#    this step; now "golden ... has no per-layer tensors: it serves --e2e only ...", exit code 1.

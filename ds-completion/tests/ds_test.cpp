@@ -227,6 +227,10 @@ int main(int argc, char** argv) {
     if (df) fclose(df);
     return 0;
   }
+  if (!G.get(0, 0, "attn_in")) {  // (a set cut by ref/trim_golden.py has the tokens and logits only)
+    fprintf(stderr, "golden %s has no per-layer tensors: it serves --e2e only; the per-layer table needs the whole set (data/golden/)\n", gdir.c_str());
+    return 1;
+  }
 
   if (determinism && !rt_path.empty()) { fprintf(stderr, "--determinism tests the Engine\n"); return 2; }
   if (determinism) {

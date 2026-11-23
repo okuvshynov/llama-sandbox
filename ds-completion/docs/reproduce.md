@@ -308,6 +308,7 @@ Unless stated: sclk 2, 16 CPU threads (32 before README step 18), the study30 pl
 | 183 | `requests/requests_test.txt` (again, with the header cases), `requests/headers-before.txt` | `make HIP=1`; `python3 results/requests/requests_test.py` (~12 min); `python3 results/requests/requests_test.py --headers-only` (~80 s), and the same with `DS_BIN=<a ds-completion built at 0aa67be>` for the file of the program before; `python3 server/test_server.py` |
 | 184 | `dist/testing-times.txt` | the commands in the file, each once; the loads from `--record` files of step 181's runs; `data/ref/<name>.pt`'s `variant` field with `~/venvs/ds-ref/bin/python` |
 | 186 | `dist/check-unit.txt` | `scripts/check.py unit`; the negative control: one float of `tests/fq/fp8.f32` changed (`struct.pack` at offset 4000), the run, the file restored; `bin/test-sampler` timed before and after the change |
+| 187 | `dist/check-default-logits.txt`, `tests/e2e/` (the cut golden sets, `expected.txt`) | `python3 ref/trim_golden.py data/golden/<set> tests/e2e/<set>` for the three sets (needs the whole sets under `data/golden/`); `scripts/check.py default --store` once, then `scripts/check.py default` (~2 min); the control: `hip/rt.cpp` line 981 `eps` -> `eps + 1e-3f`, the run, the file restored |
 | 167 | `server/serve.txt` | by hand: `DS_LOGS=<a directory> scripts/serve.sh`, one request with `curl` (the one of `docs/pi.md`, section 1), a minute's wait for `metrics.prom`, Ctrl-C; the file's parts are named in it |
 
 ## 7. Open items (to confirm)

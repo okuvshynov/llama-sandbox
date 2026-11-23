@@ -285,8 +285,9 @@ Stated as facts about the current state; what to do about them is the plan's sub
   `results/sampler/spec-heldout.matrix`, and three of them again in
   `results/sampler/step151/spec.matrix`.
 - **Per layer and end to end at 20,000 tokens** take 32 and 9 minutes on the same data.
-- **Not in git:** the golden sets and the stored logits. A clean checkout cannot
-  run `ds-test` until they are made again with the reference. (The rounding test's data: in git since step 186.)
+- **Not in git:** the whole golden sets and the stored logits files. A clean checkout cannot
+  make `ds-test`'s per-layer tables until they are made again with the reference. (Since step 187 the
+  end-to-end runs need only the cut sets in `tests/e2e/`, and hashes take the place of stored logits files.) (The rounding test's data: in git since step 186.)
 - **Not covered by any test today:** `-i` beyond the six stored sessions; `--think-show`
   (checked once, step 147); `--profile`, `--log-routing` and `--spec-log` outputs; the
   metrics and logs of the real server (only against the fake engine); a context above 20,000
@@ -303,7 +304,7 @@ change. A few fixed runs, each one command with one verdict and an exit code:
 | run | command | when | contents | time |
 |---|---|---|---|---|
 | unit | `scripts/check.py unit` | after every change | everything of 3.1: no model files | 30 s (47 s with a build) |
-| default | `scripts/check.py default` (not built yet) | after every change | logits against stored bytes; the product's outputs in one load | 5-10 min allowed |
+| default | `scripts/check.py default` | after every change | `unit`, then (step 187) the logits of the runtime at 12, 202 and 1,102 tokens and of the CPU reference path at 12 and 202, each file's sha256 against `tests/e2e/expected.txt`; to come: the product's outputs in one load | 105 s so far; 5-10 min allowed |
 | speed | (not built yet) | a change about speed | the held-out prompts' tokens per second | |
 | complete | (not built yet) | overnight | the rest of section 3 | |
 | localizers | by hand | when a verdict failed | section 3.6's "where" column | |
@@ -312,6 +313,11 @@ change. A few fixed runs, each one command with one verdict and an exit code:
 line per check, keeps every check's output under `data/check/`, and for a failed check prints
 where its output is and what to run next. A check whose needed file is missing fails; it is
 not skipped.
+
+`default`'s logits checks read cut golden sets that are in git (`tests/e2e/<name>/`: per step
+the token ids and the reference's logits, made by `ref/trim_golden.py`), so they need only the
+model and `dense-fp8.gguf`. `scripts/check.py default --store` replaces the expected hashes: for
+a change meant to move the logits, after the difference was compared with the reference.
 
 What `unit` needs outside the repository: ROCm and the GPUs (two checks run kernels),
 `~/venvs/ds-ref` (torch, for the reference's own top-k) and the model's `encoding.py` in
