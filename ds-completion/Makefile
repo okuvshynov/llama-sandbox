@@ -28,7 +28,7 @@ CXXFLAGS = -std=c++17 -O3 -g -march=native -fopenmp -Wall -Wextra -Wno-unused-pa
 LDLIBS   = $(GGML_LIBS) -fopenmp -lpthread -ldl
 
 CORE   = src/model.cpp src/engram.cpp src/fakequant.cpp src/cpu_moe.cpp src/canon_dot.cpp src/sampler.cpp
-# the CPU reference path (the model as ggml graphs): ds-ref, ds-test and a benchmark link it; ds-completion does not
+# the CPU reference path (the model as ggml graphs): ds-test and a benchmark link it; ds-completion does not
 REF    = src/forward.cpp src/fakequant_graph.cpp
 CORE_H = src/model.h src/engram.h src/taps.h src/options.h src/forward.h src/fakequant.h src/fakequant_graph.h src/cpu_moe.h src/canon_dot.h src/sampler.h
 
@@ -45,8 +45,7 @@ endif
 # Three groups (README step 169; docs/overview.md "Code map"). `make` builds all three.
 #   make product   what serves: ds-completion (HIP=1 only: it is the GPU runtime's program), and fp8pack,
 #                  which makes dense-fp8.gguf once
-#   make tests     what checks it: ds-ref (the CPU reference path as a program; without HIP=1), ds-test and
-#                  the unit tests
+#   make tests     what checks it: ds-test and the unit tests
 #   Not in a group: llama-logits (make bin/llama-logits), llama.cpp's own pipeline on the model. It gives
 #   right logits only when LLAMA_CPP is a checkout of the DeepSeek-V4.1 PR's commit (docs/llama-cpp-upstream.md): upstream
 #   reads this model's Engram table as another type, without an error (README step 175).
@@ -60,8 +59,6 @@ PRODUCT += $(BIN)/ds-completion
 TESTS  += $(BIN)/test-topk
 TOOLS  += $(BIN)/bench-fp8 $(BIN)/bench-kernels $(BIN)/bench-fp4-moe $(BIN)/bench-expert-pool $(BIN)/bench-expert-load \
           $(BIN)/bench-register $(BIN)/bench-launch $(BIN)/bench-loader-exit $(BIN)/bench-row-stride $(BIN)/bench-wave-slots
-else
-TESTS  += $(BIN)/ds-ref
 endif
 
 all: product tests tools
@@ -79,19 +76,13 @@ $(BIN)/bench-fp8: bench/bench_fp8.cpp hip/fp8_gemv.hip hip/fp8_gemv.h src/fakequ
 	    -L$(LLAMA_CPP)/$(BUILD)/ggml/src -lggml -lggml-cpu -lggml-base -lpthread -ldl
 
 # the CLI, the product: the GPU runtime, no CPU path (README step 173). libllama only for the
-# tokenizer (vocab-only load). Without HIP=1 there is no such program: the CPU path is ds-ref.
+# tokenizer (vocab-only load). Without HIP=1 there is no such program.
 $(BIN)/ds-completion: apps/ds_completion.cpp apps/record.h apps/think_view.h $(CORE) $(CORE_H) $(RT_OBJ)
 ifneq ($(HIP),1)
-	$(error ds-completion is the GPU runtime's program: make HIP=1 (the CPU reference path: make bin/ds-ref))
+	$(error ds-completion is the GPU runtime's program: make HIP=1)
 endif
 	@mkdir -p $(BIN)
 	$(CXX) $(CXXFLAGS) $(RT_FLAGS) -o $@ apps/ds_completion.cpp $(CORE) $(RT_LIBS) $(LLAMA_LIB) $(LDLIBS)
-
-# the same CLI over the CPU reference path (the ggml Engine), no runtime: what bin/ds-completion
-# was until step 173
-$(BIN)/ds-ref: apps/ds_completion.cpp apps/record.h apps/think_view.h $(CORE) $(REF) $(CORE_H)
-	@mkdir -p $(BIN)
-	$(CXX) $(CXXFLAGS) -o $@ apps/ds_completion.cpp $(CORE) $(REF) $(LLAMA_LIB) $(LDLIBS)
 
 $(BIN)/ds-test: tests/ds_test.cpp $(CORE) $(REF) $(CORE_H) $(RT_OBJ)
 	@mkdir -p $(BIN)

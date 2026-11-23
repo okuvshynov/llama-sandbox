@@ -3,12 +3,9 @@
 //   ds-completion -m <model-00001-of-000NN.gguf> --rt <dense-fp8.gguf> (-p "prompt" | -f prompt.txt | -i | --requests)
 //                 [--chat | --think [--effort 75]] [-n 128] [-t 16] [--max-ctx 65536] [--record run.json [--record-label k=v,...]]
 //                 [--gpu D] [--placement file [--moe-dies 0,1,2,3] [--cache-loads R [--cache-period N] [--cache-window N] [--cache-min N] [--cache-wait]]] [--canon] [--profile]
-//   ds-ref        -m <model-00001-of-000NN.gguf> (-p "prompt" | -f prompt.txt) [--chat | --think [--effort 75]] [-n 128]
-//                 [-t 16] [--no-quant] [--max-ctx 4096] [--record run.json [--record-label k=v,...]]
 //
-// The prompt first, then the reply: ds-completion runs the prompt in chunks of --prefill-chunk and
-// generates one token per step or, with --dspark --spec, several (the same output); ds-ref runs the
-// prompt as one chunk, then one token per step. Greedy unless --temp is given. --chat wraps the
+// The prompt first, then the reply: the prompt in chunks of --prefill-chunk, then one token per
+// step or, with --dspark --spec, several (the same output). Greedy unless --temp is given. --chat wraps the
 // prompt as one user turn in the model's chat format without thinking, --think with it (the
 // strings encoding/encoding.py produces; --effort is its reasoning effort, 1-100, default 75);
 // otherwise the prompt is raw text after BOS. -f reads the prompt from a file.
@@ -21,13 +18,10 @@
 // token count and hash, the GPU clock setting, the bytes read from storage per phase, the
 // speculative loop's totals, the routed experts' uses, placement and cache totals, and the times
 // the "# ..." lines on stderr report.
-// Two programs are built from this file (README step 173):
-//   ds-completion (make HIP=1, -DDS_RUNTIME): the product. --rt <dense-fp8.gguf> is required: every
-//     token through the own runtime (hip/rt.h: dense part on GPU D in exact fp8, routed experts on
-//     the CPU or, with --placement, partly on GPUs). It has no CPU path and does not link one.
-//   ds-ref (make): the CPU reference path as a program. Everything on the CPU through the ggml
-//     Engine (forward.cpp), the prompt as one chunk; no runtime (its options are parsed and have
-//     no effect).
+// Built with make HIP=1. --rt <dense-fp8.gguf> is required: every token goes through the own
+// runtime (hip/rt.h: the dense part on GPU D in exact fp8, routed experts on the CPU or, with
+// --placement, partly on GPUs). (Until README step 193 this file also built ds-ref, the model on
+// the CPU alone as ggml graphs: the first implementation, removed in steps 192-194.)
 
 #include "fatal.h"
 #include "llama.h"
@@ -38,15 +32,7 @@
 #include <sstream>
 #include "think_view.h"
 
-#ifdef DS_RUNTIME
 #include "rt.h"
-class Engine;  // (generate_plain takes a null one: the CPU path is ds-ref's)
-#define DS_PROGRAM "ds-completion"
-#else
-#include "forward.h"
-class Runtime;  // (write_record and generate_plain take a null one)
-#define DS_PROGRAM "ds-ref"
-#endif
 
 #include <algorithm>
 #include <csignal>
@@ -234,7 +220,6 @@ static int parse_args(int argc, char** argv, Args& args) {
     else if (a == "--trace") args.trace_path = next();  // runtime: a Chrome trace of every step (ui.perfetto.dev)
     else if (a == "--rt") args.rt_path = next();
     else if (a == "--log-routing") args.route_log = next();  // runtime: every token's experts per layer
-    else if (a == "--no-quant") args.opt.exact_quant = false;
     else if (a == "--max-ctx") args.max_ctx_set = true, args.opt.max_ctx = atoi(next());
     else if (a == "--prefill-chunk") args.prefill_chunk = atoi(next());  // runtime: prompt tokens per forward
     else if (a == "--no-overlap") args.prefill_overlap = false;  // runtime: prompt chunks without the CPU/GPU overlap
@@ -249,17 +234,10 @@ static int parse_args(int argc, char** argv, Args& args) {
   if (args.sampler.temp == 0 && args.sampler.top_p < 1) { fprintf(stderr, "--top-p needs --temp (without it the choice is greedy)\n"); return 2; }
   if (args.sampler.temp > 0)
     fprintf(stderr, "# sampling: temperature %g, top-p %g, seed %llu\n", args.sampler.temp, args.sampler.top_p, (unsigned long long)args.sampler.seed);
-#ifdef DS_RUNTIME
   if (args.rt_path.empty() && !args.model_path.empty()) {
-    fprintf(stderr, "ds-completion needs --rt <dense-fp8.gguf> (QUICKSTART.md); the model on the CPU alone, the reference path, is bin/ds-ref\n");
+    fprintf(stderr, "ds-completion needs --rt <dense-fp8.gguf> (QUICKSTART.md)\n");
     return 2;
   }
-#else
-  if (!args.rt_path.empty()) {
-    fprintf(stderr, "ds-ref is the CPU reference path; --rt is bin-hip/ds-completion's\n");
-    return 2;
-  }
-#endif
   if (args.interactive && (args.mode == "raw" || args.rt_path.empty())) {
     fprintf(stderr, "-i needs --chat or --think, and --rt\n");
     return 2;
@@ -270,13 +248,8 @@ static int parse_args(int argc, char** argv, Args& args) {
     return 2;
   }
   if (args.model_path.empty() || (args.prompt.empty() && !args.interactive && !args.requests)) {
-#ifdef DS_RUNTIME
     fprintf(stderr, "usage: ds-completion -m <model.gguf> --rt <dense-fp8.gguf> (-p \"prompt\" | -f prompt.txt | -i | --requests) [--chat|--think [--effort 1-100|low|high|max] [--think-show all|line|none]] [-n N] [--temp T [--top-p P] [--seed S]] [-t N] [--max-ctx N] [--gpu D] [--placement file [--moe-dies 0,1,2,3] [--cache-loads R [--cache-period N] [--cache-window N] [--cache-min N] [--cache-wait]]] [--canon] [--profile]\n"
                     "more (--dspark/--spec, --trace, --record, ...): QUICKSTART.md, Options\n");
-#else
-    fprintf(stderr, "usage: ds-ref -m <model.gguf> (-p \"prompt\" | -f prompt.txt) [--chat|--think [--effort 1-100|low|high|max] [--think-show all|line|none]] [-n N] [--temp T [--top-p P] [--seed S]] [-t N] [--no-quant] [--max-ctx N] [--record run.json]\n"
-                    "the model on the CPU alone, the reference path; the product is bin-hip/ds-completion (QUICKSTART.md)\n");
-#endif
     return 2;
   }
   return -1;
@@ -295,9 +268,9 @@ struct RecordRun {
   double draft_ms, verify_ms;
 };
 
-// The run as one JSON object (docs/record.md, schema 1), and the file closed. rt: null on the CPU path.
+// The run as one JSON object (docs/record.md, schema 1), and the file closed.
 // false: the file could not be written.
-static bool write_record(FILE* record, const Args& args, const RecordRun& r, [[maybe_unused]] const Runtime* rt) {
+static bool write_record(FILE* record, const Args& args, const RecordRun& r, const Runtime* rt) {
   fprintf(record, "{\n  \"schema\": 1,\n");
   fprintf(record, "  \"label\": %s,\n", label_json(args.record_label).c_str());
   fprintf(record, "  \"args\": {\"mode\": %s, \"effort\": %d, \"n\": %d, \"threads\": %d, \"runtime\": %s, \"canon\": %s, \"spec\": %s,\n"
@@ -323,8 +296,7 @@ static bool write_record(FILE* record, const Args& args, const RecordRun& r, [[m
   } else {
     fprintf(record, "  \"spec\": null,\n");
   }
-#ifdef DS_RUNTIME
-  if (rt) {  // routed experts: uses by where they ran (prompt, generation and rejected drafts), the placement, the cache
+  {  // routed experts: uses by where they ran (prompt, generation and rejected drafts), the placement, the cache
     const Runtime::ExpertStats es = rt->expert_stats();
     std::vector<std::string> dv, pv;
     for (int d : es.dies) dv.push_back(std::to_string(d));
@@ -340,9 +312,7 @@ static bool write_record(FILE* record, const Args& args, const RecordRun& r, [[m
     }
     else
       fprintf(record, "null},\n");
-  } else
-#endif
-    fprintf(record, "  \"experts\": null,\n");
+  }
   {  // the generation as values: the ids printed, in order (not the end-of-sequence id that stopped it)
     const std::vector<int32_t> printed(r.gen.begin(), r.gen.begin() + std::min((size_t)r.n_gen, r.gen.size()));
     fprintf(record, "  \"output\": {\"tokens\": %zu, \"hash\": \"fnv1a64:%016llx\"},\n", printed.size(),
@@ -377,7 +347,6 @@ struct Turn {
   ThinkView* view = nullptr;  // prints the reply
 };
 
-#ifdef DS_RUNTIME
 // --spec: generation by speculative decoding. logits: the prompt's last; first: a session's first turn
 // (its logs are opened anew); pending: what was printed but not yet run through the model.
 static void generate_spec(Runtime* rt, const Args& args, const llama_vocab* vocab, int eos, const std::vector<float>& logits, bool first,
@@ -551,12 +520,11 @@ static void generate_spec(Runtime* rt, const Args& args, const llama_vocab* voca
   fprintf(stderr, " (of the 0s, %ld plain steps without a draft); verify cost fit %.1f + %.1f n ms", plain_steps,
           verify_cost[0], verify_cost[1] - verify_cost[0]);
 }
-#endif
 
 // Plain generation, a token per step, greedy or sampled (--temp): on the runtime (with a draft
-// loaded, in shadow mode), or on the CPU engine. pos: the context's length as the loop starts,
+// loaded, in shadow mode). pos: the context's length as the loop starts,
 // which is the first generated token's position (the sampler's random number is keyed by it).
-static void generate_plain([[maybe_unused]] Runtime* rt, [[maybe_unused]] Engine* eng, const Args& args, const llama_vocab* vocab, int eos, std::vector<float>& logits,
+static void generate_plain(Runtime* rt, const Args& args, const llama_vocab* vocab, int eos, std::vector<float>& logits,
                            uint64_t pos, std::vector<int32_t>& pending, Turn& turn) {
   for (; turn.n_gen < args.n_predict; turn.n_gen++, pos++) {
     if (g_cancel) {
@@ -568,26 +536,19 @@ static void generate_plain([[maybe_unused]] Runtime* rt, [[maybe_unused]] Engine
     if (next == eos) break;
     turn.view->token(next, piece(vocab, next, args.requests));
     if (turn.n_gen + 1 == args.n_predict) { turn.n_gen++; pending = {next}; break; }
-#ifdef DS_RUNTIME
-    if (rt && rt->has_draft()) {
+    if (rt->has_draft()) {
       auto td = Clock::now();
       DraftResult d = rt->draft(next);
       turn.draft_ms += std::chrono::duration<double, std::milli>(Clock::now() - td).count();
       turn.drafts.emplace_back(d.ids.begin() + 1, d.ids.end());
       turn.confs.push_back(d.conf);
     }
-    if (rt) {
-      logits = rt->decode(next);
-      if (args.profile) {
-        fprintf(stderr, "\n# step %d: %.1f ms (cpu experts %.1f, waiting for the GPU %.1f; experts gpu %d cpu %d); GPU timeline:",
-                turn.n_gen, rt->last.total_ms, rt->last.cpu_moe_ms, rt->last.wait_ms, rt->last.gpu_experts, rt->last.cpu_experts);
-        for (auto& [g, ms] : rt->last_groups) fprintf(stderr, " %s %.1f", g.c_str(), ms);
-      }
-      continue;
+    logits = rt->decode(next);
+    if (args.profile) {
+      fprintf(stderr, "\n# step %d: %.1f ms (cpu experts %.1f, waiting for the GPU %.1f; experts gpu %d cpu %d); GPU timeline:",
+              turn.n_gen, rt->last.total_ms, rt->last.cpu_moe_ms, rt->last.wait_ms, rt->last.gpu_experts, rt->last.cpu_experts);
+      for (auto& [g, ms] : rt->last_groups) fprintf(stderr, " %s %.1f", g.c_str(), ms);
     }
-#else
-    logits = eng->forward({next});
-#endif
   }
 }
 
@@ -689,10 +650,8 @@ static int run(int argc, char** argv) {
     fprintf(stderr, "# mapped %.0f GB of CPU experts in %.1f s\n", n / 1e9,
             std::chrono::duration<double>(Clock::now() - tm).count());
   }
-#ifdef DS_RUNTIME
   std::unique_ptr<Runtime> rt;
   if (!args.rt_path.empty()) {  // (always: parse_args requires it)
-    if (!args.opt.exact_quant) { fprintf(stderr, "--no-quant is ds-ref's (the CPU reference path)\n"); return 2; }
     RtOptions ro;
     ro.gpu = args.gpu;
     ro.n_threads = args.opt.n_threads;
@@ -714,13 +673,9 @@ static int run(int argc, char** argv) {
     if (!args.trace_path.empty()) rt->set_trace(args.trace_path);
     if (!args.route_log.empty()) rt->log_routing(args.route_log);
   }
-#else
-  std::unique_ptr<Engine> eng(new Engine(m, args.opt));
-#endif
   const double t_load = std::chrono::duration<double>(Clock::now() - t0).count();
   if (record) rd[1] = io_read_bytes();
-  fprintf(stderr, "# loaded in %.1f s; prompt %zu tokens; fake-quant %s; %d threads\n", t_load, toks.size(),
-          args.opt.exact_quant ? "on" : "off", args.opt.n_threads);
+  fprintf(stderr, "# loaded in %.1f s; prompt %zu tokens; fake-quant on; %d threads\n", t_load, toks.size(), args.opt.n_threads);
 
   // One turn, or with -i a session: every turn's tokens are appended to the same context, as
   // encoding.py renders a chat: the reply's end of sequence, then <｜User｜>line<｜Assistant｜></think>.
@@ -739,7 +694,6 @@ static int run(int argc, char** argv) {
   const int eos = llama_vocab_eos(vocab);
   [[maybe_unused]] const int n_predict_turn = args.n_predict;
   std::vector<int32_t> pending;  // printed by the last turn but not yet run through the model (it stopped at -n)
-#ifdef DS_RUNTIME
   if (args.requests) {  // the empty context, to return to when a request cannot go on from what is kept
     signal(SIGUSR1, [](int) { g_cancel = 1; });
     rt->prefill_stop = [] { return g_cancel != 0; };
@@ -749,7 +703,6 @@ static int run(int argc, char** argv) {
     printf("ready\n");
     fflush(stdout);
   }
-#endif
   [[maybe_unused]] long n_requests = 0;
   [[maybe_unused]] size_t kept = 0;  // --requests: the prompt's first tokens that the context already held
   // --requests (README step 160): the tokens before the runtime's second saved point (empty:
@@ -758,7 +711,6 @@ static int run(int argc, char** argv) {
   [[maybe_unused]] size_t save_at = 0;
   [[maybe_unused]] const size_t kMinSaved = 64;
   for ([[maybe_unused]] bool first = true;; first = false) {
-#ifdef DS_RUNTIME
     if (args.requests) {
       // "gen n=N [temp=T] [top_p=P] [seed=S] [keep=0|1] bytes=B" and then B bytes: the whole prompt as text,
       // special tokens written out, the first one included. The end of input ends the run.
@@ -906,16 +858,14 @@ static int run(int argc, char** argv) {
       if (room < 1) { fprintf(stderr, "# the context is full (--max-ctx %d)\n", args.opt.max_ctx); break; }
       args.n_predict = std::min(n_predict_turn, room);
     }
-#endif
     auto t1 = Clock::now();
-#ifdef DS_RUNTIME
     std::vector<float> logits;
-    if (rt && args.interactive && args.mode == "think") {  // the mark: after <｜Assistant｜>, before <think>
+    if (args.interactive && args.mode == "think") {  // the mark: after <｜Assistant｜>, before <think>
       rt->prefill(std::vector<int32_t>(toks.begin(), toks.end() - 1));
       rt->mark();
       logits = rt->prefill({toks.back()});
     } else {
-      if (rt && save_at) {  // (--requests) up to the shared start, the saved point, then the rest
+      if (save_at) {  // (--requests) up to the shared start, the saved point, then the rest
         if (!rt->prefill(std::vector<int32_t>(toks.begin(), toks.begin() + save_at)).empty()) {  // (empty: cancelled)
           rt->mark(1);
           saved.assign(toks.begin(), toks.begin() + save_at);
@@ -925,22 +875,15 @@ static int run(int argc, char** argv) {
         logits = rt->prefill(kept ? std::vector<int32_t>(toks.begin() + kept, toks.end()) : toks);
       }
     }
-#else
-    std::vector<float> logits = eng->forward(toks);
-#endif
     const double t_pp = std::chrono::duration<double>(Clock::now() - t1).count();
     if (record) rd[2] = io_read_bytes();
     auto t2 = Clock::now();
     Turn turn;
     turn.view = &view;
     view.begin(args.mode == "think");
-#ifdef DS_RUNTIME
     if (logits.empty()) turn.cancelled = true;  // --requests: the prompt was stopped between its chunks
     else if (args.spec) generate_spec(rt.get(), args, vocab, eos, logits, first, pending, turn);
-    else generate_plain(rt.get(), nullptr, args, vocab, eos, logits, rt->n_past(), pending, turn);
-#else
-    generate_plain(nullptr, eng.get(), args, vocab, eos, logits, toks.size(), pending, turn);
-#endif
+    else generate_plain(rt.get(), args, vocab, eos, logits, rt->n_past(), pending, turn);
     const double t_tg = std::chrono::duration<double>(Clock::now() - t2).count();
     if (record) rd[3] = io_read_bytes();
     if (turn.spec_steps)
@@ -956,22 +899,16 @@ static int run(int argc, char** argv) {
     }
     fflush(stdout);
     report_shadow(turn);
-#ifdef DS_RUNTIME
-    if (rt && rt->total_gpu_experts + rt->total_cpu_experts > 0)
+    if (rt->total_gpu_experts + rt->total_cpu_experts > 0)
       fprintf(stderr, "# routed experts: %.1f%% on GPUs (%ld of %ld)\n",
               100.0 * rt->total_gpu_experts / (rt->total_gpu_experts + rt->total_cpu_experts), rt->total_gpu_experts,
               rt->total_gpu_experts + rt->total_cpu_experts);
-#endif
     if (kept) fprintf(stderr, "# prompt: %zu of its %zu tokens were in the context\n", kept, toks.size());
     fprintf(stderr, "# prompt: %zu tokens in %.2f s = %.2f t/s; generation: %d tokens in %.2f s = %.2f t/s\n",
             toks.size() - kept, t_pp, (toks.size() - kept) / t_pp, turn.n_gen, t_tg, turn.n_gen > 0 ? turn.n_gen / t_tg : 0.0);
     if (record) {
       const RecordRun r{toks, sclk, rd, t_load, t_pp, t_tg, turn.n_gen, turn.gen, turn.spec_steps, turn.spec_plain, turn.spec_accepted, turn.spec_hist, turn.draft_ms, turn.verify_ms};
-#ifdef DS_RUNTIME
       const Runtime* rtp = rt.get();
-#else
-      const Runtime* rtp = nullptr;
-#endif
       if (!write_record(record, args, r, rtp)) { fprintf(stderr, "cannot write %s\n", args.record_path.c_str()); return 1; }
       record = nullptr;
     }
@@ -985,9 +922,7 @@ static int run(int argc, char** argv) {
   fatal_phase("main: freeing the tokenizer");
   llama_model_free(tok_model);
   llama_backend_free();
-#ifdef DS_RUNTIME
   rt.reset();  // here, not among main's locals, so the phases around it are exact
-#endif
   fatal_phase("main: its locals (the model's unmap)");
   return 0;
 }

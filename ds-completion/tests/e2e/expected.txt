@@ -1,8 +1,5 @@
 # The sha256 of what each check of scripts/check.py writes: ds-test --e2e logits, [steps][n_vocab] f32,
 # 16 threads, this toolchain (ROCm 6.3.4, the compilers of docs/reproduce.md). Written by check.py --store.
-cpu/hello-fp32 c3ebb09d0301932edeebabcf95de17928065bf6e719cee36fd416c316ae3d563
-cpu/readme1100 06d5ac2de7076a78b8643d603e0dbd559932cd02912505fab63814fe8be8b9be
-cpu/readme200 fc551163c776df0f260a425ad40d57949d3f72e4f9e2e08d5b03b4e4209609c2
 runtime/hello-fp32 933c496807856cf1457da7c2ce213d88cc341230c055d335893dd2ff854b2e72
 runtime/readme1100 473b68bafddfa43c283da6bdf60cedb09ceba8041bdf3103a1cfceb47ddd12b0
 runtime/readme200 35c4876ed5ad98edd8d2a3d4d422751c16f80584e9708b678ea4899418c240dc

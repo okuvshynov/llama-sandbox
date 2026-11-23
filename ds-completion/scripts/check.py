@@ -7,17 +7,17 @@
   scripts/check.py complete    default, then everything else with a verdict, then speed (~4 h: overnight)
   scripts/check.py default|speed|complete --store    the same, and what the checks gave becomes what is expected
 
-default has two halves after unit. The arithmetic (README step 187): the logits of the runtime
-and of the CPU reference path on golden token sequences (12, 202 and 1,102 tokens; tests/e2e/),
-each file's sha256 against tests/e2e/expected.txt. And what stands around the arithmetic in the
+default has two halves after unit. The arithmetic (README step 187): the runtime's logits on
+golden token sequences (12, 202 and 1,102 tokens; tests/e2e/), each file's sha256 against tests/e2e/expected.txt. And what stands around the arithmetic in the
 product (step 188; tests/outputs_check.py): one engine with the fastest settings takes the
 held-out prompts, sampled ones and a second turn, then one fresh interactive session; every
 reply's token ids against tests/outputs/expected.json.
 speed (step 190; tests/speed_check.py) is the measurement the documents quote: each held-out
 prompt in a fresh process, twice, the second repeat's mean against tests/speed/baseline.tsv.
-complete (step 190) adds what default leaves out: the logits at 20,000 tokens and the CPU path's
-at 1,102; the request test in both modes; six sessions and ten single runs on their
-conversations; the three sampling matrices; ds-ref's output; a 2,731-token prompt from a file.
+complete (step 190) adds what default leaves out: the logits at 20,000 tokens;
+the request test in both modes; six sessions and ten single runs on their
+conversations; the three sampling matrices; a 2,731-token prompt from a file.
+(Until step 193 default and complete also ran the CPU reference path, removed in steps 192-194.)
 Not in any run: what has no verdict (the per-layer tables, the draft against the reference,
 traces) and ref/check_weights.py, which reads the checkpoint over the network (docs/testing.md).
 --store is for a change that is meant to move the logits or the outputs (a toolchain, the
@@ -56,15 +56,12 @@ DRAFT = HOME + '/llms/dspark/dspark-DeepSeek-V4.1-Flash-1017-BF16.gguf'
 EXPECTED = 'tests/e2e/expected.txt'  # lines: <key> <sha256>
 
 
-def logits(path, name):
-    """ds-test --e2e on a cut golden set (ref/trim_golden.py): the logits of every step, as bytes"""
-    rt = path == 'runtime'
-    key = f'{path}/{name}'
-    cmd = ['bin-hip/ds-test' if rt else 'bin/ds-test', '-m', MODEL, '-g', f'tests/e2e/{name}'] + (['--runtime', F8] if rt else []) + ['--e2e', '{out}']
-    full = f'data/golden/{name}'
+def logits(name):
+    """ds-test --e2e on a cut golden set (ref/trim_golden.py): the runtime's logits of every step, as bytes"""
+    cmd = ['bin-hip/ds-test', '-m', MODEL, '-g', f'tests/e2e/{name}', '--runtime', F8, '--e2e', '{out}']
     then = (f'how far from the reference: {PY_REF.replace(HOME, "~")} ref/compare_logits.py data/ref/{name}.pt <the file>; '
-            f'which layer: {cmd[0]} -m $M -g {full}' + (' --runtime $F8' if rt else '') + ' against the same from the last good commit')
-    return (f'logits, {"the runtime" if rt else "the CPU reference path"}, {name}', cmd, [MODEL] + ([F8] if rt else []), then, key)
+            f'which layer: {cmd[0]} -m $M -g data/golden/{name} --runtime $F8 against the same from the last good commit')
+    return (f'logits, the runtime, {name}', cmd, [MODEL, F8], then, f'runtime/{name}')
 
 
 # (name, command, the files outside the repository it needs, what to run next if it fails[, the key in
@@ -82,8 +79,7 @@ UNIT = [
      'its output names the check; server/ds_server.py'),
 ]
 DEFAULT = UNIT + [
-    logits('runtime', 'hello-fp32'), logits('runtime', 'readme200'), logits('runtime', 'readme1100'),
-    logits('cpu', 'hello-fp32'), logits('cpu', 'readme200'),
+    logits('hello-fp32'), logits('readme200'), logits('readme1100'),
     ('outputs: the product in one load, and one session', [sys.executable, 'tests/outputs_check.py'], [MODEL, F8, DRAFT],
      'its output names the reply and the first token that differs, and says how to narrow it down'),
 ]
@@ -93,7 +89,7 @@ SPEED = [('speed: the held-out prompts in fresh processes, twice', [PY, 'tests/s
           'its output has each prompt against the baseline and says how to look further')]
 PROD = ['bin-hip/ds-completion', '-m', MODEL, '--rt', F8, '--placement', 'placements/study30.txt', '--canon']
 COMPLETE = DEFAULT + [
-    logits('runtime', 'readme20k-s'), logits('cpu', 'readme1100'),
+    logits('readme20k-s'),
     ('requests: the protocol on one engine, with speculation', [PY, 'results/requests/requests_test.py'], FULL, 'its output names the check; docs/requests.md'),
     ('requests: the same in the plain loop', [PY, 'results/requests/requests_test.py', '--no-spec'], [MODEL, F8], 'its output names the check'),
     ('sessions: six sessions and ten single runs on their conversations', [PY, 'tests/sessions_check.py'], FULL, 'its output names the session or run and where what it printed is'),
@@ -103,8 +99,6 @@ COMPLETE = DEFAULT + [
      [PY, 'tests/matrix_check.py', 'results/sampler/step151/spec.matrix', 'results/sampler/step151/spec', '--prompts', 'tcp-udp,cpp-matrix,geometry'], FULL, 'its output names the run'),
     ('sampling: with speculation on the held-out prompts',
      [PY, 'tests/matrix_check.py', 'results/sampler/spec-heldout.matrix', 'results/sampler/step151/spec-heldout'], FULL, 'its output names the run'),
-    ('ds-ref: the CPU reference path as a program', [PY, 'tests/record_check.py', 'fnv1a64:3a40e97fd9b90430', 'bin/ds-ref', '-m', MODEL, '-p', 'The three largest cities in Ukraine are', '-n', '24'],
-     [MODEL], 'the logits checks of the CPU reference path; src/forward.cpp'),
     ('a long prompt from a file: 2,731 tokens in chunks of 512', [PY, 'tests/record_check.py', 'fnv1a64:df516e7200ad14c8'] + PROD + ['-f', 'tests/long-prompt.txt', '-n', '40'],
      [MODEL, F8], 'the logits check on readme1100 (the same chunks); then the prompt cut shorter'),
 ] + SPEED

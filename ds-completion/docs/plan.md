@@ -100,7 +100,7 @@ few fixed runs, each one command of `scripts/check.py` with one verdict:
 | `unit` | after every change | no model files: the rounding ops, the sampler, the selection kernels, the batched kernels, the server against a fake engine | 30 s | done, step 186 |
 | `default` | after every change | the model, loads kept to a minimum. Two verdicts: logits against stored bytes on golden token sequences (`ds-test --e2e`: a 12-token set and a long prompt; it starts in seconds); and the product's outputs in one load: one engine with `--requests` and the full configuration (placement, cache, draft, speculation, `--canon`) takes the held-out prompts, a sampled seed, a conversation that goes on, each reply's hash against a manifest in git. One short `-i` session in a fresh process for the two paths `--requests` does not take | ~5.5 min | done, steps 187-188 |
 | `speed` | when a change is about speed (small gains were the common case) | the held-out prompts' tokens per second in fresh processes, as the documents quote it: the second repeat's mean against `tests/speed/baseline.tsv` (2%: slower fails, within is "the same"); every output the stored bytes | 36 min, ~28 of them the registration of expert tensors for the cache (step 189) | done as it is measured today, step 190 |
-| `complete` | overnight, and before anything is called done | `default`, then: the 20,000-token logits, the CPU path at 1,102 tokens, the request test in both modes, six sessions and ten single runs, the three sampling matrices, `ds-ref`'s output, a long prompt from a file, and `speed` | ~4 h | done, step 190 |
+| `complete` | overnight, and before anything is called done | `default`, then: the 20,000-token logits, the request test in both modes, six sessions and ten single runs, the three sampling matrices, a long prompt from a file, and `speed` | ~4 h | done, step 190 |
 | localizers | only when a verdict failed | the per-layer table, per token, near-ties, traces: not part of any run; a failed check prints the command to run next | | the hint is in `check.py`'s output |
 
 What this needs, in the order of work: the expected logits and the token ids of the golden
@@ -613,6 +613,8 @@ Step 191: the CPU path's expected logits at 1,102 tokens stored; against the ref
 set; an fp32 set of that length would decide it).
 Step 192: the CPU reference path is to be removed (the person): first the rounding test moved to the runtime's host functions.
 Next: its checks and `ds-ref` out; then `src/forward.*`, `src/fakequant_graph.*`, the CPU mode of `ds-test`.
+Step 193: `ds-ref` and the CPU path's checks removed; `apps/ds_completion.cpp` builds one program (`default`: 11 checks, 5 min).
+Next: `src/forward.*`, `src/fakequant_graph.*`, the CPU mode of `ds-test`.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front

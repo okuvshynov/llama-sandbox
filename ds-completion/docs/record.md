@@ -78,7 +78,7 @@ Decided in the discussion this document comes from:
 
 ## What the first version writes
 
-`--record FILE` with a single prompt (not with `-i` or `--requests`; `bin/ds-ref` writes one too). A whole record
+`--record FILE` with a single prompt (not with `-i` or `--requests`). A whole record
 as the program wrote it, the fastest single-machine settings (`results/record/example.json`):
 
 ```json
@@ -128,7 +128,7 @@ as the program wrote it, the fastest single-machine settings (`results/record/ex
   steps; `plain_steps`: those without a draft; `accepted`: drafts the main model agreed with;
   `verified`: the steps by the number of drafts verified, from 0; `draft_ms`, `verify_ms`: the
   time in the draft and in the verify steps. Totals only: tokens per step is `gen_tokens / steps`.
-- `experts` (step 119; `null` on the CPU path): `gpu_uses` and `cpu_uses`, routed-expert uses
+- `experts` (step 119; until step 193 `null` in `ds-ref`'s records): `gpu_uses` and `cpu_uses`, routed-expert uses
   by where they ran over the whole run (rejected drafts included); `dies` and `placed`, the dies
   that hold experts and how many each held after startup; `cache`, the adaptive cache's totals
   (`null` without `--cache-loads`). Since step 122 with `loads_started_by_die`, in the order of

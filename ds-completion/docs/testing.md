@@ -37,9 +37,11 @@ plain greedy output was established once, and every faster path must print the s
   `~/llms/ds-flash/`), run by `ref/ds_ref.py` in the Python environment `~/venvs/ds-ref`. Slow
   (minutes per forward) and large (~500 GB of RAM at 20,000 tokens). Not to be confused with
   the next term.
-- **The CPU reference path, `ds-ref`.** Our own second implementation of the model, in C++ on
-  ggml graphs (`src/forward.*`, the class `Engine`), and its program `bin/ds-ref`. It checks
-  the product; it is not the official code. 3.5 t/s.
+- **The CPU reference path.** Our own first implementation of the model, in C++ on ggml graphs
+  (`src/forward.*`, the class `Engine`); not the official code. Being removed (steps 192-194):
+  the runtime is compared with the reference directly, so it checks nothing the product needs.
+  Its program `bin/ds-ref` (3.5 t/s) went in step 193, and no run of `check.py` uses the path;
+  until step 194 it remains as `bin/ds-test` without `--runtime`.
 - **The runtime.** The product's implementation on the GPUs (`hip/`, the class `Runtime`).
 - **A golden set** (`data/golden/<name>/`, made from `data/ref/<name>.pt`). One run of the
   reference on one prompt, recorded: for every forward (the prompt, then each decoded token)
@@ -154,7 +156,7 @@ without experts on GPUs ~9 s.
 |---|---|---|---|---|---|
 | held-out matrix: `scripts/run_matrix.py results/cleanup/heldout.matrix --keep-out` | the fastest configuration: speculation, the adaptive cache, `--canon`, prompt chunks | `results/cache-test/plain-canon-static/<prompt>.out` with `cmp`: plain greedy decoding on a fixed placement | M, F8, D, GPU | 21 min per repeat (8 loads); twice, as usual: 41 min | by hand (`cmp` per file) |
 | a long prompt: 9,000 bytes of `docs/steps.md`, `--canon -f FILE -n 40` | prompt chunks of 512 at 2,731 tokens | the previous build's output and hash | M, F8, GPU | ~2 min per run | by hand |
-| `bin/ds-ref -p "The three largest cities in Ukraine are" -n 24 --record` | the CPU reference path as a program | a stored hash (`fnv1a64:3a40e97fd9b90430`, step 173) | M | 13 s | by hand |
+| `bin/ds-ref -p "The three largest cities in Ukraine are" -n 24 --record` | removed in step 193 (the CPU reference path as a program) | a stored hash (`fnv1a64:3a40e97fd9b90430`, step 173) | M | 13 s | by hand |
 | sessions: `scripts/chat.sh` on the questions of `results/chat/` and `results/chat/think/` | chat and thinking over three turns, rewinds, the context kept between turns | the stored replies (`*.out`) | M, F8, D, GPU | 6 sessions, 20 min (step 181) | by hand |
 | a session against fresh runs: `ds-completion -f <whole conversation>` | a session's reply k equals a single run on the conversation before it | the session's stored reply | as above | 10 runs, 24 min (step 181) | by hand |
 | sampling, plain loop: `results/sampler/plain.matrix` on 3 prompts | one seed gives one output across repeats, placements and the cache | the stored records' `output.hash` | M, F8, GPU | 18 runs, 15 min (step 181) | by hand |
@@ -194,7 +196,7 @@ The tests above answer two different questions, and most answer only one of them
 |---|---|---|
 | the unit tests, the kernels' `--bitwise`, the server test, the request test | yes | the name of the check or case that failed |
 | `cmp` of an output with stored bytes (held-out, sessions, the long prompt) | yes | the first byte that differs, nothing about why |
-| a stored `output.hash` (sampling, the request test, `ds-ref`) | yes | nothing: not even the first token that differs |
+| a stored `output.hash` (sampling, the request test, the long prompt) | yes | nothing: not even the first token that differs |
 | `ds-test --e2e` logits against stored bytes | yes, the sharpest: the arithmetic, not what was sampled from it | the step, with `compare_logits.py`: argmax, KL, largest difference |
 | `ds-test` per layer (the table) | none of its own (by hand: equal to the stored table) | the step, the layer, and the part: attention in / out, FFN in / out, the stream out, the router's weights, the experts chosen, the selection |
 | `ds-test --per-token` | none | as above per prompt token |
@@ -307,9 +309,9 @@ change. A few fixed runs, each one command with one verdict and an exit code:
 | run | command | when | contents | time |
 |---|---|---|---|---|
 | unit | `scripts/check.py unit` | after every change | everything of 3.1: no model files | 30 s (47 s with a build) |
-| default | `scripts/check.py default` | after every change | `unit`; the logits of the runtime at 12, 202 and 1,102 tokens and of the CPU reference path at 12 and 202, each file's sha256 against `tests/e2e/expected.txt` (step 187); the product's outputs: one engine with the fastest settings takes the held-out prompts, two sampled, a second turn, and one fresh session, every reply's token ids against `tests/outputs/expected.json` (step 188) | ~5.5 min |
+| default | `scripts/check.py default` | after every change | `unit`; the logits of the runtime at 12, 202 and 1,102 tokens, each file's sha256 against `tests/e2e/expected.txt` (step 187); the product's outputs: one engine with the fastest settings takes the held-out prompts, two sampled, a second turn, and one fresh session, every reply's token ids against `tests/outputs/expected.json` (step 188) | ~5.5 min |
 | speed | `scripts/check.py speed` | a change about speed | the eight held-out prompts, each in a fresh process with the fastest settings, twice; the second repeat's mean against `tests/speed/baseline.tsv`: slower by more than 2% fails, within 2% is "the same", faster says so. Also: every output the stored bytes, the clock level the baseline's, the second repeat not reading from storage (step 190) | 36 min |
-| complete | `scripts/check.py complete` | overnight, and before anything is called done | `default`; the logits at 20,000 tokens (runtime) and at 1,102 (CPU path); the request test with and without speculation; six sessions and ten single runs on their conversations; the three sampling matrices; `ds-ref`'s output; a 2,731-token prompt from a file; `speed` (step 190) | ~4 h |
+| complete | `scripts/check.py complete` | overnight, and before anything is called done | `default`; the logits at 20,000 tokens; the request test with and without speculation; six sessions and ten single runs on their conversations; the three sampling matrices; a 2,731-token prompt from a file; `speed` (step 190) | ~4 h |
 | localizers | by hand | when a verdict failed | section 3.6's "where" column | |
 
 `check.py` builds first (`make`, `make HIP=1`: a stale program is a wrong verdict), prints a

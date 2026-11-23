@@ -7269,3 +7269,34 @@ ties to even, as we do.
 The runtime's fp4 rounding itself is in GPU kernels and stays covered by the logits checks.
 `scripts/check.py unit`: all checks passed (31 s).
 
+## Step 193: removing the CPU reference path, 2: `ds-ref` and its checks
+
+**The checks.** `scripts/check.py default` loses the CPU path's logits at 12 and 202 tokens,
+`complete` the ones at 1,102 tokens (stored two steps ago) and `ds-ref`'s output hash.
+`tests/e2e/expected.txt` keeps the runtime's four hashes. `default` is 11 checks in 301 s
+(13 in 326 s).
+
+**The program.** `apps/ds_completion.cpp` built two programs, chosen by `-DDS_RUNTIME` at 15
+places. It builds one now: the sections of the other are gone, with what only allowed for
+them: the `Engine*` that `generate_plain` took and never used, the tests for "no runtime"
+(`if (rt)`), `--no-quant` (an unknown argument now), the `"experts": null` of a record, the
+usage text and the messages that pointed to `bin/ds-ref`. 1,004 lines -> 947. The Makefile
+has no `ds-ref` target.
+
+One line of output is kept as it was though half of it is constant now: `# loaded in N s;
+prompt N tokens; fake-quant on; N threads` (stored logs and scripts read it).
+
+**Checked.** `scripts/check.py default`: all checks passed. The long prompt from a file with
+`--record`: the stored hash; a record still has its ten fields. `--no-quant`: "unknown
+argument"; without `--rt`: the message, without the pointer to `ds-ref`.
+
+A mistake on the way: resolving the conditional sections by script left an `else` whose `if`
+I had then removed by hand; the build caught it, `check.py` said "the build: no check was
+run", which is what that line is for.
+
+What was lost with the program: a way to run the model without GPUs (3.5 t/s). The last commit
+that builds it is `bb42f51`; README and QUICKSTART say so where they quoted its speed.
+
+Left for step 194: `src/forward.*`, `src/fakequant_graph.*`, `bin/ds-test` without `--runtime`
+and its `--no-quant` golden sets, `bench-cpu-moe`'s use of the graph ops, `src/options.h`.
+

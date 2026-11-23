@@ -67,14 +67,14 @@ cmake -B build -DBUILD_SHARED_LIBS=OFF -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j 32
 
 cd ~/projects/llama-sandbox/ds-completion
-make && make HIP=1                     # -> bin/ (CPU: fp8pack, ds-ref, tests) and bin-hip/ (GPU: ds-completion); LLAMA_CPP=<dir> for a llama.cpp checkout elsewhere
+make && make HIP=1                     # -> bin/ (CPU: fp8pack, tests) and bin-hip/ (GPU: ds-completion); LLAMA_CPP=<dir> for a llama.cpp checkout elsewhere
 M=~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf
 bin/fp8pack -m $M -o ~/llms/ds-1017-fp8/dense-fp8.gguf   # lossless fp8 repack, 6.8 GB, ~20 s
 ```
 
 `make` builds every program: the tests and the benchmarks too. To serve or to chat, the product
 alone is enough and about three times faster to build: `make HIP=1 product && bin-hip/fp8pack -m $M -o ...`
-(`ds-completion` and `fp8pack`; `make tests`, with the CPU reference program `ds-ref`, and `make tools` are the other two groups, README
+(`ds-completion` and `fp8pack`; `make tests` and `make tools` are the other two groups, README
 "The product and the tools around it").
 
 `dense-fp8.gguf` comes out byte for byte the same on every build (its checksum is in the manifest),
@@ -82,7 +82,7 @@ so it doubles as a check of the build and the model files.
 
 ## Check
 
-    scripts/check.py default   # ~5.5 min: builds; the checks without the model; logits against stored hashes;
+    scripts/check.py default   # ~5 min: builds; the checks without the model; logits against stored hashes;
                                # the product's outputs (held-out prompts, sampling, a second turn, a session) against stored ids
     scripts/check.py unit      # only the part without the model, 30 s
     scripts/check.py speed     # 36 min: the held-out prompts' tokens per second against the stored baseline
@@ -208,12 +208,10 @@ Options:
   (README steps 128-129). A first version, to grow
   ([docs/record.md](docs/record.md), README steps 115-119). One prompt only (not with `-i`); a run that does not
   finish leaves the file empty.
-- `--no-quant` (`bin/ds-ref` only): without the reference's fp8/fp4 rounding (a comparison).
 
-`ds-completion` needs `--rt` (step 173). The model on the CPU alone, through ggml graphs, is the
-reference path and a program of its own: `bin/ds-ref -m $M -p "..."` (built by `make`; the same
-options for the prompt, the modes, `-n`, `-t`, sampling and `--record`; none of the runtime's).
-Until step 173 this was `bin/ds-completion`, or `bin-hip/ds-completion` without `--rt`.
+`ds-completion` needs `--rt` (step 173). There is no program for the model on the CPU alone any
+more: `bin/ds-ref` (the first implementation, ggml graphs, 3.5 t/s) was removed in step 193, since
+the runtime is checked against the reference directly. The last commit that builds it: `bb42f51`.
 
 ## A server
 
@@ -280,7 +278,7 @@ a row says otherwise (the clock does not matter to the CPU rows).
 | **speculative decoding + adaptive expert cache** | `... --placement placements/study30.txt --dspark ... --spec --canon --cache-loads 800 --cache-period 8` | **33.9-55.0 t/s, mean 44.6** (300 tokens, held-out prompts; README step 104) | output byte-identical to plain decoding with `--canon` |
 | the same, sampled | `... --temp 1 --top-p 0.95 --seed 1` | mean 43.1 against 44.9 greedy in the same session (README step 151) | the plain loop's output for the same seed |
 | dense on GPU 0, every routed expert on the CPU | `bin-hip/ds-completion --rt ...` without `--placement` | 12.0-12.5 t/s (sclk 2) | 5.9e-6 / 4.8e-3 (earlier run 1.7e-5 / 6.3e-4) |
-| CPU only, the reference path | `bin/ds-ref` (`bin/ds-completion` until step 173) | 3.5 t/s | 1.3e-5 / 3.9e-3 |
+| CPU only (removed in step 193) | `bin/ds-ref` at commit `bb42f51` | 3.5 t/s | 1.3e-5 / 3.9e-3 |
 | llama.cpp with the DeepSeek-V4.1 PR (llama-cli, CPU; steps 2-3) | - | 3.5 t/s | 2.1e-5 / 1.3e-3 |
 
 The steps between these rows (the static placement, speculation without the cache) and their
@@ -296,7 +294,7 @@ Means over all 17 steps: 1.8e-2 to 2.5e-2 for every mode.
   fake-quant reference. It has no inexact op left, and repeated runs are bit-identical.
 - **Prompt processing** (chunks of 512, the CPU's experts overlapped with the GPU's
   work; README steps 37-45, 68): 93 t/s, 63 with `--canon` (1,989 tokens; 97 / 73 at 6,106; sclk 6),
-  output byte-identical to token-by-token processing; ~7.7 t/s with `bin/ds-ref`. The
+  output byte-identical to token-by-token processing; ~7.7 t/s on the CPU alone (`ds-ref`, removed). The
   runtime's mean KL varies run to run with fp8 rounding flips (README step 10); every exact mode
   scatters the same way.
 - **Where a step goes** (`--spec`, cache, sclk 6; the traces of README steps 105 and 155): a 6-token
@@ -313,8 +311,7 @@ Means over all 17 steps: 1.8e-2 to 2.5e-2 for every mode.
 - `-i` sessions: one line per turn, no system prompt, no tool calls.
 - Context: 65,536 tokens by default (prompt + generation), up to the model's
   1,048,576 with `--max-ctx N` (~6.4 KB of GPU 0 memory per position). A 30k-token prompt takes
-  ~5-8 min at 63-97 t/s (it took ~30 min token by token). `bin/ds-ref` (the CPU reference path): 4,096 by
-  default, at most 16k (no candidate-block selection there).
+  ~5-8 min at 63-97 t/s (it took ~30 min token by token). 
 - The dense part uses one GPU; the others only hold experts with `--placement`.
 - At exit the process sometimes aborts (signal 6, exit code 134) inside the GPU runtime's
   shutdown, after `main` has returned: the output and the timing lines are complete by then
