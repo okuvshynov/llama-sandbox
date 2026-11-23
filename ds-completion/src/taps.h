@@ -1,9 +1,8 @@
 // A layer's named intermediates, copied out for a test (README step 171).
 //
-// Both implementations of the model can run one block on given inputs and return what the
-// reference records under the same names (h_in, attn_out, ffn_out, router_w, ...):
-// Engine::run_layer (src/forward.h, the CPU reference path) and Runtime::run_layer (hip/rt.h, the
-// GPU runtime). tests/ds_test.cpp compares either with the golden data. When a program serves,
+// The runtime can run one block on given inputs and return what the reference records under
+// the same names (h_in, attn_out, ffn_out, router_w, ...): Runtime::run_layer (hip/rt.h).
+// tests/ds_test.cpp compares them with the golden data. When a program serves,
 // nothing asks for taps: the runtime's layer code gets a null Taps* and copies nothing.
 #pragma once
 

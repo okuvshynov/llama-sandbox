@@ -37,11 +37,11 @@ plain greedy output was established once, and every faster path must print the s
   `~/llms/ds-flash/`), run by `ref/ds_ref.py` in the Python environment `~/venvs/ds-ref`. Slow
   (minutes per forward) and large (~500 GB of RAM at 20,000 tokens). Not to be confused with
   the next term.
-- **The CPU reference path.** Our own first implementation of the model, in C++ on ggml graphs
-  (`src/forward.*`, the class `Engine`); not the official code. Being removed (steps 192-194):
-  the runtime is compared with the reference directly, so it checks nothing the product needs.
-  Its program `bin/ds-ref` (3.5 t/s) went in step 193, and no run of `check.py` uses the path;
-  until step 194 it remains as `bin/ds-test` without `--runtime`.
+- **The CPU reference path** (history; in older steps and results). Our own first
+  implementation of the model, in C++ on ggml graphs (`src/forward.*`, the class `Engine`, the
+  program `bin/ds-ref`, `bin/ds-test` without `--runtime`); not the official code. Removed in
+  steps 192-194: the runtime is compared with the reference directly. The last commit with it
+  is `bb42f51`; its stored tables (`results/test-*.txt` without `-runtime`) stay as history.
 - **The runtime.** The product's implementation on the GPUs (`hip/`, the class `Runtime`).
 - **A golden set** (`data/golden/<name>/`, made from `data/ref/<name>.pt`). One run of the
   reference on one prompt, recorded: for every forward (the prompt, then each decoded token)
@@ -116,22 +116,19 @@ The golden sets (all in `data/golden/`, 73 GB together, not in git):
 | set | prompt | variant | steps | made for |
 |---|---|---|---|---|
 | `hello` | 12 tokens, chat | real (bf16 + rounding) | 17 | the first comparison; errors of 2-10% by construction |
-| `hello-fp32` | 12 tokens | fp32 + rounding | 5 | the standard small set, both paths |
-| `hello-fp32-nq` | 12 tokens | fp32, no rounding | 5 | the arithmetic without the rounding |
+| `hello-fp32` | 12 tokens | fp32 + rounding | 5 | the standard small set |
+| `hello-fp32-nq` | 12 tokens | fp32, no rounding | 5 | the arithmetic without the rounding. Not used since step 194: only the CPU reference path could run without rounding |
 | `hello-fp32-dspark` | 12 tokens | fp32 + rounding, with the draft | 13 | the draft's guesses and confidences |
 | `readme200` | 202 tokens | real | 9 | past the 128-token window (the ring buffer) |
-| `readme200-fp32-nq` | 202 tokens | fp32, no rounding | 5 | the same, exact variant |
+| `readme200-fp32-nq` | 202 tokens | fp32, no rounding | 5 | the same, exact variant (not used since step 194) |
 | `readme1100` | 1,102 tokens | real | 5 | compressed attention with many blocks |
 | `readme20k-s` | 20,002 tokens | real, with the indexer's scores | 9 | long context: candidate blocks, selection past 16k (65 GB) |
 
 | test | target | compared with | needs | time | verdict |
 |---|---|---|---|---|---|
-| `bin/ds-test -g hello-fp32` (also `hello`, `hello-fp32-nq --no-quant`) | every layer of the CPU reference path | the reference's tensors, then the stored table | M, G | 8 s each | by hand |
-| `bin/ds-test -g readme200`, `readme200-fp32-nq --no-quant`, `readme1100` | the same on longer prompts | stored tables `results/test-*.txt` | M, G | 28 s, 25 s, 170 s (step 174) | by hand |
 | `bin-hip/ds-test -g hello-fp32 --runtime F8` | every layer of the runtime (one die, experts on the CPU) | the reference's tensors, then the table of the previous build | M, F8, GPU, G | 5 s | by hand |
 | the same with `--layers 0-5`, `--layers 3,20` | a runtime of some layers (the test's own mode) | the previous build's table | as above | seconds | by hand |
 | `... --runtime F8 --e2e FILE`, then `ref/compare_logits.py` | the runtime end to end | a stored logits file byte for byte (`data/ds/`, not in git); the reference's logits (argmax, KL) | as above, py | 5 s + 2 s | by hand |
-| `bin/ds-test -g hello-fp32 --e2e FILE` | the CPU reference path end to end | as above | M, G, py | 3 s | by hand |
 | `bin-hip/ds-test -g readme20k-s --runtime F8 --dump-topk FILE` | the runtime per layer at 20,000 tokens, the selection | `results/rt-readme20k.txt`; the dump byte for byte with `data/ds/readme20k-topk.bin` | M, F8, GPU, G | 32 min (step 181) | by hand |
 | `... -g readme20k-s --runtime F8 --e2e FILE`, `compare_logits.py` | the runtime end to end at 20,000 tokens | `data/ds/readme20k-rt.f32` byte for byte; the reference: argmax 9 of 9 | as above, py | 9 min (step 181) | by hand |
 | `ref/check_topk_ties.py` | whether selection differences at 20,000 tokens are near-ties | the reference's scores in the golden set | G, the dump, py | not timed here | by hand |

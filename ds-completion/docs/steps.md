@@ -7300,3 +7300,43 @@ that builds it is `bb42f51`; README and QUICKSTART say so where they quoted its 
 Left for step 194: `src/forward.*`, `src/fakequant_graph.*`, `bin/ds-test` without `--runtime`
 and its `--no-quant` golden sets, `bench-cpu-moe`'s use of the graph ops, `src/options.h`.
 
+## Step 194: removing the CPU reference path, 3: its sources and `ds-test`'s CPU mode
+
+**Removed:** `src/forward.cpp`, `src/forward.h` (the model as ggml graphs, the class `Engine`),
+`src/fakequant_graph.cpp`, `src/fakequant_graph.h` (the roundings as graph ops): 793 lines.
+
+**`tests/ds_test.cpp`** tested either implementation, chosen by `--runtime` and six
+conditional sections; it tests the runtime. Gone: the `Engine` per-layer loop, its end-to-end
+run, `--determinism` (two engines compared), `--no-quant`. `--runtime` is required now, and
+the program is built by `make HIP=1` only (`make bin/ds-test` says so). 452 lines -> 314.
+
+**Around them:** `src/options.h` loses the rounding switch; the Makefile loses the `REF` list
+and `-DDS_RUNTIME` (nothing tests it any more); `bench-cpu-moe` compared the CPU expert kernel
+with a ggml graph that used the removed fp8 graph op, so it carries that op itself now (8
+lines over `fq_fp8_host`, split over the tasks as before).
+
+**Checked.**
+
+| | |
+|---|---|
+| `scripts/check.py default` | all checks passed (298 s) |
+| the per-layer table, `bin-hip/ds-test -g data/golden/hello-fp32 --runtime`, old program and new | 202 lines, equal but for the time column |
+| `bin/bench-cpu-moe --tokens 2 --check-layers 0,20` | runs; ours 6.4e-08 against the double reference, the canonical sums 0 of 5,120 rows differ |
+| `bin-hip/ds-test` without `--runtime` | the usage text |
+
+**What the three steps removed** (192-194): about 1,000 lines of C++, one program, 21
+conditional sections in two files, four checks. **What they cost:** no way to run the model
+without GPUs (`bb42f51` is the last commit with one); the no-rounding golden sets (`-nq`) have
+no user now, since only that path could switch the rounding off; `--determinism`. **What is
+left of ggml in the tree:** the GGUF reader and tensor metadata (`src/model.cpp`), the
+tokenizer through libllama, one benchmark's baseline, and `llama-logits`.
+
+History stays as it was written: the steps, the stored tables of the CPU path
+(`results/test-*.txt` without `-runtime`) and `results/dist/after-removal/run.sh`, which names
+`bin/ds-test` and `bin/ds-ref`, describe the tree of their commits.
+
+**A mistake on the way.** My edit script stopped at its own sanity check, and the same command
+line went on to `git rm` the sources and delete a binary, because the two were joined by a
+step that succeeded. Nothing was lost (the deletion was the plan, and git had the files), but
+a deletion should not be chained after something that can fail.
+

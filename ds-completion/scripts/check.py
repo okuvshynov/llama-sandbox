@@ -17,7 +17,8 @@ prompt in a fresh process, twice, the second repeat's mean against tests/speed/b
 complete (step 190) adds what default leaves out: the logits at 20,000 tokens;
 the request test in both modes; six sessions and ten single runs on their
 conversations; the three sampling matrices; a 2,731-token prompt from a file.
-(Until step 193 default and complete also ran the CPU reference path, removed in steps 192-194.)
+(Until step 193 default and complete also ran a second implementation, the CPU reference path,
+removed in steps 192-194.)
 Not in any run: what has no verdict (the per-layer tables, the draft against the reference,
 traces) and ref/check_weights.py, which reads the checkpoint over the network (docs/testing.md).
 --store is for a change that is meant to move the logits or the outputs (a toolchain, the

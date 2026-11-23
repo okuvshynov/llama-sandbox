@@ -126,9 +126,11 @@ token -> embedding (host) -> 40 x [ engram (layers 1, 14) -> attention block -> 
   message format and lets the model's `encoding.py` render the prompt (system block, tools,
   reasoning effort) and parse the reply (reasoning, text, tool calls). One request at a time;
   a signal cancels a request whose client left.
-- **Reference path** (`src/forward.cpp`): the whole model as ggml CPU graphs, module by module like
-  the official `model.py`. Slow (3.5 t/s), but it is the second implementation every runtime
-  change is checked against.
+- (Until step 194 there was a second implementation, the **CPU reference path**: the whole
+  model as ggml CPU graphs, module by module like the official `model.py`, 3.5 t/s. It was the
+  first thing built and what the runtime was first checked against. The runtime is compared
+  with the official reference's golden sets directly, so it was removed: steps 192-194; the
+  last commit with it is `bb42f51`.)
 
 ## 4. How correctness is kept
 
@@ -288,22 +290,21 @@ three parts (README step 169). The rule the first part should obey, and where it
   `bin-hip/ds-completion --rt ...`, the server in front of it, and `fp8pack`, which makes one
   of its files once. On this path no ggml graph is built or computed; from llama.cpp it takes
   the tokenizer, the GGUF reader and tensor metadata.
-- **What checks it** is the second implementation and the programs that compare: the CPU
-  reference path, the tests, the Python reference. It may depend on the product; the product
+- **What checks it** is the programs that compare and what they compare with: the tests,
+  `scripts/check.py`, the Python reference and its golden sets. It may depend on the product; the product
   should not depend on it.
 - **Tools** measure and inspect; nothing depends on them.
 
 The product does not reach into the second part any more (steps 171-173):
 
-- Nothing in `hip/` includes `src/forward.h`; the two names the runtime took from it have
-  headers of their own (`src/engram.h`, `src/taps.h`).
-- The rounding functions the runtime calls have no ggml in them; the graph ops are apart
-  (`src/fakequant_graph.*`).
-- `ds-completion` has no CPU path: it needs `--rt`. The program for the model on the CPU alone,
-  `ds-ref`, was removed in step 193. The Makefile's `REF` list (`forward.cpp`,
-  `fakequant_graph.cpp`) is linked by `ds-test` and one benchmark until step 194 removes it.
+- The runtime has headers of its own for what it once took from the CPU path (`src/engram.h`,
+  `src/taps.h`).
+- The rounding functions the runtime calls have no ggml in them (`src/fakequant.*`).
+- `ds-completion` has no CPU path: it needs `--rt`. The CPU reference path itself is gone:
+  its program `ds-ref` in step 193, its sources (`src/forward.*`, `src/fakequant_graph.*`) and
+  `ds-test`'s CPU mode in step 194.
 
-What remains shared is by design: one source file for both programs' command line, and the
+What remains shared between the product and its tests is by design: the
 loader, the sampler and the CPU expert kernels. And one thing remains linked that the product
 does not use: ggml itself comes in with `libllama.a`, which the tokenizer needs.
 
@@ -347,8 +348,6 @@ Also the product's: `scripts/serve.sh` and `scripts/chat.sh` (the two ways to st
 
 | path | what |
 |---|---|
-| `src/forward.{h,cpp}` | the CPU reference path (ggml graphs): `ds-test`'s CPU mode links it, `ds-completion` does not (step 173). To be removed in step 194 |
-| `src/fakequant_graph.{h,cpp}` | the same roundings as ggml custom ops, for the reference path's graphs (step 172) |
 | `tests/ds_test.cpp` | per-layer and end-to-end tests against the goldens |
 | `tests/test_fakequant.cpp`, `tests/test_topk.cpp` | the host rounding functions (`src/fakequant.cpp`) and the indexer's selection against the reference's, bit for bit |
 | `tests/e2e/`, `tests/fq/` | what the checks compare with, in git: golden sets cut to tokens and logits with the expected hashes (`ref/trim_golden.py`, step 187); the rounding test's vectors; `tests/outputs/expected.json`, the expected token ids of `tests/outputs_check.py` (step 188); `tests/speed/baseline.tsv` |

@@ -85,7 +85,7 @@ Runtime::Runtime(const Model& model, RtOptions options, const std::string& fp8_p
   if (!has_head()) fprintf(stderr, "# runtime: layers 0-%d of %d, no head\n", n_run - 1, hp.n_layer);
 
   // rotary frequencies: window-only layers at rope_base, compressed layers at
-  // compress_rope_base with YaRN (as Engine::rope)
+  // compress_rope_base with YaRN (as the reference's)
   const auto f_win = rope_freqs(hp.rope_dim, 0, hp.rope_base, 1, 0, 0);
   const auto f_cmp = rope_freqs(hp.rope_dim, hp.yarn_orig_ctx, hp.compress_rope_base, hp.yarn_factor, hp.yarn_beta_fast,
                                 hp.yarn_beta_slow);
@@ -1490,7 +1490,7 @@ void Runtime::block_pre(int L, Taps* taps, int M) {
         k_hc_pre(ht(t), dspark->quarter, E, (chunked ? dspark->hid_chunk + t * nh : dspark->main_hidden) + (size_t)d * E, s);
   }
   mark("hc");
-  // each sublayer's mixes give the next sublayer's input mix (see Engine::block)
+  // each sublayer's mixes give the next sublayer's input mix (as the reference's Block)
   k_gemv_f32_m(w.hc_attn_fn, MIX, E * HC, h, M, mixes, partial, s);
   k_hc_split(h, E * HC, mixes, w.hc_attn_scale, w.hc_attn_base, eps, hp.hc_eps, hp.hc_iters, a_pre, a_post, a_comb, s, M);
   k_hc_pre_norm(h, pre, w.attn_norm, E, eps, x, s, M);

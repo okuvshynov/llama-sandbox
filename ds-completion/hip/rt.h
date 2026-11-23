@@ -76,8 +76,8 @@ class Runtime {
   std::function<bool()> prefill_stop;
 
   // teacher-forced single layer (tests): begin_step(token), then run_layer for L = 0.. in
-  // order (consumers read what their source layer wrote), then end_step(). Inputs and taps as
-  // Engine::run_layer (h_in is the stream before the engram on engram layers).
+  // order (consumers read what their source layer wrote), then end_step(). Inputs and taps as the
+  // reference records them (h_in is the stream before the engram on engram layers).
   void begin_step(int32_t token);
   Taps run_layer(int L, const std::vector<float>& h_in, const std::vector<float>& pre_in);
   void end_step();

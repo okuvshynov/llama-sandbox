@@ -72,8 +72,8 @@ right after a copy may only read the page cache.
 ```bash
 # llama.cpp: upstream, a CPU build with static libraries in build/, at the commit and with the cmake lines of QUICKSTART.md "Build and prepare"
 cd ~/projects/llama-sandbox/ds-completion
-make            # bin/: fp8pack, ds-ref (the CPU reference path), the CPU tests and benchmarks (links llama.cpp's static CPU libraries)
-make HIP=1      # bin-hip/: ds-completion (the product: the GPU runtime), the tests with the runtime, the GPU benchmarks; no ds-ref
+make            # bin/: fp8pack, the unit tests and the CPU benchmarks (links llama.cpp's static CPU libraries)
+make HIP=1      # bin-hip/: ds-completion (the product: the GPU runtime), ds-test, the GPU benchmarks
 M=~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf
 F8=~/llms/ds-1017-fp8/dense-fp8.gguf
 D=~/llms/dspark/dspark-DeepSeek-V4.1-Flash-1017-BF16.gguf
@@ -87,7 +87,7 @@ Run from this directory (placement files are relative paths). How to run: [QUICK
 |---|---|---|---|
 | `data/ref/` | reference runs (`.pt`): the official model math on the CPU (`ref/ds_ref.py`) | `~/venvs/ds-ref/bin/python ref/ds_ref.py --prompt "..." --chat --n-decode 16 [--fp32] [--no-quant] --out data/ref/x.pt` (prompts: README step 2; the 20k-token run: step 35) | minutes to ~1 h (20k tokens: 42 min, ~500 GB of RAM, a 35 GB file) |
 | `data/golden/` | per-layer golden activations and logits for the gates | `ref/export_golden.py data/ref/x.pt data/golden/x` | minutes |
-| `data/ds/`, `data/llama/` | our and llama.cpp's logits for the comparisons | `bin/ds-test ... --e2e`; `bin/llama-logits` (README steps 2-3; `make bin/llama-logits LLAMA_CPP=<a checkout of the PR's commit>`, not part of `make` since step 175) | minutes |
+| `data/ds/`, `data/llama/` | our and llama.cpp's logits for the comparisons | `bin-hip/ds-test ... --runtime $F8 --e2e` (before step 194 also `bin/ds-test ... --e2e`, the CPU reference path); `bin/llama-logits` (README steps 2-3; `make bin/llama-logits LLAMA_CPP=<a checkout of the PR's commit>`, not part of `make` since step 175) | minutes |
 | `tests/fq/` (in git since step 186; `data/fq/` before) | fake-quant test vectors | `ref/make_fq_test.py` | seconds |
 | `data/routing/study/` | routing logs of the 30 study prompts (plain): inputs of `placements/study30.txt` and the simulations | `results/routing-study.sh` (prompts in `prompts/routing-study.tsv`) | ~1 h |
 | `data/routing/oracle/` | routing logs of the 2 oracle prompts | README step 15 | minutes |
@@ -315,6 +315,7 @@ Unless stated: sclk 2, 16 CPU threads (32 before README step 18), the study30 pl
 | 191 | `tests/e2e/expected.txt` (the entry `cpu/readme1100`) | `bin/ds-test -m $M -g tests/e2e/readme1100 --e2e <file>` twice, `sha256sum`; `~/venvs/ds-ref/bin/python ref/compare_logits.py data/ref/readme1100.pt <file>` |
 | 192 | `tests/fq/` (two more rows) | `~/venvs/ds-ref/bin/python ref/make_fq_test.py`; `make bin/test-fakequant && bin/test-fakequant`; the controls: `sed 's/nearbyintf(v \/ q)/roundf(v \/ q)/' src/fakequant.cpp > x.cpp; g++ -O2 -std=c++17 -Isrc -o t tests/test_fakequant.cpp x.cpp; ./t` (and `1e-4f` to `1e-3f`) |
 | 193 | (no results file: the checks are the result) | `scripts/check.py default`; `python3 tests/record_check.py fnv1a64:df516e7200ad14c8 bin-hip/ds-completion -m $M --rt $F8 --placement placements/study30.txt --canon -f tests/long-prompt.txt -n 40`; `ds-ref` itself: `git checkout bb42f51 && make bin/ds-ref` |
+| 194 | (no results file) | `scripts/check.py default`; `bin-hip/ds-test -m $M -g data/golden/hello-fp32 --runtime $F8` from this commit and from `90b4613`, the last column cut (`awk '{NF=NF-1; print}'`), `cmp`; `bin/bench-cpu-moe -m $M --tokens 2 --check-layers 0,20` |
 | 167 | `server/serve.txt` | by hand: `DS_LOGS=<a directory> scripts/serve.sh`, one request with `curl` (the one of `docs/pi.md`, section 1), a minute's wait for `metrics.prom`, Ctrl-C; the file's parts are named in it |
 
 ## 7. Open items (to confirm)

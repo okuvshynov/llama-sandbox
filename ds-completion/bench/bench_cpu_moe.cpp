@@ -1,5 +1,5 @@
 // bench-cpu-moe: the CPU routed-expert kernel (cpu_moe.h) against ggml's mul_mat_id path (what
-// the CPU reference path, src/forward.cpp, uses) and against a double-precision host computation of the reference math.
+// the CPU reference path used until its removal, README step 194) and against a double-precision host computation of the reference math.
 //
 //   bench-cpu-moe -m <model.gguf> [-t 32] [--tokens 5] [--check-layers 0,20,39] [-k 6] [--batch T]
 //
@@ -28,7 +28,6 @@
 #include <immintrin.h>
 #include "cpu_moe.h"
 #include "fakequant.h"
-#include "fakequant_graph.h"
 #include "model.h"
 
 #include "ggml-alloc.h"
@@ -48,6 +47,15 @@
 #include <omp.h>
 
 using Clock = std::chrono::steady_clock;
+
+// the fp8 rounding as a ggml custom op, for the graph below (src/fakequant_graph.cpp had it until
+// README step 194): blocks of 32 through fq_fp8_host, split over the tasks
+static void fq_fp8_op(ggml_tensor* dst, const ggml_tensor* a, int ith, int nth, void*) {
+  const int64_t n_blocks = ggml_nelements(a) / 32, per = (n_blocks + nth - 1) / nth;
+  const int64_t b0 = per * ith, b1 = std::min(n_blocks, b0 + per);
+  if (b1 > b0) fq_fp8_host((const float*)a->data + b0 * 32, (float*)dst->data + b0 * 32, (b1 - b0) * 32);
+}
+static ggml_tensor* fq_fp8(ggml_context* ctx, ggml_tensor* x) { return ggml_map_custom1(ctx, x, fq_fp8_op, GGML_N_TASKS_MAX, nullptr); }
 
 // the runtime's previous path: one ggml CPU graph per layer
 struct GgmlMoe {

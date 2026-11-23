@@ -51,7 +51,7 @@ Three kinds of code live here, and the directories alone do not say which is whi
 | | what | where |
 |---|---|---|
 | **The product** | the engine with the GPU runtime (`bin-hip/ds-completion --rt ...`), the HTTP server in front of it, and `fp8pack`, which makes one of its files | `apps/ds_completion.cpp`, `apps/fp8pack.cpp`, `hip/`, `src/` except `forward.*` and `fakequant_graph.*`, `server/ds_server.py`, `scripts/serve.sh`, `scripts/chat.sh`, `placements/` |
-| **What checks it** | a second implementation of the model on the CPU (ggml graphs; being removed, steps 192-194: its program `ds-ref` is gone), the test programs, the official Python reference and the golden data it writes | `src/forward.*`, `src/fakequant_graph.*`, `tests/`, `ref/`, `server/test_server.py`, `server/fake_engine.py` |
+| **What checks it** | the test programs, the fixed runs of `scripts/check.py`, the official Python reference and the golden data it writes (a second implementation of the model on the CPU was removed in steps 192-194) | `tests/`, `scripts/check.py`, `ref/`, `server/test_server.py`, `server/fake_engine.py` |
 | **Tools** | benchmarks, the runner of measurements and the readers of records and traces, the inspector, every measurement's raw output | `bench/`, `scripts/` (the rest), `apps/ds_inspect.cpp`, `results/` |
 
 `make product`, `make tests` and `make tools` build one kind each (`make`: all three).

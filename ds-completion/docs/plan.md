@@ -615,6 +615,8 @@ Step 192: the CPU reference path is to be removed (the person): first the roundi
 Next: its checks and `ds-ref` out; then `src/forward.*`, `src/fakequant_graph.*`, the CPU mode of `ds-test`.
 Step 193: `ds-ref` and the CPU path's checks removed; `apps/ds_completion.cpp` builds one program (`default`: 11 checks, 5 min).
 Next: `src/forward.*`, `src/fakequant_graph.*`, the CPU mode of `ds-test`.
+Step 194: done: the sources and `ds-test`'s CPU mode removed (793 + 138 lines); `ds-test` is the runtime's test, HIP=1 only.
+The CPU reference path is gone: one implementation, checked against the official reference.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front

@@ -28,9 +28,7 @@ CXXFLAGS = -std=c++17 -O3 -g -march=native -fopenmp -Wall -Wextra -Wno-unused-pa
 LDLIBS   = $(GGML_LIBS) -fopenmp -lpthread -ldl
 
 CORE   = src/model.cpp src/engram.cpp src/fakequant.cpp src/cpu_moe.cpp src/canon_dot.cpp src/sampler.cpp
-# the CPU reference path (the model as ggml graphs): ds-test and a benchmark link it; ds-completion does not
-REF    = src/forward.cpp src/fakequant_graph.cpp
-CORE_H = src/model.h src/engram.h src/taps.h src/options.h src/forward.h src/fakequant.h src/fakequant_graph.h src/cpu_moe.h src/canon_dot.h src/sampler.h
+CORE_H = src/model.h src/engram.h src/taps.h src/options.h src/fakequant.h src/cpu_moe.h src/canon_dot.h src/sampler.h
 
 # HIP builds: ds-completion (built only here) and ds-test carry the own decode runtime (hip/), compiled by
 # hipcc into objects that the g++ link picks up
@@ -38,25 +36,25 @@ ROCM = /opt/rocm-6.3.4
 ifeq ($(HIP),1)
 RT_OBJ   = $(BIN)/obj/rt.o $(BIN)/obj/rt_trace.o $(BIN)/obj/kernels.o $(BIN)/obj/fp8_gemv.o $(BIN)/obj/fp4_moe.o $(BIN)/obj/expert_pool.o \
            $(BIN)/obj/expert_loader.o $(BIN)/obj/expert_cache.o $(BIN)/obj/dspark.o
-RT_FLAGS = -DDS_RUNTIME -D__HIP_PLATFORM_AMD__ -Ihip -I$(ROCM)/include
+RT_FLAGS = -D__HIP_PLATFORM_AMD__ -Ihip -I$(ROCM)/include
 RT_LIBS  = $(RT_OBJ) -L$(ROCM)/lib -Wl,-rpath,$(ROCM)/lib -lamdhip64
 endif
 
 # Three groups (README step 169; docs/overview.md "Code map"). `make` builds all three.
 #   make product   what serves: ds-completion (HIP=1 only: it is the GPU runtime's program), and fp8pack,
 #                  which makes dense-fp8.gguf once
-#   make tests     what checks it: ds-test and the unit tests
+#   make tests     what checks it: the unit tests and, with HIP=1, ds-test (the runtime against the golden sets)
 #   Not in a group: llama-logits (make bin/llama-logits), llama.cpp's own pipeline on the model. It gives
 #   right logits only when LLAMA_CPP is a checkout of the DeepSeek-V4.1 PR's commit (docs/llama-cpp-upstream.md): upstream
 #   reads this model's Engram table as another type, without an error (README step 175).
 #   make tools     what measures and inspects: ds-inspect, the benchmarks
 # With HIP=1 each is the bin-hip/ build of the same group (and the programs only it has).
 PRODUCT = $(BIN)/fp8pack
-TESTS   = $(BIN)/ds-test $(BIN)/test-fakequant $(BIN)/test-sampler
+TESTS   = $(BIN)/test-fakequant $(BIN)/test-sampler
 TOOLS   = $(BIN)/ds-inspect $(BIN)/bench-cpu-moe $(BIN)/bench-fp4-decode
 ifeq ($(HIP),1)
 PRODUCT += $(BIN)/ds-completion
-TESTS  += $(BIN)/test-topk
+TESTS  += $(BIN)/ds-test $(BIN)/test-topk
 TOOLS  += $(BIN)/bench-fp8 $(BIN)/bench-kernels $(BIN)/bench-fp4-moe $(BIN)/bench-expert-pool $(BIN)/bench-expert-load \
           $(BIN)/bench-register $(BIN)/bench-launch $(BIN)/bench-loader-exit $(BIN)/bench-row-stride $(BIN)/bench-wave-slots
 endif
@@ -84,9 +82,13 @@ endif
 	@mkdir -p $(BIN)
 	$(CXX) $(CXXFLAGS) $(RT_FLAGS) -o $@ apps/ds_completion.cpp $(CORE) $(RT_LIBS) $(LLAMA_LIB) $(LDLIBS)
 
-$(BIN)/ds-test: tests/ds_test.cpp $(CORE) $(REF) $(CORE_H) $(RT_OBJ)
+# the runtime against the golden sets (HIP=1 only; its CPU mode went with the reference path, README step 194)
+$(BIN)/ds-test: tests/ds_test.cpp $(CORE) $(CORE_H) $(RT_OBJ)
+ifneq ($(HIP),1)
+	$(error ds-test tests the GPU runtime: make HIP=1)
+endif
 	@mkdir -p $(BIN)
-	$(CXX) $(CXXFLAGS) $(RT_FLAGS) -o $@ tests/ds_test.cpp $(CORE) $(REF) $(RT_LIBS) $(LDLIBS)
+	$(CXX) $(CXXFLAGS) $(RT_FLAGS) -o $@ tests/ds_test.cpp $(CORE) $(RT_LIBS) $(LDLIBS)
 
 $(BIN)/bench-kernels: bench/bench_kernels.cpp hip/kernels.hip hip/fp8_gemv.hip hip/kernels.h hip/fp8_gemv.h
 	@mkdir -p $(BIN)
@@ -163,9 +165,9 @@ $(BIN)/fp8pack: apps/fp8pack.cpp src/model.cpp src/model.h src/fakequant.cpp src
 	@mkdir -p $(BIN)
 	$(CXX) $(CXXFLAGS) -o $@ apps/fp8pack.cpp src/model.cpp src/fakequant.cpp $(LDLIBS)
 
-$(BIN)/bench-cpu-moe: bench/bench_cpu_moe.cpp $(CORE) $(REF) $(CORE_H)
+$(BIN)/bench-cpu-moe: bench/bench_cpu_moe.cpp $(CORE) $(CORE_H)
 	@mkdir -p $(BIN)
-	$(CXX) $(CXXFLAGS) -O3 -o $@ bench/bench_cpu_moe.cpp $(CORE) $(REF) $(LDLIBS)
+	$(CXX) $(CXXFLAGS) -O3 -o $@ bench/bench_cpu_moe.cpp $(CORE) $(LDLIBS)
 
 $(BIN)/bench-fp4-decode: bench/bench_fp4_decode.cpp src/canon_dot.cpp src/canon_dot.h src/fakequant.cpp src/fakequant.h
 	@mkdir -p $(BIN)

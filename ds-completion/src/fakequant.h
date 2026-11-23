@@ -1,7 +1,7 @@
 // The reference's fp8 / fp4 "fake quantization" (quantize, then dequantize back to float): the
 // scalar rules and the host functions. No ggml here (README step 172): the GPU runtime, fp8pack
-// and the kernels' benchmarks use this half. The same roundings as ggml custom ops, for the CPU
-// reference path's graphs, are in fakequant_graph.h.
+// and the kernels' benchmarks use it. (The same roundings as ggml custom ops, for the CPU
+// reference path's graphs, were in fakequant_graph.h until README step 194.)
 //
 // The model was trained with these roundings in place, so the reference (inference/kernel.py)
 // applies them at fixed points; matching them is what makes our per-layer outputs comparable
@@ -16,7 +16,7 @@ void fq_fp8_host(const float* x, float* y, int64_t n);
 // one block of 32: q[j] = the e4m3 values, returns the scale (y = q * scale)
 float fq_fp8_split(const float* xb, float* q);
 
-// the scalar rules, exposed for fakequant_graph.cpp and bench-fp8
+// the scalar rules, exposed for bench-fp8 and tests/test_fakequant.cpp
 float fq_e4m3_round(float v);  // nearest e4m3 (fn) value, ties to even, saturating at +-448
 float fq_e2m1_round(float v);  // nearest e2m1 value, ties to even, input clamped to +-6
 
