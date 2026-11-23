@@ -216,6 +216,8 @@ against upstream, `llama-logits` compiles and would give wrong logits with no er
 **Not checked:** the longer golden sets against upstream; the size check against a file that
 fails it; two machines and `--requests` with the upstream build. Every result in this
 repository before this step was made with the pin, and this machine's build stays on it.
+(As of step 168. Steps 174-175, below, ran the longer golden sets and `--requests` and moved this
+machine's build to upstream; two machines left the code in step 178.)
 
 **Following upstream from here:** a later commit can break the build or move the CPU path's
 numbers. `e626db7ca` is the way back; after a move to a newer one, the gate of this section.
@@ -228,7 +230,7 @@ the request and server tests. `bin/llama-logits` is no longer built by `make` or
 logits are wanted again.
 
 **Step 176:** the checkout is `~/projects/llama.cpp` and the Makefile's variable `LLAMA_CPP`
-(`FORK` in the commands above still works). One more user of the PR's code turned up: the
+(`FORK` in the commands above works again since step 182; from step 176 until then the Makefile ignored it). One more user of the PR's code turned up: the
 Python reference (`ref/weights.py`) imported the checkout's `gguf-py` and used its `MXFP8` type
 for the Engram table. It reads the table by its layout now, as `src/model.h` does.
 

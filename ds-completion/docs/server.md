@@ -42,7 +42,8 @@ Read of a request:
 
 Refused with 400 `invalid_request_error`: other block types (images, `redacted_thinking`),
 `tool_choice` `any` / `tool` (forcing a tool would need constrained
-output), a last message from the assistant, an unknown effort. Other fields (`model`, `betas`,
+output), a last message from the assistant, an unknown effort, an unknown `thinking.type`, a tool without
+`name` or `input_schema` (server tools), a `temperature`, `top_p` or `seed` that is not a number. Other fields (`model`, `betas`,
 `metadata`, ...) are ignored.
 
 The reply is a message with, in this order, a `thinking` block (the reasoning; `signature` is
@@ -161,7 +162,7 @@ where the request did not get that far.
 | `stop_reason`, `blocks`, `note` | of a completed reply: the stop reason, its blocks' types, why it did not parse (if it did not) |
 | `client_left`, `stream_differs` | the client closed its connection; a stream that was not its message (a bug) |
 
-A request refused by the server has only the first rows; one the engine took and then
+A request refused by the server has only the first rows, `total_s` and `client_left`; one the engine took and then
 cancelled has its tokens and seconds but no stop reason. To read it: `jq -c
 '[.request, .outcome, .how, .kept, .prompt_s]' FILE`.
 

@@ -26,7 +26,7 @@ Three parts, which need not be on one machine:
 
        cat ~/llms/UD-Q8_K_XL/*.gguf > /dev/null        # 508 GB, ~3 min
 
-4. Start the server. The short way (step 167), with the fastest settings, the context size
+4. Start the server. The short way (step 167), with the fastest settings,
    a context of 262,144 tokens and every log kept in a new directory under
    `~/ds-serve-logs/`:
 

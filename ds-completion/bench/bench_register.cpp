@@ -42,7 +42,7 @@ __global__ void tiny(int* p) { if (threadIdx.x == 0) p[0]++; }
 
 int main(int argc, char** argv) {
   setvbuf(stdout, nullptr, _IOLBF, 0);
-  if (argc < 2) { fprintf(stderr, "usage: bench-register <file> [--gb 16] [--pieces 0,4096,1024,256,64] [--dev 0]\n"); return 2; }
+  if (argc < 2) { fprintf(stderr, "usage: bench-register <file> [--gb 8] [--pieces 0,4096,1024,256,64] [--dev 0]\n"); return 2; }
   double gb = 8;
   int dev = 0;
   const char* fault_path = nullptr;

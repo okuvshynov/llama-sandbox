@@ -6,8 +6,9 @@ decided). Today (sclk 6, 16 CPU threads): `--spec` with the adaptive cache (`--c
 step 104; every decode change on the same ruler: `results/heldout-history/`). Prompt processing
 93 t/s (63 `--canon`; 1,989 tokens, README step 68). Where a token's time goes today: docs/timing.md.
 
-This file is the list of items with their status, and the two lists of ideas still open ("Two
-machines", "Further optimization ideas": dated sections, "today" inside one means its date).
+This file is the list of items with their status, the dated plans ("The testing process", "The product and the tools", "Observability of the
+server"), the list of ideas still open ("Further optimization ideas") and "Two machines", kept
+as history ("today" inside a dated section means its date).
 The plans that have been carried out were removed in step 156: the cost model of 2026-10-27,
 the plans for batched verification, expert placement, the adaptive cache, long context and
 prompt processing, and the first brainstorm with its sections 1-6. Steps and other documents
@@ -48,7 +49,7 @@ Speed
 | 17 | Tensor parallelism, 2-way then 4-way (C1/C2) | planned; step 76 tried wo_a/wo_b over 0-1 (+0.6%, not kept) | split the dense GEMVs over dies: ~-6..10 ms per step, matters once experts are mostly on GPUs |
 | 18 | Shared expert by TP, routed by EP (C4) | planned | the dense shared expert splits like any other GEMV under TP |
 | 19 | DSpark speculative decoding (E1) | done | `--dspark ... --spec`, output identical to plain greedy; held-out prompts +7% to +33% (geometric mean +22%), oracle placement +19% / +71% (README steps 19-26) |
-| 20 | Batched prompt processing (F) | done (steps 37-46, 68: 93 / 63 t/s fast / `--canon`, 1,989 tokens) | README steps 37-38: chunks of up to 512, CPU experts batched, CPU/GPU overlap; byte-identical output: 16.8 -> 51.6 t/s (fast), 17.4 -> 40.0 (canon), 1,989 tokens. CPU and GPU now balanced (~33 s each): step 39 (fp8_gemm, bit-identical): 57.1 t/s fast; now the CPU experts are the limit (30 of 36 s). Options and the expert-streaming estimate: "Prompt processing: where it stands and the options" (P1-P9) |
+| 20 | Batched prompt processing (F) | done (steps 37-46, 68: 93 / 63 t/s fast / `--canon`, 1,989 tokens) | README steps 37-38: chunks of up to 512, CPU experts batched, CPU/GPU overlap; byte-identical output: 16.8 -> 51.6 t/s (fast), 17.4 -> 40.0 (canon), 1,989 tokens. CPU and GPU now balanced (~33 s each): step 39 (fp8_gemm, bit-identical): 57.1 t/s fast; now the CPU experts are the limit (30 of 36 s). Options and the expert-streaming estimate: "Prompt processing: where it stands and the options" (a section removed in step 156: `git show 64f5e05:ds-completion/PLAN.md`) (P1-P9) |
 | 30 | Expert registration stalls the GPU | done | README step 43: not HIP calls but the memory-map lock: one registration call holds it, any mmap/munmap meanwhile waits (up to seconds for the ~48 GB ranges). 64 MB pieces (copies split at piece boundaries): no stall; registration (~95-135 s) still delays the cache's first loads |
 | 21 | Dynamic expert cache (A2) | merged into 16 | item 13 showed recent usage beats fixed sets |
 | 22 | Faster GPU fp4 expert kernel | partly done | 287 -> 406 GB/s (item 8); the per-row fp8 activation decode is the next cost; matters little while it overlaps |
@@ -134,8 +135,8 @@ Checked after 2 and 3: the programs build, the short gate and a held-out prompt 
   program `ds-ref`; the person chose a program): a serving build would
   then take only the tokenizer and the GGUF reader from llama.cpp (it uses only those; ggml is
   still linked, it comes with `libllama.a`). Is the CPU-only mode part of
-  the product? **Decided (the person, 2026-11-21): no, it is a reference tool.** So the next step
-  takes it out of the product's binary; as an option of the build or a program of its own is open.
+  the product? **Decided (the person, 2026-11-21): no, it is a reference tool.** Step 173
+  took it out of the product's binary, as a program of its own.
 - Moving directories (`src/forward.*`, the analysis scripts): it breaks paths the documents and
   the results' headers name; the moment for it is a move to a repository of its own, if that comes.
 - Where `ds-test` belongs: it gates both paths.
@@ -568,6 +569,8 @@ Step 179: the layer range out of the runtime and the program (`--layers`, `--tea
 Step 180: a last read after the removal: `verify()`'s unused `head` parameter out, two passages of the documents in the past tense.
 Step 181: sessions, sampling and the longer golden sets on the build after the removal: all the stored bytes (3 h, 2 h of it
 loads of the model). Next: the testing process (item 35).
+Step 182: the documents, comments and names against the tree: ~70 corrections of text, the Makefile's `FORK` alias; the code
+findings listed in `results/dist/review-182.txt` section 3 for steps of their own. Next: the testing process (item 35).
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front

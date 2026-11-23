@@ -4,7 +4,8 @@ no model. It answers the i-th request with the i-th entry of a JSON file, a list
 {"text": ..., "stop": "eos"|"length", "delay": seconds, "kept": tokens, "saved": tokens} (SIGUSR1 during the
 delay cancels the reply, as the engine does; "how" in the prompt line is continue with kept tokens, else
 empty), and appends every request it gets (header and prompt) to a log file as one JSON line.
-An entry {"exit": code} ends the process in place of a reply: an engine that is gone.
+An entry {"error": message} is answered with the engine's "error <message>" line; an entry
+{"exit": code} ends the process in place of a reply: an engine that is gone.
 
   fake_engine.py REPLIES.json REQUESTS.log --requests
 """

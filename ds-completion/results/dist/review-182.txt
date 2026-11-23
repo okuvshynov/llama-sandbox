@@ -1,0 +1,84 @@
+# The documents, comments and names against the tree after the clean-ups of steps 168-181 (README step 182).
+# Commit 0989337 + this step's change (the commit that adds this file); 2026-11-23. No GPU run: see 4.
+#
+# 1. By program (all clean)
+#    - every repository path in backticks in README.md, QUICKSTART.md, scripts/README.md and docs/*.md except steps.md
+#      and process.md exists (python: the regex `[A-Za-z0-9_./{},-]+` with a known top directory; reproduce.md's
+#      results column is relative to results/);
+#    - every --option those documents name is parsed by some program here (or is another tool's: cmake, rocprofv3,
+#      pi, git, npm); all 38 options of ds-completion's parser are in QUICKSTART.md.
+#
+# 2. By reading: four independent read-only passes (subagents), each finding then checked against the code
+#    before a change. Nothing of the removed two-machine code was found anywhere. What was found is older.
+#
+#    Documents, corrected
+#    QUICKSTART.md         the model's size in GiB called GB (474 / 488: now with both units); the draft "8.5 GB on GPU 0"
+#                          (the file; 8.0 on the GPU, results/gpu-memory/ledger.csv); die 0's memory in the ledger's numbers;
+#                          "~2 min" to load (2.5); the date over "Current results"
+#    docs/overview.md      a command without --rt, which the program refuses; "6,626 experts = 43%" at startup (a record:
+#                          802 + 3 x 1,765 = 6,097 = 40%); "Every step in the README"; "What is next" without the testing
+#                          process or the clean-up; RDMA between machines; pi-models.json and the two new scripts missing
+#                          from the code map; src/options.h under "What checks it" (the product includes it); the date
+#    docs/timing.md        the date; the load: 116 s, and 139 s in step 181's records
+#    docs/reproduce.md     what `make` and `make HIP=1` build; "Every number in README"; the second machine's software in the
+#                          present tense; FORK
+#    docs/plan.md          the opening paragraph ("Two machines" as ideas still open; three newer sections not named);
+#                          item 20's pointer to a section removed in step 156; a sentence saying step 173 was still to do
+#    docs/record.md        "fourteen" arguments (21); "the layer split" as a free input; --requests among what --record is
+#                          not with; the status line
+#    docs/requests.md      both notes about the saved point can come in one request; which mistakes close the engine
+#    docs/server.md        three refusals not listed; what a refused request's log line has
+#    docs/pi.md            a garbled sentence
+#    docs/llama-cpp-upstream.md   "not checked" items that later steps checked; FORK
+#    scripts/README.md     fans_full.sh and set_vega_freq.sh not listed (and without a header comment: added);
+#                          serve.sh's settings are not chat.sh's
+#
+#    Comments and usage texts, corrected (no code)
+#    hip/rt.cpp            fold_misses()'s comment stood over expert_stats() since step 136 (moved to rt_trace.cpp);
+#                          when the engram rows are fetched
+#    hip/rt_trace.cpp      "the lookahead study's step" (removed in step 135)
+#    hip/kernels.h, .hip   "single-die ... One token per step (M = 1)"; a comment for a kernel that does not exist (fp8
+#                          fake-quant); "bitonic sort" over a radix select; a comment three functions above its kernel
+#    hip/dspark.h, rt.h    comments on the wrong member (hidden_log / debug_log; topk_cur / cand_bidx); "(one token)";
+#                          reserve_gb has no option
+#    apps/ds_completion.cpp  the header: one chunk, one token per step, greedy (ds-ref only); --requests "each on an empty
+#                          context" (steps 158, 160) in three places; four comments on --spec-n's line, three of them
+#                          other options'; keep= missing from the request format; ds-ref "none of its options"
+#    tests/ds_test.cpp     "compare ds-completion"; --dspark's comment on --dspark-out
+#    bench/, src/, ref/    bench-register's usage (--gb 16, the default is 8); "what the runtime used so far";
+#                          "exposed for the unit test"; "ds-completion's own dump"
+#    server/, scripts/     ds_server.py: the first sentence, --progress missing from the usage, what a cancelled request
+#                          adds to the metrics; fake_engine.py: the "error" entry; route_stats.py: three options;
+#                          serve.sh: PI_CODING_AGENT_DIR, GiB
+#    Makefile              "ds-completion and ds-test also carry the runtime" (ds-completion is built only with HIP=1)
+#
+#    One line of code: the Makefile's `ifdef FORK` assigned LLAMA_CPP to itself, so FORK=<dir>, which two documents
+#    said still worked, did nothing since step 176. Now LLAMA_CPP := $(FORK).
+make -n FORK=/tmp/ZZZ bin/fp8pack -W apps/fp8pack.cpp      -I/tmp/ZZZ/ggml/include -I/tmp/ZZZ/include   (before: ~/projects/llama.cpp)
+make -n bin/fp8pack -W apps/fp8pack.cpp                    -I/home/oleksandr/projects/llama.cpp/ggml/include
+#
+# 3. Found, not changed: these change code or behaviour, each for a step of its own
+#    a. --requests: a field that does not parse ("n=abc", an unknown key) after bytes= is answered with "error" and
+#       the engine goes on WITHOUT reading the prompt's bytes, which it then reads as the next header. With bytes=
+#       last, as the server sends it and the document shows it, the engine closes. No test covers either.
+#    b. ds-ref accepts every runtime option and ignores it (--spec, --placement, --canon, ...); with --spec its record
+#       has a "spec" object of zeros. Its errors for -i and --requests say "needs --rt", which it refuses.
+#    c. Unused: DS_PROGRAM (apps/ds_completion.cpp); map_experts()'s `skip`; ExpertLoader::layers; k_moe_combine's
+#       n_dies; Engine::lay, a copy of m.layers; includes (fakequant.h in rt.cpp, forward.cpp, test_fakequant.cpp;
+#       <map>, <set>, <cfenv>, <chrono>); `if (rt)` tests where rt is never null; bin-asan in `make clean`.
+#    d. Makefile prerequisites: CORE_H names src/forward.h and src/fakequant_graph.h, so the product is rebuilt when
+#       the reference path's headers change; it lacks src/fatal.h and src/canon_math.h; dspark.o lacks the two
+#       expert_* headers; three benchmarks lack src/canon_dot.cpp; bench-cpu-moe links all of REF for one function.
+#    e. Messages: the trace's "GPU 0" where the home die is --gpu's; "registering the expert tensors failed; pinned
+#       loads" (the cache starts no load then: to confirm).
+#    f. Usage texts shorter than the parsers: ds-test (--dspark, --dspark-out, --determinism), bench-fp8's modes,
+#       ds-ref (--record-label).
+#    g. Names: bin/ds-ref (our CPU path) beside ref/ds_ref.py and ~/venvs/ds-ref (the official reference).
+#    h. Units: "GB" in the documents is sometimes GiB (755 GB of RAM, 269 GB of experts: not checked one by one).
+#
+# 4. Checks. make, make HIP=1: rc 0, the same warnings as before (hipcc's occupancy notes on hip/fp8_gemv.hip).
+#    bin-hip/ds-completion and bin-hip/ds-test against the builds of a0a65ed: the disassembly (objdump -d, addresses
+#    removed) is the same, and for ds-completion so are the sections .hip_fatbin (the GPU code, 3,696,904 bytes) and
+#    .rodata. So no GPU run. python3 server/test_server.py: all checks passed. bash -n on the three shell scripts.
+#    Not read: docs/steps.md and docs/process.md (history); the bodies of src/cpu_moe.cpp, canon_dot.cpp, sampler.cpp
+#    and of the benchmarks (headers and usage only); numbers that stand in one document only.

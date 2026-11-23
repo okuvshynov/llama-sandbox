@@ -5,7 +5,7 @@ faster or slower. Details and measurements: [docs/steps.md](steps.md) (steps cit
 [docs/plan.md](plan.md). Generation and prompt numbers are at sclk 6 (the GPU clock level). The clock:
 held-out 36.8 / 41.1 / 42.1 t/s at sclk 2 / 6 / 8 when swept (sclk 6 is 44.6 since); at sclk 6 ~35% of a token's time scales with
 it (README step 90); the rest is the CPU side and HBM-bound GPU work (step 94).
-Greedy unless a section says sampled. Last brought up to date at step 156 (2026-11-18).
+Greedy unless a section says sampled. Last brought up to date at step 156 (2026-11-18); read through again at step 182 (2026-11-23).
 
 ## Generation (one sequence, speculative decoding with the adaptive cache)
 
@@ -140,7 +140,7 @@ the engine's (README steps 152-154):
 | its reply: 42,960 tokens of reasoning and a tool call | 1,117 s at 38.5 t/s (2.97 tokens per step) |
 | a 3,008-token prompt | 40 s (74 t/s) |
 | replies on the held-out prompts in `--requests` mode | as single runs (38.9 / 47.9 / 51.2 against 38.9 / 50.8 / 52.0 t/s) |
-| the engine ready after its start | ~116 s with `--cache-wait` (the experts' registration) |
+| the engine ready after its start | ~116 s with `--cache-wait` (the experts' registration); 139 s in step 181's records, the cause not looked for (PLAN "The testing process") |
 
 - **Requests wait in line:** one at a time, so a second client's 19-minute request starts
   when the first one ends.

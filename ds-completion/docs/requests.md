@@ -117,8 +117,8 @@ saved point, and a second line when the prompt and the context part before eithe
 - The first line: `it goes on from the context (N kept)`, `it returns to the saved point (N
   kept)` or `it starts on the empty context`, the last with its reason where there is one
   (`(keep=0)`; `(it has no token after the context's)` for a prompt that is the context
-  itself), then `; a point is saved at N` or `; the saved point at N ends (the prompt starts
-  with M of its tokens)`. With an empty context: `# context: empty; the prompt has N tokens: ...`.
+  itself), then `; a point is saved at N`, `; the saved point at N ends (the prompt starts
+  with M of its tokens)`, or both (the old point ends and one is saved earlier). With an empty context: `# context: empty; the prompt has N tokens: ...`.
 - The second line: the index of the first token that differs (the first token is 0), its id
   and text on each side, the text of the 8 tokens before it, and of 8 tokens from it on each
   side. Special tokens are written out, a line end as `\n`. A token can be a part of a
@@ -135,8 +135,8 @@ call's arguments written out again, the reasoning left out), or another request 
 
     error <message>
 
-in place of a reply, for a request with a mistake in a value, an empty prompt or one too long
+in place of a reply, for a request with a value out of range (`n` below 1, `temp`, `top_p`), an empty prompt or one too long
 for `--max-ctx`; the engine then reads the next request. If the header itself cannot be
-followed (an unknown first word, an unknown field, no `bytes=`), the message ends with
+followed (an unknown first word, a field that is unknown or not a number, no `bytes=`), the message ends with
 `; closing` and the engine exits, since it cannot know where the next request starts.
 An error inside the engine (for example a chunk past `--max-ctx`) ends the process as in any other mode.

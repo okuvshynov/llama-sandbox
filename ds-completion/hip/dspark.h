@@ -61,8 +61,8 @@ class DSpark {
   static constexpr int kMaxChunk = 8;
   std::vector<float> in_emb, in_one_hot;  // draft()'s input block, on the host (kept for its asynchronous copies)
   std::vector<int32_t> in_ids;
-  FILE* hidden_log = nullptr;
-  FILE* debug_log = nullptr;   // debugging: the next draft's per-layer attn/ffn in/out [layer][4][block][n_embd], then closed  // debugging: every seeded position's main_hidden, f32 [n_targets][n_embd]
+  FILE* hidden_log = nullptr;  // debugging: every seeded position's main_hidden, f32 [n_targets][n_embd]
+  FILE* debug_log = nullptr;   // debugging: the next draft's per-layer attn/ffn in/out [layer][4][block][n_embd], then closed
   DraftResult draft(int32_t anchor, int pos, bool keep_logits);
   // Runtime::mark / rewind: the window rings saved, or put back
   void mark_rings(bool restore, int slot);

@@ -44,6 +44,8 @@ void Runtime::mem_report() const {
   fprintf(stderr, "\n");
 }
 
+// profile: each layer's GPU wait for the CPU (its "ffn.wait_for_cpu_experts" interval) next to
+// what the CPU had to do there, folded into the histogram (call once the step's marks are done)
 void Runtime::fold_misses() {
   for (const MissRec& r : miss_recs) {
     float w = 0;
@@ -226,7 +228,7 @@ void Runtime::mark(const char* group) {
 }
 
 // after a decode step's end_step(), with or without the head: the profile's groups, the misses
-// folded into them, the step's spans into the trace, the lookahead study's step
+// folded into them, the step's spans into the trace
 void Runtime::step_stats() {
   if (profile) {
     last_groups.clear();

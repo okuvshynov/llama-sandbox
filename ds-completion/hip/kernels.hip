@@ -122,7 +122,6 @@ void k_fq4(float* x, int n, bool e4m3_scale_16, hipStream_t s) {
 
 // ================================================================== matrix-vector
 
-// one wave per (row, K chunk); partial[split][row], then a reduction over the splits
 // One load step of a GEMV lane: the activations (XV, loaded once and reusable for several rows)
 // against one row's weights. load_dot = dotw(load_x): every GEMV uses the same expression, so the
 // single- and multi-row kernels round identically.
@@ -159,6 +158,7 @@ __device__ inline float dotw<uint16_t>(const uint16_t* w, int k, const XV<uint16
 template <typename T>
 __device__ inline float load_dot(const T* w, const float* x, int k) { return dotw<T>(w, k, load_x<T>(x, k)); }
 
+// one wave per (row, K chunk); partial[split][row], then a reduction over the splits
 template <typename T, int VEC>
 __global__ void gemv_partial_kernel(const T* W, int N, int K, int ST, int chunk, int b0, const float* x, float* partial) {
   const int row = (blockIdx.x + b0) * 4 + (threadIdx.x >> 6), lane = threadIdx.x & 63;
@@ -709,7 +709,6 @@ void k_index_scores(const float* q, int n_head, int dim, const float* keys, int 
   index_scores_kernel<<<cdiv(n, 64), 256, 0, s>>>(q, n_head, dim, keys, n, w, wscale, score);
 }
 
-// bitonic sort of (score, index) pairs, descending, in shared memory; then the first k indices
 // order-preserving key of a float: larger float -> larger unsigned (-inf lowest, +inf highest)
 __device__ inline uint32_t topk_key(float f) {
   const uint32_t u = __float_as_uint(f);

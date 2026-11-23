@@ -16,16 +16,16 @@ Items marked **(to confirm)** are not yet pinned down; they are listed at the en
 | GPUs | 2x Radeon Pro Vega II Duo = 4 dies (gfx906), 32 GB HBM2 each, PCIe 3.0 (MPX) |
 | GPU links | Infinity Fabric (XGMI) within each card: dies 0-1 and 2-3 (bridge reseated; see the sibling repo `macpro-2019-vega-if`: ROCm crashes on cross-card runtime copies, so nothing here relies on peer copies) |
 
-The RAM must hold the whole GGUF (474 GB) in the page cache next to the work: everything runs
+The RAM must hold the whole GGUF (474 GiB = 508 GB) in the page cache next to the work: everything runs
 from mmap, and the routed experts are read from it on every token.
 
 **The second machine** (README steps 110-112; not used by any program since step 178, which
 removed the model in two halves; hostnames `tomb`, the first, and `shower`): the
 same computer, CPU, RAM and GPUs, without the XGMI bridges (unused); 10 GbE between the two
-(direct or switched, MTU 1500, ping ~0.2 ms). The same software (section 2), the same model
+(direct or switched, MTU 1500, ping ~0.2 ms). For those steps it had the same software (section 2), the same model
 files at the same paths with the same sha256 (`results/split/sha256.txt`), this repository at
-the same commit and built (section 4), the same sclk level. The one-machine results do not need
-it; it reproduces them to the byte at the same speed (44.33 against 44.60 t/s held-out).
+the same commit and built (section 4), the same sclk level; what it has now: section 7. The one-machine results do not need
+it; it reproduced them to the byte at the same speed (44.33 against 44.60 t/s held-out).
 
 ## 2. Software
 
@@ -34,7 +34,7 @@ it; it reproduces them to the byte at the same speed (44.33 against 44.60 t/s he
 | OS | Ubuntu 22.04 LTS, kernel `6.10.5-1-t2-jammy` (t2linux, for the Mac's T2 chip) |
 | ROCm | 6.3.4 in `/opt/rocm-6.3.4` (HIP 6.3.42134; gfx906 is past its support window but works) |
 | compiler | g++ 11.4.0; hipcc (AMD clang 18, from ROCm 6.3.4) |
-| llama.cpp | upstream (`master`) at `e626db7caadee98c6174b1c2dc69f3f43075faa0` (2026-11-20), in `~/projects/llama.cpp` (`~/forks/llama.cpp` until step 175; `make LLAMA_CPP=<dir>`, `FORK=<dir>` in older commands, for another place); CPU build in `build/` (static libraries), QUICKSTART's two `cmake` lines. Used for ggml, GGUF reading and the tokenizer. Every check was run with it in step 175 (`results/dist/upstream.txt`). |
+| llama.cpp | upstream (`master`) at `e626db7caadee98c6174b1c2dc69f3f43075faa0` (2026-11-20), in `~/projects/llama.cpp` (`~/forks/llama.cpp` until step 175; `make LLAMA_CPP=<dir>`, `FORK=<dir>` in older commands, for another place (`FORK` did nothing from step 176 to step 182: the Makefile assigned the variable to itself)); CPU build in `build/` (static libraries), QUICKSTART's two `cmake` lines. Used for ggml, GGUF reading and the tokenizer. Every check was run with it in step 175 (`results/dist/upstream.txt`). |
 | llama.cpp, until step 167 | `~/forks/llama.cpp` on branch `deepseek41`: commit `b72050d03` "model : add DeepSeek-V4.1-Flash (deepseek41)" (Unsloth; the head of llama.cpp PR #30817) on top of upstream `797de63b2`. The results of steps 1 to 167 and step 174 were made with this build, and they are what "the fork" means in older steps and results files. Still needed for one thing: llama.cpp's own implementation on these files (the CPU baseline `llama-cli` of steps 2-3, `bin/llama-logits`), which upstream reads wrong ([llama-cpp-upstream.md](llama-cpp-upstream.md)). |
 | Python (reference) | `ref/weights.py` imports `gguf-py` from the llama.cpp checkout (`LLAMA_CPP` in the environment, default `~/projects/llama.cpp`; upstream's works since step 176). venv `~/venvs/ds-ref`, Python 3.10.12: `pip install -r ref/requirements.txt` (a `pip freeze`: torch 2.14.1+cpu, numpy 2.2.6, safetensors 0.8.0, sympy 1.14.0, tokenizers 0.23.3, huggingface_hub 2.3.0, ...) |
 | perf (counters, step 79) | Ubuntu's `linux-tools-generic` (perf 5.15) run as `/usr/lib/linux-tools/5.15.0-202-generic/perf` (the `/usr/bin/perf` wrapper refuses the 6.10 kernel); user-space core events with `perf_event_paranoid` 2 |
@@ -72,8 +72,8 @@ right after a copy may only read the page cache.
 ```bash
 # llama.cpp: upstream, a CPU build with static libraries in build/, at the commit and with the cmake lines of QUICKSTART.md "Build and prepare"
 cd ~/projects/llama-sandbox/ds-completion
-make            # bin/: CPU programs (links llama.cpp's static CPU libraries)
-make HIP=1      # bin-hip/: the same plus the own GPU runtime and the GPU benchmarks
+make            # bin/: fp8pack, ds-ref (the CPU reference path), the CPU tests and benchmarks (links llama.cpp's static CPU libraries)
+make HIP=1      # bin-hip/: ds-completion (the product: the GPU runtime), the tests with the runtime, the GPU benchmarks; no ds-ref
 M=~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf
 F8=~/llms/ds-1017-fp8/dense-fp8.gguf
 D=~/llms/dspark/dspark-DeepSeek-V4.1-Flash-1017-BF16.gguf
@@ -100,10 +100,10 @@ them exactly with the same binary and placement.
 
 ## 6. Which command produced which result
 
-Every number in README comes from a file in `results/`. Speed numbers depend on the sclk level
+Every number in the documents comes from a file in `results/`. Speed numbers depend on the sclk level
 and vary ~1-3% run to run; correctness results (identical outputs, 0 differing values) must
 reproduce exactly. Up to step 26 many runs were typed by hand: the table names the program and
-the README step gives the settings (prompt, tokens, threads, placement), but not always a
+the step (`docs/steps.md`) gives the settings (prompt, tokens, threads, placement), but not always a
 script; from step 27 on every result has a script. The commit that added a file:
 `git log -- results/<file>`. Convention from now on: a result file starts with a `#` header
 naming the command or script, the commit, the clock level and the date (summary and table
@@ -304,6 +304,7 @@ Unless stated: sclk 2, 16 CPU threads (32 before README step 18), the study30 pl
 | 179 | `dist/layer-range.txt` | before the change: `make HIP=1` at `519ffd4` and copies of `bin-hip/ds-test` and `bin-hip/ds-completion` kept aside (the base); after it `make && make HIP=1`; then the commands in the file (~60 min, 41 of them the held-out prompts twice): the three `ds-test --runtime` tables and `--e2e` on both builds, `bin/ds-ref --record`, the long prompt on both programs three times (`head -c 9000 docs/steps.md` as the prompt file), `scripts/run_matrix.py results/cleanup/heldout.matrix --reps 2 --keep-out --out <dir>` and `cmp` with `results/cache-test/plain-canon-static/`, a 60-token `--trace` and `scripts/trace_critpath.py`, `results/requests/requests_test.py`, `server/test_server.py` |
 | 180 | `dist/two-machines-last-read.txt` | the `grep` in the file; `make && make HIP=1`; `scripts/run_matrix.py results/cleanup/heldout.matrix --reps 1 --keep-out --out <dir>` and `cmp` of each output with `results/cache-test/plain-canon-static/<prompt>.out` (~20 min) |
 | 181 | `dist/after-removal-gates.txt`, `dist/after-removal/` (`run.sh`, `cmp_table.py`, `cmp_session.py`, `cmp_hash.py`, `run-log.txt`) | `mkdir -p data/step181 && cp results/dist/after-removal/{run.sh,cmp_*.py} data/step181/ && data/step181/run.sh > data/step181/run.log 2>&1` (3 h 04 min: sessions 44, sampling 95, golden sets 45; `run.sh` finds the repository two directories above itself) |
+| 182 | `dist/review-182.txt` | the two checks by program are described in the file; the readings were by hand (four read-only subagents); `make && make HIP=1`, `objdump -d` of the two programs against the previous build's, `python3 server/test_server.py` |
 | 167 | `server/serve.txt` | by hand: `DS_LOGS=<a directory> scripts/serve.sh`, one request with `curl` (the one of `docs/pi.md`, section 1), a minute's wait for `metrics.prom`, Ctrl-C; the file's parts are named in it |
 
 ## 7. Open items (to confirm)

@@ -17,7 +17,7 @@
 # PORT (default 8080): as baseUrl in pi's models.json.
 # MAX_CTX (default 262144): the engine's --max-ctx. A position costs ~6.4 KB on GPU 0: 262,144
 # take 1.7 GB of the room the home die otherwise gives to experts, 1,000,000 take 6.4 GB.
-# contextWindow in pi's models.json (~/.pi/agent/models.json) must not be larger, or pi does not
+# contextWindow in pi's models.json (~/.pi/agent/models.json, or under $PI_CODING_AGENT_DIR) must not be larger, or pi does not
 # compact a conversation before the engine refuses its prompt: the script warns if it is.
 set -u
 cd "$(dirname "$0")/.."
@@ -45,7 +45,7 @@ cached_gb=$(awk '/^Cached:/ {printf "%d", $2 / 1048576}' /proc/meminfo)
   for c in /sys/class/drm/card[0-9]/device; do
     [ -f "$c/pp_dpm_sclk" ] && echo "# $(basename "$(dirname "$c")"): $(cat "$c/power_dpm_force_performance_level"), sclk $(grep '\*' "$c/pp_dpm_sclk" | tr -d '*')"
   done
-  echo "# page cache: $cached_gb GB (the model files are 488 GB)"
+  echo "# page cache: $cached_gb GiB (the model files are 488 GiB)"
   [ -f "$PI_MODELS" ] && { echo "# $PI_MODELS:"; sed 's/^/#   /' "$PI_MODELS"; }
 } > "$DIR/info.txt"
 echo "# logs: $DIR" >&2

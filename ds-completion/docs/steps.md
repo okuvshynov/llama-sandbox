@@ -6809,3 +6809,48 @@ the build before it printed.
 **Next** (the person, 2026-11-22: this is what to focus on): the testing process itself. The
 same guarantees in less time: PLAN "The testing process".
 
+## Step 182: the documents, comments and names against the tree
+
+After the clean-ups of steps 168-181 the person asked for a check of everything written: the
+documents, the comments, the names (`results/dist/review-182.txt` has every finding).
+
+**How.** Two checks by program: every path the current documents name exists, and every
+option they name is parsed by some program (both clean; all 38 options of `ds-completion` are
+in QUICKSTART). Then four independent read-only passes, each over one part (the runtime; the
+programs, `src/`, the tests and the Makefile; the server, requests and records with their
+scripts; the front documents), and every finding checked against the code before a change.
+
+**Found.** Nothing of the two-machine code, anywhere. What was stale is older, and of a few
+kinds:
+
+- *Numbers that drifted apart:* the model's size (474 "GB" in three documents is GiB; 508 GB
+  in a fourth); the draft on GPU 0 (8.5 GB is its file, 8.0 its memory); the experts placed at
+  startup (the overview said 6,626 = 43%; a record says 6,097 = 40%); `--record`'s arguments
+  ("fourteen": 21); the load time.
+- *Text a later step overtook:* `--requests` "each on an empty context" in three comments
+  (steps 158 and 160 changed that); the server's first sentence; the overview's "What is next";
+  a plan sentence saying step 173 was still to come; dates over sections edited since.
+- *Comments that moved away from their code:* one stood over the wrong function since step
+  136, two on the wrong member, one named a study removed in step 135, one described a sort
+  the kernel no longer uses, one line carried four comments of which three were other options'.
+- *One command the program refuses* (the overview's, without `--rt`), and two scripts in
+  `scripts/` that no document listed.
+- *One line of code:* the Makefile's `FORK` alias assigned `LLAMA_CPP` to itself since step
+  176, while two documents said `FORK=<dir>` still worked. Fixed.
+
+About 40 corrections in 13 documents and 30 in comments and usage texts of 17 source files.
+
+**Checked.** The programs are the same code: the disassembly of `bin-hip/ds-completion` and
+`bin-hip/ds-test` equals the previous build's, and so do the GPU code and the constants. So
+no GPU run. The server test passes.
+
+**Found and left for steps of their own** (they change code or behaviour; section 3 of the
+file): a `--requests` header whose bad field comes after `bytes=` leaves the prompt unread and
+the engine out of step with its input; `ds-ref` accepts and ignores every runtime option;
+unused members, parameters and includes; Makefile prerequisites (the product is rebuilt when
+the reference path's headers change); usage texts shorter than their parsers; "GB" that is
+sometimes GiB.
+
+**Not read:** `docs/steps.md` and `docs/process.md` (history), the bodies of the CPU kernels
+and the benchmarks, numbers that stand in one document only.
+

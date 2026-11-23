@@ -11,7 +11,7 @@ many users at once.
 
 How to build and run it: [QUICKSTART.md](QUICKSTART.md).
 
-## Status (2026-11-22)
+## Status (2026-11-23)
 
 - **Speed:** 44.6 t/s mean (34-55) on the 8 held-out prompts with speculative decoding
   and the adaptive expert cache, every output byte-identical to plain greedy decoding

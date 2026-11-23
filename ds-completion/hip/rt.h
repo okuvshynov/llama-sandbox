@@ -43,7 +43,7 @@ struct RtOptions {
   // memory, keeping `reserve_gb` free on each; empty = every routed expert on the CPU
   std::string placement;
   std::vector<int> moe_dies = {0, 1, 2, 3};
-  double reserve_gb = 0.75;
+  double reserve_gb = 0.75;  // GPU memory left free on each die when the expert pools are sized (no command-line option)
   // the DSpark draft head's GGUF (dspark.h); empty = none
   std::string dspark;
   // placement-invariant expert numerics (canon_dot.h; PLAN.md "Adaptive expert cache"): every
@@ -253,7 +253,7 @@ class Runtime {
   void setup_experts();
   void mark_state(bool restore, int slot);
 
-  // device scratch (one token)
+  // device scratch, per token of a chunk: [kChunk][...]
   float *h, *h2, *pre, *a_pre, *a_post, *a_comb, *f_pre, *f_post, *f_comb, *mixes;
   float *x, *t1, *qr, *q, *kvv, *o, *oa, *y, *ysh, *yr, *logits_d, *partial;
   int* next_d = nullptr;  // a verify chunk's argmax ids (README step 88)
@@ -265,6 +265,7 @@ class Runtime {
   float *cmp_kvn, *cmp_sc, *lat, *ik, *iq, *iw, *iscore, *gate, *up, *act, *router_logits, *rw, *erows, *ekv;
   int *rids, *iota;
   std::map<int, int*> topk_buf;  // [index source] its selection buffers, [kChunk][idx_topk]
+  // [token of the chunk][index source] its selection (topk_buf or iota)
   std::vector<std::map<int, const int*>> topk_cur = std::vector<std::map<int, const int*>>(kChunk);
   // candidate blocks (the reference's two-level top-k, > 16k positions): per token of the chunk,
   // the candidate source's keep mask [max_ctx / block + 1], or null when every block is kept
@@ -272,7 +273,6 @@ class Runtime {
   uint8_t* cand_keep = nullptr;  // [kChunk][max_ctx / block + 1]
   float* cand_bscore = nullptr;  // [max_ctx / block + 1]
   int* cand_bidx = nullptr;      // [cand_topk_blocks]
-                                 // [token of the chunk][index source] its selection (topk_buf or iota)
   // the routed experts' inputs, staged together so one copy moves them (device and pinned host):
   // lists [kChunk][kMoeListStride] (per token: the dies', then the CPU's), then x [kChunk][n_embd];
   // a chunk of M copies the lists and its M rows of x

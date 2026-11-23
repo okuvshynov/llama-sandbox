@@ -3,7 +3,7 @@
 a GPU-resident set of experts could serve, for a given amount of HBM.
 
     ~/venvs/ds-ref/bin/python scripts/route_stats.py data/routing/*.bin [--prompt] [--train a.bin,b.bin]
-        [--cross prompts/routing-study.tsv]
+        [--cross prompts/routing-study.tsv] [--windows 16,64,256,1024] [--no-temporal] [--emit-placement FILE]
 
 Units: a "slot" is one (token, layer, chosen expert); a token has 40 x 6 = 240. A policy keeps a
 set of (layer, expert) pairs resident; its hit rate is the fraction of slots it serves.

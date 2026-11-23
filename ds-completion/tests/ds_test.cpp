@@ -1,4 +1,5 @@
-// ds-test: compare ds-completion against the reference's golden runs (ref/ds_ref.py, exported
+// ds-test: compare our two implementations (the CPU reference path's Engine, and with --runtime
+// the GPU Runtime) against the official reference's golden runs (ref/ds_ref.py, exported
 // with ref/export_golden.py).
 //
 //   ds-test -m <model> -g data/golden/hello [--layers 0-39] [--no-quant] [-t 16]
@@ -135,8 +136,8 @@ int main(int argc, char** argv) {
     else if (a == "--no-quant") opt.exact_quant = false;
     else if (a == "-t") opt.n_threads = atoi(next());
     else if (a == "--gpu") gpu = atoi(next());
-    else if (a == "--dspark") dspark_path = next();
-    else if (a == "--dspark-out") dspark_out = next();  // with --e2e: every step's draft, for ref/compare_dspark.py  // runtime: the DSpark draft GGUF (shadow mode: drafts measured, not used)
+    else if (a == "--dspark") dspark_path = next();  // runtime: the DSpark draft GGUF
+    else if (a == "--dspark-out") dspark_out = next();  // with --e2e: every step's draft, for ref/compare_dspark.py
     else if (a == "--placement") placement = next();  // runtime: routed experts on GPUs (expert_pool.h)
     else if (a == "--moe-dies") {
       moe_dies.clear();

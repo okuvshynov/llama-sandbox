@@ -16,7 +16,7 @@ void fq_fp8_host(const float* x, float* y, int64_t n);
 // one block of 32: q[j] = the e4m3 values, returns the scale (y = q * scale)
 float fq_fp8_split(const float* xb, float* q);
 
-// the scalar rules, exposed for the unit test
+// the scalar rules, exposed for fakequant_graph.cpp and bench-fp8
 float fq_e4m3_round(float v);  // nearest e4m3 (fn) value, ties to even, saturating at +-448
 float fq_e2m1_round(float v);  // nearest e2m1 value, ties to even, input clamped to +-6
 

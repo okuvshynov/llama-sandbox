@@ -4,7 +4,7 @@
     ~/venvs/ds-ref/bin/python ref/compare_logits.py data/ref/hello.pt data/llama/hello.f32
 
 The other side is a raw float32 file of [steps][n_vocab] (llama-logits --out, later
-ds-completion's own dump). Per step: argmax agreement, top-5 overlap, KL(ref || other) of the
+ds-test --e2e). Per step: argmax agreement, top-5 overlap, KL(ref || other) of the
 softmax, and the max |logit difference| relative to the ref's logit spread.
 """
 import functools

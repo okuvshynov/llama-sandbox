@@ -38,8 +38,8 @@ the placement. `--canon` makes the output independent of where an expert runs.
   Set it right after a boot, before any GPU program runs (`scripts/set_vega_freq.sh` is this
   loop): once, set after a program had run, the level was in effect but the starred line read 1
   whenever the GPUs idled, and the records labelled the runs wrongly (README steps 178-179).
-- **Model files** (in `~/llms/`; 488 GB, run from the page cache, so the RAM must hold them):
-  - `UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-0000{1..9}-of-00009.gguf` (474 GB; Unsloth's
+- **Model files** (in `~/llms/`; 488 GiB = 524 GB, run from the page cache, so the RAM must hold them):
+  - `UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-0000{1..9}-of-00009.gguf` (474 GiB = 508 GB; Unsloth's
     [DeepSeek-V4.1-Flash-1017-GGUF](https://huggingface.co/unsloth/DeepSeek-V4.1-Flash-1017-GGUF));
   - `dspark/dspark-DeepSeek-V4.1-Flash-1017-BF16.gguf` (8.5 GB): the DSpark draft for `--spec`;
   - `ds-1017-fp8/dense-fp8.gguf` (6.8 GB): made from the model by `bin/fp8pack` (below).
@@ -113,12 +113,12 @@ bin-hip/ds-completion -m $M --rt ~/llms/ds-1017-fp8/dense-fp8.gguf \
     -p "Write a haiku about memory bandwidth." --chat -n 64
 ```
 
-Without `--dspark ... --spec`: 17.7-21.7 t/s generation (at sclk 2), and 8.5 GB more GPU 0 memory for
+Without `--dspark ... --spec`: 17.7-21.7 t/s generation (at sclk 2), and 8.0 GB more GPU 0 memory for
 experts. Without `--placement` every routed expert runs on the CPU (faster start, ~12 t/s).
 A higher GPU clock helps both: held-out with the cache 36.8 / 41.1 / 42.1 t/s at sclk 2 / 6 / 8
 when last swept (README step 90; sclk 6 is 44.6 since); the clock is set outside the program (sudo).
 
-After a memory-heavy job (anything that pushed the 474 GB model out of the page cache), the
+After a memory-heavy job (anything that pushed the 474 GiB model out of the page cache), the
 first run reads it back from disk; `cat ~/llms/UD-Q8_K_XL/*.gguf > /dev/null` first (2-4 min)
 keeps that out of a timed run. After a reboot too: until the engram table is cached, each new
 text reads its rows from disk and runs ~12% slower once (README step 117; `--record` shows it
@@ -165,7 +165,7 @@ Options:
 - `--gpu D`: the die for the runtime (default 0).
 - `--placement FILE`: routed experts on GPUs, the file's top-ranked ones that fit (10-30 s upload).
 - `--moe-dies 0,1,2,3`: the dies that hold experts (default all four).
-- `--dspark FILE`: the DSpark draft GGUF (8.5 GB on GPU 0). Alone: shadow mode, drafts are
+- `--dspark FILE`: the DSpark draft GGUF (an 8.5 GB file, 8.0 GB on GPU 0). Alone: shadow mode, drafts are
   measured but not used.
 - `--spec`: speculative decoding (needs `--dspark`); the number of guesses verified per step
   is chosen from the draft's confidence. `--spec-n N` fixes it; `--spec-log FILE` writes
@@ -223,7 +223,7 @@ python3 server/ds_server.py --port 8080 -- \
 every minute) in a new directory under `~/ds-serve-logs/` per start, and `--max-ctx 262144`
 (`MAX_CTX` for another; it warns if pi's `models.json` asks for more).
 
-It prints `listening 8080` when the model is loaded (~2 min). A client: the Anthropic SDK with
+It prints `listening 8080` when the model is loaded (~2.5 min). A client: the Anthropic SDK with
 `base_url="http://127.0.0.1:8080"` (or `ANTHROPIC_BASE_URL`) and any API key; or the pi coding
 harness with `server/pi-models.json` (the setup: [docs/pi.md](docs/pi.md)).
 
@@ -257,7 +257,7 @@ harness with `server/pi-models.json` (the setup: [docs/pi.md](docs/pi.md)).
 
 The engine's side alone, for another front: `--requests`, [docs/requests.md](docs/requests.md).
 
-## Current results (2026-11-18)
+## Current results (each row from the step it names; read through again 2026-11-23, step 182)
 
 The two top rows were measured with `--cache-wait` (the run starts after the cache's
 registration); without it a short run starts at the static placement's speed. At sclk 6 unless
@@ -292,8 +292,9 @@ Means over all 17 steps: 1.8e-2 to 2.5e-2 for every mode.
   ~27 ms, its wait for the other dies ~5 ms, outside the layers ~5 ms; the draft before it ~8 ms
   more. The prompt: the CPU's experts and the GPU's work overlap and the slower
   sets the pace (TIMING.md).
-- **GPU memory:** 6.41 GiB fp8 + 1.75 GiB small weights + ~1 GB of prompt-chunk
-  buffers on die 0; the rest holds experts (and the 8.5 GB draft with `--dspark`).
+- **GPU memory:** on die 0 the fp8 weights (6.85 GB), the small weights (1.9 GB) and
+  activations and scratch (0.8 GB); the rest holds experts (and the draft's 8.0 GB with
+  `--dspark`; `results/gpu-memory/`).
 
 ## Limits
 

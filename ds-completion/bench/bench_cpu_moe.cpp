@@ -1,5 +1,5 @@
 // bench-cpu-moe: the CPU routed-expert kernel (cpu_moe.h) against ggml's mul_mat_id path (what
-// the runtime used so far) and against a double-precision host computation of the reference math.
+// the CPU reference path, src/forward.cpp, uses) and against a double-precision host computation of the reference math.
 //
 //   bench-cpu-moe -m <model.gguf> [-t 32] [--tokens 5] [--check-layers 0,20,39] [-k 6] [--batch T]
 //

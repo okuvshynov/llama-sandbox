@@ -1,7 +1,7 @@
-# ds-completion: overview (2026-11-18)
+# ds-completion: overview (2026-11-23)
 
 A ~20-minute read: what was built, how it works, what we measured, what we learned, and what
-is next. First written 2026-10-28; brought up to date at step 156. How to run it: [QUICKSTART.md](../QUICKSTART.md). Where the time goes, one page: [docs/timing.md](timing.md). Every step and number in detail:
+is next. First written 2026-10-28; brought up to date at step 156 and read through again at step 182. How to run it: [QUICKSTART.md](../QUICKSTART.md). Where the time goes, one page: [docs/timing.md](timing.md). Every step and number in detail:
 [docs/steps.md](steps.md). Plan and cost model: [docs/plan.md](plan.md). Operand types and accumulation:
 [docs/numerics.md](numerics.md).
 
@@ -15,14 +15,14 @@ run cut in two halves on two of them (below), and that was taken out to keep one
 - Non-goals: other models, other hardware, serving many users at once.
 - One sequence at a time, text only. Greedy by default; temperature and top-p with a seed
   since steps 148-151.
-- Three ways in, one engine: a program for one prompt (`ds-completion -m model -p "prompt"`),
+- Three ways in, one engine: a program for one prompt (`ds-completion -m model --rt dense-fp8.gguf -p "prompt"`),
   an interactive session (`-i`), and since steps 152-154 requests on stdin (`--requests`) with
   a small HTTP server in front that speaks the Anthropic Messages API.
 
 | | |
 |---|---|
 | model | 40 layers, hidden 5120; MoE with 384 routed experts (top-6) + 1 shared; compressed sparse attention with an indexer; hyper-connections (4 copies); engram n-gram memory (189 GB table) in 2 layers |
-| weights | GGUF (UD-Q8_K_XL, 474 GB), lossless against the official 1017 release: experts mxfp4 (269 GB), dense weights fp8 expanded to bf16 |
+| weights | GGUF (UD-Q8_K_XL, 474 GiB = 508 GB), lossless against the official 1017 release: experts mxfp4 (269 GB), dense weights fp8 expanded to bf16 |
 | machine | Xeon W-3245 (16 cores, AVX-512), 755 GB RAM (~112 GB/s), 2x Radeon Pro Vega II Duo = 4 GPU dies, 32 GB HBM each (gfx906: no fp8, no bf16 math, no matrix cores) |
 
 ## 2. Results
@@ -93,8 +93,8 @@ token -> embedding (host) -> 40 x [ engram (layers 1, 14) -> attention block -> 
   exactly with fp16 dot products and fp32 accumulation.
 - **Routed experts on GPUs** (`hip/expert_pool.hip`, `hip/fp4_moe.hip`): each die holds a pool of
   expert slots (18.8 MB each). A placement file ranks (layer, expert) pairs by how often the router
-  chose them in a 30-prompt study; at startup the top ones that fit are uploaded (6,626 experts =
-  43%). The fp4 kernel is exact too (fp4 and fp8 values are exact in fp16).
+  chose them in a 30-prompt study; at startup the top ones that fit are uploaded (6,097 of the 15,360 experts =
+  40%, with the draft at the default context). The fp4 kernel is exact too (fp4 and fp8 values are exact in fp16).
 - **Routed experts on the CPU** (`src/cpu_moe.cpp`): an AVX-512 kernel reading the mxfp4 weights in
   place from the memory-mapped GGUF; exact; a cold call ~0.25-0.3 ms per expert after the
   runtime's wait for the GPU (README steps 77-82: neither DRAM nor arithmetic alone sets it).
@@ -107,7 +107,7 @@ token -> embedding (host) -> 40 x [ engram (layers 1, 14) -> attention block -> 
   one half of the chunk while the GPU runs the other half's attention; attention still per
   token inside the chunk. Every result bit-identical to token by token.
 - **Speculative decoding** (`hip/dspark.cpp`, `Runtime::verify/commit`): the release's DSpark
-  draft (3 small layers reading the main model's layers 37-39, 8.5 GB on GPU 0) guesses the
+  draft (3 small layers reading the main model's layers 37-39, 8.0 GB on GPU 0) guesses the
   next 5 tokens in ~8 ms. The main model then runs [last token, guesses] as one chunk:
   projections, the head and the expert block read their weights once for all tokens; attention
   runs per token in position order. The longest correct prefix plus the model's own next token
@@ -140,7 +140,7 @@ token -> embedding (host) -> 40 x [ engram (layers 1, 14) -> attention block -> 
   logits. Errors cannot accumulate across layers, so every row tests one layer.
 - **Rule for every change:** placement-only or reordering changes must be bit-identical to the
   previous version; numerics changes must stay at the same error level against the reference.
-  Every step in the README records its gate.
+  Every step in `docs/steps.md` records its gate.
 - **Batched kernels** (speculative verification) have bitwise tests against one-token calls
   (`bench-fp8 --bitwise`, `bench-kernels --bitwise`, `bench-expert-pool`), each with a control
   that the test can see a difference; the end-to-end gate is speculative output = plain greedy
@@ -226,7 +226,13 @@ dense part.
 ## 7. What is next
 
 Optimization is paused (the person, 2026-11-16); the work since is the engine as something
-other programs can use.
+other programs can use, and then (steps 168-181) a clean-up: upstream llama.cpp alone, the
+product apart from what checks it, one machine only.
+
+0. **The testing process** (the person, 2026-11-22; PLAN item 35). A full pass of the gates is
+   ~3.5 h, about two thirds of it loads of the model, with runs that repeat each other and
+   comparisons written by hand per step. The same guarantees in less time: tiers by what
+   changed, the outputs in one load through `--requests`, one stored manifest.
 
 1. **How the programs are organized.** One prompt, chat and the server are modes of one loop in
    `apps/ds_completion.cpp`, and the chat template exists twice (in C++ for `-i`, in the
@@ -253,7 +259,7 @@ other programs can use.
    20k tokens. Left: compressed caches in fp8/fp4 (far beyond 64k), the indexer batched over a
    verify step past 512 keys.
 
-Explored, not planned: RDMA between machines, an MI210 for the dense part (~33 t/s estimated),
+Explored, not planned: an MI210 for the dense part (~33 t/s estimated),
 more hardware for the experts, and a hypothetical V4.1-Pro (engram on SSD is easy; experts
 barely fit in two machines' RAM).
 
@@ -316,6 +322,7 @@ each also with `HIP=1`; `make` builds all of them, as before.
 | `src/model.{h,cpp}` | GGUF loading (zero-copy mmap), the model's schema and hyperparameters |
 | `src/engram.{h,cpp}` | `engram_rows`: which rows of the Engram table a position reads (the n-gram hash), one function for both paths |
 | `src/taps.h` | `Tap`, `Taps`: a layer's named intermediates as `run_layer` returns them on either path, for `ds-test`; in serving the runtime's pointer to them is null |
+| `src/options.h` | `Options` (threads, context size, the rounding switch): what the command line fills for either path |
 | `src/cpu_moe.{h,cpp}` | the exact AVX-512 routed-expert kernel |
 | `src/canon_dot.{h,cpp}`, `src/canon_math.h` | `--canon`: one specification of an expert's arithmetic that the CPU and the GPU kernels both reproduce bit for bit, so an expert gives the same bits wherever it runs |
 | `src/sampler.{h,cpp}` | the next token from the logits: greedy, or temperature and top-p with a random number per (seed, position) (README steps 148-151); `tests/test_sampler.cpp` checks it |
@@ -331,7 +338,7 @@ each also with `HIP=1`; `make` builds all of them, as before.
 | `hip/expert_loader.{h,cpp}` | the background loads into pool slots, one thread per die |
 | `hip/dspark.{h,cpp}` | the DSpark draft (3 layers, Markov and confidence heads) |
 | `docs/requests.md` | `--requests`: the protocol between the engine and a server's front (README step 152) |
-| `docs/server.md`, `server/` | the HTTP front: `ds_server.py` (Anthropic Messages over `--requests`), and its test without a model (`test_server.py` with `fake_engine.py`; README steps 153-154) |
+| `docs/server.md`, `server/` | the HTTP front: `ds_server.py` (Anthropic Messages over `--requests`), and its test without a model (`test_server.py` with `fake_engine.py`; README steps 153-154), `pi-models.json` for the pi harness (docs/pi.md) |
 | `placements/` | ranked expert placements (`study30.txt` is the default) |
 
 Also the product's: `scripts/serve.sh` and `scripts/chat.sh` (the two ways to start it),
@@ -343,7 +350,6 @@ Also the product's: `scripts/serve.sh` and `scripts/chat.sh` (the two ways to st
 |---|---|
 | `src/forward.{h,cpp}` | the CPU reference path (ggml graphs): `ds-ref` and the tests link it, `ds-completion` does not (step 173) |
 | `bin/ds-ref` (from `apps/ds_completion.cpp`, without `-DDS_RUNTIME`) | the reference path as a program: the same command line for prompts, modes, sampling and `--record`; no runtime |
-| `src/options.h` | `Options` (threads, context size, the rounding switch): what the command line fills for either path |
 | `src/fakequant_graph.{h,cpp}` | the same roundings as ggml custom ops, for the reference path's graphs (step 172) |
 | `tests/ds_test.cpp` | per-layer and end-to-end tests against the goldens |
 | `tests/test_fakequant.cpp`, `tests/test_topk.cpp` | the rounding ops and the indexer's selection against the reference's, bit for bit |
@@ -358,6 +364,6 @@ Also the product's: `scripts/serve.sh` and `scripts/chat.sh` (the two ways to st
 |---|---|
 | `apps/ds_inspect.cpp` | load the model, or some layers, through the real loader and show what it found |
 | `bench/bench_*` | benchmarks of each kernel and of the loader, CPU and GPU (the Makefile knows which need `HIP=1`) |
-| `scripts/` | the tools still in use ([scripts/README.md](../scripts/README.md)): the runner of a matrix of runs (`run_matrix.py`) and the reader of their records (`records.py`; README steps 128-129), the chat launcher (`chat.sh`), the held-out measurement (`spec-measure.sh`), the trace tools, `route_stats.py`. A script written for one step lies with its results under `results/` (README step 130) |
+| `scripts/` | the tools still in use ([scripts/README.md](../scripts/README.md)): the runner of a matrix of runs (`run_matrix.py`) and the reader of their records (`records.py`; README steps 128-129), the chat launcher (`chat.sh`), the held-out measurement (`spec-measure.sh`), the trace tools, `route_stats.py`, the Mac Pro's fans and GPU clock (`fans_full.sh`, `set_vega_freq.sh`). A script written for one step lies with its results under `results/` (README step 130) |
 | `docs/rocprof.md` | the GPU side under AMD's `rocprofv3`: how to run it, its files, how to read them (README step 140) |
 | `results/` | raw outputs of every measurement quoted in the steps ([docs/reproduce.md](reproduce.md): which command produced which) |

@@ -6,13 +6,17 @@
 //   ds-ref        -m <model-00001-of-000NN.gguf> (-p "prompt" | -f prompt.txt) [--chat | --think [--effort 75]] [-n 128]
 //                 [-t 16] [--no-quant] [--max-ctx 4096] [--record run.json [--record-label k=v,...]]
 //
-// The prompt is fed as one chunk (prefill), then one token per step, greedy. --chat wraps the
+// The prompt first, then the reply: ds-completion runs the prompt in chunks of --prefill-chunk and
+// generates one token per step or, with --dspark --spec, several (the same output); ds-ref runs the
+// prompt as one chunk, then one token per step. Greedy unless --temp is given. --chat wraps the
 // prompt as one user turn in the model's chat format without thinking, --think with it (the
 // strings encoding/encoding.py produces; --effort is its reasoning effort, 1-100, default 75);
 // otherwise the prompt is raw text after BOS. -f reads the prompt from a file.
 // Only the tokenizer comes from libllama (vocab-only load).
-// --requests (ds-completion, in place of a prompt): prompts from stdin, each on an empty context,
-// the replies' tokens as lines on stdout (docs/requests.md; README step 152).
+// --requests (ds-completion, in place of a prompt): prompts from stdin, each going on from the
+// context the last one left or from a saved point where it can, else on an empty context; the
+// replies' tokens as lines on stdout (docs/requests.md; README steps 152, 158, 160).
+// More options (sampling, speculation, traces): QUICKSTART.md, "Options".
 // --record FILE: the run as one JSON object (docs/record.md): a few of its arguments, the prompt's
 // token count and hash, the GPU clock setting, the bytes read from storage per phase, the
 // speculative loop's totals, the routed experts' uses, placement and cache totals, and the times
@@ -22,7 +26,8 @@
 //     token through the own runtime (hip/rt.h: dense part on GPU D in exact fp8, routed experts on
 //     the CPU or, with --placement, partly on GPUs). It has no CPU path and does not link one.
 //   ds-ref (make): the CPU reference path as a program. Everything on the CPU through the ggml
-//     Engine (forward.cpp), the prompt as one chunk; no runtime, none of its options.
+//     Engine (forward.cpp), the prompt as one chunk; no runtime (its options are parsed and have
+//     no effect).
 
 #include "fatal.h"
 #include "llama.h"
@@ -169,7 +174,7 @@ struct Args {
   std::string dspark_path;
   bool spec = false;
   bool interactive = false;
-  bool requests = false;  // --requests: prompts from stdin, each on an empty context (README step 152)
+  bool requests = false;  // --requests: prompts from stdin (docs/requests.md; README steps 152, 158, 160)
   int spec_n = 0;
   std::string spec_log_path;
   std::string record_path;
@@ -207,13 +212,13 @@ static int parse_args(int argc, char** argv, Args& args) {
     else if (a == "-n") args.n_predict = atoi(next());
     else if (a == "-t") args.opt.n_threads = atoi(next());
     else if (a == "--gpu") args.gpu = atoi(next());
-    else if (a == "--dspark") args.dspark_path = next();
-    else if (a == "--spec") args.spec = true;
+    else if (a == "--dspark") args.dspark_path = next();  // the DSpark draft GGUF (alone: shadow mode, drafts measured, not used)
+    else if (a == "--spec") args.spec = true;  // with --dspark: speculative decoding (the same output)
     else if (a == "--temp") args.sampler.temp = atof(next());    // 0 (default): greedy
     else if (a == "--top-p") args.sampler.top_p = atof(next());  // with --temp: the most probable tokens up to this probability
     else if (a == "--seed") args.sampler.seed = strtoull(next(), nullptr, 10);
     else if (a == "--spec-log") args.spec_log_path = next();  // per verify step: n k verify_ms draft_ms conf[0..]
-    else if (a == "--spec-n") args.spec_n = atoi(next());  // fixed drafts verified per step (default: chosen per step)  // drafts verified per step (default: all the draft makes)  // with --rt and --dspark: speculative decoding (greedy, same output)  // runtime: the DSpark draft GGUF (shadow mode: drafts measured, not used)
+    else if (a == "--spec-n") args.spec_n = atoi(next());  // fixed drafts verified per step (default: chosen per step)
     else if (a == "--placement") args.placement = next();  // runtime: routed experts on GPUs (expert_pool.h)
     else if (a == "--canon") args.canon = true;  // runtime: placement-invariant expert numerics (rt.h)
     else if (a == "--cache-loads") args.cache_loads = atof(next());  // runtime: adaptive expert cache (expert_cache.h)
@@ -735,7 +740,7 @@ static int run(int argc, char** argv) {
   [[maybe_unused]] const int n_predict_turn = args.n_predict;
   std::vector<int32_t> pending;  // printed by the last turn but not yet run through the model (it stopped at -n)
 #ifdef DS_RUNTIME
-  if (args.requests) {  // the empty context, to return to before every request
+  if (args.requests) {  // the empty context, to return to when a request cannot go on from what is kept
     signal(SIGUSR1, [](int) { g_cancel = 1; });
     rt->prefill_stop = [] { return g_cancel != 0; };
     rt->mark();
@@ -755,7 +760,7 @@ static int run(int argc, char** argv) {
   for ([[maybe_unused]] bool first = true;; first = false) {
 #ifdef DS_RUNTIME
     if (args.requests) {
-      // "gen n=N [temp=T] [top_p=P] [seed=S] bytes=B" and then B bytes: the whole prompt as text,
+      // "gen n=N [temp=T] [top_p=P] [seed=S] [keep=0|1] bytes=B" and then B bytes: the whole prompt as text,
       // special tokens written out, the first one included. The end of input ends the run.
       std::string head, err;
       for (int c; (c = getchar()) != EOF;) {

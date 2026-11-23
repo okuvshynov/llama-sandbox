@@ -10,7 +10,7 @@
 LLAMA_CPP ?= $(HOME)/projects/llama.cpp
 # the variable's name until step 176, in the commands of older steps
 ifdef FORK
-LLAMA_CPP := $(LLAMA_CPP)
+LLAMA_CPP := $(FORK)
 endif
 BUILD = build
 GGML_LIBS = $(LLAMA_CPP)/$(BUILD)/ggml/src/libggml.a $(LLAMA_CPP)/$(BUILD)/ggml/src/libggml-cpu.a \
@@ -32,7 +32,7 @@ CORE   = src/model.cpp src/engram.cpp src/fakequant.cpp src/cpu_moe.cpp src/cano
 REF    = src/forward.cpp src/fakequant_graph.cpp
 CORE_H = src/model.h src/engram.h src/taps.h src/options.h src/forward.h src/fakequant.h src/fakequant_graph.h src/cpu_moe.h src/canon_dot.h src/sampler.h
 
-# HIP builds: ds-completion and ds-test also carry the own decode runtime (hip/), compiled by
+# HIP builds: ds-completion (built only here) and ds-test carry the own decode runtime (hip/), compiled by
 # hipcc into objects that the g++ link picks up
 ROCM = /opt/rocm-6.3.4
 ifeq ($(HIP),1)

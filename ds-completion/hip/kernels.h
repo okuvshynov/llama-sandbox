@@ -1,4 +1,5 @@
-// Device kernels of the single-die decode runtime (rt.cpp). One token per step (M = 1).
+// Device kernels of the decode runtime (rt.cpp, dspark.cpp): for one token, or with the _m
+// variants for a chunk of M tokens per launch.
 //
 // Every kernel mirrors one piece of inference/model.py (named in its comment) with the
 // reference's numerics: fp32 math, and the fp8/fp4 fake quantization at the same points. All
@@ -12,11 +13,10 @@
 
 // y[r] = x[r] * rsqrt(mean(x[r]^2) + eps) * w   (w may be null), `rows` rows of n
 void k_rms_norm(const float* x, const float* w, float* y, int n, int rows, float eps, hipStream_t s);
-// in place: act_quant(x, 32, ue8m0, inplace) - e4m3 values, power-of-two scale per 32
 // in place: fp4_act_quant(x, 32) (e8m0 scales) or (x, 16, e4m3 scales)
 void k_fq4(float* x, int n, bool e4m3_scale_16, hipStream_t s);
 
-// ---- matrix-vector (M = 1) ----
+// ---- matrix-vector ----
 
 // `stride`: the rows' distance on the GPU in elements (0: K). The runtime keeps the router's and the
 // compressor's matrices f32_row_stride(K) apart (K + 16 when K * 4 is a multiple of 4096).

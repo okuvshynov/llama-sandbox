@@ -883,8 +883,7 @@ void Runtime::gemv8(const Fp8W& w, Codes c, float* yout, int rows_per_group, int
              yout + (size_t)m0 * w.N, s, w.stride);
 }
 
-// profile: each layer's GPU wait for the CPU (its "ffn.wait_for_cpu_experts" interval) next to
-// what the CPU had to do there, folded into the histogram (call once the step's marks are done)
+// for --record: the dies that hold experts, how many each got at startup, the cache's totals
 Runtime::ExpertStats Runtime::expert_stats() const {
   ExpertStats r;
   for (size_t i = 0; i < dies.size(); i++) {
@@ -908,9 +907,10 @@ void Runtime::tap(Taps* taps, const char* name, const float* d, std::vector<int6
   (*taps)[name] = std::move(t);
 }
 
-// The engram rows depend only on the tokens, so every engram layer's rows are gathered at the
-// start of the step (host: hash, read the mmap'd mxfp8 rows, convert) and go to the GPU in one
-// copy; the layers then only compute. h_erows is rewritten next step, after end_step's sync.
+// The engram rows depend only on the tokens, so every engram layer's rows are gathered once per
+// forward (host: hash, read the mmap'd mxfp8 rows, convert) and go to the GPU in one copy; the
+// layers then only compute. Called through fetch_engram_pending(), once layer 0 is queued (README
+// step 73). h_erows is rewritten by the next forward, after this one's last sync.
 void Runtime::fetch_engram_rows(const std::vector<int32_t>& chunk, int p0) {
   const int n_cols = hp.engram_cols(), D = hp.engram_dim, n_slots = (int)hp.engram_layers.size();
   const size_t n = (size_t)n_cols * D;  // one token's rows of one slot

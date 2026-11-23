@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """An HTTP front for ds-completion: the Anthropic Messages API, as far as a single-turn
-benchmark with one tool needs it (README step 153).
+benchmark with one tool (README step 153) and then the pi coding harness (conversations with
+tool results, a stream; steps 157-161) need it. docs/server.md.
 
   python3 server/ds_server.py [--port 8080] [--host 127.0.0.1] [--encoding ~/llms/ds-flash/encoding/encoding.py]
-                      [--temp 1 --top-p 0.95 --seed 0] [--model-name NAME] [--log FILE] [--dump DIR] [--ping 10]
+                      [--temp 1 --top-p 0.95 --seed 0] [--model-name NAME] [--log FILE] [--dump DIR] [--ping 10] [--progress 30]
                       -- ENGINE COMMAND ...
 
   python3 server/ds_server.py -- bin-hip/ds-completion -m $M --rt $F8 --placement placements/study30.txt \\
@@ -72,7 +73,7 @@ class Metrics:
     """The numbers of GET /metrics (README step 165), in the Prometheus text format, written here:
     the server uses only the standard library. Counters and gauges, no histograms. Every series
     is there from the start, at 0. The tokens and seconds are those of completed requests (a
-    cancelled or failed one adds to ds_requests_total only), so a speed is a ratio of two counters:
+    cancelled or failed one adds to ds_requests_total and, if the engine took it, to ds_context_total), so a speed is a ratio of two counters:
     ds_generated_tokens_total / ds_generation_seconds_total."""
 
     # name, kind, help, the label's name, its values
