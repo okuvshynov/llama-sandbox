@@ -1,7 +1,7 @@
 # ds-completion: links ggml (and, for the tokenizer only, libllama) from a llama.cpp checkout
 # (LLAMA_CPP, default ~/projects/llama.cpp): upstream, at the commit QUICKSTART.md names (README steps 168, 175).
 #
-# src/ is the engine (the files that need ROCm are compiled only with HIP=1); apps/, tests/ and bench/ the programs.
+# src/ is the engine (the files that need ROCm are compiled only with HIP=1); apps/, tests/ and tools/ the programs.
 #
 #   make          CPU build -> bin/
 #   make HIP=1    also the own GPU runtime (hip/, ROCm 6.3.4, gfx906) -> bin-hip/
@@ -68,9 +68,9 @@ tools: $(TOOLS)
 HIPCC    = $(ROCM)/bin/hipcc
 HIPFLAGS = -std=c++17 -O3 -fPIC --offload-arch=gfx906 -Isrc -I$(LLAMA_CPP)/ggml/include
 
-$(BIN)/bench-fp8: bench/bench_fp8.cpp src/fp8_gemv.hip src/fp8_gemv.h src/fakequant.cpp
+$(BIN)/bench-fp8: tools/bench_fp8.cpp src/fp8_gemv.hip src/fp8_gemv.h src/fakequant.cpp
 	@mkdir -p $(BIN)
-	$(HIPCC) $(HIPFLAGS) -fopenmp -o $@ bench/bench_fp8.cpp src/fp8_gemv.hip src/fakequant.cpp \
+	$(HIPCC) $(HIPFLAGS) -fopenmp -o $@ tools/bench_fp8.cpp src/fp8_gemv.hip src/fakequant.cpp \
 	    -L$(LLAMA_CPP)/$(BUILD)/ggml/src -lggml -lggml-cpu -lggml-base -lpthread -ldl
 
 # the CLI, the product: the GPU runtime, no CPU path (README step 173). libllama only for the
@@ -90,47 +90,47 @@ endif
 	@mkdir -p $(BIN)
 	$(CXX) $(CXXFLAGS) $(RT_FLAGS) -o $@ tests/ds_test.cpp $(CORE) $(RT_LIBS) $(LDLIBS)
 
-$(BIN)/bench-kernels: bench/bench_kernels.cpp src/kernels.hip src/fp8_gemv.hip src/kernels.h src/fp8_gemv.h
+$(BIN)/bench-kernels: tools/bench_kernels.cpp src/kernels.hip src/fp8_gemv.hip src/kernels.h src/fp8_gemv.h
 	@mkdir -p $(BIN)
-	$(HIPCC) $(HIPFLAGS) -o $@ bench/bench_kernels.cpp src/kernels.hip src/fp8_gemv.hip
+	$(HIPCC) $(HIPFLAGS) -o $@ tools/bench_kernels.cpp src/kernels.hip src/fp8_gemv.hip
 
-$(BIN)/bench-row-stride: bench/bench_row_stride.hip
+$(BIN)/bench-row-stride: tools/bench_row_stride.hip
 	@mkdir -p $(BIN)
-	$(HIPCC) $(HIPFLAGS) -o $@ bench/bench_row_stride.hip
+	$(HIPCC) $(HIPFLAGS) -o $@ tools/bench_row_stride.hip
 
-$(BIN)/bench-wave-slots: bench/bench_wave_slots.hip
+$(BIN)/bench-wave-slots: tools/bench_wave_slots.hip
 	@mkdir -p $(BIN)
-	$(HIPCC) $(HIPFLAGS) -o $@ bench/bench_wave_slots.hip
+	$(HIPCC) $(HIPFLAGS) -o $@ tools/bench_wave_slots.hip
 
-$(BIN)/bench-loader-exit: bench/bench_loader_exit.cpp
+$(BIN)/bench-loader-exit: tools/bench_loader_exit.cpp
 	@mkdir -p $(BIN)
-	$(HIPCC) $(HIPFLAGS) -o $@ bench/bench_loader_exit.cpp -lpthread
+	$(HIPCC) $(HIPFLAGS) -o $@ tools/bench_loader_exit.cpp -lpthread
 
-$(BIN)/bench-launch: bench/bench_launch.cpp
+$(BIN)/bench-launch: tools/bench_launch.cpp
 	@mkdir -p $(BIN)
-	$(HIPCC) $(HIPFLAGS) -o $@ bench/bench_launch.cpp
+	$(HIPCC) $(HIPFLAGS) -o $@ tools/bench_launch.cpp
 
-$(BIN)/bench-register: bench/bench_register.cpp
+$(BIN)/bench-register: tools/bench_register.cpp
 	@mkdir -p $(BIN)
-	$(HIPCC) $(HIPFLAGS) -o $@ bench/bench_register.cpp
+	$(HIPCC) $(HIPFLAGS) -o $@ tools/bench_register.cpp
 
 $(BIN)/test-topk: tests/test_topk.cpp src/kernels.hip src/kernels.h
 	@mkdir -p $(BIN)
 	$(HIPCC) $(HIPFLAGS) -o $@ tests/test_topk.cpp src/kernels.hip
 
-$(BIN)/bench-fp4-moe: bench/bench_fp4_moe.cpp $(BIN)/obj/fp4_moe.o src/model.cpp src/cpu_moe.cpp src/fakequant.cpp $(CORE_H)
+$(BIN)/bench-fp4-moe: tools/bench_fp4_moe.cpp $(BIN)/obj/fp4_moe.o src/model.cpp src/cpu_moe.cpp src/fakequant.cpp $(CORE_H)
 	@mkdir -p $(BIN)
-	$(CXX) $(CXXFLAGS) $(RT_FLAGS) -O3 -o $@ bench/bench_fp4_moe.cpp src/model.cpp src/cpu_moe.cpp src/canon_dot.cpp src/fakequant.cpp \
+	$(CXX) $(CXXFLAGS) $(RT_FLAGS) -O3 -o $@ tools/bench_fp4_moe.cpp src/model.cpp src/cpu_moe.cpp src/canon_dot.cpp src/fakequant.cpp \
 	    $(BIN)/obj/fp4_moe.o -L$(ROCM)/lib -Wl,-rpath,$(ROCM)/lib -lamdhip64 $(LDLIBS)
 
-$(BIN)/bench-expert-load: bench/bench_expert_load.cpp $(BIN)/obj/fp4_moe.o $(BIN)/obj/expert_pool.o $(BIN)/obj/expert_loader.o src/model.cpp src/cpu_moe.cpp src/fakequant.cpp $(CORE_H)
+$(BIN)/bench-expert-load: tools/bench_expert_load.cpp $(BIN)/obj/fp4_moe.o $(BIN)/obj/expert_pool.o $(BIN)/obj/expert_loader.o src/model.cpp src/cpu_moe.cpp src/fakequant.cpp $(CORE_H)
 	@mkdir -p $(BIN)
-	$(CXX) $(CXXFLAGS) $(RT_FLAGS) -O3 -o $@ bench/bench_expert_load.cpp src/model.cpp src/cpu_moe.cpp src/canon_dot.cpp src/fakequant.cpp \
+	$(CXX) $(CXXFLAGS) $(RT_FLAGS) -O3 -o $@ tools/bench_expert_load.cpp src/model.cpp src/cpu_moe.cpp src/canon_dot.cpp src/fakequant.cpp \
 	    $(BIN)/obj/fp4_moe.o $(BIN)/obj/expert_pool.o $(BIN)/obj/expert_loader.o -L$(ROCM)/lib -Wl,-rpath,$(ROCM)/lib -lamdhip64 $(LDLIBS)
 
-$(BIN)/bench-expert-pool: bench/bench_expert_pool.cpp $(BIN)/obj/fp4_moe.o $(BIN)/obj/expert_pool.o src/model.cpp src/cpu_moe.cpp src/fakequant.cpp $(CORE_H)
+$(BIN)/bench-expert-pool: tools/bench_expert_pool.cpp $(BIN)/obj/fp4_moe.o $(BIN)/obj/expert_pool.o src/model.cpp src/cpu_moe.cpp src/fakequant.cpp $(CORE_H)
 	@mkdir -p $(BIN)
-	$(CXX) $(CXXFLAGS) $(RT_FLAGS) -O3 -o $@ bench/bench_expert_pool.cpp src/model.cpp src/cpu_moe.cpp src/canon_dot.cpp src/fakequant.cpp \
+	$(CXX) $(CXXFLAGS) $(RT_FLAGS) -O3 -o $@ tools/bench_expert_pool.cpp src/model.cpp src/cpu_moe.cpp src/canon_dot.cpp src/fakequant.cpp \
 	    $(BIN)/obj/fp4_moe.o $(BIN)/obj/expert_pool.o -L$(ROCM)/lib -Wl,-rpath,$(ROCM)/lib -lamdhip64 $(LDLIBS)
 
 $(BIN)/obj/%.o: src/%.hip src/kernels.h src/fp8_gemv.h src/fp4_moe.h src/expert_pool.h
@@ -157,21 +157,21 @@ $(BIN)/obj/dspark.o: src/dspark.cpp src/rt.h src/dspark.h src/kernels.h src/fp8_
 	@mkdir -p $(BIN)/obj
 	$(HIPCC) $(HIPFLAGS) -c -o $@ $<
 
-$(BIN)/ds-inspect: apps/ds_inspect.cpp src/model.cpp src/model.h
+$(BIN)/ds-inspect: tools/ds_inspect.cpp src/model.cpp src/model.h
 	@mkdir -p $(BIN)
-	$(CXX) $(CXXFLAGS) -o $@ apps/ds_inspect.cpp src/model.cpp $(LDLIBS)
+	$(CXX) $(CXXFLAGS) -o $@ tools/ds_inspect.cpp src/model.cpp $(LDLIBS)
 
 $(BIN)/fp8pack: apps/fp8pack.cpp src/model.cpp src/model.h src/fakequant.cpp src/fakequant.h
 	@mkdir -p $(BIN)
 	$(CXX) $(CXXFLAGS) -o $@ apps/fp8pack.cpp src/model.cpp src/fakequant.cpp $(LDLIBS)
 
-$(BIN)/bench-cpu-moe: bench/bench_cpu_moe.cpp $(CORE) $(CORE_H)
+$(BIN)/bench-cpu-moe: tools/bench_cpu_moe.cpp $(CORE) $(CORE_H)
 	@mkdir -p $(BIN)
-	$(CXX) $(CXXFLAGS) -O3 -o $@ bench/bench_cpu_moe.cpp $(CORE) $(LDLIBS)
+	$(CXX) $(CXXFLAGS) -O3 -o $@ tools/bench_cpu_moe.cpp $(CORE) $(LDLIBS)
 
-$(BIN)/bench-fp4-decode: bench/bench_fp4_decode.cpp src/canon_dot.cpp src/canon_dot.h src/fakequant.cpp src/fakequant.h
+$(BIN)/bench-fp4-decode: tools/bench_fp4_decode.cpp src/canon_dot.cpp src/canon_dot.h src/fakequant.cpp src/fakequant.h
 	@mkdir -p $(BIN)
-	$(CXX) $(CXXFLAGS) -o $@ bench/bench_fp4_decode.cpp src/canon_dot.cpp src/fakequant.cpp $(LDLIBS)
+	$(CXX) $(CXXFLAGS) -o $@ tools/bench_fp4_decode.cpp src/canon_dot.cpp src/fakequant.cpp $(LDLIBS)
 
 # the sampler alone: no model, no GPU (README step 148)
 $(BIN)/test-sampler: tests/test_sampler.cpp src/sampler.cpp src/sampler.h

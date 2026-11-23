@@ -24,7 +24,7 @@ upstream" below. Nothing is changed in the code yet, and the decision above stan
   `llama_token_to_piece` (`apps/ds_completion.cpp`).
 - **GGUF reading and ggml tensor metadata** (`src/model.cpp`): every tensor's type, shape, data
   pointer (the mmap) and row strides, computed by ggml from the tensor's type.
-- **ggml's CPU ops**: until step 194, for the CPU reference path (`src/forward.cpp`, removed). Now only one benchmark's baseline (`bench/bench_cpu_moe.cpp`).
+- **ggml's CPU ops**: until step 194, for the CPU reference path (`src/forward.cpp`, removed). Now only one benchmark's baseline (`tools/bench_cpu_moe.cpp`).
 
 The GPU runtime (`src/rt.cpp` and its kernels) and the CPU expert kernels are our own code; they read raw bytes.
 

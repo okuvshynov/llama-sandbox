@@ -7390,3 +7390,26 @@ A further split inside `src/` (the arithmetic kernels apart from the runtime tha
 is possible at this size and was left: the include directions have not been checked for a
 clean cut.
 
+## Step 197: the directories, 3: `bench/` is `tools/`, with `ds_inspect`
+
+`bench/` renamed to `tools/` (its 12 files keep their names, and the programs theirs:
+`bench-kernels`, `bench-cpu-moe`, ...), and `apps/ds_inspect.cpp` moved there: it inspects, it
+is not part of the product. `apps/` now holds the product's two programs only
+(`ds_completion.cpp` with `record.h` and `think_view.h`, and `fp8pack.cpp`).
+
+`scripts/check.py default`: all checks passed (301 s). `bin/ds-inspect -m $M` and
+`bin-hip/bench-kernels --bitwise` run from the new place.
+
+**The tree after steps 195-197:**
+
+| directory | what | the Makefile's group |
+|---|---|---|
+| `src/` | the engine: loader, runtime, kernels (CPU and GPU), expert pool / loader / cache, the draft, sampler | (libraries) |
+| `apps/` | the product's programs: `ds-completion`, `fp8pack` | product |
+| `server/` | `ds_server.py`, `pi-models.json` | product |
+| `tests/` | every test, C++ and Python; `tests/data/` what they compare with | tests |
+| `tools/` | the benchmarks, `ds-inspect` | tools |
+| `ref/`, `scripts/` | the official reference's side; the runners and readers | as before |
+
+Three pure moves; no arithmetic and no output changed.
+

@@ -176,7 +176,7 @@ without experts on GPUs ~9 s.
 |---|---|---|---|
 | the held-out matrix's second repeat | generation speed, mean of eight prompts (44.6-45.1 t/s) | the previous step's mean; run-to-run 1-3% | part of 3.3's 41 min |
 | `--trace FILE` on one prompt, `scripts/trace_critpath.py` | that a trace is still written and read; where a step's time goes | the previous trace (`scripts/trace_compare.py`) | ~3 min |
-| the benchmarks (`bench/`) | one kernel or the loader | their own earlier numbers | seconds to minutes each, run when their code changes |
+| the benchmarks (`tools/`) | one kernel or the loader | their own earlier numbers | seconds to minutes each, run when their code changes |
 
 ### 3.6 Two kinds of result: a verdict, and where it went wrong
 

@@ -51,8 +51,8 @@ Three kinds of code live here, and the directories alone do not say which is whi
 | | what | where |
 |---|---|---|
 | **The product** | the engine with the GPU runtime (`bin-hip/ds-completion --rt ...`), the HTTP server in front of it, and `fp8pack`, which makes one of its files | `apps/ds_completion.cpp`, `apps/fp8pack.cpp`, `src/`, `server/ds_server.py`, `scripts/serve.sh`, `scripts/chat.sh`, `placements/` |
-| **What checks it** | the test programs, the fixed runs of `scripts/check.py`, the official Python reference and the golden data it writes (a second implementation of the model on the CPU was removed in steps 192-194) | `tests/`, `scripts/check.py`, `ref/`, `tests/test_server.py`, `tests/fake_engine.py` |
-| **Tools** | benchmarks, the runner of measurements and the readers of records and traces, the inspector, every measurement's raw output | `bench/`, `scripts/` (the rest), `apps/ds_inspect.cpp`, `results/` |
+| **What checks it** | the test programs, the fixed runs of `scripts/check.py`, the official Python reference and the golden data it writes (a second implementation of the model on the CPU was removed in steps 192-194) | `tests/`, `scripts/check.py`, `ref/` |
+| **Tools** | benchmarks, the runner of measurements and the readers of records and traces, the inspector, every measurement's raw output | `tools/`, `scripts/` (the rest), `results/` |
 
 `make product`, `make tests` and `make tools` build one kind each (`make`: all three).
 The second and third may depend on the product; the product does not depend on them

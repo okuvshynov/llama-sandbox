@@ -619,6 +619,7 @@ Step 194: done: the sources and `ds-test`'s CPU mode removed (793 + 138 lines); 
 The CPU reference path is gone: one implementation, checked against the official reference.
 Step 195: the directories (the person): every test under `tests/`, data under `tests/data/`. Next: `hip/` into `src/`; `bench/` to `tools/`.
 Step 196: `hip/` merged into `src/` (the engine, 34 files). Next: `bench/` to `tools/`.
+Step 197: `bench/` is `tools/`, with `ds_inspect`. The directories follow the three groups: product (`src/`, `apps/`, `server/`), `tests/`, `tools/`.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front
