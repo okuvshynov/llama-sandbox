@@ -6773,3 +6773,39 @@ and all its calls are in those runs).
 
 **Not done**, carried from steps 178-179: the longer golden sets, `-i` sessions and sampling
 with the build after the removal. Open: why the starred clock level read 1 in step 178's boot.
+
+## Step 181: sessions, sampling and the longer golden sets on the build after the removal
+
+Steps 178-180 each listed these as not run. No code changed here: the programs are those of
+step 180's commit (`results/dist/after-removal-gates.txt`; the script, its helpers and its log
+in `results/dist/after-removal/`; sclk 6; 3 h 04 min).
+
+| | what ran | result |
+|---|---|---|
+| sessions | `scripts/chat.sh` with the questions of steps 108-109: chat at `-n 200` and `-n 12`, thinking at `-n 600`, 20 and 45, and the long one (`--effort max -n 2500`, replies of 1,344, 2,500 and 764 tokens) | 6 of 6 print the stored bytes |
+| a session against fresh runs | `ds-completion -f` on the whole conversation before reply 2 and reply 3 | 10 of 10 print the session's reply |
+| sampling, the plain loop | step 149's matrix: 6 configurations on 3 prompts | 18 of 18 output hashes are step 149's |
+| sampling with `--spec` | step 151's two matrices: 5 configurations on 3 prompts, greedy and sampled on the 8 held-out prompts | 15 of 15 and 16 of 16 are step 151's |
+| the CPU reference path | `bin/ds-test` on `hello-fp32-nq`, `readme200`, `readme200-fp32-nq`, `readme1100` | 960 rows, 0 differ from the stored tables |
+| the runtime at 20,000 tokens | `bin-hip/ds-test --runtime` on `readme20k-s`, per layer with the top-k dump, and end to end | 360 rows, 0 differ; the dump and the logits are the stored bytes; against the reference 9 of 9 argmax, mean KL 2.15e-02 (step 174's line) |
+
+Speeds are those of the stored runs to ~2% in every configuration (held-out greedy with
+`--spec` 45.11 t/s against 44.94 in step 151's records; sampled 42.50 against 43.06).
+
+So the build after the removal prints, on everything the project has stored outputs for, what
+the build before it printed.
+
+**Two things seen on the way.**
+
+- *One false alarm, mine:* the helper that compared a fresh run with a session's reply split
+  the stored file by line, and the chat replies have newlines. It said DIFFERS on bytes that
+  were equal; corrected during the run. The comparisons of steps 178, 179 and this one were each
+  written by hand for the step.
+- *Most of the three hours is loading the model.* A held-out run is ~140 s of load and ~8 s of
+  generation; 52 loads are about two of the three hours. And the load itself reads 138.6 s in
+  these records against 115.7 s in step 151's of the same matrix (20% longer; when it changed
+  and why was not looked for).
+
+**Next** (the person, 2026-11-22: this is what to focus on): the testing process itself. The
+same guarantees in less time: PLAN "The testing process".
+

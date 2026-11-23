@@ -69,6 +69,42 @@ Features and limits
 | 29 | Sampling beyond greedy | started | temperature and top-p for a minimal server (the person's benchmark). Step 148: the sampler as a library with its test. Step 149: `--temp`, `--top-p`, `--seed` in the plain loop, one seed one output on any placement. Step 150: the speculative loop samples too (the plain loop's outputs; held-out mean 41.8 t/s against 44.8 greedy, not with `--remote`). Step 151: that loss was the draws (~1 ms each and the threads' start); a vector `exp` and draws in turn: 43.1 t/s against 44.9 greedy. Step 152: `--requests`, the engine's side of the server (prompts on stdin, each on an empty context; `docs/requests.md`). Step 153: the HTTP front, `server/ds_server.py` (Anthropic Messages; the model's `encoding.py` renders and parses): the benchmark's script runs against it unchanged. Step 154: a request whose client left is cancelled (`SIGUSR1` to the engine). Sampling with `--spec` on two machines, long listed as open, went with the two machines (step 178). Next: the person's samples, the OpenAI endpoint if wanted. Greedy loops on some long reasoning (README step 48) |
 | 33 | Observability of the server | started (steps 1-3 of 4 done, steps 164-166) | a metrics page in the Prometheus format, the engine's choice of context in the protocol and the log, a log of requests as JSON lines: "Observability of the server" below (README step 162) |
 | 34 | The product and the tools | the three small steps done (steps 169-171), `fakequant` in two (172), the CPU path as its own program `ds-ref` (173). Open: where `ds-test` belongs, directory moves, a tokenizer without libllama | say and then make true which code is the product and which checks or measures it: "The product and the tools" below |
+| 35 | The testing process: the same guarantees in less time | planned (2026-11-22, after step 181) | a full pass is ~3.5 h, most of it loads of the model, with overlapping runs and comparisons written by hand per step: "The testing process" below |
+
+## The testing process (2026-11-22)
+
+**Why.** After the two-machine code left, gating three commits took ~3.5 h of runs (steps
+179-181). A run is ~140 s of load for ~8 s of generation; several runs repeat each other; each
+step wrote its own comparison code, and one of them raised a false alarm (step 181).
+
+**What overlaps** (to confirm by reading the matrices side by side):
+
+- the eight held-out greedy `--spec` runs: `results/cleanup/heldout.matrix`, and the `greedy`
+  configurations of the two sampling matrices;
+- per layer and end to end on one golden set: at 20,000 tokens 32 min and 9 min; the logits'
+  bytes are the sharper check, the table says where a difference starts;
+- the CPU reference tables after a change that touched only `hip/`;
+- a session against stored bytes, and again against fresh runs on the whole conversation
+  (10 loads for what the stored bytes already hold);
+- each sampling property on three prompts.
+
+**Proposed** (nothing built or measured yet):
+
+| tier | when | what | estimate |
+|---|---|---|---|
+| quick | every change | unit tests, the server test with the fake engine, `hello-fp32` per layer on the runtime and its logits against stored bytes | ~5 min |
+| outputs, one load | a change to the runtime or the program | one process with `--requests` takes every prompt in turn (held-out, sampling seeds, session turns as requests that go on); each output's hash against one stored manifest; one run in a fresh process kept | ~10-15 min |
+| speed | when speed could have moved | the held-out prompts in fresh processes, the second repeat | ~20 min |
+| long | a change to the runtime | the 20,000-token logits against stored bytes; the per-layer table only if they differ or the toolchain changed | ~9 min |
+
+Tiers chosen by what changed (the Makefile's groups: the CPU tables for `src/forward.*`, the
+server test for `server/`); one program that runs a tier and prints pass or fail per check
+against stored hashes, so no step writes its own comparison.
+
+**To check first:** that outputs through `--requests` are the fresh process's bytes on all
+held-out prompts (with `--canon` they should be: the output does not depend on the cache's
+state); what cannot vary per request (the placement, `--spec-n`: their own loads); why the
+load takes ~140 s and why it was ~116 s at step 151.
 
 ## The product and the tools (2026-11-21)
 
@@ -530,6 +566,8 @@ clock samples in `--trace`); the last commit with it: efa4e03. Next: the layer r
 Step 179: the layer range out of the runtime and the program (`--layers`, `--teacher`, `--stream-in`, `--stream-out`,
 `hip/rt_peer.cpp`); the runtime runs layers 0 .. k, all of them outside `ds-test --layers`; the last commit with it: 519ffd4.
 Step 180: a last read after the removal: `verify()`'s unused `head` parameter out, two passages of the documents in the past tense.
+Step 181: sessions, sampling and the longer golden sets on the build after the removal: all the stored bytes (3 h, 2 h of it
+loads of the model). Next: the testing process (item 35).
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front

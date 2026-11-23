@@ -1,0 +1,72 @@
+20:06:37 == sessions
+20:06:37 session chat200: -n 200
+  rc=0 same
+20:09:10 session chat12: -n 12
+  rc=0 same
+20:11:40 fresh chat200 reply 3 (-f results/chat/whole.txt -n 200)
+  rc=0 DIFFERS   <- the helper, not the output: cmp_session.py split a reply with newlines by line; corrected during the run, and the same file then compares "same" (README step 181)
+20:14:13 fresh chat12 reply 3 (-f results/chat/whole-n12.txt -n 12)
+  rc=0 same
+20:16:41 session th: --think --think-show all --effort 75 -n 600
+  rc=0 same
+20:19:14 session th20: --think --think-show all --effort 75 -n 20
+  rc=0 same
+20:21:44 session th45: --think --think-show all --effort 75 -n 45
+  rc=0 same
+20:24:16 session long: --think --think-show all --effort max -n 2500
+  rc=0 same
+20:28:42 fresh th reply 2 (-f results/chat/think/th-ref2.txt -n 600)
+  rc=0 same
+20:31:12 fresh th20 reply 2 (-f results/chat/think/th20-ref2.txt -n 20)
+  rc=0 same
+20:33:40 fresh th45 reply 2 (-f results/chat/think/th45-ref2.txt -n 45)
+  rc=0 same
+20:36:09 fresh long reply 2 (-f results/chat/think/long-ref2.txt -n 2500)
+  rc=0 same
+20:39:42 fresh th reply 3 (-f results/chat/think/th-ref3.txt -n 600)
+  rc=0 same
+20:42:13 fresh th20 reply 3 (-f results/chat/think/th20-ref3.txt -n 20)
+  rc=0 same
+20:44:41 fresh th45 reply 3 (-f results/chat/think/th45-ref3.txt -n 45)
+  rc=0 same
+20:47:11 fresh long reply 3 (-f results/chat/think/long-ref3.txt -n 2500)
+  rc=0 same
+20:50:03 == sampling
+21:04:54 plain rc=0
+data/step181/plain: 18 of 18 output hashes equal to results/sampler/plain
+  greedy     3 runs  mean t/s  24.32  (stored  24.27)
+  s1         3 runs  mean t/s  23.37  (stored  23.03)
+  s1-cache   3 runs  mean t/s  29.17  (stored  28.79)
+  s1-oracle  3 runs  mean t/s  21.16  (stored  20.98)
+  s1-p1      3 runs  mean t/s  23.44  (stored  23.34)
+  s2         3 runs  mean t/s  23.48  (stored  23.30)
+21:43:28 spec rc=0
+data/step181/spec: 15 of 15 output hashes equal to results/sampler/step151/spec
+  greedy     3 runs  mean t/s  50.03  (stored  49.56)
+  s1         3 runs  mean t/s  48.16  (stored  47.73)
+  s1-n5      3 runs  mean t/s  44.80  (stored  45.84)
+  s1-p1      3 runs  mean t/s  45.85  (stored  45.61)
+  s2         3 runs  mean t/s  47.85  (stored  48.16)
+22:24:38 spec-heldout rc=0
+data/step181/spec-heldout: 16 of 16 output hashes equal to results/sampler/step151/spec-heldout
+  greedy     8 runs  mean t/s  45.11  (stored  44.94)
+  s1         8 runs  mean t/s  42.50  (stored  43.06)
+22:25:56 test-sampler rc=0 all checks passed
+22:25:56 == golden sets, CPU reference path
+22:25:56 bin/ds-test -m /home/oleksandr/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf -g data/golden/hello-fp32-nq --no-quant
+  rc=0 200 rows new, 200 stored, 0 differ
+22:26:00 bin/ds-test -m /home/oleksandr/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf -g data/golden/readme200
+  rc=0 360 rows new, 360 stored, 0 differ
+22:26:29 bin/ds-test -m /home/oleksandr/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf -g data/golden/readme200-fp32-nq --no-quant
+  rc=0 200 rows new, 200 stored, 0 differ
+22:26:55 bin/ds-test -m /home/oleksandr/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf -g data/golden/readme1100
+  rc=0 200 rows new, 200 stored, 0 differ
+22:29:51 == golden set, 20,000 tokens, the runtime
+22:29:51 end to end
+  rc=0
+  logits: the stored bytes
+  compare rc=0 # argmax agrees 9/9, mean KL 2.15e-02, max KL 7.75e-02
+22:38:54 bin-hip/ds-test -m /home/oleksandr/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf -g data/golden/readme20k-s --runtime /home/oleksandr/llms/ds-1017-fp8/dense-fp8.gguf --dump-topk data/step181/readme20k-topk.bin
+  rc=0 360 rows new, 360 stored, 0 differ
+  top-k dump: the stored bytes
+23:10:31 == done

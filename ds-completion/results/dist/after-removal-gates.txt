@@ -1,0 +1,62 @@
+# The gates steps 178-180 did not run, on the build after the two-machine code left (README step 181):
+# chat and thinking sessions, sampling, the longer golden sets. No code changed in this step.
+# Commit a0a65ed (the programs built at it; the commit that adds this file changes documents only);
+# llama.cpp e626db7ca in ~/projects/llama.cpp; sclk 6 on the four GPUs (manual; the star reads 6, the records say
+# [6, 6, 6, 6]); 2026-11-22 20:06 to 23:10, the machine booted at 13:50.
+# Script: results/dist/after-removal/run.sh (written for a directory data/step181; its O variable), its three
+# comparison helpers beside it, its log run-log.txt.
+# M=~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf  F8=~/llms/ds-1017-fp8/dense-fp8.gguf
+#
+# 1. Sessions (44 min): scripts/chat.sh --cache-wait ... < questions, stdout against the stored replies
+#    (results/chat/, results/chat/think/). --think-show all: the stored files hold the reasoning, and since step 147
+#    chat.sh shows it as one line by default.
+#    session    options                                        tokens per reply     t/s per reply         stdout
+    chat200    -n 200                                          21, 10, 200          32.2, 31.1, 44.3      the stored bytes
+    chat12     -n 12                                           12, 10, 12           32.2, 33.8, 59.7      the stored bytes
+    th         --think --effort 75 -n 600                      39, 72, 67           33.8, 40.1, 45.9      the stored bytes
+    th20       --think --effort 75 -n 20                       20, 20, 20           33.7, 42.3, 42.8      the stored bytes
+    th45       --think --effort 75 -n 45                       39, 45, 45           35.0, 37.3, 42.0      the stored bytes
+    long       --think --effort max -n 2500                    1344, 2500, 764      45.7, 39.2, 38.5      the stored bytes
+#    Fresh runs on the whole conversation (ds-completion -f <file> -n N, chat.sh's options without --chat -i):
+#    whole.txt, whole-n12.txt (reply 3), and <tag>-ref2.txt, <tag>-ref3.txt for th, th20, th45, long:
+#    10 of 10 print the session's reply.
+#    (run-log.txt says DIFFERS for the first of them: the helper split a reply that has newlines by line. Corrected
+#    during the run; the same output file then compares equal.)
+#
+# 2. Sampling (95 min): the three matrices of steps 149-151 into a new directory, output.hash against the stored records
+#    scripts/run_matrix.py results/sampler/plain.matrix --prompts tcp-udp,cpp-matrix,geometry --out <dir>
+#      18 of 18 hashes equal to results/sampler/plain/
+#      config      mean t/s   stored
+       greedy        24.32    24.27
+       s1            23.37    23.03
+       s1-cache      29.17    28.79
+       s1-oracle     21.16    20.98
+       s1-p1         23.44    23.34
+       s2            23.48    23.30
+#    scripts/run_matrix.py <results/sampler/step151/spec.matrix with its --spec-log paths in the new directory> --prompts tcp-udp,cpp-matrix,geometry --out <dir>
+#      15 of 15 hashes equal to results/sampler/step151/spec/
+       greedy        50.03    49.56
+       s1            48.16    47.73
+       s1-n5         44.80    45.84
+       s1-p1         45.85    45.61
+       s2            47.85    48.16
+#    scripts/run_matrix.py results/sampler/spec-heldout.matrix --out <dir>
+#      16 of 16 hashes equal to results/sampler/step151/spec-heldout/
+       greedy        45.11    44.94    (8 prompts)
+       s1            42.50    43.06    (8 prompts)
+#    bin/test-sampler: all checks passed
+#
+# 3. The longer golden sets (45 min), every column of the table but ms against the stored table
+#    command                                                                    stored file                          rows  differing
+bin/ds-test -m $M -g data/golden/hello-fp32-nq --no-quant                       results/test-hello-fp32-nq.txt        200  0
+bin/ds-test -m $M -g data/golden/readme200                                      results/test-readme200.txt            360  0
+bin/ds-test -m $M -g data/golden/readme200-fp32-nq --no-quant                   results/test-readme200-fp32-nq.txt    200  0
+bin/ds-test -m $M -g data/golden/readme1100                                     results/test-readme1100.txt           200  0
+bin-hip/ds-test -m $M -g data/golden/readme20k-s --runtime $F8 --dump-topk <f>  results/rt-readme20k.txt              360  0     (32 min)
+#    its top-k dump: the same bytes as data/ds/readme20k-topk.bin (cmp)
+bin-hip/ds-test -m $M -g data/golden/readme20k-s --runtime $F8 --e2e <file>     the logits: the same bytes as data/ds/readme20k-rt.f32 (cmp)   (9 min)
+~/venvs/ds-ref/bin/python ref/compare_logits.py data/ref/readme20k-s.pt <file>  argmax agrees 9/9, mean KL 2.15e-02, max KL 7.75e-02 (step 174's line)
+#
+# 4. Seen on the way: the load. The 16 held-out sampling runs: load_s 138.6 (138.4-138.8) in these records, 115.7
+#    (115.4-116.3) in step 151's of the same matrix. 20% longer; when it changed and why: not looked for.
+#    A run here is ~140 s of load and ~8 s of generation: of the 3 h 04 min, about 2 h are 52 loads of the model.
