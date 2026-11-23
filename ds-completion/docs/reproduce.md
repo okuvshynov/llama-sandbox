@@ -88,7 +88,7 @@ Run from this directory (placement files are relative paths). How to run: [QUICK
 | `data/ref/` | reference runs (`.pt`): the official model math on the CPU (`ref/ds_ref.py`) | `~/venvs/ds-ref/bin/python ref/ds_ref.py --prompt "..." --chat --n-decode 16 [--fp32] [--no-quant] --out data/ref/x.pt` (prompts: README step 2; the 20k-token run: step 35) | minutes to ~1 h (20k tokens: 42 min, ~500 GB of RAM, a 35 GB file) |
 | `data/golden/` | per-layer golden activations and logits for the gates | `ref/export_golden.py data/ref/x.pt data/golden/x` | minutes |
 | `data/ds/`, `data/llama/` | our and llama.cpp's logits for the comparisons | `bin/ds-test ... --e2e`; `bin/llama-logits` (README steps 2-3; `make bin/llama-logits LLAMA_CPP=<a checkout of the PR's commit>`, not part of `make` since step 175) | minutes |
-| `data/fq/` | fake-quant test vectors | `ref/make_fq_test.py` | seconds |
+| `tests/fq/` (in git since step 186; `data/fq/` before) | fake-quant test vectors | `ref/make_fq_test.py` | seconds |
 | `data/routing/study/` | routing logs of the 30 study prompts (plain): inputs of `placements/study30.txt` and the simulations | `results/routing-study.sh` (prompts in `prompts/routing-study.tsv`) | ~1 h |
 | `data/routing/oracle/` | routing logs of the 2 oracle prompts | README step 15 | minutes |
 | `data/routing/spec/` | routing logs of the 8 held-out prompts under `--spec` | `results/spec-routing.sh` | ~15 min |
@@ -307,6 +307,7 @@ Unless stated: sclk 2, 16 CPU threads (32 before README step 18), the study30 pl
 | 182 | `dist/review-182.txt` | the two checks by program are described in the file; the readings were by hand (four read-only subagents); `make && make HIP=1`, `objdump -d` of the two programs against the previous build's, `python3 server/test_server.py` |
 | 183 | `requests/requests_test.txt` (again, with the header cases), `requests/headers-before.txt` | `make HIP=1`; `python3 results/requests/requests_test.py` (~12 min); `python3 results/requests/requests_test.py --headers-only` (~80 s), and the same with `DS_BIN=<a ds-completion built at 0aa67be>` for the file of the program before; `python3 server/test_server.py` |
 | 184 | `dist/testing-times.txt` | the commands in the file, each once; the loads from `--record` files of step 181's runs; `data/ref/<name>.pt`'s `variant` field with `~/venvs/ds-ref/bin/python` |
+| 186 | `dist/check-unit.txt` | `scripts/check.py unit`; the negative control: one float of `tests/fq/fp8.f32` changed (`struct.pack` at offset 4000), the run, the file restored; `bin/test-sampler` timed before and after the change |
 | 167 | `server/serve.txt` | by hand: `DS_LOGS=<a directory> scripts/serve.sh`, one request with `curl` (the one of `docs/pi.md`, section 1), a minute's wait for `metrics.prom`, Ctrl-C; the file's parts are named in it |
 
 ## 7. Open items (to confirm)

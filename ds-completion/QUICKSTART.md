@@ -80,6 +80,13 @@ alone is enough and about three times faster to build: `make HIP=1 product && bi
 `dense-fp8.gguf` comes out byte for byte the same on every build (its checksum is in the manifest),
 so it doubles as a check of the build and the model files.
 
+## Check
+
+    scripts/check.py unit      # builds, then the checks that need no model files: 30 s, "all checks passed"
+
+After every change. The run with the model (`default`) is being built; what there is until
+then, test by test: [docs/testing.md](docs/testing.md).
+
 ## Run
 
 Run from this directory (the placement path is relative). Which setting is fastest depends on

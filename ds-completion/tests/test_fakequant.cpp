@@ -1,5 +1,8 @@
 // test-fakequant: our fake-quant ops vs ref/kernel_cpu.py on the inputs of ref/make_fq_test.py.
 // Must be bit-identical.
+//
+//   test-fakequant [dir]      dir: in.f32 and the reference's fp8.f32, fp4.f32, fp4e4.f32
+//                             (default tests/fq, which is in git; README step 186). Exit code 1 if a value differs.
 #include "fakequant.h"
 #include "fakequant_graph.h"
 #include "ggml-cpu.h"
@@ -21,13 +24,14 @@ static std::vector<float> load(const char* p) {
   return v;
 }
 
-int main() {
-  std::vector<float> in = load("data/fq/in.f32");
+int main(int argc, char** argv) {
+  const std::string dir = argc > 1 ? argv[1] : "tests/fq";
+  std::vector<float> in = load((dir + "/in.f32").c_str());
   const int64_t n = (int64_t)in.size();
   const char* names[] = {"fp8", "fp4", "fp4e4"};
   int bad_total = 0;
   for (int k = 0; k < 3; k++) {
-    std::vector<float> want = load((std::string("data/fq/") + names[k] + ".f32").c_str());
+    std::vector<float> want = load((dir + "/" + names[k] + ".f32").c_str());
     ggml_init_params p = {64 * 1024 * 1024, nullptr, false};
     ggml_context* ctx = ggml_init(p);
     ggml_tensor* x = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 64, n / 64);

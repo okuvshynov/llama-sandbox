@@ -38,16 +38,30 @@ static std::vector<double> softmax(const std::vector<float>& l, double temp) {
   return p;
 }
 
-// top-p the plain way: the whole vocabulary sorted
-static int32_t reference(const std::vector<float>& l, const SamplerOptions& o, uint64_t pos) {
+// top-p the plain way: the whole vocabulary sorted. The order depends on the logits and the
+// temperature only, so it is made once for them (Sorted) and used for every top-p and position:
+// sorting 129,280 values for each of 4,800 draws was 79 of this test's 80 seconds (README step 186).
+struct Sorted {
+  std::vector<double> p;
+  std::vector<int32_t> id;
+  double total = 0;
+};
+static Sorted sorted(const std::vector<float>& l, double temp) {
   const int n = l.size();
   const double top = *std::max_element(l.begin(), l.end());
-  std::vector<double> p(n);
-  double total = 0;
-  for (int i = 0; i < n; i++) total += p[i] = std::exp(((double)l[i] - top) / o.temp);
-  std::vector<int32_t> id(n);
-  for (int i = 0; i < n; i++) id[i] = i;
-  std::sort(id.begin(), id.end(), [&](int32_t a, int32_t b) { return p[a] != p[b] ? p[a] > p[b] : a < b; });
+  Sorted s;
+  s.p.resize(n);
+  for (int i = 0; i < n; i++) s.total += s.p[i] = std::exp(((double)l[i] - top) / temp);
+  s.id.resize(n);
+  for (int i = 0; i < n; i++) s.id[i] = i;
+  std::sort(s.id.begin(), s.id.end(), [&](int32_t a, int32_t b) { return s.p[a] != s.p[b] ? s.p[a] > s.p[b] : a < b; });
+  return s;
+}
+static int32_t reference(const Sorted& s, const SamplerOptions& o, uint64_t pos) {
+  const int n = s.p.size();
+  const std::vector<double>& p = s.p;
+  const std::vector<int32_t>& id = s.id;
+  const double total = s.total;
   int keep = 0;
   double kept = 0;
   while (keep < n) {
@@ -172,14 +186,16 @@ int main() {
   {  // top-p's shortcut (only the tokens above a floor are sorted) against the whole vocabulary sorted
     long n = 0, same = 0;
     for (const auto& l : big)
-      for (float temp : {0.6f, 1.0f, 1.5f})
+      for (float temp : {0.6f, 1.0f, 1.5f}) {
+        const Sorted srt = sorted(l, temp);
         for (float top_p : {0.5f, 0.9f, 0.95f, 0.999f}) {
           SamplerOptions o;
           o.temp = temp;
           o.top_p = top_p;
           o.seed = 3;
-          for (uint64_t pos = 0; pos < 25; pos++, n++) same += sample_token(l.data(), V, o, pos) == reference(l, o, pos);
+          for (uint64_t pos = 0; pos < 25; pos++, n++) same += sample_token(l.data(), V, o, pos) == reference(srt, o, pos);
         }
+      }
     snprintf(what, sizeof what, "%d logits, top-p: the same token as with the whole vocabulary sorted in %ld of %ld draws", V, same, n);
     check(same == n, what);
   }

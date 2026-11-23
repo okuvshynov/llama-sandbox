@@ -364,7 +364,7 @@ Also the product's: `scripts/serve.sh` and `scripts/chat.sh` (the two ways to st
 |---|---|
 | `apps/ds_inspect.cpp` | load the model, or some layers, through the real loader and show what it found |
 | `bench/bench_*` | benchmarks of each kernel and of the loader, CPU and GPU (the Makefile knows which need `HIP=1`) |
-| `scripts/` | the tools still in use ([scripts/README.md](../scripts/README.md)): the runner of a matrix of runs (`run_matrix.py`) and the reader of their records (`records.py`; README steps 128-129), the chat launcher (`chat.sh`), the held-out measurement (`spec-measure.sh`), the trace tools, `route_stats.py`, the Mac Pro's fans and GPU clock (`fans_full.sh`, `set_vega_freq.sh`). A script written for one step lies with its results under `results/` (README step 130) |
+| `scripts/` | the tools still in use ([scripts/README.md](../scripts/README.md)): the checks as fixed runs (`check.py`, step 186), the runner of a matrix of runs (`run_matrix.py`) and the reader of their records (`records.py`; README steps 128-129), the chat launcher (`chat.sh`), the held-out measurement (`spec-measure.sh`), the trace tools, `route_stats.py`, the Mac Pro's fans and GPU clock (`fans_full.sh`, `set_vega_freq.sh`). A script written for one step lies with its results under `results/` (README step 130) |
 | `docs/testing.md` | the tests as they are: terms, each test's target, needs and time (step 184) |
 | `docs/rocprof.md` | the GPU side under AMD's `rocprofv3`: how to run it, its files, how to read them (README step 140) |
 | `results/` | raw outputs of every measurement quoted in the steps ([docs/reproduce.md](reproduce.md): which command produced which) |

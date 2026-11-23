@@ -1,5 +1,8 @@
 # Testing: the current state (2026-11-23, step 184)
 
+**Since step 186** the tests are being gathered into a few fixed runs of `scripts/check.py`:
+section 7. Sections 1 to 6 describe the tests themselves and the practice before that.
+
 What checks this engine today: the terms, every test with what it tests, what it is compared
 against, what it needs and how long it takes. This page describes; it changes nothing. The plan
 to make the process shorter is [plan.md](plan.md), "The testing process" (item 35), and it
@@ -98,8 +101,8 @@ checkpoint access. **verdict**: "auto" = the test itself exits non-zero on a fai
 
 | test | target | compared with | needs | time | verdict |
 |---|---|---|---|---|---|
-| `bin/test-fakequant data/fq` | the fp8 / fp4 rounding functions, host and ggml versions | `ref/kernel_cpu.py`'s outputs on 45,312 values per function (`data/fq/`, made by `ref/make_fq_test.py`): bit-identical | `data/fq/` (not in git; py to remake) | < 1 s | auto |
-| `bin/test-sampler` | `src/sampler.*`: temperature, top-p, one seed gives one draw sequence, distributions (chi-square) | its own specification | nothing | 80 s (the timing loops over 129,280 logits; reproduce.md says "a few seconds") | auto |
+| `bin/test-fakequant` | the fp8 / fp4 rounding ops of the reference path's graphs (`src/fakequant_graph.cpp`); the runtime's host functions in `src/fakequant.cpp` are not called by it | `ref/kernel_cpu.py`'s outputs on 45,312 values per function (`tests/fq/`, made by `ref/make_fq_test.py`): bit-identical | nothing (`tests/fq/` is in git since step 186) | < 1 s | auto |
+| `bin/test-sampler` | `src/sampler.*`: temperature, top-p, one seed gives one draw sequence, distributions (chi-square) | its own specification | nothing | 19 s (80 s until step 186: the comparison sorted the whole vocabulary for every draw) | auto |
 | `ref/check_topk.py` (runs `bin-hip/test-topk`) | the indexer's selection kernels: top-k, candidate blocks | torch's `topk` and the reference's `select_candidate_blocks` on 46 cases | GPU, py | 3 s | auto |
 | `bin-hip/bench-kernels --bitwise` | the batched (M-token) kernels | the one-token kernels: bit-identical | GPU | 1 s | auto |
 | `python3 server/test_server.py` | `server/ds_server.py`: prompts rendered, replies parsed, streams, refusals, cancels, metrics, logs | canned replies from `server/fake_engine.py` | the model's `encoding.py` (`~/llms/ds-flash/encoding/`) | 8 s | auto |
@@ -235,7 +238,7 @@ What this shows about the current practice:
 | the GPUs, ROCm 6.3.4, the clock set (sclk 6, by hand with sudo after a boot) | | | everything on `bin-hip/`; the clock matters for speed only |
 | golden sets (G) | `data/golden/`, 73 GB; `data/ref/*.pt` behind them | **no** (`data/` is ignored) | `ds-test` |
 | stored logits and dumps | `data/ds/*.f32`, `readme20k-topk.bin` | **no** | the byte-for-byte end-to-end checks |
-| `data/fq/` | inputs and expected outputs of the rounding test | **no** | `test-fakequant` |
+| `tests/fq/` | inputs and expected outputs of the rounding test | yes (since step 186; `data/fq/` before) | `test-fakequant` |
 | stored tables | `results/test-*.txt`, `results/rt-readme20k.txt` | yes | `ds-test` gates |
 | stored outputs, hashes and records | `results/cache-test/plain-canon-static/`, `results/record/reference/heldout-output.tsv`, `results/sampler/`, `results/chat/` | yes | 3.3, 3.4 |
 | `~/venvs/ds-ref` (torch, numpy) | the reference's environment | no (`ref/requirements.txt`) | making golden sets, `compare_logits.py`, `check_topk.py`, `check_weights.py`, the draft's comparison |
@@ -282,12 +285,35 @@ Stated as facts about the current state; what to do about them is the plan's sub
   `results/sampler/spec-heldout.matrix`, and three of them again in
   `results/sampler/step151/spec.matrix`.
 - **Per layer and end to end at 20,000 tokens** take 32 and 9 minutes on the same data.
-- **Not in git:** the golden sets, the stored logits and `data/fq/`. A clean checkout cannot
-  run `ds-test` or `test-fakequant` until they are made again with the reference.
+- **Not in git:** the golden sets and the stored logits. A clean checkout cannot
+  run `ds-test` until they are made again with the reference. (The rounding test's data: in git since step 186.)
 - **Not covered by any test today:** `-i` beyond the six stored sessions; `--think-show`
   (checked once, step 147); `--profile`, `--log-routing` and `--spec-log` outputs; the
   metrics and logs of the real server (only against the fake engine); a context above 20,000
   tokens against the reference; the fast (non-`--canon`) mode's outputs across placements,
   which are not expected to be identical; the draft against the reference since step 19.
-- **Seen, not explained:** the load is 139 s where step 151 recorded 116 s; `test-sampler`
-  takes 80 s.
+- **Seen, not explained:** the load is 139 s where step 151 recorded 116 s. (`test-sampler`'s
+  80 s: explained and cut to 19 s in step 186.)
+
+## 7. The runs (from step 186)
+
+Decided after this page was written (plan.md, "The testing process"): no choosing of tests per
+change. A few fixed runs, each one command with one verdict and an exit code:
+
+| run | command | when | contents | time |
+|---|---|---|---|---|
+| unit | `scripts/check.py unit` | after every change | everything of 3.1: no model files | 30 s (47 s with a build) |
+| default | `scripts/check.py default` (not built yet) | after every change | logits against stored bytes; the product's outputs in one load | 5-10 min allowed |
+| speed | (not built yet) | a change about speed | the held-out prompts' tokens per second | |
+| complete | (not built yet) | overnight | the rest of section 3 | |
+| localizers | by hand | when a verdict failed | section 3.6's "where" column | |
+
+`check.py` builds first (`make`, `make HIP=1`: a stale program is a wrong verdict), prints one
+line per check, keeps every check's output under `data/check/`, and for a failed check prints
+where its output is and what to run next. A check whose needed file is missing fails; it is
+not skipped.
+
+What `unit` needs outside the repository: ROCm and the GPUs (two checks run kernels),
+`~/venvs/ds-ref` (torch, for the reference's own top-k) and the model's `encoding.py` in
+`~/llms/ds-flash/encoding/` (the chat format the server test renders with). No weights.
+

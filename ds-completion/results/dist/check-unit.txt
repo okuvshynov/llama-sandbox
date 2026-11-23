@@ -1,0 +1,35 @@
+# scripts/check.py unit (README step 186): the checks that need no model files, as one run with one verdict.
+# Commit 4597c8e + this step's change (the commit that adds this file); sclk 6; 2026-11-23.
+#
+# 1. The run, after a change to two test sources (so the first build compiles them)
+scripts/check.py unit
+ok    build: make  14.5 s
+ok    build: make HIP=1  2.1 s
+ok    fakequant: the rounding ops against the reference's, bit for bit  0.0 s
+ok    sampler: temperature, top-p, one seed one sequence  19.0 s
+ok    top-k: the selection kernels against torch and the reference  2.1 s
+ok    kernels: M tokens per launch against one, bit for bit  0.8 s
+ok    server: ds_server.py against a fake engine  8.1 s
+all checks passed (47 s)                                        exit code 0
+#
+# 2. A negative control: one value of tests/fq/fp8.f32 (the reference's expected output) changed by 1.0
+scripts/check.py unit
+ok    build: make  0.0 s
+ok    build: make HIP=1  0.0 s
+FAIL  fakequant: the rounding ops against the reference's, bit for bit  0.0 s
+      exit code 1; output: data/check/unit-20261123-100023/01-fakequant.txt
+      next: its output names the first values that differ; the functions are in src/fakequant_graph.cpp
+ok    sampler: temperature, top-p, one seed one sequence  19.1 s
+ok    top-k: the selection kernels against torch and the reference  2.1 s
+ok    kernels: M tokens per launch against one, bit for bit  0.8 s
+ok    server: ds_server.py against a fake engine  8.1 s
+FAILED: 1 of 5 checks (30 s)                                    exit code 1
+#    The file restored (cmp with data/fq/fp8.f32). scripts/check.py bogus: the usage line, exit code 2.
+#
+# 3. bin/test-sampler: 80.2 s -> 19.0 s. Its check "129280 logits, top-p: the same token as with the whole vocabulary
+#    sorted" sorted the vocabulary for each of its 4,800 draws; the order depends on the logits and the temperature
+#    only, so it is now sorted 48 times. Every "ok" line of the output is the same text as before (diff without the
+#    four "time" lines). The 17 s left are the 4,800 draws of the sampler itself (up to 6.5 ms each on flat logits).
+#
+# 4. bin/test-fakequant: its data moved from data/fq/ (not in git) to tests/fq/ (in git, 4 files of 181,248 bytes,
+#    the same bytes); the directory is its optional argument. "ALL BIT-EXACT", 45,312 values per function.

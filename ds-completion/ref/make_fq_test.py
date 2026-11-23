@@ -2,7 +2,7 @@
 """Inputs + expected outputs of kernel_cpu's fake-quant functions, for bin/test-fakequant.
 
 Rows of 64 values at magnitudes from 1e-7 to 1e4, including exact ties of the e4m3 / e2m1 grids,
-zeros, and blocks whose amax hits the clamps. Writes data/fq/{in,fp8,fp4,fp4e4}.f32.
+zeros, and blocks whose amax hits the clamps. Writes tests/fq/{in,fp8,fp4,fp4e4}.f32 (in git since README step 186: 181 KB each).
 """
 import sys
 from pathlib import Path
@@ -23,7 +23,7 @@ ties = torch.tensor([0.25, 0.75, 1.25, 1.75, 2.5, 3.5, 5.0, 6.0] * 4)
 for sc in [2.0**-3, 1.0, 2.0**5]:
     rows.append(torch.cat([ties, -ties]) * sc)
 x = torch.stack(rows).float()
-out = Path("data/fq")
+out = Path("tests/fq")
 out.mkdir(parents=True, exist_ok=True)
 x.numpy().tofile(out / "in.f32")
 K.act_quant(x.clone(), 32, "ue8m0", torch.float8_e8m0fnu, True).numpy().tofile(out / "fp8.f32")

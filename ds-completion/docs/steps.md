@@ -6945,3 +6945,57 @@ What the split shows about the practice:
 For item 35 this gives a rule the first draft of the plan lacked: a tier runs verdicts; a
 localizer runs when its verdict fails.
 
+## Step 186: the runs decided, and the first of them: `scripts/check.py unit`
+
+**The decision** (the person, 2026-11-23, on `docs/testing.md`): aim for simplicity and speed
+of iteration, and avoid deciding per change which tests to pick, because mistakes happen there.
+So a few fixed runs:
+
+1. **unit**: no model files, fast; after every change.
+2. **default**: with the model, avoiding reloads; after most changes. 5-10 minutes is fine.
+3. **speed**: the held-out prompts' tokens per second, its own run: small performance gains
+   were the common case and will be again.
+4. **complete**: whatever it takes, overnight.
+5. **localizers**: only when a verdict failed.
+
+PLAN's section "The testing process" has the contents of each and the order of work; the tiers
+"by what changed" of step 181's draft are gone.
+
+**Built here: `unit`.** `scripts/check.py unit` builds both ways (a stale program is a wrong
+verdict), runs five checks and prints a line for each, then one verdict; exit code 1 on any
+failure; every check's output kept under `data/check/`. A failed check prints where its
+output is and what to look at next. A check whose needed file is missing fails, it is not
+skipped.
+
+| check | time |
+|---|---|
+| the rounding ops against the reference's (`bin/test-fakequant`) | 0.0 s |
+| the sampler (`bin/test-sampler`) | 19.0 s |
+| the selection kernels against torch (`ref/check_topk.py`) | 2.1 s |
+| the batched kernels against one token per launch (`bin-hip/bench-kernels --bitwise`) | 0.8 s |
+| the server against a fake engine (`server/test_server.py`) | 8.1 s |
+| all, with nothing to build | 30 s |
+
+Two changes to make them fit:
+
+- **`test-sampler`: 80 s -> 19 s.** One check compared 4,800 draws with "the whole vocabulary
+  sorted", and sorted 129,280 values for each draw. The order depends on the logits and the
+  temperature only: sorted 48 times now. The same draws, the same lines of output. The 17 s
+  left are the sampler's own 4,800 draws.
+- **`test-fakequant`'s data in git** (`tests/fq/`, 725 KB; it was under `data/`, which git
+  ignores): the test now runs from a clean checkout.
+
+**A negative control** (`results/dist/check-unit.txt`): one value of the reference's expected
+output changed; the run says FAIL for that check, passes the other four, exit code 1.
+
+**What `unit` still needs from outside the repository:** the GPUs with ROCm (two checks run
+kernels), the Python environment with torch (the reference's top-k), and the model's
+`encoding.py` for the server test. No weights.
+
+**Seen while doing it:** `test-fakequant` checks the rounding ops of the reference path's
+graphs only. The runtime's host functions (`src/fakequant.cpp`: the fp8 codec and repack) have
+a self-test at the draft's load and no unit test.
+
+Next: `default`. First the expected logits and token ids of the golden sets into git, and the
+end-to-end runs of the runtime on the longer sets timed.
+
