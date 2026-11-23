@@ -1,0 +1,31 @@
+# The last read after the two-machine code left (README step 180): the documents and the code searched for what
+# steps 178 and 179 missed; one thing in the code (verify()'s `head` parameter, which no caller passed).
+# Commit 33a96a8 + this step's change (the commit that adds this file); llama.cpp e626db7ca in ~/projects/llama.cpp;
+# sclk 6 on the four GPUs (manual; the star reads 6 at idle, the records say [6, 6, 6, 6]);
+# 2026-11-22 19:30 to 19:55, the machine booted at 13:50 (the same boot as step 179: nothing read from storage).
+#
+# 1. The search (current documents and code; results/, docs/steps.md and docs/process.md, which are history, left out)
+grep -rnIiE 'two[- ]machine|second machine|both machines|other machine|shower|--remote|--serve\b|--layers|--teacher|--stream-(in|out)|stream_(in|out)|peer|trace_merge|split-measure|layer range|range of layers|two halves|\bL0\b|layer0\(|layer1\(' --include='*.md' --include='*.cpp' --include='*.h' --include='*.py' --include='*.sh' --include='Makefile' .
+#    Every hit read. Changed: two passages in the present tense (docs/overview.md section 6, docs/timing.md's
+#    two-machine section). Left as they are: the notes "measured, then removed" (README, overview, plan, timing,
+#    numerics, record, reproduce), the history lines of docs/plan.md, --layers of ds-test, ds-inspect, fp8pack and
+#    the benchmarks (other programs' options), "two halves" of a prompt chunk (step 45's overlap, one machine).
+#    No hit in QUICKSTART.md, scripts/, server/, docs/requests.md, docs/server.md, the matrices.
+#
+# 2. Build: make, make HIP=1: rc 0, no warnings. bin-hip/ds-completion 17,072,536 -> 17,072,512 bytes.
+#
+# 3. Held-out prompts, once: scripts/run_matrix.py results/cleanup/heldout.matrix --reps 1 --keep-out --out <dir>
+#    Each output compared with results/cache-test/plain-canon-static/<prompt>.out (cmp). No run failed.
+#    prompt            t/s   MB read from storage while generating   output
+    tcp-udp         38.94    0.0   the stored bytes
+    py-lru          47.09    0.0   the stored bytes
+    cpp-matrix      54.62    1.0   the stored bytes
+    sql-report      47.33    0.0   the stored bytes
+    geometry        55.04    0.0   the stored bytes
+    zh-travel       34.01    0.0   the stored bytes
+    ja-email        37.26    0.0   the stored bytes
+    summary-json    44.78    0.0   the stored bytes
+#    mean 44.88 t/s (step 179's second repeat: 44.91).
+#
+# Not run: ds-test, the request and server tests, a trace (the change is one parameter of one function, and every
+# call of it is in the runs above).

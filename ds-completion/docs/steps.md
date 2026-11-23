@@ -6748,3 +6748,28 @@ itself, as a place for A/B runs of one-machine builds. In the code: nothing.
 
 **Not done:** the longer golden sets; `-i` sessions and sampling with the new build; a last read
 of the documents for what the two steps left (the third step of the plan).
+
+## Step 180: a last read after the two-machine code left
+
+The third step of the plan of step 178: the current documents and the code searched for what
+steps 178 and 179 missed (`results/dist/two-machines-last-read.txt` has the search). Little was
+left, as the documents had moved with the two code commits.
+
+- **Code:** `Runtime::verify()` had a parameter `head` (false: no logits). Only the back half of
+  step 111 could want a verify step without logits; no caller passed it. Removed; the comment
+  that described it is now on `forward_chunk()`, where prompt chunks do use it.
+- **Documents:** two passages still spoke of two machines in the present tense: the overview's
+  paragraph under the step's time table, and the two-machine section of `docs/timing.md` (its
+  heading already said "measured, then removed"). Both are in the past tense now.
+- **Left as they are:** the notes "measured, then removed" in the README, the overview, the
+  plan, `timing.md`, `numerics.md`, `record.md` and `reproduce.md`; the plan's history lines;
+  `--layers` of `ds-test`, `ds-inspect`, `fp8pack` and the benchmarks, which are those programs'
+  own options; "two halves" of a prompt chunk, which is step 45's overlap on one machine.
+
+**Checked** (sclk 6, the same boot as step 179): both builds without warnings; the held-out
+prompts once, 8 of 8 outputs the stored bytes, mean 44.88 t/s (step 179: 44.91), nothing read
+from storage. Not run: `ds-test`, the request and server tests (one parameter of one function,
+and all its calls are in those runs).
+
+**Not done**, carried from steps 178-179: the longer golden sets, `-i` sessions and sampling
+with the build after the removal. Open: why the starred clock level read 1 in step 178's boot.

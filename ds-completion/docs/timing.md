@@ -160,25 +160,25 @@ What a second identical machine gave (README steps 110-112), kept here for what 
 one machine: the cost of the CPU's experts. The code was removed in step 178 (the last commit
 with it: `efa4e03`).
 
-Layers 0-19 on one machine, layers 20-39 with the head and the draft on a second one; per step
-the stream of the verified tokens goes over once (64 KB per token) and a few ids come back
+Layers 0-19 ran on one machine, layers 20-39 with the head and the draft on a second one; per step
+the stream of the verified tokens went over once (64 KB per token) and a few ids came back
 (README steps 110-112). Held-out mean **50.9 t/s** against 44.6 on one machine.
 
 - **A 6-token code step** (merged trace, medians): the front's layers 36.4 ms, the stream over
   0.4, the back's layers and head 36.1, the ids back 0.14, the draft 9.35: **82.7 ms** against
   92.9 on one machine. A 2-token chat step: 21.4 + 22.4 + 8.8 = 53.7.
 - **What it removed:** die 0's wait for the CPU's experts (26.7 ms of a 6-token step on one
-  machine, 0 on both halves here): each machine holds ~88% of its half's experts on GPUs (~42% on
+  machine, 0 on both halves there): each machine held ~88% of its half's experts on GPUs (~42% on
   one machine) and 97-99% of the expert uses.
-- **What it did not change:** the dense work (48 ms of a step on one machine, ~36 + ~36 here,
-  as each half's layers now include what used to hide under the CPU's time). So the gain follows
+- **What it did not change:** the dense work (48 ms of a step on one machine, ~36 + ~36 there,
+  as each half's layers included what used to hide under the CPU's time). So the gain followed
   the CPU's share: +23-27% where a third of the experts ran on the CPU, +8% on chat, +2.5% on Chinese and
   Japanese (1-2 tokens per step),
   0 on a 3,000-token reasoning run whose cache had 97% on GPUs already.
-- **The network** is ~0.5 ms per step. A millisecond of the back's work is a millisecond of the
-  step: the front waits for exactly what the back takes (answers arrive ~155 us after it is done).
-- **The machines take turns:** half of the two machines' GPUs is idle at any moment. The draft
-  call waits ~1 ms behind the back's commit.
+- **The network** was ~0.5 ms per step. A millisecond of the back's work was a millisecond of the
+  step: the front waited for exactly what the back took (answers arrived ~155 us after it was done).
+- **The machines took turns:** half of the two machines' GPUs was idle at any moment. The draft
+  call waited ~1 ms behind the back's commit.
 
 ## Seeing a step: traces
 

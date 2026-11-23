@@ -438,7 +438,7 @@ void Runtime::set_half(int i, int t0) {
   cur_half = i;
 }
 
-std::vector<int32_t> Runtime::verify(const std::vector<int32_t>& chunk, bool head) {
+std::vector<int32_t> Runtime::verify(const std::vector<int32_t>& chunk) {
   const int M = (int)chunk.size(), HD = hp.head_dim;
   if (M < 1 || M > DSpark::kMaxChunk) throw std::runtime_error("verify: chunk of " + std::to_string(M));
   verify_p0 = n_past_;
@@ -457,7 +457,7 @@ std::vector<int32_t> Runtime::verify(const std::vector<int32_t>& chunk, bool hea
   }
   verifying = true;
   const auto t_v = Clock::now();
-  std::vector<int32_t> next = forward_chunk(chunk, head);
+  std::vector<int32_t> next = forward_chunk(chunk);
   trace_host(("verify " + std::to_string(M) + " tokens").c_str(), t_v, Clock::now(), 3);
   verifying = false;
   return next;

@@ -193,7 +193,7 @@ is one solid, well-tested and clear single-machine implementation. The two-machi
 of the runtime, and was the least tested path (nothing after step 112 ran on it: not sampling
 with `--spec`, the server, records). In three commits: the link (`--remote`, `--serve`,
 `hip/peer.h`; step 178), the layer range (`--layers`, `--teacher`, the stream in and out; step
-179), the documents (most of them moved with the two code steps). The last commit with all of
+179), a last read of the code and the documents (step 180; most documents moved with the two code steps). The last commit with all of
 it: `efa4e03`; with the layer range: `519ffd4`. The measurements, the traces and the two
 scripts stay under `results/split/` and `results/trace/two-machines/`. What follows is the text
 as it stood, for what it says about one machine (the CPU's experts are what a second machine's
@@ -529,6 +529,7 @@ Step 178: the two-machine link out of the code (`--remote`, `--serve`, `hip/peer
 clock samples in `--trace`); the last commit with it: efa4e03. Next: the layer range (`--layers`, `--teacher`, the stream).
 Step 179: the layer range out of the runtime and the program (`--layers`, `--teacher`, `--stream-in`, `--stream-out`,
 `hip/rt_peer.cpp`); the runtime runs layers 0 .. k, all of them outside `ds-test --layers`; the last commit with it: 519ffd4.
+Step 180: a last read after the removal: `verify()`'s unused `head` parameter out, two passages of the documents in the past tense.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front

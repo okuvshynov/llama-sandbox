@@ -215,7 +215,7 @@ A code prompt's 6-token verify step, 85 ms (the traces of README steps 105 and 1
 | outside the layers (embedding, head, ids to the host, the cache's step) | 5 |
 
 So the dense part on one die is over half of a step and the CPU's misses a third; on two
-machines the CPU's part is gone and each half's layers take ~36 ms. Sampling adds ~0.5 ms per
+machines (step 111, since removed) the CPU's part was gone and each half's layers took ~36 ms. Sampling adds ~0.5 ms per
 draw, one per accepted draft and one more.
 
 When this page was first written (sclk 2, before the cache) a plain step was 87 ms with every

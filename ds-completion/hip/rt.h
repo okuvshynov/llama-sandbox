@@ -103,8 +103,7 @@ class Runtime {
   // only. The window ring needs nothing: a discarded slot is written again, by the token that
   // takes its position, before any window reads it. Nor do the compressed caches: they are keyed
   // by position and read only up to the current one.
-  // head = false: no logits (prompt chunks), returns an empty vector
-  std::vector<int32_t> verify(const std::vector<int32_t>& chunk, bool head = true);
+  std::vector<int32_t> verify(const std::vector<int32_t>& chunk);
   // For sampling (README step 150): with keep_verify_logits set, verify() also copies the
   // chunk's logits to the host; verify_logits(i) are those after chunk[i], n_vocab of them,
   // valid until the next verify().
@@ -346,7 +345,8 @@ class Runtime {
   hipEvent_t ev_engram = nullptr;  // delays the engram layer that reads it
   bool engram_copied = false;      // s still has to wait for ev_engram
   void fetch_engram_pending();
-  std::vector<int32_t> forward_chunk(const std::vector<int32_t>& toks, bool head = true);  // the greedy next token after each
+  // the greedy next token after each; head = false: no logits (prompt chunks), an empty vector
+  std::vector<int32_t> forward_chunk(const std::vector<int32_t>& toks, bool head = true);
   void tap(Taps* taps, const char* name, const float* d, std::vector<int64_t> ne);
   void mark(const char* group);
   std::vector<std::pair<const char*, hipEvent_t>> marks;
