@@ -7201,3 +7201,32 @@ measurement should be tried on stored measurements before it is trusted with a n
 nothing to choose per change: `unit` 30 s, `default` 5.5 min, `speed` 36 min, `complete` ~4 h.
 What to improve in each is listed in the plan.
 
+## Step 191: the last expected hash for `complete`, and what its logits say against the reference
+
+Step 190 left one check of `complete` without an expectation: the CPU reference path's logits
+on the 1,102-token set. Made twice in separate processes (114 s each), the same sha256; it is
+in `tests/e2e/expected.txt` now, so the overnight run needs no `--store`.
+
+Before storing it, the file against the reference (`ref/compare_logits.py`):
+
+| | argmax | mean KL | max KL |
+|---|---|---|---|
+| the CPU reference path, `readme1100` | **4 of 5** | 1.27e-02 | 2.48e-02 |
+| the runtime, `readme1100` (step 187) | 5 of 5 | 1.30e-02 | 2.42e-02 |
+
+The one that differs is step 0, the token after the 1,100-token prompt: the reference's two
+best logits there are 23.815 (token 769) and 23.734 (token 313), 0.08 apart; our CPU path has
+them at 23.475 and 23.717 and so takes 313. The KL of that step (2.5e-02) is of the size of
+the runtime's on the same set. `readme1100` is a golden set of the real reference (bf16 with
+rounding), against which a correct implementation is 2-10% off per layer by construction
+(the reason the fp32 variants exist), and the per-layer table of this path on this set has not
+changed since it was stored. So this reads as a near-tie decided by that noise, on a path that
+has computed the same since step 174 at least. It is not proven: there is no fp32 variant of
+this set to compare with, which is what would decide it.
+
+The hash stored is what the path computes today. It says "unchanged", not "right": that is
+all a stored hash can say, and the comparison above is the kind of look `--store` asks for.
+
+**Open:** an fp32 golden set at ~1,100 tokens (the reference, ~10 minutes), to tell the
+near-tie from a difference; until then the 4 of 5 stands as an observation.
+

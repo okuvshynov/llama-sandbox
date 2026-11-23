@@ -609,6 +609,8 @@ boots); a process that ends first stops it (a chat session 126 -> 21 s). Open, t
 and how `speed` measures.
 Step 190: `check.py speed` and `check.py complete`, both as things are measured today (the person: build the split first,
 improve each run after); progress lines of the long checks in the run's own output. The four runs exist.
+Step 191: the CPU path's expected logits at 1,102 tokens stored; against the reference 4 of 5 argmaxes (a near-tie on a bf16
+set; an fp32 set of that length would decide it).
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front
