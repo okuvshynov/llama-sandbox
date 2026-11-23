@@ -8,7 +8,7 @@
 // fp8 split  fq_fp8_split: its codes times its scale must be the same values
 // fp4, fp4e4 the scalar rules fq_e2m1_round / fq_e4m3_round / fq_pow2_ceil, put together here as the
 //            reference does (blocks of 32 with a power-of-two scale; blocks of 16 with an e4m3
-//            scale). The runtime's fp4 rounding itself runs in GPU kernels (hip/kernels.hip),
+//            scale). The runtime's fp4 rounding itself runs in GPU kernels (src/kernels.hip),
 //            which the logits checks cover; this keeps the rules they were written from honest.
 // No ggml (README step 192): until then this tested the CPU reference path's graph ops only.
 #include "fakequant.h"

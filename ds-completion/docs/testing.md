@@ -42,7 +42,7 @@ plain greedy output was established once, and every faster path must print the s
   program `bin/ds-ref`, `bin/ds-test` without `--runtime`); not the official code. Removed in
   steps 192-194: the runtime is compared with the reference directly. The last commit with it
   is `bb42f51`; its stored tables (`results/test-*.txt` without `-runtime`) stay as history.
-- **The runtime.** The product's implementation on the GPUs (`hip/`, the class `Runtime`).
+- **The runtime.** The product's implementation on the GPUs (`src/rt.cpp` and what it uses, the class `Runtime`; in `hip/` until step 196).
 - **A golden set** (`data/golden/<name>/`, made from `data/ref/<name>.pt`). One run of the
   reference on one prompt, recorded: for every forward (the prompt, then each decoded token)
   and every layer, the layer's input and its intermediate and output tensors, the routed

@@ -26,7 +26,7 @@ upstream" below. Nothing is changed in the code yet, and the decision above stan
   pointer (the mmap) and row strides, computed by ggml from the tensor's type.
 - **ggml's CPU ops**: until step 194, for the CPU reference path (`src/forward.cpp`, removed). Now only one benchmark's baseline (`bench/bench_cpu_moe.cpp`).
 
-The GPU runtime (`hip/`) and the CPU expert kernels are our own code; they read raw bytes.
+The GPU runtime (`src/rt.cpp` and its kernels) and the CPU expert kernels are our own code; they read raw bytes.
 
 ## The fork
 
@@ -123,7 +123,7 @@ rest). Three places depend on type 43 being MXFP8:
 | place | what it takes from ggml |
 |---|---|
 | `src/model.cpp`, the Engram tensor's check | the name `GGML_TYPE_MXFP8` |
-| `hip/rt.cpp`, `fetch_engram_rows` (the GPU runtime) | the type's `to_float` and the row's size in bytes (`nb[1]`) |
+| `src/rt.cpp`, `fetch_engram_rows` (the GPU runtime) | the type's `to_float` and the row's size in bytes (`nb[1]`) |
 | `src/forward.cpp`, `Engine::engram` (the CPU-only path; removed in step 194) | `ggml_get_rows` on the table |
 
 **The trial** (`results/dist/trunk-trial.patch`, on a copy of our sources at `40f345e`; the
@@ -181,7 +181,7 @@ The trial's two steps, done:
 - **The decoder** (`src/model.h`, `src/model.cpp`): `mxfp8_to_float` and `mxfp8_row_bytes`. A
   block is 33 bytes, one e8m0 scale then 32 e4m3 codes; value = e4m3(code) x 2^(scale - 127),
   exact in fp32, the same values as the PR's `dequantize_row_mxfp8`.
-- **Both paths use it.** The GPU runtime (`hip/rt.cpp`, `fetch_engram_rows`) in place of the
+- **Both paths use it.** The GPU runtime (`src/rt.cpp`, `fetch_engram_rows`) in place of the
   type's `to_float` and `nb[1]`. The CPU path (`src/forward.cpp`, `Engine::engram`; removed in step 194) gathered and
   decoded the rows on the host and gives them to its graph as an input, in place of
   `ggml_get_rows` on the table.

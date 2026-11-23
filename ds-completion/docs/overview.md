@@ -87,11 +87,11 @@ token -> embedding (host) -> 40 x [ engram (layers 1, 14) -> attention block -> 
                                                                         sum in a fixed order on GPU 0
 ```
 
-- **Dense part on GPU 0** (`hip/rt.cpp`, `hip/kernels.hip`, `hip/fp8_gemv.hip`): our own HIP
+- **Dense part on GPU 0** (`src/rt.cpp`, `src/kernels.hip`, `src/fp8_gemv.hip`): our own HIP
   kernels, one token per step, ~1,500 kernel launches per token. The dense linears come from a
   lossless fp8 repack (`fp8pack`, 6.4 GB instead of 14 GB bf16); the GEMV multiplies fp8 x fp8
   exactly with fp16 dot products and fp32 accumulation.
-- **Routed experts on GPUs** (`hip/expert_pool.hip`, `hip/fp4_moe.hip`): each die holds a pool of
+- **Routed experts on GPUs** (`src/expert_pool.hip`, `src/fp4_moe.hip`): each die holds a pool of
   expert slots (18.8 MB each). A placement file ranks (layer, expert) pairs by how often the router
   chose them in a 30-prompt study; at startup the top ones that fit are uploaded (6,097 of the 15,360 experts =
   40%, with the draft at the default context). The fp4 kernel is exact too (fp4 and fp8 values are exact in fp16).
@@ -106,7 +106,7 @@ token -> embedding (host) -> 40 x [ engram (layers 1, 14) -> attention block -> 
   projections as fp8 matrix multiplies, the CPU's experts batched per expert and computed for
   one half of the chunk while the GPU runs the other half's attention; attention still per
   token inside the chunk. Every result bit-identical to token by token.
-- **Speculative decoding** (`hip/dspark.cpp`, `Runtime::verify/commit`): the release's DSpark
+- **Speculative decoding** (`src/dspark.cpp`, `Runtime::verify/commit`): the release's DSpark
   draft (3 small layers reading the main model's layers 37-39, 8.0 GB on GPU 0) guesses the
   next 5 tokens in ~8 ms. The main model then runs [last token, guesses] as one chunk:
   projections, the head and the expert block read their weights once for all tokens; attention
@@ -278,8 +278,9 @@ barely fit in two machines' RAM).
 
 ## 9. Code map
 
-Libraries and programs are apart (README step 139): `src/` is the CPU-side library and `hip/`
-the GPU runtime library, neither has a `main`; `apps/` has the programs one runs, `tests/` the
+Libraries and programs are apart (README step 139): `src/` is the engine, without a `main`
+(until step 196 in two directories by compiler: `src/` for what builds without ROCm, `hip/` for
+the GPU runtime; the Makefile still knows which files need ROCm); `apps/` has the programs one runs, `tests/` the
 test programs, `bench/` the benchmarks. `scripts/` has the tools still in use; a script written
 for one step lies with its results.
 
@@ -328,15 +329,15 @@ each also with `HIP=1`; `make` builds all of them, as before.
 | `src/sampler.{h,cpp}` | the next token from the logits: greedy, or temperature and top-p with a random number per (seed, position) (README steps 148-151); `tests/test_sampler.cpp` checks it |
 | `src/fakequant.{h,cpp}` | the reference's fp8/fp4 rounding without ggml: the scalar rules, the host functions the runtime calls, the fp8 repack of `fp8pack` |
 | `src/fatal.h` | where the process is, for the handler that reports a fatal signal |
-| `hip/rt.{h,cpp}` | the GPU runtime: state, layer order, the expert split |
-| `hip/rt_trace.cpp` | the runtime's observability: the startup memory ledger, `--profile`'s groups, `--trace` (`hip/rt_internal.h`: the helpers the runtime's files share) |
-| `hip/kernels.{h,hip}` | the runtime's kernels (norms, attention, indexer, hyper-connections, router, dispatch) |
-| `hip/fp8_gemv.{h,hip}` | exact fp8 x fp8 GEMV |
-| `hip/fp4_moe.{h,hip}` | exact fp4 routed-expert kernel (4 launches) |
-| `hip/expert_pool.{h,hip}` | expert slots per die, placement reading and assignment |
-| `hip/expert_cache.{h,cpp}` | the adaptive cache: which experts to swap in and out, from recent use |
-| `hip/expert_loader.{h,cpp}` | the background loads into pool slots, one thread per die |
-| `hip/dspark.{h,cpp}` | the DSpark draft (3 layers, Markov and confidence heads) |
+| `src/rt.{h,cpp}` | the GPU runtime: state, layer order, the expert split |
+| `src/rt_trace.cpp` | the runtime's observability: the startup memory ledger, `--profile`'s groups, `--trace` (`src/rt_internal.h`: the helpers the runtime's files share) |
+| `src/kernels.{h,hip}` | the runtime's kernels (norms, attention, indexer, hyper-connections, router, dispatch) |
+| `src/fp8_gemv.{h,hip}` | exact fp8 x fp8 GEMV |
+| `src/fp4_moe.{h,hip}` | exact fp4 routed-expert kernel (4 launches) |
+| `src/expert_pool.{h,hip}` | expert slots per die, placement reading and assignment |
+| `src/expert_cache.{h,cpp}` | the adaptive cache: which experts to swap in and out, from recent use |
+| `src/expert_loader.{h,cpp}` | the background loads into pool slots, one thread per die |
+| `src/dspark.{h,cpp}` | the DSpark draft (3 layers, Markov and confidence heads) |
 | `docs/requests.md` | `--requests`: the protocol between the engine and a server's front (README step 152) |
 | `docs/server.md`, `server/` | the HTTP front: `ds_server.py` (Anthropic Messages over `--requests`; its test without a model is `tests/test_server.py` with `tests/fake_engine.py`, README steps 153-154), `pi-models.json` for the pi harness (docs/pi.md) |
 | `placements/` | ranked expert placements (`study30.txt` is the default) |
@@ -344,7 +345,7 @@ each also with `HIP=1`; `make` builds all of them, as before.
 Also the product's: `scripts/serve.sh` and `scripts/chat.sh` (the two ways to start it),
 `server/ds_server.py`, and DeepSeek's `encoding.py` from the model's directory.
 
-### What checks it: the reference path and the tests
+### What checks it: the tests
 
 | path | what |
 |---|---|

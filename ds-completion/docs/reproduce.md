@@ -317,6 +317,7 @@ Unless stated: sclk 2, 16 CPU threads (32 before README step 18), the study30 pl
 | 193 | (no results file: the checks are the result) | `scripts/check.py default`; `python3 tests/record_check.py fnv1a64:df516e7200ad14c8 bin-hip/ds-completion -m $M --rt $F8 --placement placements/study30.txt --canon -f tests/long-prompt.txt -n 40`; `ds-ref` itself: `git checkout bb42f51 && make bin/ds-ref` |
 | 194 | (no results file) | `scripts/check.py default`; `bin-hip/ds-test -m $M -g data/golden/hello-fp32 --runtime $F8` from this commit and from `90b4613`, the last column cut (`awk '{NF=NF-1; print}'`), `cmp`; `bin/bench-cpu-moe -m $M --tokens 2 --check-layers 0,20` |
 | 195 | (a move; no results file) | `scripts/check.py default`; `python3 tests/requests_test.py --headers-only`. Paths in rows above this one are those of their commits: `tests/e2e` etc. are `tests/data/...` now, `server/test_server.py` and `results/requests/requests_test.py` are in `tests/` |
+| 196 | (a move; no results file) | `scripts/check.py default`. In rows above this one `hip/x` is `src/x` now |
 | 167 | `server/serve.txt` | by hand: `DS_LOGS=<a directory> scripts/serve.sh`, one request with `curl` (the one of `docs/pi.md`, section 1), a minute's wait for `metrics.prom`, Ctrl-C; the file's parts are named in it |
 
 ## 7. Open items (to confirm)

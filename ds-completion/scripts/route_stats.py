@@ -146,7 +146,7 @@ def lru_warm(keys, C, prior_counts):
 
 def emit_placement(path, keys, n_pairs, sources, caps):
     """Ranked (layer, expert) pairs, most used first: the runtime keeps the top ones that fit in
-    HBM (hip/expert_pool.h). Pairs never used are listed too, after the used ones, in layer order,
+    HBM (src/expert_pool.h). Pairs never used are listed too, after the used ones, in layer order,
     so any capacity can be filled."""
     counts = np.bincount(keys.ravel(), minlength=n_pairs)
     order = np.lexsort((np.arange(n_pairs), -counts))  # by count desc, ties by (layer, expert)

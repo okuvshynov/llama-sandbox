@@ -251,7 +251,7 @@ is one solid, well-tested and clear single-machine implementation. The two-machi
 +14% on short runs and nothing on long ones, was not parallel, was a second branch in every call
 of the runtime, and was the least tested path (nothing after step 112 ran on it: not sampling
 with `--spec`, the server, records). In three commits: the link (`--remote`, `--serve`,
-`hip/peer.h`; step 178), the layer range (`--layers`, `--teacher`, the stream in and out; step
+`src/peer.h`; step 178), the layer range (`--layers`, `--teacher`, the stream in and out; step
 179), a last read of the code and the documents (step 180; most documents moved with the two code steps). The last commit with all of
 it: `efa4e03`; with the layer range: `519ffd4`. The measurements, the traces and the two
 scripts stay under `results/split/` and `results/trace/two-machines/`. What follows is the text
@@ -261,7 +261,7 @@ GPU memory bought).
 **Was done** (README steps 110-112): a second identical Mac Pro; the model cut at layer 20, the only
 cut where nothing but the residual stream crosses (compressed caches and index picks stay within
 each half; the engram is in the front, the draft and the head in the back); the halves as two
-processes over TCP (`hip/peer.h`), the front driving; one merged trace. Held-out mean 44.60 ->
+processes over TCP (`src/peer.h`), the front driving; one merged trace. Held-out mean 44.60 ->
 50.85 t/s, outputs identical.
 
 **What the split is and is not.** It is GPU room: each machine holds ~88% of its half's expert
@@ -482,7 +482,7 @@ Step 130: done: 33 one-step scripts moved to their results, 11 stay (`scripts/RE
 measurements: a matrix file beside its results, read with `scripts/records.py`.
 Step 131: cleanup, part 1: `run()` split: `Args` + `parse_args()`, `write_record()`; behaviour unchanged
 (old against new on 8 usage errors and 7 kinds of run). Next: the two generation loops as functions; then
-the unadopted studies removed one per commit; `hip/rt.cpp` last. The kernels are not touched.
+the unadopted studies removed one per commit; `src/rt.cpp` last. The kernels are not touched.
 Step 132: part 2: `Turn`, `generate_spec()`, `generate_plain()`, `report_shadow()`; `run()` 268 lines (was
 664); eleven kinds of run the same old against new. Next: the unadopted studies, one per commit.
 Step 133: the second draft block's study (step 107) out of the code: `DS_DRAFT2_LOG`, `draft_shadow`, `gap`;
@@ -493,7 +493,7 @@ commit with it: def1a2a. Next: the router lookahead (step 63), the draft's unuse
 Step 135: the router lookahead (step 63) out: 174 lines; the last commit with it: 8798740. The draft's
 hidden-state dump stays: `ds-test` and `ref/dspark_check.py` use it. Next: `DS_DRAFT_KEEP`.
 Step 136: `DS_DRAFT_KEEP` and the hidden-state dump stay for now. `hip/rt.cpp` part 1: the trace, the
-profile's groups and the memory ledger into `hip/rt_trace.cpp` (+ `hip/rt_internal.h`); speed unchanged.
+profile's groups and the memory ledger into `src/rt_trace.cpp` (+ `src/rt_internal.h`); speed unchanged.
 Next: the two-machine code into its own file, then the constructor in parts.
 Step 137: the two-machine code into `hip/rt_peer.cpp`; both halves as two processes on one machine, old
 and new builds in every pairing: the whole model's output. Two-machine speed not measured. Next: the
@@ -587,7 +587,7 @@ Step 177: `~/forks/llama.cpp` deleted; the documents reviewed against steps 168-
 Step 178: the two-machine link out of the code (`--remote`, `--serve`, `hip/peer.h`, the runtime's `peer` branches, the
 clock samples in `--trace`); the last commit with it: efa4e03. Next: the layer range (`--layers`, `--teacher`, the stream).
 Step 179: the layer range out of the runtime and the program (`--layers`, `--teacher`, `--stream-in`, `--stream-out`,
-`hip/rt_peer.cpp`); the runtime runs layers 0 .. k, all of them outside `ds-test --layers`; the last commit with it: 519ffd4.
+`src/rt_peer.cpp`); the runtime runs layers 0 .. k, all of them outside `ds-test --layers`; the last commit with it: 519ffd4.
 Step 180: a last read after the removal: `verify()`'s unused `head` parameter out, two passages of the documents in the past tense.
 Step 181: sessions, sampling and the longer golden sets on the build after the removal: all the stored bytes (3 h, 2 h of it
 loads of the model). Next: the testing process (item 35).
@@ -618,6 +618,7 @@ Next: `src/forward.*`, `src/fakequant_graph.*`, the CPU mode of `ds-test`.
 Step 194: done: the sources and `ds-test`'s CPU mode removed (793 + 138 lines); `ds-test` is the runtime's test, HIP=1 only.
 The CPU reference path is gone: one implementation, checked against the official reference.
 Step 195: the directories (the person): every test under `tests/`, data under `tests/data/`. Next: `hip/` into `src/`; `bench/` to `tools/`.
+Step 196: `hip/` merged into `src/` (the engine, 34 files). Next: `bench/` to `tools/`.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front

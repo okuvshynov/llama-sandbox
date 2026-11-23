@@ -19,7 +19,7 @@
 // speculative loop's totals, the routed experts' uses, placement and cache totals, and the times
 // the "# ..." lines on stderr report.
 // Built with make HIP=1. --rt <dense-fp8.gguf> is required: every token goes through the own
-// runtime (hip/rt.h: the dense part on GPU D in exact fp8, routed experts on the CPU or, with
+// runtime (src/rt.h: the dense part on GPU D in exact fp8, routed experts on the CPU or, with
 // --placement, partly on GPUs). (Until README step 193 this file also built ds-ref, the model on
 // the CPU alone as ggml graphs: the first implementation, removed in steps 192-194.)
 

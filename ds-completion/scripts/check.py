@@ -73,9 +73,9 @@ UNIT = [
     ('sampler: temperature, top-p, one seed one sequence', ['bin/test-sampler'], [],
      'its output names the check; src/sampler.cpp'),
     ('top-k: the selection kernels against torch and the reference', [PY_REF, 'ref/check_topk.py'], [PY_REF],
-     'its output names the case; hip/kernels.hip (k_topk, k_candidate_blocks)'),
+     'its output names the case; src/kernels.hip (k_topk, k_candidate_blocks)'),
     ('kernels: M tokens per launch against one, bit for bit', ['bin-hip/bench-kernels', '--bitwise'], [],
-     'its output names the kernel; hip/kernels.hip'),
+     'its output names the kernel; src/kernels.hip'),
     ('server: ds_server.py against a fake engine', [sys.executable, 'tests/test_server.py'], [ENCODING],
      'its output names the check; server/ds_server.py'),
 ]

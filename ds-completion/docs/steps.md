@@ -7367,3 +7367,26 @@ programs, `server/` the server, `tests/` what checks them, `tools/` what measure
 (`--headers-only`): all passed. Older steps and results files name the old paths: they describe
 the tree of their commits.
 
+## Step 196: the directories, 2: `hip/` into `src/`
+
+`src/` and `hip/` were split by what compiles them: `src/` builds without ROCm, `hip/` is the
+GPU runtime. While there were two implementations of the model, `src/` was also what they
+shared. Since step 194 everything in `src/` is the host half of the one runtime, and the split
+said how a file is compiled, not what it is for.
+
+All 18 files of `hip/` moved to `src/` (no two names met): the runtime (`rt.*`, `rt_trace.cpp`,
+`rt_internal.h`), the draft (`dspark.*`), the expert pool, loader and cache, the GPU kernels
+(`kernels.*`, `fp8_gemv.*`, `fp4_moe.*`). `src/` has 34 files. No file's content changed but
+for paths in comments. The Makefile keeps the build boundary as it had it: the objects that
+need ROCm are built only with `HIP=1`; `-Ihip` is gone. The build directories keep their names
+(`bin/`, `bin-hip/`).
+
+`scripts/check.py default`: all checks passed (301 s).
+
+A mistake on the way: the replacement of `hip/` by `src/` in the sources also rewrote
+`#include <hip/hip_runtime.h>`, ROCm's own header. The build said so at once.
+
+A further split inside `src/` (the arithmetic kernels apart from the runtime that drives them)
+is possible at this size and was left: the include directions have not been checked for a
+clean cut.
+

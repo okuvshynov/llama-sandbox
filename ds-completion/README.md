@@ -50,7 +50,7 @@ Three kinds of code live here, and the directories alone do not say which is whi
 
 | | what | where |
 |---|---|---|
-| **The product** | the engine with the GPU runtime (`bin-hip/ds-completion --rt ...`), the HTTP server in front of it, and `fp8pack`, which makes one of its files | `apps/ds_completion.cpp`, `apps/fp8pack.cpp`, `hip/`, `src/` except `forward.*` and `fakequant_graph.*`, `server/ds_server.py`, `scripts/serve.sh`, `scripts/chat.sh`, `placements/` |
+| **The product** | the engine with the GPU runtime (`bin-hip/ds-completion --rt ...`), the HTTP server in front of it, and `fp8pack`, which makes one of its files | `apps/ds_completion.cpp`, `apps/fp8pack.cpp`, `src/`, `server/ds_server.py`, `scripts/serve.sh`, `scripts/chat.sh`, `placements/` |
 | **What checks it** | the test programs, the fixed runs of `scripts/check.py`, the official Python reference and the golden data it writes (a second implementation of the model on the CPU was removed in steps 192-194) | `tests/`, `scripts/check.py`, `ref/`, `tests/test_server.py`, `tests/fake_engine.py` |
 | **Tools** | benchmarks, the runner of measurements and the readers of records and traces, the inspector, every measurement's raw output | `bench/`, `scripts/` (the rest), `apps/ds_inspect.cpp`, `results/` |
 

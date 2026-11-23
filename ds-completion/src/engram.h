@@ -1,5 +1,5 @@
 // Which rows of the Engram table a position reads (README step 171; the hash was in forward.cpp
-// until then). The GPU runtime (hip/rt.cpp) uses it; so did the CPU reference path until README
+// until then). The GPU runtime (src/rt.cpp) uses it; so did the CPU reference path until README
 // step 194. The rows' bytes are decoded by mxfp8_to_float (model.h).
 #pragma once
 

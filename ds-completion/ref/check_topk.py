@@ -1,4 +1,4 @@
-"""The runtime's indexer selection kernels (hip/kernels.h: k_topk, k_candidate_blocks,
+"""The runtime's indexer selection kernels (src/kernels.h: k_topk, k_candidate_blocks,
 k_mask_candidates) against the reference's own code on the same scores (PLAN.md "Long context").
 
     ~/venvs/ds-ref/bin/python ref/check_topk.py [--bin bin-hip/test-topk]

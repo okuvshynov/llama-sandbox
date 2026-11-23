@@ -1,7 +1,7 @@
 # ds-completion: links ggml (and, for the tokenizer only, libllama) from a llama.cpp checkout
 # (LLAMA_CPP, default ~/projects/llama.cpp): upstream, at the commit QUICKSTART.md names (README steps 168, 175).
 #
-# src/ and hip/ are the libraries (CPU side, GPU runtime); apps/, tests/ and bench/ the programs.
+# src/ is the engine (the files that need ROCm are compiled only with HIP=1); apps/, tests/ and bench/ the programs.
 #
 #   make          CPU build -> bin/
 #   make HIP=1    also the own GPU runtime (hip/, ROCm 6.3.4, gfx906) -> bin-hip/
@@ -30,13 +30,13 @@ LDLIBS   = $(GGML_LIBS) -fopenmp -lpthread -ldl
 CORE   = src/model.cpp src/engram.cpp src/fakequant.cpp src/cpu_moe.cpp src/canon_dot.cpp src/sampler.cpp
 CORE_H = src/model.h src/engram.h src/taps.h src/options.h src/fakequant.h src/cpu_moe.h src/canon_dot.h src/sampler.h
 
-# HIP builds: ds-completion (built only here) and ds-test carry the own decode runtime (hip/), compiled by
+# HIP builds: ds-completion (built only here) and ds-test carry the own decode runtime (src/rt.cpp and what it uses), compiled by
 # hipcc into objects that the g++ link picks up
 ROCM = /opt/rocm-6.3.4
 ifeq ($(HIP),1)
 RT_OBJ   = $(BIN)/obj/rt.o $(BIN)/obj/rt_trace.o $(BIN)/obj/kernels.o $(BIN)/obj/fp8_gemv.o $(BIN)/obj/fp4_moe.o $(BIN)/obj/expert_pool.o \
            $(BIN)/obj/expert_loader.o $(BIN)/obj/expert_cache.o $(BIN)/obj/dspark.o
-RT_FLAGS = -D__HIP_PLATFORM_AMD__ -Ihip -I$(ROCM)/include
+RT_FLAGS = -D__HIP_PLATFORM_AMD__ -I$(ROCM)/include
 RT_LIBS  = $(RT_OBJ) -L$(ROCM)/lib -Wl,-rpath,$(ROCM)/lib -lamdhip64
 endif
 
@@ -66,11 +66,11 @@ tools: $(TOOLS)
 
 # our own HIP kernels (PLAN.md B1 onwards)
 HIPCC    = $(ROCM)/bin/hipcc
-HIPFLAGS = -std=c++17 -O3 -fPIC --offload-arch=gfx906 -Ihip -Isrc -I$(LLAMA_CPP)/ggml/include
+HIPFLAGS = -std=c++17 -O3 -fPIC --offload-arch=gfx906 -Isrc -I$(LLAMA_CPP)/ggml/include
 
-$(BIN)/bench-fp8: bench/bench_fp8.cpp hip/fp8_gemv.hip hip/fp8_gemv.h src/fakequant.cpp
+$(BIN)/bench-fp8: bench/bench_fp8.cpp src/fp8_gemv.hip src/fp8_gemv.h src/fakequant.cpp
 	@mkdir -p $(BIN)
-	$(HIPCC) $(HIPFLAGS) -fopenmp -o $@ bench/bench_fp8.cpp hip/fp8_gemv.hip src/fakequant.cpp \
+	$(HIPCC) $(HIPFLAGS) -fopenmp -o $@ bench/bench_fp8.cpp src/fp8_gemv.hip src/fakequant.cpp \
 	    -L$(LLAMA_CPP)/$(BUILD)/ggml/src -lggml -lggml-cpu -lggml-base -lpthread -ldl
 
 # the CLI, the product: the GPU runtime, no CPU path (README step 173). libllama only for the
@@ -90,9 +90,9 @@ endif
 	@mkdir -p $(BIN)
 	$(CXX) $(CXXFLAGS) $(RT_FLAGS) -o $@ tests/ds_test.cpp $(CORE) $(RT_LIBS) $(LDLIBS)
 
-$(BIN)/bench-kernels: bench/bench_kernels.cpp hip/kernels.hip hip/fp8_gemv.hip hip/kernels.h hip/fp8_gemv.h
+$(BIN)/bench-kernels: bench/bench_kernels.cpp src/kernels.hip src/fp8_gemv.hip src/kernels.h src/fp8_gemv.h
 	@mkdir -p $(BIN)
-	$(HIPCC) $(HIPFLAGS) -o $@ bench/bench_kernels.cpp hip/kernels.hip hip/fp8_gemv.hip
+	$(HIPCC) $(HIPFLAGS) -o $@ bench/bench_kernels.cpp src/kernels.hip src/fp8_gemv.hip
 
 $(BIN)/bench-row-stride: bench/bench_row_stride.hip
 	@mkdir -p $(BIN)
@@ -114,9 +114,9 @@ $(BIN)/bench-register: bench/bench_register.cpp
 	@mkdir -p $(BIN)
 	$(HIPCC) $(HIPFLAGS) -o $@ bench/bench_register.cpp
 
-$(BIN)/test-topk: tests/test_topk.cpp hip/kernels.hip hip/kernels.h
+$(BIN)/test-topk: tests/test_topk.cpp src/kernels.hip src/kernels.h
 	@mkdir -p $(BIN)
-	$(HIPCC) $(HIPFLAGS) -o $@ tests/test_topk.cpp hip/kernels.hip
+	$(HIPCC) $(HIPFLAGS) -o $@ tests/test_topk.cpp src/kernels.hip
 
 $(BIN)/bench-fp4-moe: bench/bench_fp4_moe.cpp $(BIN)/obj/fp4_moe.o src/model.cpp src/cpu_moe.cpp src/fakequant.cpp $(CORE_H)
 	@mkdir -p $(BIN)
@@ -133,27 +133,27 @@ $(BIN)/bench-expert-pool: bench/bench_expert_pool.cpp $(BIN)/obj/fp4_moe.o $(BIN
 	$(CXX) $(CXXFLAGS) $(RT_FLAGS) -O3 -o $@ bench/bench_expert_pool.cpp src/model.cpp src/cpu_moe.cpp src/canon_dot.cpp src/fakequant.cpp \
 	    $(BIN)/obj/fp4_moe.o $(BIN)/obj/expert_pool.o -L$(ROCM)/lib -Wl,-rpath,$(ROCM)/lib -lamdhip64 $(LDLIBS)
 
-$(BIN)/obj/%.o: hip/%.hip hip/kernels.h hip/fp8_gemv.h hip/fp4_moe.h hip/expert_pool.h
+$(BIN)/obj/%.o: src/%.hip src/kernels.h src/fp8_gemv.h src/fp4_moe.h src/expert_pool.h
 	@mkdir -p $(BIN)/obj
 	$(HIPCC) $(HIPFLAGS) -c -o $@ $<
 
-$(BIN)/obj/expert_loader.o: hip/expert_loader.cpp hip/expert_loader.h hip/expert_pool.h hip/fp4_moe.h $(CORE_H)
+$(BIN)/obj/expert_loader.o: src/expert_loader.cpp src/expert_loader.h src/expert_pool.h src/fp4_moe.h $(CORE_H)
 	@mkdir -p $(BIN)/obj
 	$(HIPCC) $(HIPFLAGS) -c -o $@ $<
 
-$(BIN)/obj/expert_cache.o: hip/expert_cache.cpp hip/expert_cache.h hip/expert_loader.h hip/expert_pool.h hip/kernels.h $(CORE_H)
+$(BIN)/obj/expert_cache.o: src/expert_cache.cpp src/expert_cache.h src/expert_loader.h src/expert_pool.h src/kernels.h $(CORE_H)
 	@mkdir -p $(BIN)/obj
 	$(HIPCC) $(HIPFLAGS) -c -o $@ $<
 
-$(BIN)/obj/rt.o: hip/rt.cpp hip/rt.h hip/rt_internal.h hip/expert_cache.h hip/expert_loader.h hip/dspark.h hip/kernels.h hip/fp8_gemv.h hip/fp4_moe.h hip/expert_pool.h $(CORE_H)
+$(BIN)/obj/rt.o: src/rt.cpp src/rt.h src/rt_internal.h src/expert_cache.h src/expert_loader.h src/dspark.h src/kernels.h src/fp8_gemv.h src/fp4_moe.h src/expert_pool.h $(CORE_H)
 	@mkdir -p $(BIN)/obj
 	$(HIPCC) $(HIPFLAGS) -c -o $@ $<
 
-$(BIN)/obj/rt_trace.o: hip/rt_trace.cpp hip/rt.h hip/rt_internal.h hip/expert_cache.h hip/expert_loader.h hip/dspark.h hip/kernels.h hip/fp8_gemv.h hip/fp4_moe.h hip/expert_pool.h $(CORE_H)
+$(BIN)/obj/rt_trace.o: src/rt_trace.cpp src/rt.h src/rt_internal.h src/expert_cache.h src/expert_loader.h src/dspark.h src/kernels.h src/fp8_gemv.h src/fp4_moe.h src/expert_pool.h $(CORE_H)
 	@mkdir -p $(BIN)/obj
 	$(HIPCC) $(HIPFLAGS) -c -o $@ $<
 
-$(BIN)/obj/dspark.o: hip/dspark.cpp hip/rt.h hip/dspark.h hip/kernels.h hip/fp8_gemv.h hip/fp4_moe.h hip/expert_pool.h $(CORE_H)
+$(BIN)/obj/dspark.o: src/dspark.cpp src/rt.h src/dspark.h src/kernels.h src/fp8_gemv.h src/fp4_moe.h src/expert_pool.h $(CORE_H)
 	@mkdir -p $(BIN)/obj
 	$(HIPCC) $(HIPFLAGS) -c -o $@ $<
 
