@@ -319,6 +319,7 @@ Unless stated: sclk 2, 16 CPU threads (32 before README step 18), the study30 pl
 | 195 | (a move; no results file) | `scripts/check.py default`; `python3 tests/requests_test.py --headers-only`. Paths in rows above this one are those of their commits: `tests/e2e` etc. are `tests/data/...` now, `server/test_server.py` and `results/requests/requests_test.py` are in `tests/` |
 | 196 | (a move; no results file) | `scripts/check.py default`. In rows above this one `hip/x` is `src/x` now |
 | 197 | (a move; no results file) | `scripts/check.py default`; `bin/ds-inspect -m $M`; `bin-hip/bench-kernels --bitwise`. In rows above this one `bench/x` is `tools/x` now, `apps/ds_inspect.cpp` is `tools/ds_inspect.cpp` |
+| 198 | `dist/check-complete-first.txt` | `scripts/check.py complete > data/check-complete.txt 2>&1` (6 h 43 min in that boot); section 1 is that file without the lines starting `      \|`; section 2 the two `.err` files it names; section 3 from the records in `data/check/speed-<time>/runs/` against `tests/data/speed/baseline.tsv` (the python lines are in the step's commit message) |
 | 167 | `server/serve.txt` | by hand: `DS_LOGS=<a directory> scripts/serve.sh`, one request with `curl` (the one of `docs/pi.md`, section 1), a minute's wait for `metrics.prom`, Ctrl-C; the file's parts are named in it |
 
 ## 7. Open items (to confirm)

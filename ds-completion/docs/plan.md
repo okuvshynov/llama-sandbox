@@ -620,6 +620,8 @@ The CPU reference path is gone: one implementation, checked against the official
 Step 195: the directories (the person): every test under `tests/`, data under `tests/data/`. Next: `hip/` into `src/`; `bench/` to `tools/`.
 Step 196: `hip/` merged into `src/` (the engine, 34 files). Next: `bench/` to `tools/`.
 Step 197: `bench/` is `tools/`, with `ds_inspect`. The directories follow the three groups: product (`src/`, `apps/`, `server/`), `tests/`, `tools/`.
+Step 198: `complete` whole for the first time: 16 of 18 pass, 6 h 43 min; no output differs; two crashes in the ROCm runtime (the exit abort; a segfault at a
+loader thread's first allocation, perhaps the same fault); registration 285 s per start in this boot. Next: the registration.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front

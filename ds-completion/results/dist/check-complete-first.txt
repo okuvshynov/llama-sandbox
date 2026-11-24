@@ -1,0 +1,131 @@
+# scripts/check.py complete > data/check-complete.txt 2>&1   (README step 198: the first whole run of `complete`)
+# Commit f86fef9; sclk 6 on the four dies (manual); 2026-11-23, 15:01 to 21:44; booted 14:57.
+# Result: 16 of 18 checks passed, 2 failed, 24,176 s (6 h 43 min). Both failures are crashes inside the ROCm
+# runtime, not a differing output and not a lost speed:
+#   15 sampling, with speculation: 15 of 15 output hashes are the stored ones; the run s1-n5 cpp-matrix aborted
+#      after main (free(): invalid pointer in libhsa-runtime64's shutdown: the exit abort of steps 93, 96, 101).
+#   18 speed: the first run (tcp-udp, repeat 1) died of SIGSEGV in the thread load-die1 before any load, in
+#      load_stage_create; the check stops at "a run failed" and gives no verdict. From its 15 records the second
+#      repeat's mean is 44.81 t/s against the baseline's 44.88 (-0.16%); section 3.
+# Registration of the expert tensors took 284.6-284.8 s in every engine start of this boot (116-139 s in the
+# boots of step 189): "loaded in" 297.3-298.5 s in the 31 records of checks 16 and 18.
+#
+# Sections: 1. the run's own lines (without the long checks' streamed lines)  2. the two crashes' stderr
+#           3. the speed check's records against the baseline
+
+== 1. data/check-complete.txt, the lines of check.py itself
+# scripts/check.py complete; commit f86fef9; sclk 6,6,6,6; 2026-11-23 15:01; outputs in data/check/complete-20261123-150118/
+ok    build: make  0.0 s
+ok    build: make HIP=1  0.0 s
+..    fakequant: the rounding ops against the reference's, bit for bit
+ok    fakequant: the rounding ops against the reference's, bit for bit  0.0 s
+..    sampler: temperature, top-p, one seed one sequence
+ok    sampler: temperature, top-p, one seed one sequence  19.1 s
+..    top-k: the selection kernels against torch and the reference
+ok    top-k: the selection kernels against torch and the reference  2.6 s
+..    kernels: M tokens per launch against one, bit for bit
+ok    kernels: M tokens per launch against one, bit for bit  0.8 s
+..    server: ds_server.py against a fake engine
+ok    server: ds_server.py against a fake engine  8.1 s
+..    logits, the runtime, hello-fp32
+ok    logits, the runtime, hello-fp32  17.0 s
+..    logits, the runtime, readme200
+ok    logits, the runtime, readme200  45.4 s
+..    logits, the runtime, readme1100
+ok    logits, the runtime, readme1100  66.2 s
+..    outputs: the product in one load, and one session  (15:03; its lines follow, all of its output: data/check/complete-20261123-150118/09-outputs.txt)
+ok    outputs: the product in one load, and one session  434.6 s
+..    logits, the runtime, readme20k-s
+ok    logits, the runtime, readme20k-s  535.2 s
+..    requests: the protocol on one engine, with speculation  (15:20; its lines follow, all of its output: data/check/complete-20261123-150118/11-requests.txt)
+ok    requests: the protocol on one engine, with speculation  861.5 s
+..    requests: the same in the plain loop  (15:34; its lines follow, all of its output: data/check/complete-20261123-150118/12-requests.txt)
+ok    requests: the same in the plain loop  899.7 s
+..    sessions: six sessions and ten single runs on their conversations  (15:49; its lines follow, all of its output: data/check/complete-20261123-150118/13-sessions.txt)
+ok    sessions: six sessions and ten single runs on their conversations  5153.6 s
+..    sampling: the plain loop, one seed across repeats, placements and the cache  (17:15; its lines follow, all of its output: data/check/complete-20261123-150118/14-sampling.txt)
+ok    sampling: the plain loop, one seed across repeats, placements and the cache  1367.8 s
+..    sampling: with speculation, seeds and fixed draft lengths  (17:38; its lines follow, all of its output: data/check/complete-20261123-150118/15-sampling.txt)
+FAIL  sampling: with speculation, seeds and fixed draft lengths  4699.2 s
+      exit code 1
+      output: data/check/complete-20261123-150118/15-sampling.txt
+      next: its output names the run
+..    sampling: with speculation on the held-out prompts  (18:56; its lines follow, all of its output: data/check/complete-20261123-150118/16-sampling.txt)
+ok    sampling: with speculation on the held-out prompts  5015.3 s
+..    a long prompt from a file: 2,731 tokens in chunks of 512
+ok    a long prompt from a file: 2,731 tokens in chunks of 512  48.1 s
+..    speed: the held-out prompts in fresh processes, twice  (20:20; its lines follow, all of its output: data/check/complete-20261123-150118/18-speed.txt)
+FAIL  speed: the held-out prompts in fresh processes, twice  5001.8 s
+      exit code 1
+      output: data/check/complete-20261123-150118/18-speed.txt
+      next: its output has each prompt against the baseline and says how to look further
+FAILED: 2 of 18 checks (24176 s)
+rc=1
+
+== 2a. data/check/matrix-spec.matrix-20261123-173809/s1-n5-cpp-matrix-1.err, from 'loaded in'
+# loaded in 297.8 s; prompt 25 tokens; fake-quant on; 16 threads
+
+# drafts verified per step: 0: 0 1: 0 2: 0 3: 0 4: 0 5: 65 (of the 0s, 0 plain steps without a draft); verify cost fit 91.1 + -1.3 n ms
+# speculative: 65 verify steps, 3.65 drafts accepted per step, 4.62 tokens per step; draft 7.8 ms per step
+# routed experts: 86.6% on GPUs (86275 of 99600)
+# prompt: 25 tokens in 0.61 s = 41.03 t/s; generation: 300 tokens in 6.22 s = 48.19 t/s
+# short forwards: 233 of 7920 (die, layer) results needed a second copy (3 rows per token in the first)
+# expert cache: 33 rebalances, 4172 swaps planned, 3923 loads started, 3923 published
+# expert loader: 4308 pieces unregistered in 0.0 s
+free(): invalid pointer
+# fatal signal 6; phase: after main: static destructors and the libraries' exit; thread: ds-completion (the main thread); loads started / finished per die: 0/0 1276/1276 1298/1298 1349/1349
+# backtrace:
+bin-hip/ds-completion(+0x840df)[0x63c40d4f70df]
+/lib/x86_64-linux-gnu/libc.so.6(+0x424b0)[0x78e30be424b0]
+/lib/x86_64-linux-gnu/libc.so.6(pthread_kill+0x12c)[0x78e30be9691c]
+/lib/x86_64-linux-gnu/libc.so.6(raise+0x16)[0x78e30be42406]
+/lib/x86_64-linux-gnu/libc.so.6(abort+0xd3)[0x78e30be287f3]
+/lib/x86_64-linux-gnu/libc.so.6(+0x895c7)[0x78e30be895c7]
+/lib/x86_64-linux-gnu/libc.so.6(+0xa0c1c)[0x78e30bea0c1c]
+/lib/x86_64-linux-gnu/libc.so.6(+0xa2964)[0x78e30bea2964]
+/lib/x86_64-linux-gnu/libc.so.6(free+0x73)[0x78e30bea5373]
+/opt/rocm-6.3.4/lib/libhsa-runtime64.so.1(+0x6f423)[0x78e302c6f423]
+/lib/x86_64-linux-gnu/libc.so.6(+0x45425)[0x78e30be45425]
+/lib/x86_64-linux-gnu/libc.so.6(on_exit+0x0)[0x78e30be455a0]
+/lib/x86_64-linux-gnu/libc.so.6(+0x29d97)[0x78e30be29d97]
+/lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x80)[0x78e30be29e40]
+bin-hip/ds-completion(+0x832e5)[0x63c40d4f62e5]
+
+== 2b. data/check/speed-20261123-202052/runs/cleanup-tcp-udp-1.err, from 'expert loader'
+# expert loader: 288.8 GB of expert tensors registered in 284.6 s (direct loads from now)
+# expert cache: up to 800 loads/s, rebalance every 8 tokens over the last 256
+# loaded in 297.5 s; prompt 20 tokens; fake-quant on; 16 threads
+# fatal signal 11; phase: run; thread: load-die1 (not the main thread); loads started / finished per die: 0/0 0/0 0/0 0/0
+# backtrace:
+bin-hip/ds-completion(+0x840df)[0x5c60ec2140df]
+/lib/x86_64-linux-gnu/libc.so.6(+0x424b0)[0x794a168424b0]
+/lib/x86_64-linux-gnu/libstdc++.so.6(_ZSt29_Rb_tree_insert_and_rebalancebPSt18_Rb_tree_node_baseS0_RS_+0x14b)[0x794a16cc684b]
+/opt/rocm-6.3.4/lib/libhsa-runtime64.so.1(+0x6f0c0)[0x794a0d66f0c0]
+/opt/rocm-6.3.4/lib/libamdhip64.so.6(+0x37317d)[0x794a1737317d]
+/opt/rocm-6.3.4/lib/libamdhip64.so.6(+0x391cef)[0x794a17391cef]
+/opt/rocm-6.3.4/lib/libamdhip64.so.6(+0x370320)[0x794a17370320]
+/opt/rocm-6.3.4/lib/libamdhip64.so.6(+0x34fd28)[0x794a1734fd28]
+/opt/rocm-6.3.4/lib/libamdhip64.so.6(+0x28086c)[0x794a1728086c]
+/opt/rocm-6.3.4/lib/libamdhip64.so.6(+0x280aeb)[0x794a17280aeb]
+/opt/rocm-6.3.4/lib/libamdhip64.so.6(+0x282127)[0x794a17282127]
+bin-hip/ds-completion(+0x11955b)[0x5c60ec2a955b]
+bin-hip/ds-completion(+0x11b957)[0x5c60ec2ab957]
+bin-hip/ds-completion(+0x11c775)[0x5c60ec2ac775]
+/lib/x86_64-linux-gnu/libstdc++.so.6(+0xdc253)[0x794a16cdc253]
+/lib/x86_64-linux-gnu/libc.so.6(+0x949e3)[0x794a168949e3]
+/lib/x86_64-linux-gnu/libc.so.6(+0x126860)[0x794a16926860]
+# addr2line on bin-hip/ds-completion: +0x11955b load_stage_create(int, unsigned long, int); +0x11b957 ExpertLoader::work_loop(int)
+# the two crashes in libhsa-runtime64.so.1: +0x6f423 (2a, free at exit) and +0x6f0c0 (2b, a std::map insert), 0x363 bytes apart
+
+== 3. speed: generation t/s per prompt (records in data/check/speed-20261123-202052/runs/), computed by hand, not by speed_check.py
+prompt          repeat 1  repeat 2  baseline     diff  output hashes of the two repeats
+cpp-matrix         52.42     54.76     52.54   +4.24%  same
+geometry           55.87     54.98     55.60   -1.11%  same
+ja-email           37.12     36.84     37.35   -1.35%  same
+py-lru             46.79     46.68     47.29   -1.27%  same
+sql-report         47.55     47.16     47.72   -1.17%  same
+summary-json       45.00     44.99     45.17   -0.42%  same
+tcp-udp          crashed     39.01     39.23   -0.58%  one only
+zh-travel          34.21     34.08     34.19   -0.32%  same
+mean                         44.81     44.88   -0.16%
+# storage read while generating, second repeat: max 0 bytes

@@ -7413,3 +7413,57 @@ is not part of the product. `apps/` now holds the product's two programs only
 
 Three pure moves; no arithmetic and no output changed.
 
+
+## Step 198: `complete`, the first whole run
+
+`scripts/check.py complete` on `f86fef9`, started after a reboot (clock set, level 6), 15:01 to
+21:44 (`results/dist/check-complete-first.txt`). **16 of 18 checks passed, 2 failed; 6 h 43 min**
+against the ~4 h estimated.
+
+| check | result | time |
+|---|---|---|
+| unit, the logits at 12 / 202 / 1,102 tokens, outputs | ok | 10 min |
+| the logits at 20,000 tokens | ok | 9 min |
+| requests, with speculation and in the plain loop | ok | 14 + 15 min |
+| sessions: six, and ten single runs | ok | 86 min |
+| sampling, the plain loop | ok | 23 min |
+| sampling, with speculation | **FAIL**: 15 of 15 hashes the stored ones, one run aborted at exit | 78 min |
+| sampling, the held-out prompts | ok | 84 min |
+| the long prompt | ok | 48 s |
+| speed | **FAIL**: the first run crashed, no verdict | 83 min |
+
+The checks written in step 190 and never run whole (sessions, the three matrices, the 20,000-token
+logits, the long prompt) worked as written. No output differed from its stored one anywhere.
+
+**Failure 1: the exit abort again.** `s1-n5 cpp-matrix` generated its 300 tokens, wrote its
+record (the stored hash), and aborted after `main` with `free(): invalid pointer` in
+libhsa-runtime64's shutdown: steps 93, 96, 101. `run_matrix.py` counts the exit code, so the
+check failed with all its hashes right.
+
+**Failure 2: a segfault at the first load, new.** The speed check's first run died of SIGSEGV
+before generating: thread `load-die1`, in `load_stage_create` (each die's loader thread
+allocates its staging buffers there: `hipHostMalloc`, `hipMalloc`), the stack ending in
+libhsa-runtime64 inserting into a `std::map`. The check stops at "a run failed" and compares no
+speeds. From the 15 records, by hand: the second repeat's mean **44.81 t/s against the
+baseline's 44.88 (-0.16%)**; seven prompts -0.3% to -1.4%, cpp-matrix +4.2%; the two repeats'
+outputs the same on the seven prompts that have both.
+
+**The two crashes may be one.** The exit abort is a `free` at `+0x6f423` of libhsa-runtime64,
+the segfault an insert at `+0x6f0c0`: 0x363 bytes apart. The loader threads of dies 1-3 start
+together and all allocate through HIP at once. If the runtime's map does not stand that, a
+damaged tree fails either at an insert (once, today) or when it is freed at exit (the abort
+seen since step 93). A hypothesis: not reproduced, the libraries are stripped. Its test is
+cheap: the stages created one at a time, and many starts.
+
+**Why 6.7 hours: the registration.** It took 284.6-284.8 s in every engine start of this boot
+(step 189: constant within a boot, 116 / 139 / 119 s in three boots). "Loaded in" is 297-299 s
+in all 31 records of the last two checks. The sessions (16 starts), the two speculation
+matrices (15 and 16) and speed (16) are 5.5 of the 6.7 hours, most of it this.
+
+**What the run says about the checks themselves:**
+- a run that crashes after `main` with a complete record of the right hash fails its matrix;
+  whether that is a failure or a warning is to be decided;
+- the speed check loses its whole verdict to one failed run, here one of the warm-up repeat;
+- `complete`'s time depends on the boot by a factor of 1.7 through the registration.
+
+Next: the registration, why a boot can be 2.5 times slower, and what removes the wait.
