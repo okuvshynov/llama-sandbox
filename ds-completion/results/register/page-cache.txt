@@ -1,0 +1,53 @@
+# Why the registration of the expert tensors took 285 s in one boot and 116 s in another (README step 199).
+# Commit ebb9162; sclk 6; 2026-11-23, 21:50-22:10; booted 14:57, after scripts/check.py complete (step 198), nothing else running.
+# The probes are step 189's (results/register/reg_threads.cpp, reg_flags.cpp; the g++ line is in registration.txt);
+# ktop.py is beside this file. $D = ~/llms/UD-Q8_K_XL, $M3 / $M4 = its shards 3 and 4.
+#
+# In this boot nobody ran `cat $D/*.gguf > /dev/null`: the page cache was filled by the checks themselves, through the
+# page faults of ds-test and ds-completion (16 threads, the experts in the order the tokens route to them).
+#
+# 1. The probes in this boot, as it was:   ./reg_threads $M3 6   and   ./reg_flags $M4      (step 189: 2.1-2.9 GB/s)
+64 MB pieces, 1 thread (as the loader)               populate  0.00 s, register   6.80 s =  0.95 GB/s (0.95 GB/s with the populate)
+the same again (a second region)                     populate  0.00 s, register   6.91 s =  0.93 GB/s (0.93 GB/s with the populate)
+1024 MB pieces, 1 thread                             populate  0.00 s, register   6.52 s =  0.99 GB/s (0.99 GB/s with the populate)
+64 MB pieces, 4 threads                              populate  0.00 s, register   6.96 s =  0.93 GB/s (0.93 GB/s with the populate)
+64 MB pieces, 16 threads                             populate  0.00 s, register   7.02 s =  0.92 GB/s (0.92 GB/s with the populate)
+populated first by 16 threads; 64 MB, 1 thread       populate  0.41 s, register   6.18 s =  1.04 GB/s (0.98 GB/s with the populate)
+populated first by 16 threads; 64 MB, 16 threads     populate  0.39 s, register   6.53 s =  0.99 GB/s (0.93 GB/s with the populate)
+read-only | portable (the loader's)     6.19 s = 1.04 GB/s; cpu user 0.00 s, system 2.04 s
+read-only                               6.74 s = 0.95 GB/s; cpu user 0.01 s, system 2.15 s
+portable                                6.14 s = 1.05 GB/s; cpu user 0.01 s, system 2.03 s
+default (0)                             6.07 s = 1.06 GB/s; cpu user 0.01 s, system 2.01 s
+#    The same probe, the same bytes, 2.5 times slower than in the boot of step 189: the machine's state, not the engine.
+#
+# 2. Who is on a CPU meanwhile:   python3 ktop.py ./reg_flags $M4      (CPU time per thread over the run, >= 0.1 s)
+wall 26.5 s        (4 cases of ~6.1 s; the probe's own thread: 8.2 s in the kernel by its own count above)
+  1.86 s (user 0.00 sys 1.86)  kworker/u128:1-page1
+  1.39 s (user 0.00 sys 1.39)  kworker/u128:3-page1
+  1.30 s (user 0.00 sys 1.30)  kworker/u128:2-page1
+#    (the rest is this session's own processes.) The caller 8.2 s and the kernel workers of the GPU's page-table
+#    queue ("page1") 4.6 s: for about half of the 26.5 s nothing of it is on a CPU. It waits for the GPU side.
+#
+# 3. One shard dropped from the page cache and read back in one sequential pass, then the same probe:
+#    python3 -c "import os,sys; fd=os.open(sys.argv[1],os.O_RDONLY); os.posix_fadvise(fd,0,0,os.POSIX_FADV_DONTNEED)" $M4
+#    cat $M4 > /dev/null        (50.5 GB in 18.3 s; Cached: 305.1 -> 255.8 -> 305.1 GB)
+#    ./reg_flags $M4
+read-only | portable (the loader's)     2.69 s = 2.39 GB/s; cpu user 0.00 s, system 1.29 s
+read-only                               1.53 s = 4.20 GB/s; cpu user 0.01 s, system 1.09 s
+portable                                1.55 s = 4.17 GB/s; cpu user 0.00 s, system 1.10 s
+default (0)                             1.52 s = 4.23 GB/s; cpu user 0.00 s, system 1.09 s
+#    1.0 -> 4.2 GB/s (the first case 2.4), above anything step 189 measured.
+#
+# 4. The whole model the same way, then one engine start:
+#    the fadvise line for each of the nine shards (Cached: 305 -> 16 GB; MemFree 772 GB)
+#    cat $D/*.gguf > /dev/null        (188 s; Cached: 513 GB)
+#    bin-hip/ds-completion -m $M --rt .../dense-fp8.gguf --placement placements/study30.txt --dspark ... --spec --canon
+#        --cache-loads 800 --cache-period 8 --cache-wait -p "What is the difference between TCP and UDP?" -n 100
+    before (every start of step 198's run)   "288.8 GB of expert tensors registered in 284.6 s"; "loaded in 297.5 s"
+    after                                    "288.8 GB of expert tensors registered in 75.1 s";  "loaded in 87.7 s"
+#
+# So the rate of the registration is a property of the page cache's pages: 1.0 GB/s when the files came in through
+# page faults in routing order, 4.2 GB/s (3.8 over the whole model) when they came in by one sequential read into
+# free memory. Not measured: the pages' physical layout itself (/proc/<pid>/pagemap gives frame numbers to root only).
+# The reading that fits: a sequential read gets physically consecutive pages, the driver maps consecutive pages to
+# the GPU in large pieces, scattered ones page by page. The boots of step 189 (116, 119, 139 s) lie between the two.

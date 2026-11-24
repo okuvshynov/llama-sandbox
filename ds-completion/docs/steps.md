@@ -7467,3 +7467,43 @@ matrices (15 and 16) and speed (16) are 5.5 of the 6.7 hours, most of it this.
 - `complete`'s time depends on the boot by a factor of 1.7 through the registration.
 
 Next: the registration, why a boot can be 2.5 times slower, and what removes the wait.
+
+## Step 199: the slow registration is the page cache's layout
+
+Step 198's boot registered the expert tensors in 285 s per start, step 189's in 116. Why
+(`results/register/page-cache.txt`)?
+
+**It is the machine's state.** Step 189's probe, which registers 6 GiB of one shard and has
+nothing of the engine in it, gave 0.93-1.06 GB/s in this boot where it gave 2.1-2.9.
+
+**Half of the time nothing runs.** Over the probe's 26.5 s the calling thread is 8.2 s in the
+kernel and the kernel's workers of the GPU's page-table queue 4.6 s; the rest is waiting for
+the GPU side.
+
+**How the files came into the page cache decides it.** In this boot nobody had read the model
+with `cat`: the checks' own page faults filled the cache, 16 threads, experts in the order
+tokens route to them. One shard dropped from the cache (`posix_fadvise(DONTNEED)`, no root
+needed) and read back with `cat`: the probe on it **1.0 -> 4.2 GB/s**. The whole model the
+same way (188 s for the `cat`), then one engine start:
+
+| | registered in | loaded in |
+|---|---|---|
+| the cache as the checks' page faults left it | 284.6 s | 297.5 s |
+| after dropping the files and one sequential read | **75.1 s** | **87.7 s** |
+
+75 s is faster than any boot before (116, 119, 139 s): those caches were mixtures.
+
+The reading that fits, not measured (the pages' frame numbers are root's to see): a sequential
+read into free memory gets physically consecutive pages, and the driver maps consecutive
+pages to the GPU in large pieces, scattered ones page by page.
+
+What follows:
+- step 189's "constant within a boot, different between boots" is this: the cache is filled
+  once per boot, and how it was filled stays;
+- QUICKSTART's `cat` before a timed run now has a second reason, and after a cache filled
+  otherwise it needs the drop first (a `cat` of cached files moves nothing);
+- `complete`'s 63 engine starts at 210 s less each are 3.7 of step 198's 6.7 hours.
+
+Next (to decide): a script that drops and re-reads the model, run by `check.py speed` and
+`complete` at their start; the engine saying so when it registers slowly; and, as before,
+loads before the registration is complete.

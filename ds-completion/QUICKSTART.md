@@ -132,7 +132,11 @@ when last swept (README step 90; sclk 6 is 44.6 since); the clock is set outside
 
 After a memory-heavy job (anything that pushed the 474 GiB model out of the page cache), the
 first run reads it back from disk; `cat ~/llms/UD-Q8_K_XL/*.gguf > /dev/null` first (2-4 min)
-keeps that out of a timed run. After a reboot too: until the engram table is cached, each new
+keeps that out of a timed run. It also decides how long every start with the cache registers the
+expert tensors: 75 s when the files came into the cache by this sequential read, up to 285 s when
+the engine's own page faults brought them in (README step 199; then drop them first, a `cat` of
+cached files moves nothing:
+`python3 -c "import os,sys; [os.posix_fadvise(os.open(f,0),0,0,os.POSIX_FADV_DONTNEED) for f in sys.argv[1:]]" ~/llms/UD-Q8_K_XL/*.gguf`). After a reboot too: until the engram table is cached, each new
 text reads its rows from disk and runs ~12% slower once (README step 117; `--record` shows it
 as `read_bytes`).
 
