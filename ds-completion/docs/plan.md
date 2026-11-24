@@ -71,6 +71,49 @@ Features and limits
 | 33 | Observability of the server | started (steps 1-3 of 4 done, steps 164-166) | a metrics page in the Prometheus format, the engine's choice of context in the protocol and the log, a log of requests as JSON lines: "Observability of the server" below (README step 162) |
 | 34 | The product and the tools | the three small steps done (steps 169-171), `fakequant` in two (172), the CPU path as its own program `ds-ref` (173). Open: where `ds-test` belongs, directory moves, a tokenizer without libllama | say and then make true which code is the product and which checks or measures it: "The product and the tools" below |
 | 35 | The testing process: the same guarantees in less time | done as a split (steps 186-190): `unit`, `default`, `speed`, `complete`; each to be improved | a full pass is ~3.5 h, most of it loads of the model, with overlapping runs and comparisons written by hand per step: "The testing process" below |
+| 36 | The load, rethought | planned (2026-11-23; measured in steps 199-200); the person tests by hand first | a start is 12.9 s of load where the bus allows ~5, and then the cache waits 75-285 s for a registration its loads do not strictly need: "The load" below |
+
+## The load (2026-11-23)
+
+Measured in steps 189, 199 and 200 (`results/register/`). Nothing below is built; the person
+runs tests by hand before any of it starts.
+
+**Today, with a well-filled page cache:** start and mapping 1.3 s; dense weights, small
+weights and the draft to GPU 0 4.7 s (8.7 GB); the placement's 6,097 experts 7.0 s (114.6 GB at
+18.5 GB/s); "loaded in" 12.9 s. Then the registration of the 289 GB of expert tensors in the
+background: 75 s when the files came into the page cache by a sequential read, 285 s when the
+engine's page faults brought them in. The cache starts no load until it ends. Exit 4.5 s.
+
+**What the machine allows:** 27 GB/s to the four dies (two PCIe 3.0 x16 slots, two dies each;
+step 30, at sclk 2): 57 GB and 66 GB per card in 4.2 s and 4.9 s. Registration: 1.0-4.2 GB/s
+on page-cache pages by their layout, 4.8 on our own 4 KiB pages, 9.7 on 2 MB huge pages.
+
+**Three things a start has to reach, each with its own need:**
+
+| | needs | today |
+|---|---|---|
+| able to generate | the dense weights on GPU 0; the CPU kernel reads every expert once the files are mapped | after the whole load, 12.9 s |
+| full speed | the placement's experts in their slots | the same moment |
+| the cache adapts | loads: direct from registered memory, or by a host copy to a pinned buffer (same rate, 2-3 times the CPU per load) | after the registration, 88-298 s |
+
+**The steps, in the order proposed:**
+
+| | step | expected | check |
+|---|---|---|---|
+| A | The cache's loads from the first token: the copying path for an expert whose memory is not registered yet, the direct path once it is (the loader already knows per piece) | no correctness check waits for the registration: 47 of `complete`'s 63 starts go from 88-298 s to ~13 s | `default`; `speed` before and after with `--cache-wait` kept there; the speed of the first 75 s of a process measured, since the copying path costs the CPU expert kernel (step 30: noticeable at 400 loads/s; a 300-token run starts ~630/s) |
+| B | The upload at the bus rate: two threads per die or direct transfers, and the dense weights to die 0 while experts go to the others | "loaded in" 12.9 -> ~6 s | `default`; the load's phases timed again (`results/register/ts.py`); the bus rate measured again at sclk 6 first |
+| C1 | The registration short by the page cache: a script that drops the model's files from the cache and reads them back sequentially (3 min, no root), run by `check.py speed` and `complete` at their start; one line from the engine when it registers below ~2 GB/s | 285 -> 75 s per start whatever filled the cache | one start before and after |
+| C2 | The same by a copy that outlives the process: the experts once per boot in shared memory on huge pages | ~30 s; needs root once per boot (`shmem_enabled`), a second loader path, and the logits checks on it | only if 75 s is still too long after A |
+| D | Generating before the upload is over: the placement as the cache's first target, the CPU serving what has not arrived | the first token at ~3 s instead of ~6 | left unless wanted: ~4 s for the most code touched |
+
+**Open questions the hand tests may answer:** whether the page-cache layout explains every
+boot's rate (step 199 has two points and an inferred mechanism); what the copying path costs at
+the cache's real rate; whether the exit's 4.5 s matters to anyone.
+
+Apart from this item: the two crashes of step 198 in the ROCm runtime (the exit abort; the
+segfault at a loader thread's first allocation), which may be one fault of concurrent
+allocation from the loader threads. B changes that code, so the test of it (stages created one
+at a time, many starts) belongs before B.
 
 ## The testing process (2026-11-22)
 
@@ -626,6 +669,7 @@ Step 199: the slow registration is the page cache's layout: filled by the engine
 (1.0 -> 4.2 GB/s). To decide: a script for it run by `speed` and `complete`; the engine's hint; loads before the registration is complete.
 Step 200: the load studied: 12.9 s (the bus allows ~5), then 75-285 s of registration the cache waits for; huge pages register at 9.7 GB/s.
 Proposed: cache loads at once by the copying path; the upload at the bus rate; the registration short. The person decides.
+Then: written up as item 36, "The load"; the person tests by hand first.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front

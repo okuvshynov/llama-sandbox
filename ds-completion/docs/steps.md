@@ -7551,3 +7551,6 @@ The design proposed to the person: the cache's loads from the first token (the c
 until a piece is registered); the upload at the bus rate, the dense weights at the same time;
 the registration made short by the cache script (step 199) and, if wanted, by a huge-page
 copy. Nothing built in this step.
+
+Written up as plan item 36 ("The load" in `docs/plan.md`: steps A to D with what each is
+expected to give and its check). The person tests by hand before any of it starts.
