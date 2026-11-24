@@ -7507,3 +7507,47 @@ What follows:
 Next (to decide): a script that drops and re-reads the model, run by `check.py speed` and
 `complete` at their start; the engine saying so when it registers slowly; and, as before,
 loads before the registration is complete.
+
+## Step 200: the load, measured phase by phase, and what a new design could reach
+
+Before changing anything about the load: where its time is, and what the machine allows
+(`results/register/load-study.txt`). The person: knowing what we know now, how would the model
+be loaded as fast as possible, the placement of the experts being what it is?
+
+**A start today, with a well-filled page cache:**
+
+| phase | time | what |
+|---|---|---|
+| start, files parsed and mapped | 1.3 s | 1.1 s of it mapping in the CPU experts' pages |
+| dense fp8 weights to GPU 0 | 2.4 s | 6.41 GiB at 2.8 GB/s |
+| small weights, the draft | 2.3 s | 2.3 GB |
+| 6,097 experts to the four dies | 7.0 s | 114.6 GB at 18.5 GB/s; one thread per die, sequential after the dense weights |
+| **"loaded in"** | **12.9 s** | |
+| registration, in the background | 75 s (285 s with step 198's cache) | the cache's loads wait for it |
+| exit | 4.5 s | |
+
+**The bus.** Two cards, each on one PCIe 3.0 x16 slot with two dies behind a switch. Step 30
+measured 9 GB/s to one die and 27 GB/s to four (13.5 per card), from a pinned buffer or from
+registered memory alike. The placement puts 57 GB on card A (dies 0 and 1, with the dense
+weights) and 66 GB on card B: **4.2 s and 4.9 s at the bus rate**, against 12.9 s. The upload
+is 5.35 GB/s per die: bound by its one thread, not by the bus; and the dense weights at 2.8
+GB/s and the draft at 0.3 GB/s are host work, not transfer.
+
+**Registration of our own memory** (`reg_anon`): 4.8 GB/s with 4 KiB pages, **9.7 GB/s with 2 MB
+huge pages** (page cache: 1.0 to 4.2, step 199). A private copy of the experts does not fit
+beside the model's page cache (797 GB of 755), so a copy must outlive the process to pay:
+shared memory with huge pages, which is root's to switch on here.
+
+**What is needed when:**
+- to generate at all: the dense weights on GPU 0 (8.7 GB) and the experts readable by the CPU
+  kernel, which they are as soon as the files are mapped;
+- for full speed: the placement's experts in their slots (114.6 GB over the bus);
+- for the cache to adapt: loads, which today wait for the whole registration, though the
+  loader has a path that needs none (a host copy to a pinned buffer; step 30: the same rate,
+  2-3 times the CPU per load).
+
+So the three are separable, and today's load does them in sequence and makes the last wait.
+The design proposed to the person: the cache's loads from the first token (the copying path
+until a piece is registered); the upload at the bus rate, the dense weights at the same time;
+the registration made short by the cache script (step 199) and, if wanted, by a huge-page
+copy. Nothing built in this step.

@@ -624,6 +624,8 @@ Step 198: `complete` whole for the first time: 16 of 18 pass, 6 h 43 min; no out
 loader thread's first allocation, perhaps the same fault); registration 285 s per start in this boot. Next: the registration.
 Step 199: the slow registration is the page cache's layout: filled by the engine's page faults 285 s, after a drop and a sequential `cat` 75 s
 (1.0 -> 4.2 GB/s). To decide: a script for it run by `speed` and `complete`; the engine's hint; loads before the registration is complete.
+Step 200: the load studied: 12.9 s (the bus allows ~5), then 75-285 s of registration the cache waits for; huge pages register at 9.7 GB/s.
+Proposed: cache loads at once by the copying path; the upload at the bus rate; the registration short. The person decides.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front

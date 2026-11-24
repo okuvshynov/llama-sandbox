@@ -1,0 +1,53 @@
+# The load of the model, measured phase by phase, and the bounds for a new design (README step 200).
+# Commit ccb4c74; sclk 6; 2026-11-23, 22:15-22:40; booted 14:57; the page cache as step 199 left it (dropped, read by cat).
+# $M = shard 1 of the model, $M4 = shard 4. Programs beside this file: ts.py (a time before every line), reg_anon.cpp
+# (built with step 189's g++ line).
+#
+# 1. One start, every line with the time it appeared:
+#    ( /usr/bin/time -f '# wall ...' stdbuf -oL -eL bin-hip/ds-completion -m $M --rt .../dense-fp8.gguf --placement placements/study30.txt
+#      --dspark .../dspark-DeepSeek-V4.1-Flash-1017-BF16.gguf --spec --canon --cache-loads 800 --cache-period 8
+#      -p "What is the difference between TCP and UDP?" -n 8 2>&1 ) | python3 ts.py      (the GPU memory table's rows left out)
+   1.27  # mapped 289 GB of CPU experts in 1.1 s
+   3.72  # runtime: 6.41 GiB of fp8 weights on GPU 0 (80 matrices with padded rows)
+   4.30  # runtime: 1.75 GiB of small weights on GPU 0
+   6.01  # dspark: 3 layers, block 5, 128 experts top-3, targets 37 38 39; 0.5 GB on GPU 0, its routed experts in the expert pool
+  13.02  # runtime: 6097 experts (39.7% of the loaded layers' pairs) on GPUs (0: 802, 1: 1765, 2: 1765, 3: 1765), loaded in 6.2 s
+  13.02  # expert cache: up to 800 loads/s, rebalance every 8 tokens over the last 256
+  13.02  # GPU memory (GB; the driver's used memory after each startup phase; expert slot = 18.8 MB):
+  13.02  # loaded in 12.9 s; prompt 10 tokens; fake-quant on; 16 threads
+  13.76   - Stack Overflow
+  13.76  
+  13.97  WEBMay 21
+  13.97  # drafts verified per step: 0: 5 1: 0 2: 1 3: 0 4: 0 5: 0 (of the 0s, 2 plain steps without a draft); verify cost fit 61.8 + 26.1 n ms
+  13.97  # speculative: 6 verify steps, 0.17 drafts accepted per step, 1.33 tokens per step; draft 5.1 ms per step
+  13.97  
+  13.97  # routed experts: 37.4% on GPUs (1617 of 4320)
+  13.97  # prompt: 10 tokens in 0.48 s = 21.03 t/s; generation: 8 tokens in 0.47 s = 16.98 t/s
+  14.00  # short forwards: 0 of 840 (die, layer) results needed a second copy (3 rows per token in the first)
+  14.00  # expert cache: 2 rebalances, 644 swaps planned, 0 loads started, 0 published
+  14.00  # expert loader: the registration of the expert tensors stopped after 1.0 s (the run ended first)
+  18.47  # wall 18.48 s, user 72.94 s, sys 19.66 s, max rss 293089788 kB
+  18.47  (end of output)
+#    Phases:  0.0- 1.3 s  start, the files parsed and mapped, the CPU experts' pages mapped in (1.1 s)
+#             1.3- 3.7 s  dense fp8 weights to GPU 0: 6.41 GiB in 2.45 s = 2.8 GB/s
+#             3.7- 4.3 s  small weights, 1.75 GiB
+#             4.3- 6.0 s  the draft, 0.5 GB in 1.7 s
+#             6.0-13.0 s  6,097 experts = 114.6 GB to the four dies in 6.2 s = 18.5 GB/s (one thread per die: host copy
+#                         to a pinned buffer, then the transfer); dies 1-3 hold 33.2 GB each: 5.35 GB/s per die
+#            13.0-14.0 s  the prompt and 8 tokens
+#            14.0-18.5 s  exit, 4.5 s
+#            in the background from 13.0 s: the registration (75 s with this cache, 285 s with step 198's), the cache's
+#            loads waiting for it ("0 loads started").
+#
+# 2. The bus. Two cards, each one PCIe 3.0 x16 slot with a switch and two dies behind it (lspci -tv: root ports 06:00.0
+#    and 16:00.0; every die's link 8.0 GT/s x16). Step 30's bench-expert-load: 468-491 loads/s to one die = 9 GB/s,
+#    1,437 loads/s to four = 27 GB/s (13.5 per card), the same for pinned and registered sources (measured at sclk 2).
+#    The placement puts 802 + 1,765 experts and the dense weights on card A (dies 0, 1): 48.3 + 8.7 = 57 GB, and
+#    1,765 + 1,765 on card B: 66.4 GB. At 13.5 GB/s per card: 4.2 s and 4.9 s. The load's 12.9 s against a floor of ~5 s.
+#
+# 3. ./reg_anon $M4      (6 GiB of our own memory, filled from the cached file by 16 threads, registered in 64 MB pieces)
+anonymous, 4 KiB pages       fill from the cached file, 16 threads 0.22 s = 28.9 GB/s; register 1.35 s = 4.76 GB/s
+anonymous, 2 MB huge pages   fill from the cached file, 16 threads 0.30 s = 21.6 GB/s; register 0.66 s = 9.70 GB/s
+#    (page cache: 1.0 GB/s filled by page faults, 4.2 GB/s filled by cat; step 199.) Huge pages for shared memory are
+#    off here (/sys/kernel/mm/transparent_hugepage/shmem_enabled: never; root's to change), for private memory on request.
+#    RAM: 755 GB; the model in the page cache 508 GB + a private copy of the experts 289 GB = 797 GB: not both.
