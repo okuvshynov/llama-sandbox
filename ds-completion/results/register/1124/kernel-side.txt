@@ -1,0 +1,59 @@
+# The kernel's side of the registration and of the stalls: a sampled profile and trace events (README step 202).
+# Commit e4b5d07 (engine unchanged; the scratch build of scratch-build.diff); sclk 6; 2026-11-24, booted 08:26; perf 5.15.224
+# (/usr/lib/linux-tools-5.15.0-204/perf; the installed wrapper does not fit kernel 6.10.5), with kernel.perf_event_paranoid=-1,
+# kernel.kptr_restrict=0 and /sys/kernel/tracing readable (root set the three for this boot).
+# $E = the engine's command of README.txt (cpp-matrix, --spec --canon --cache-loads 800 --cache-period 8 --cache-wait).
+#
+# 1. A registration, sampled:   ./fill_faults $M4 26; perf record -a -g -F 2999 -- ./reg_flags $M4     (2.8-2.9 GB/s; 77,561 samples)
+#    perf report --children --comm reg_flags --sort symbol     (% of all samples; the ioctl is 28.16%)
+    28.16%  kfd_ioctl -> kfd_ioctl_svm -> svm_range_set_attr (28.07%)
+    26.70%  svm_range_validate_and_map          (7.83% in the function itself)
+     8.33%  amdgpu_vm_update_range              (amdgpu_vm_ptes_update 7.08%, amdgpu_vm_sdma_update 4.54%)
+     5.49%  dma_map_page_attrs
+     3.05%  amdgpu_hmm_range_get_pages          (hmm_range_fault 2.94%)
+     2.35%  dma_resv_iter_first_unlocked
+     1.10%  amdgpu_gmc_flush_gpu_tlb_pasid      (amdgpu_fence_wait_polling 0.97%)
+    17.08%  madvise                             (the probe's own MADV_POPULATE_READ, not the registration)
+#    kernel workers: sdma_v4_0_ring_insert_nop 1.14% + 0.78% (two workers), the scheduler's run and free work below 0.2%.
+#    HSA_USERPTR_FOR_PAGED_MEM=0 / 1 / unset: the same times (2.87-2.97 GB/s): it does not choose the registration's path.
+#
+# 2. The engine's registration in trace events (the whole run of section 4; 288.8 GB registered in 64.5 s, 4,308 pieces):
+    854K  gpu_scheduler:drm_run_job  (and as many drm_sched_job, drm_sched_process_job, amdgpu_sched_run_job)
+     10M  amdgpu:amdgpu_vm_set_ptes        72K  amdgpu:amdgpu_vm_copy_ptes      925  amdgpu:amdgpu_vm_flush
+#    None of these events occurs in the generation window. 854K jobs in 64.5 s: one per 75 us; ~198 jobs per 64 MB piece.
+#
+# 3. Generation, sampled:   perf record -a -g -F 1999 -D 65500 -- [DS_HOME_ADAPT=1] $E -n 300, cut to the generation's seconds
+                                   loads into die 0     step 86's rule on
+    generation                     50.24 t/s            54.46 t/s
+    samples: libgomp               40.87%               38.21%
+             ds-completion         35.50%               35.82%
+             kernel                16.92%               20.25%      (intel_idle 13.10% / 16.28%)
+             libhsa-runtime64       4.43%                3.84%
+    any amdgpu / kfd / irq function: at most 0.01% in both.
+#
+# 4. Generation, trace events on the profiler's clock:
+#    DS_HOME_ADAPT=1 perf record -a -k CLOCK_MONOTONIC -e irq:irq_handler_entry -e amdgpu:amdgpu_iv -e amdgpu:amdgpu_sched_run_job
+#      -e 'gpu_scheduler:*' -e amdgpu:amdgpu_vm_set_ptes -e amdgpu:amdgpu_vm_copy_ptes -e amdgpu:amdgpu_vm_flush -e amdgpu:amdgpu_vm_bo_update
+#      -e amdgpu:amdgpu_vm_grab_id -- rocprofv3 --kernel-trace --memory-copy-trace ... -- $E -n 150       (37.41 t/s; 1.7 GB of events)
+#    perf script --time <the last 3.9 s> -F cpu,time,event,trace > gen_events.txt; python3 irq_an.py
+#    irq 291-294 are dies 0-3 (/sys/bus/pci/devices/0000:{0b,0e,1b,1e}:00.0/irq; kfd nodes 1-4 by location_id).
+    interrupts in 3.9 s: die 0 104,465; die 1 22,695; die 2 23,315; die 3 22,748
+    die 0 by source: compute end-of-pipe (client 20, src 181) ring 52: 75,670; ring 37: 14,031; ring 36: 2,022;
+                     copy engines (client 8 / 9, src 224 trap + src 247, in pairs): 5,167 / 1,905
+    clock check: from a kernel's end (profiler) to die 0's next end-of-pipe interrupt: p10 2, p50 3, p90 6 us
+    2,769 held-up kernels (60-100 us, a load copy to die 0 in flight), 5,196 fast ones (< 20 us):
+      a copy-engine interrupt falls inside the kernel's interval:   1-5% of the held-up, 0% of the fast
+      an end-of-pipe interrupt of another ring:                     2%, 0%
+      its own ring's end-of-pipe:                                   95%, 96%
+    intervals between die 0's ring-52 end-of-pipe interrupts during load copies (8,931 under 0.4 ms), by 10 us:
+      0: 2179  10: 2909  20: 222  30: 5  40: 7  50: 44  60: 427  70: 651  80: 1117  90: 340  100: 113  110: 134  120: 138 ...
+#    (irq_an.py also prints interrupt rates "with a load copy in flight": its in-flight time is wrong there, do not use those rates.)
+#
+# 5. The load's copy in pieces (rocprofv3 as before, -n 150; die 0's loads through the pinned path, DS_LOAD_PIECE_KB):
+#    die 0's main-stream kernels over the last 3.6 s
+    run                         kernels   mean     60-100 us   draft per step   generation
+    step 86's rule on            73,010   21.0 us    6.5%         8.1 ms        40.29 t/s
+    loads into die 0 (repeat)    67,590   24.7 us   10.0%        11.8 ms        37.63 t/s
+    pinned, 6.27 MB copies       68,174   24.9 us    9.6%        10.3 ms        38.12 t/s
+    pinned, 256 KB pieces        67,461   24.4 us    9.3%        10.1 ms        37.62 t/s
+    pinned, 64 KB pieces         58,065   24.8 us    8.8%        11.5 ms        32.18 t/s

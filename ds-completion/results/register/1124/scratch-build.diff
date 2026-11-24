@@ -9,9 +9,17 @@
                                  {opt.cache_loads, opt.cache_period, opt.cache_window, opt.cache_wait, opt.cache_min, home_die}));
      fprintf(stderr, "# expert cache: up to %.0f loads/s, rebalance every %d tokens over the last %d%s\n", opt.cache_loads,
 --- /home/oleksandr/projects/llama-sandbox/ds-completion/src/expert_loader.cpp	2026-11-23 10:44:42.026294601 -0500
-+++ src/expert_loader.cpp	2026-11-24 12:43:36.811810204 -0500
-@@ -80,7 +80,8 @@
++++ src/expert_loader.cpp	2026-11-24 13:33:41.051842815 -0500
+@@ -78,9 +78,16 @@
+         a = e;
+       }
      } else {
++      // scratch: the pinned copy in pieces of DS_LOAD_PIECE_KB (die 0's loads only)
++      static const size_t piece_kb = getenv("DS_LOAD_PIECE_KB") ? (size_t)atol(getenv("DS_LOAD_PIECE_KB")) : 0;
++      if (piece_kb && p.dev == 0) {
++        for (size_t o = 0; o < bytes; o += piece_kb << 10)
++          CHECK(hipMemcpyAsync(st.dstage[b] + o, src + o, std::min(piece_kb << 10, bytes - o), hipMemcpyHostToDevice, st.s));
++      } else
        CHECK(hipMemcpyAsync(st.dstage[b], src, bytes, hipMemcpyHostToDevice, st.s));
      }
 -    fp4_unpack(st.dstage[b], n_blocks, mat->codes + base, mat->scales + base, st.s);
@@ -20,7 +28,7 @@
      CHECK(hipEventRecord(st.free[b], st.s));
    }
  }
-@@ -207,7 +208,7 @@
+@@ -207,7 +214,7 @@
      }
      const auto ta = std::chrono::steady_clock::now();
      if (d < kFatalDies) g_fatal_loads_started[d]++;

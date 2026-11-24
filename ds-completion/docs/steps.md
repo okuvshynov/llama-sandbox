@@ -7608,3 +7608,20 @@ Recommended (the report, "Recommendations"): the sequential read; the engine mea
 pinned-only loads; if the registration stays, below HIP for dies 1-3; die 1 as the last choice
 for a load; the reserve stays 0.75 GB; step 86's rule stays; a kernel-side trace of a copy to
 die 0. Decided: nothing yet.
+
+## Step 202: the kernel's side of the registration and of the stalls
+
+With `perf_event_paranoid`, `kptr_restrict` and the trace directory opened by the person for
+this boot (`results/register/1124/kernel-side.txt`; the report's addendum).
+
+- **The registration** runs in the driver's shared-virtual-memory path
+  (`svm_range_validate_and_map`): its own loop 28% of the call's CPU time, the GPU page tables
+  30%, a DMA mapping per page 19%, finding the pages 11%. The page tables go through the copy
+  engine's queue: 854,000 jobs for the engine's 289 GB in 64.5 s, one per 75 us. So step 201's
+  inference holds, and the registration's time is the number of those jobs.
+- **The stalls:** sampled, the host is the same with loads into die 0 (50.24 t/s) and without
+  (54.46): no driver function above 0.01%. In trace events on the profiler's clock a held-up
+  kernel has no copy-engine interrupt or other event inside it (1-5% of 2,769); the copy engines
+  interrupt once per copy. The load's copy in 256 KB or 64 KB pieces: the same hold-ups.
+
+The hold-up is inside the card. Step 86's rule stays the answer; the cause stays open.

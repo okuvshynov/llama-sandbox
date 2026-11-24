@@ -678,6 +678,7 @@ Then: written up as item 36, "The load"; the person tests by hand first.
 Step 201: the registration and the stalls studied (`docs/registration-and-stalls.md`): page tables of 330-540 MB per die; HIP's per-device locks; a path below HIP
 (lock for dies 1-3, ROCr's copy) ~3x faster in a probe; loads into die 0 hold its kernels up every ~93 us (cause open), loads into die 1 cost it ~6%.
 To decide: pinned-only loads measured first; die 1 last for loads.
+Step 202: from the kernel: the registration is 854,000 page-table jobs on the copy engine's queue (one per 75 us); the stalls show nothing on the host (no driver work, no interrupt inside a held-up kernel) and do not depend on the copy's piece size.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front

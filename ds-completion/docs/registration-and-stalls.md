@@ -423,3 +423,48 @@ so it could be the copy engine working in chunks of about that size, with someth
 - Two early readings were wrong and are corrected above: that a copy on die 0 stops during a
   registration (it does not), and that a second stream's kernels slow the die (the test kernel was
   simply heavy).
+
+## Addendum: the kernel's side (later the same day)
+
+With kernel profiling and trace events opened by root for this boot, both questions were looked
+at from the driver's side (`results/register/1124/kernel-side.txt`).
+
+**The registration.**
+
+- The path is the driver's shared-virtual-memory code: `kfd_ioctl_svm`, `svm_range_set_attr`,
+  `svm_range_validate_and_map`. Of the call's CPU time, 28% is that last function's own loop
+  over pages, 30% writing GPU page tables, 19% DMA-mapping pages one at a time
+  (`dma_map_page_attrs`, also where pages are consecutive), 11% finding the pages, 8% walking
+  fences, 4% flushing the GPU's TLB.
+- The page tables are written through the copy engine's queue (`amdgpu_vm_sdma_*`; the kernel
+  workers sit in that ring's code). This was an inference above and is now observed.
+- The engine's registration of 289 GB in 64.5 s submitted **854,000 jobs** to that queue, one
+  per 75 µs, about 198 per 64 MB piece. The registration's wall time is, to a first reading, the
+  number of page-table jobs times the round trip of one. A scattered page cache means more
+  entries and so more jobs; HIP's four calls per piece multiply them.
+- That path maps a range again for every GPU that already has access when access is added,
+  which would make HIP's four one-die calls cost 1+2+3+4 mappings. It fits the timing; it was
+  not checked against the driver's source.
+- The runtime's `HSA_USERPTR_FOR_PAGED_MEM` switch changes nothing for a registration.
+
+**The stalls.**
+
+- Sampled system-wide during generation, the host is quiet with loads into die 0 and without:
+  no driver or interrupt function above 0.01% of samples, the same user-space profile. The
+  speeds were 50.24 and 54.46 t/s (the 8% of step 122 again, this time not under the profiler).
+- With trace events on the profiler's clock, every kernel completion on die 0 shows as an
+  interrupt 2 to 6 µs after the kernel's reported end (27,000 interrupts per second on die 0,
+  6,000 on each other die). A held-up kernel has no copy-engine interrupt and no other event
+  inside it (1 to 5% of 2,769). The copy engines raise one interrupt per copy, not one per
+  93 µs. No page-table or scheduler event occurs during generation at all.
+- Cutting the load's copy into 256 KB or 64 KB pieces changes nothing: the share of held-up
+  kernels and the drafts' time stay as with whole 6.27 MB copies, and the 64 KB run is slower
+  for its extra calls.
+
+So the hold-up is not started by the host, not marked by anything the driver sees, and not tied
+to the size of one copy request. It happens inside the card while its copy engine is writing
+into the die that is computing. That closes the cheap ways of finding a cause; what is left is
+removing die 0's other work piece by piece, or accepting step 86's rule as the answer.
+
+One more practical point from the interrupt counts: every kernel on die 0 raises a completion
+interrupt, about 2,000 per verify step. Fewer, larger kernels would cut those too.
