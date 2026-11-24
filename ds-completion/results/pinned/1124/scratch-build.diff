@@ -1,0 +1,79 @@
+--- /home/oleksandr/projects/llama-sandbox/ds-completion/src/rt.cpp	2026-11-23 12:21:54.668414222 -0500
++++ src/rt.cpp	2026-11-24 15:18:52.068023973 -0500
+@@ -684,7 +684,7 @@
+   // the home die's pool also holds the draft's experts, after the main model's slots
+   const int n_draft = dspark ? dspark->pool_slots() : 0;
+   for (const Die& d : dies)
+-    cap.push_back(std::max(0, pool_slots_that_fit(d.dev, E, F, (size_t)(opt.reserve_gb * 1e9)) - (d.dev == home ? n_draft : 0)));
++    cap.push_back(std::max(0, pool_slots_that_fit(d.dev, E, F, (size_t)((getenv("DS_RESERVE_GB") ? atof(getenv("DS_RESERVE_GB")) : opt.reserve_gb) * 1e9))  /* scratch */ - (d.dev == home ? n_draft : 0)));
+   std::vector<bool> loaded(hp.n_layer);
+   for (int L = 0; L < hp.n_layer; L++) loaded[L] = m.layers[L].loaded;
+   placement = place_experts(read_placement(opt.placement), hp.n_layer, X, cap, loaded);
+@@ -738,6 +738,7 @@
+     int home_die = -1;  // the home die (its index in dies) keeps its startup experts (README step 86)
+     for (size_t i = 0; i < dies.size(); i++)
+       if (dies[i].dev == opt.gpu) home_die = (int)i;
++    if (getenv("DS_HOME_ADAPT")) home_die = -1;  // scratch: step 86's rule off (the cache loads into the home die too)
+     cache.reset(new ExpertCache(m, pools, h_table, d_table, X,
+                                 {opt.cache_loads, opt.cache_period, opt.cache_window, opt.cache_wait, opt.cache_min, home_die}));
+     fprintf(stderr, "# expert cache: up to %.0f loads/s, rebalance every %d tokens over the last %d%s\n", opt.cache_loads,
+--- /home/oleksandr/projects/llama-sandbox/ds-completion/src/expert_loader.cpp	2026-11-23 10:44:42.026294601 -0500
++++ src/expert_loader.cpp	2026-11-24 13:33:41.051842815 -0500
+@@ -78,9 +78,16 @@
+         a = e;
+       }
+     } else {
++      // scratch: the pinned copy in pieces of DS_LOAD_PIECE_KB (die 0's loads only)
++      static const size_t piece_kb = getenv("DS_LOAD_PIECE_KB") ? (size_t)atol(getenv("DS_LOAD_PIECE_KB")) : 0;
++      if (piece_kb && p.dev == 0) {
++        for (size_t o = 0; o < bytes; o += piece_kb << 10)
++          CHECK(hipMemcpyAsync(st.dstage[b] + o, src + o, std::min(piece_kb << 10, bytes - o), hipMemcpyHostToDevice, st.s));
++      } else
+       CHECK(hipMemcpyAsync(st.dstage[b], src, bytes, hipMemcpyHostToDevice, st.s));
+     }
+-    fp4_unpack(st.dstage[b], n_blocks, mat->codes + base, mat->scales + base, st.s);
++    // scratch: timing only, the slot keeps its old bytes
++    if (!(p.dev == 0 && getenv("DS_LOAD_NO_UNPACK"))) fp4_unpack(st.dstage[b], n_blocks, mat->codes + base, mat->scales + base, st.s);
+     CHECK(hipEventRecord(st.free[b], st.s));
+   }
+ }
+@@ -207,7 +214,7 @@
+     }
+     const auto ta = std::chrono::steady_clock::now();
+     if (d < kFatalDies) g_fatal_loads_started[d]++;
+-    load_expert(st, p, r.slot, m.layers[r.layer], r.expert, registered);
++    load_expert(st, p, r.slot, m.layers[r.layer], r.expert, registered && !(p.dev == 0 && getenv("DS_LOAD_PINNED")));  // scratch
+     CHECK(hipEventRecord(fin, st.s));
+     CHECK(hipEventSynchronize(fin));
+     if (d < kFatalDies) g_fatal_loads_done[d]++;
+--- /home/oleksandr/projects/llama-sandbox/ds-completion/src/expert_cache.cpp	2026-11-15 22:39:25.518318097 -0500
++++ src/expert_cache.cpp	2026-11-24 14:32:57.264381282 -0500
+@@ -25,7 +25,8 @@
+   last_use.assign(n_pairs, -1);
+   last_tick = std::chrono::steady_clock::now();
+   st.started_by_die.assign(n_dies, 0);
+-  loader.reset(new ExpertLoader(m, pools, true));  // direct loads once the tensors are registered
++  pinned_only = getenv("DS_CACHE_PINNED") != nullptr;  // scratch: no registration, every load through the pinned buffer, from the first token
++  loader.reset(new ExpertLoader(m, pools, !pinned_only));  // direct loads once the tensors are registered
+   if (o.wait && !loader->wait_direct()) throw std::runtime_error("expert cache: registering the expert tensors failed");
+ }
+ 
+@@ -97,7 +98,7 @@
+   bucket = std::min(bucket + opt.rate * std::chrono::duration<double>(now - last_tick).count(), std::max(1.0, opt.rate * 0.2));
+   last_tick = now;
+   std::vector<ExpertLoader::Request> start;
+-  while (!plan.empty() && bucket >= 1.0 && loader->direct_ready()) {
++  while (!plan.empty() && bucket >= 1.0 && (pinned_only || loader->direct_ready())) {
+     const Swap s = plan.front();
+     plan.pop_front();
+     if (table[s.victim] < 0 || table[s.pair] >= 0 || loading[s.pair]) continue;  // overtaken
+--- /home/oleksandr/projects/llama-sandbox/ds-completion/src/expert_cache.h	2026-11-16 12:05:31.578061318 -0500
++++ src/expert_cache.h	2026-11-24 14:32:57.264381282 -0500
+@@ -84,6 +84,7 @@
+   std::chrono::steady_clock::time_point last_tick;
+   bool table_dirty = false;
+   std::unique_ptr<ExpertLoader> loader;
++  bool pinned_only = false;  // scratch
+  public:
+   ExpertLoader* loader_ptr() { return loader.get(); }  // --trace (README step 86)
+  private:

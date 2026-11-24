@@ -1,0 +1,26 @@
+# bin/bench-cpu-moe -m $M --decode 2,6 --layers 4 --steps 30   (4 KB pages of the mapping against anonymous 2 MB pages)
+# commit 042e890 (engine unchanged); sclk 6 (manual, all four cards); 2026-11-24, booted 08:26; README step 203
+# accuracy vs the double-precision reference math
+layer  0: ours relerr 6.28e-08   canonical 6.25e-08   ggml (q8_0 activations) relerr 2.31e-02
+  canonical dot, gate rows of expert 347: 0 of 2304 differ from the scalar specification
+  canonical dot, up rows of expert 347: 0 of 2304 differ from the scalar specification
+  canonical dot, down rows of expert 347: 0 of 5120 differ from the scalar specification
+layer 20: ours relerr 6.37e-08   canonical 6.44e-08   ggml (q8_0 activations) relerr 2.55e-02
+  canonical dot, gate rows of expert 259: 0 of 2304 differ from the scalar specification
+  canonical dot, up rows of expert 259: 0 of 2304 differ from the scalar specification
+  canonical dot, down rows of expert 259: 0 of 5120 differ from the scalar specification
+layer 39: ours relerr 5.60e-08   canonical 5.50e-08   ggml (q8_0 activations) relerr 2.18e-02
+  canonical dot, gate rows of expert 33: 0 of 2304 differ from the scalar specification
+  canonical dot, up rows of expert 33: 0 of 2304 differ from the scalar specification
+  canonical dot, down rows of expert 33: 0 of 5120 differ from the scalar specification
+# decode: 4 layers' experts copied (28.9 GB); anonymous huge pages 0 -> 27552 MB
+# per call: D tokens, each its own fresh expert (18.8 MB); 30 steps x 4 layers; ms per expert (GB/s)
+D 2: 4 KB pages: dynamic 0.252 ( 74)  static 0.228 ( 82)  control 0.213 ( 88) | 2 MB pages: dynamic 0.248 ( 76)  static 0.244 ( 77)  control 0.205 ( 92)
+D 6: 4 KB pages: dynamic 0.226 ( 83)  static 0.219 ( 86)  control 0.260 ( 72) | 2 MB pages: dynamic 0.232 ( 81)  static 0.208 ( 90)  control 0.185 (102)
+# static vs dynamic, 3 tokens sharing experts, fast and canonical, 4 layers: 0 differ
+# per call, gap 0 us: ms
+D 2: forward_batch 0.522 = prep 0.002 + inputs 0.012 + gate_up 0.282 + act 0.030 + down 0.193 + sum 0.002 | one-token kernel 0.486 | empty parallel region 0.004
+D 6: forward_batch 1.348 = prep 0.004 + inputs 0.014 + gate_up 0.830 + act 0.019 + down 0.475 + sum 0.001 | one-token kernel 1.718 | empty parallel region 0.004
+# per call, gap 1500 us: ms
+D 2: forward_batch 0.642 = prep 0.002 + inputs 0.129 + gate_up 0.301 + act 0.028 + down 0.177 + sum 0.001 | one-token kernel 0.557 | empty parallel region 0.021
+D 6: forward_batch 1.679 = prep 0.004 + inputs 0.159 + gate_up 0.862 + act 0.113 + down 0.501 + sum 0.034 | one-token kernel 1.525 | empty parallel region 0.014

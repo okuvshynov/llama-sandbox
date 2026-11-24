@@ -7625,3 +7625,49 @@ this boot (`results/register/1124/kernel-side.txt`; the report's addendum).
   interrupt once per copy. The load's copy in 256 KB or 64 KB pieces: the same hold-ups.
 
 The hold-up is inside the card. Step 86's rule stays the answer; the cause stays open.
+
+## Step 203: pinned-only loads, the reserve, and the model on huge pages, measured
+
+Three measurements for the load's new design (plan item 36), none a change of the engine: a
+scratch build with environment switches (`results/pinned/1124/`, its `README.txt` has every
+table).
+
+**Pinned-only loads.** No registration; every load through the pinned buffer, from the first
+token. The 8 held-out prompts, 2 repeats, the second one read; all outputs the stored bytes.
+
+| | registered, `--cache-wait` | pinned | pinned, 200 loads/s | registered, no wait |
+|---|---|---|---|---|
+| generation, mean | 44.89 t/s | 41.95 (-6.6%) | 39.93 (-11.1%) | 29.54 (-34.2%) |
+| expert uses on GPUs | 84.6% | 84.0% | 79.7% | 60.4% |
+| time in verify steps | 5.65 s | 6.02 s | 6.34 s | 9.14 s |
+| loaded in | 75.1 s | 12.8 s | 12.8 s | 12.8 s |
+
+- Pinned loads adapt the cache as well as registered ones; the loss is in the verify steps.
+- A lower rate is worse: the cache adapts too slowly.
+- Without `--cache-wait` a short run gets no loads at all (they wait for the registration) and
+  is a third slower. Pinned loads are 42% faster than that.
+- On the 2,731-token prompt pinned loads cost nothing: prompt 88.4-89.5 against 89.0-89.7 t/s,
+  generation 32.4-32.7 against 30.8-33.0. Step 201's trace had the CPU's experts busy 92% of
+  that prompt, so "the copy competes with the CPU's kernel" does not explain the 6.6% of the
+  short prompts by itself. The mechanism is open.
+
+**The reserve.** Without registration there are no page tables on the cards. With 0.3 GB
+reserved per die in place of 0.75, 96 more experts fit (6,193): uses on GPUs 84.37% against
+84.10%, speed -0.3% and +0.2% in the two repeats: nothing. At 85% coverage the marginal slot
+is nearly worthless; a model the GPUs cover less of would be different.
+
+**Huge pages.** 6 GiB of a shard copied to 2 MB pages of the hugetlb pool (a memfd, mapped
+shared and read-only, as the engine maps a shard):
+
+- registering it works with this driver, through HIP at 7.8-8.6 GB/s (2.9 on this boot's page
+  cache) and below HIP for four dies at 11.3-13.3 (7.0): 289 GB in 34-37 s or 22-26 s. I had
+  expected about 10 s below HIP; the driver still maps 4 KiB at a time for DMA.
+- the page tables on the cards: 0-2 MB per die for 6 GiB, against 11-13 MB.
+- HIP's direct copy from it: 12.8 GB/s, the bytes equal. The CPU's kernel: the same speed.
+- llama.cpp's GGUF reader takes a file in the pool (tried on shard 1, which has no tensors).
+
+Not tried: reserving 474 GiB after a boot, and a shard with tensors in the pool.
+
+Decided by the person: understanding before percent. Next, the mechanism of the pinned loads'
+cost (the CPU expert call by phase, the memory controller's counters), since a larger model
+may leave no choice but pinned loads.

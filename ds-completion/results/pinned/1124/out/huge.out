@@ -1,0 +1,41 @@
+# reg_huge.cpp: for m in hip hsa4 hsa3 hsa1 cache-hip cache-hsa4 hip hsa4: ./reg_huge $M4 $m (one mode per process); then ./gguf_huge $M1
+# the pool: vm.nr_hugepages=4096 (8 GiB of 2 MB pages), set by root; $M4 / $M1 = shards 4 and 1 of ~/llms/UD-Q8_K_XL
+# commit 042e890 (engine unchanged); sclk 6 (manual, all four cards); 2026-11-24, booted 08:26; README step 203
+== hip
+# 6 GiB copied onto huge pages by 16 threads in 0.20 s = 32.8 GB/s
+hip        register 6 GiB:  0.82 s =    7.8 GB/s (cpu 0.66 s); 289 GB at this rate: 37 s
+           copy to die 1 from it: 12.85 GB/s, cpu 1.56 ms per 18.8 MB, bytes equal
+exit 0
+== hsa4
+# 6 GiB copied onto huge pages by 16 threads in 0.20 s = 31.5 GB/s
+hsa4       register 6 GiB:  0.57 s =   11.3 GB/s (cpu 0.50 s); 289 GB at this rate: 26 s
+exit 0
+== hsa3
+# 6 GiB copied onto huge pages by 16 threads in 0.20 s = 32.0 GB/s
+hsa3       register 6 GiB:  0.40 s =   16.0 GB/s (cpu 0.35 s); 289 GB at this rate: 18 s
+exit 0
+== hsa1
+# 6 GiB copied onto huge pages by 16 threads in 0.20 s = 31.8 GB/s
+hsa1       register 6 GiB:  0.28 s =   23.0 GB/s (cpu 0.26 s); 289 GB at this rate: 13 s
+exit 0
+== cache-hip
+cache-hip  register 6 GiB:  2.24 s =    2.9 GB/s (cpu 1.23 s); 289 GB at this rate: 101 s
+           copy to die 1 from it: 12.94 GB/s, cpu 1.63 ms per 18.8 MB, bytes equal
+exit 0
+== cache-hsa4
+cache-hsa4 register 6 GiB:  0.92 s =    7.0 GB/s (cpu 0.45 s); 289 GB at this rate: 41 s
+exit 0
+== hip
+# 6 GiB copied onto huge pages by 16 threads in 0.20 s = 31.8 GB/s
+hip        register 6 GiB:  0.75 s =    8.6 GB/s (cpu 0.58 s); 289 GB at this rate: 34 s
+           copy to die 1 from it: 12.81 GB/s, cpu 1.62 ms per 18.8 MB, bytes equal
+exit 0
+== hsa4
+# 6 GiB copied onto huge pages by 16 threads in 0.21 s = 31.2 GB/s
+hsa4       register 6 GiB:  0.48 s =   13.3 GB/s (cpu 0.42 s); 289 GB at this rate: 22 s
+exit 0
+== gguf
+the file: 5780589 bytes; on huge pages: 6291456 bytes (padded to 2 MB)
+the reader on the copy: 0 tensors, 92 keys, data offset 5780589: the same as the original
+read() of the copy's first bytes: works (GGUF)
+exit 0

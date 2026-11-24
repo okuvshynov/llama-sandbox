@@ -679,6 +679,7 @@ Step 201: the registration and the stalls studied (`docs/registration-and-stalls
 (lock for dies 1-3, ROCr's copy) ~3x faster in a probe; loads into die 0 hold its kernels up every ~93 us (cause open), loads into die 1 cost it ~6%.
 To decide: pinned-only loads measured first; die 1 last for loads.
 Step 202: from the kernel: the registration is 854,000 page-table jobs on the copy engine's queue (one per 75 us); the stalls show nothing on the host (no driver work, no interrupt inside a held-up kernel) and do not depend on the copy's piece size.
+Step 203: measured for this item: pinned-only loads -6.6% on the held-out prompts (nothing on the long prompt; mechanism open), no loads before the registration ends -34.2%, so loads through the pinned buffer until the registration is done are worth having; the reserve at 0.3 GB without registration: no gain today; the model on 2 MB pages of the hugetlb pool registers in 22-37 s with page tables near zero (474 GiB reserved after a boot: untried). Next: why pinned loads cost what they do.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front

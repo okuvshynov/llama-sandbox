@@ -1,0 +1,13 @@
+# scripts/run_matrix.py /tmp/claude-1000/-home-oleksandr-projects-llama-sandbox-ds-completion/9958e636-ead0-413f-919d-4d4d616c1553/scratchpad/reserve.matrix --keep-out; commit 042e890, sclk 6 6 6 6, 2026-11-24T15:19:13-05:00
+# 32 runs: 8 prompts x 2 configurations x up to 2 repeats; records: CONFIG-PROMPT-REP.json; read with scripts/records.py
+# scratch: the held-out prompts, the cache's loads registered (today) against pinned-only (no registration, loads from the first token)
+set M  ~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf
+set F8 ~/llms/ds-1017-fp8/dense-fp8.gguf
+set D  ~/llms/dspark/dspark-DeepSeek-V4.1-Flash-1017-BF16.gguf
+bin /tmp/claude-1000/-home-oleksandr-projects-llama-sandbox-ds-completion/9958e636-ead0-413f-919d-4d4d616c1553/scratchpad/build/bin-hip/ds-completion
+prompts results/spec-heldout/prompts.txt
+out /tmp/claude-1000/-home-oleksandr-projects-llama-sandbox-ds-completion/9958e636-ead0-413f-919d-4d4d616c1553/scratchpad/reserve-runs
+reps 2
+base --rt $F8 --placement placements/study30.txt --dspark $D --spec --canon --cache-period 8
+config pinned DS_CACHE_PINNED=1 --cache-loads 800
+config pinned-r03 DS_CACHE_PINNED=1 DS_RESERVE_GB=0.3 --cache-loads 800

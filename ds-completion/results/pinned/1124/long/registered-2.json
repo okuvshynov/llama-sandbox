@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "label": {},
+  "args": {"mode": "raw", "effort": 75, "n": 100, "threads": 16, "runtime": true, "canon": true, "spec": true,
+           "placement": "placements/study30.txt", "cache_loads": 800, "cache_period": 8, "cache_window": 256, "cache_min": 2,
+           "cache_wait": true, "spec_n": 0, "temp": 0, "top_p": 1, "seed": 0,
+           "profile": false, "trace": false, "spec_log": false, "log_routing": false},
+  "prompt": {"tokens": 2731, "hash": "fnv1a64:e77d4fa401405a50"},
+  "env": {"gpu_sclk": [6, 6, 6, 6], "ds": {}},
+  "read_bytes": {"load": 0, "prompt": 0, "gen": 0},
+  "spec": {"steps": 62, "plain_steps": 17, "accepted": 37, "verified": [32, 24, 3, 3, 0, 0], "draft_ms": 353.4, "verify_ms": 2651.1},
+  "experts": {"gpu_uses": 486645, "cpu_uses": 193035, "dies": [0, 1, 2, 3], "placed": [802, 1765, 1765, 1765],
+               "cache": {"rebalances": 18, "swaps_planned": 19237, "loads_started": 2950, "loads_published": 2857,
+                         "loads_started_by_die": [0, 969, 964, 1017]}},
+  "output": {"tokens": 100, "hash": "fnv1a64:8e614e2bbbf847b9"},
+  "counters": {"load_s": 75.573, "prompt_s": 30.4447, "prompt_tps": 89.704, "gen_tokens": 100, "gen_s": 3.0287, "gen_tps": 33.018}
+}

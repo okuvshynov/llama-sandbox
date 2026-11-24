@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "label": {"config": "pinned", "prompt": "zh-travel", "rep": "2"},
+  "args": {"mode": "chat", "effort": 75, "n": 300, "threads": 16, "runtime": true, "canon": true, "spec": true,
+           "placement": "placements/study30.txt", "cache_loads": 800, "cache_period": 8, "cache_window": 256, "cache_min": 2,
+           "cache_wait": false, "spec_n": 0, "temp": 0, "top_p": 1, "seed": 0,
+           "profile": false, "trace": false, "spec_log": false, "log_routing": false},
+  "prompt": {"tokens": 17, "hash": "fnv1a64:5b47625f5035c82d"},
+  "env": {"gpu_sclk": [6, 6, 6, 6], "ds": {"DS_CACHE_PINNED": "1"}},
+  "read_bytes": {"load": 0, "prompt": 0, "gen": 0},
+  "spec": {"steps": 198, "plain_steps": 78, "accepted": 101, "verified": [117, 50, 21, 7, 3, 0], "draft_ms": 927.7, "verify_ms": 8009.0},
+  "experts": {"gpu_uses": 71327, "cpu_uses": 10273, "dies": [0, 1, 2, 3], "placed": [802, 1765, 1765, 1765],
+               "cache": {"rebalances": 39, "swaps_planned": 3082, "loads_started": 2998, "loads_published": 2998,
+                         "loads_started_by_die": [0, 1008, 1003, 987]}},
+  "output": {"tokens": 300, "hash": "fnv1a64:6fa28c9df3b39c7c"},
+  "counters": {"load_s": 12.751, "prompt_s": 0.6300, "prompt_tps": 26.985, "gen_tokens": 300, "gen_s": 9.0086, "gen_tps": 33.302}
+}
