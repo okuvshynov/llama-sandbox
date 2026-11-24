@@ -1,0 +1,9 @@
+# ./fill_faults $M4 20; ./reg_flags $M4 (its fourth case lies partly beyond the 20 GiB). Commit c6c42fb; sclk 6; 2026-11-24 (booted 08:26). Probes and build lines: ../README.txt; the report: docs/registration-and-stalls.md.
+# 3424 blocks of 6.27 MB = 20.0 GiB by page faults, 16 threads, 6.0 s = 3.56 GB/s
+MemFree:        767012756 kB
+Cached:         21704904 kB
+== reg_flags (HIP, 4 x 6 GiB cases; the 4th partly beyond the 20 GiB)
+read-only | portable (the loader's)     2.51 s = 2.57 GB/s; cpu user 0.00 s, system 1.26 s
+read-only                               2.49 s = 2.59 GB/s; cpu user 0.00 s, system 1.27 s
+portable                                2.51 s = 2.57 GB/s; cpu user 0.01 s, system 1.25 s
+default (0)                             1.90 s = 3.39 GB/s; cpu user 0.01 s, system 1.16 s

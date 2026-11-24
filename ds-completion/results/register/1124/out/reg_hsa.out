@@ -1,0 +1,13 @@
+# ./reg_hsa $M4 (shard 4 read by cat after boot). Commit c6c42fb; sclk 6; 2026-11-24 (booted 08:26). Probes and build lines: ../README.txt; the report: docs/registration-and-stalls.md.
+# 4 GPUs; 6 GiB per case in 64 MB pieces
+page cache (file read by cat)                1 GPU   lock  0.11 s = 60.67 GB/s (sys 0.09 s, waiting 0.02 s); unlock 0.00 s
+page cache, a second region                  1 GPU   lock  0.04 s = 168.82 GB/s (sys 0.03 s, waiting 0.01 s); unlock 0.00 s
+page cache                                   2 GPU   lock  0.14 s = 46.21 GB/s (sys 0.12 s, waiting 0.02 s); unlock 0.00 s
+page cache                                   4 GPU   lock  0.26 s = 25.16 GB/s (sys 0.21 s, waiting 0.05 s); unlock 0.00 s
+page cache, all agents (as HIP)              4 GPU+  lock  0.19 s = 34.00 GB/s (sys 0.15 s, waiting 0.04 s); unlock 0.00 s
+anonymous 4 KiB, touched in order            1 GPU   lock  0.06 s = 110.84 GB/s (sys 0.05 s, waiting 0.01 s); unlock 0.00 s
+anonymous 4 KiB, touched in order            4 GPU   lock  0.24 s = 27.25 GB/s (sys 0.18 s, waiting 0.06 s); unlock 0.00 s
+anonymous 4 KiB, touched in random order     1 GPU   lock  0.20 s = 32.12 GB/s (sys 0.13 s, waiting 0.07 s); unlock 0.00 s
+anonymous 4 KiB, touched in random order     4 GPU   lock  0.68 s =  9.41 GB/s (sys 0.44 s, waiting 0.24 s); unlock 0.00 s
+anonymous 2 MB huge pages                    1 GPU   lock  0.05 s = 118.92 GB/s (sys 0.04 s, waiting 0.01 s); unlock 0.00 s
+anonymous 2 MB huge pages                    4 GPU   lock  0.21 s = 30.48 GB/s (sys 0.17 s, waiting 0.04 s); unlock 0.00 s

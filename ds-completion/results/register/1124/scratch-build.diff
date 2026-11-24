@@ -1,0 +1,31 @@
+--- /home/oleksandr/projects/llama-sandbox/ds-completion/src/rt.cpp	2026-11-23 12:21:54.668414222 -0500
++++ src/rt.cpp	2026-11-24 12:31:21.968487187 -0500
+@@ -738,6 +738,7 @@
+     int home_die = -1;  // the home die (its index in dies) keeps its startup experts (README step 86)
+     for (size_t i = 0; i < dies.size(); i++)
+       if (dies[i].dev == opt.gpu) home_die = (int)i;
++    if (getenv("DS_HOME_ADAPT")) home_die = -1;  // scratch: step 86's rule off (the cache loads into the home die too)
+     cache.reset(new ExpertCache(m, pools, h_table, d_table, X,
+                                 {opt.cache_loads, opt.cache_period, opt.cache_window, opt.cache_wait, opt.cache_min, home_die}));
+     fprintf(stderr, "# expert cache: up to %.0f loads/s, rebalance every %d tokens over the last %d%s\n", opt.cache_loads,
+--- /home/oleksandr/projects/llama-sandbox/ds-completion/src/expert_loader.cpp	2026-11-23 10:44:42.026294601 -0500
++++ src/expert_loader.cpp	2026-11-24 12:43:36.811810204 -0500
+@@ -80,7 +80,8 @@
+     } else {
+       CHECK(hipMemcpyAsync(st.dstage[b], src, bytes, hipMemcpyHostToDevice, st.s));
+     }
+-    fp4_unpack(st.dstage[b], n_blocks, mat->codes + base, mat->scales + base, st.s);
++    // scratch: timing only, the slot keeps its old bytes
++    if (!(p.dev == 0 && getenv("DS_LOAD_NO_UNPACK"))) fp4_unpack(st.dstage[b], n_blocks, mat->codes + base, mat->scales + base, st.s);
+     CHECK(hipEventRecord(st.free[b], st.s));
+   }
+ }
+@@ -207,7 +208,7 @@
+     }
+     const auto ta = std::chrono::steady_clock::now();
+     if (d < kFatalDies) g_fatal_loads_started[d]++;
+-    load_expert(st, p, r.slot, m.layers[r.layer], r.expert, registered);
++    load_expert(st, p, r.slot, m.layers[r.layer], r.expert, registered && !(p.dev == 0 && getenv("DS_LOAD_PINNED")));  // scratch
+     CHECK(hipEventRecord(fin, st.s));
+     CHECK(hipEventSynchronize(fin));
+     if (d < kFatalDies) g_fatal_loads_done[d]++;

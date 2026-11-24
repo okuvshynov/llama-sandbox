@@ -7554,3 +7554,57 @@ copy. Nothing built in this step.
 
 Written up as plan item 36 ("The load" in `docs/plan.md`: steps A to D with what each is
 expected to give and its check). The person tests by hand before any of it starts.
+
+## Step 201: the registration and the stalls on die 0, studied
+
+A day of probes, no engine change; the whole of it is `docs/registration-and-stalls.md`, the
+probes and outputs `results/register/1124/`. The person's questions: why does the registration
+take minutes, can it be made faster or avoided; and why did step 86's rule (no loads into die
+0) help.
+
+**The registration** writes each die's page tables (8 bytes per 4 KiB page, a 2 MB entry where
+512 pages are consecutive): for the 289 GB up to 565 MB per die, measured 330 MB (cat-filled)
+to 540 MB (fault-filled) of the 0.75 GB the engine leaves free. 6 GiB in 64 MB pieces:
+
+| | cat-filled | fault-filled |
+|---|---|---|
+| one `hsa_amd_memory_lock`, one die | 0.04-0.11 s | 0.24 s |
+| one call, four dies | 0.26 s | 0.89 s |
+| `hipHostRegister` | 0.8-0.9 s (7-8 GB/s) | 2.24 s (2.9 GB/s) |
+
+HIP locks once per device per piece (a shim under it counted the calls), which costs 2.5-3.4
+times one call for four dies; the work is linear in the dies; the layout is a factor of 3.4.
+The cards' BAR stays at 256 MB (the resize to 32 GB fails at boot), so the driver probably
+writes page tables through the GPU's queue: a lock for one die waits longer while the other die
+of its card receives a copy (0.26-0.30 s against 0.10), not for the other card. Not helped by:
+a lock for all dies before `hipHostRegister` (0.44 vs 0.86 s); copies from memory HIP does not
+know (pinned again per copy); a lock per expert (3.2 ms, ~240-300 loads/s). What works in a
+probe: one lock for dies 1-3 and `hsa_amd_memory_async_copy` into HIP's memory: 12-12.7 GB/s
+to one die, 25 to four, 0.63-0.67 ms of CPU per load against 1.43, the bytes equal;
+extrapolated, 289 GB in ~10-31 s against ~39-100. Die 0 is registered like the others though
+nothing is loaded into it.
+
+**The stalls** (the engine in a scratch copy with step 86's rule off, under `rocprofv3`;
+cpp-matrix, 150 tokens). Mean time per kernel on die 0's main stream, by the load copy in flight:
+
+| | copy to die 0 | to die 1 only | none on this card |
+|---|---|---|---|
+| the load as it is (two runs) | 47.8, 47.9 us | 22.7, 23.0 | 21.4, 21.6 |
+| unpack kernel skipped on die 0 | 47.3 | 22.2 | 21.5 |
+| pinned path on die 0 | 48.9 | 25.4 | 21.5 |
+
+With a copy to die 0 in flight (15-16% of the time) a third of the kernels take 60-100 us
+whatever their normal time; the hold-ups come about every 93 us (57% of 8,426 intervals between
+80 and 100 us) and hit kernels of 25-50 us 77% of the time, those under 6 us 6%. Not the unpack
+kernel, its stream, the source memory, die 0's own small copies, an idle queue, or the die's
+other streams. A benchmark of plain kernels with the same copies shows only a per-launch tax of
+a few us, equal for die 0 and die 1 and absent for the other card and for device-to-host
+copies: that part (the card's link) is understood and is the 6% from die 1; the 93 us is not.
+
+**The CPU's experts** run 26% (chat) and 39% (code) of a generation's time, 46% right after a
+long prompt, 92% of a 2,731-token prompt; the loader as pinned loads would move 13.6-22.3 GB/s.
+
+Recommended (the report, "Recommendations"): the sequential read; the engine measured with
+pinned-only loads; if the registration stays, below HIP for dies 1-3; die 1 as the last choice
+for a load; the reserve stays 0.75 GB; step 86's rule stays; a kernel-side trace of a copy to
+die 0. Decided: nothing yet.

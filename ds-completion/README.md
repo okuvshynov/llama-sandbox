@@ -78,6 +78,7 @@ build, every option, the current results, the limits).
 | [docs/requests.md](docs/requests.md), [docs/server.md](docs/server.md) | `--requests`, the protocol between the engine and a front; the HTTP front |
 | [docs/pi.md](docs/pi.md) | the pi coding harness on this engine: the setup, step by step |
 | [docs/rocprof.md](docs/rocprof.md) | the GPU side under AMD's profiler |
+| [docs/registration-and-stalls.md](docs/registration-and-stalls.md) | a study (2026-11-24): what registering memory with the GPUs is and costs, the GPU page tables, and the stalls of die 0 while a copy lands on it |
 | [docs/llama-cpp-upstream.md](docs/llama-cpp-upstream.md) | llama.cpp: why it was a pull request's commit until step 167, what upstream reads wrong in these files, and how we came to build against upstream alone |
 | [scripts/README.md](scripts/README.md) | the tools still in use |
 

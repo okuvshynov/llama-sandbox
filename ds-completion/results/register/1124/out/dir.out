@@ -1,0 +1,12 @@
+# ./die_dir 60 (a second run gave the same numbers). Commit c6c42fb; sclk 6; 2026-11-24 (booted 08:26). Probes and build lines: ../README.txt; the report: docs/registration-and-stalls.md.
+background                                     small med small p90   big med   big p90   copies/s
+nothing in the background                         0.98 ms    1.00 ms   32.06 ms   35.36 ms          0
+die 0: host to device, back to back               2.27 ms    2.28 ms   32.17 ms   36.46 ms       2127
+die 0: device to host, back to back               1.20 ms    1.21 ms   33.37 ms   37.69 ms       2216
+die 0: device to device on the die                6.04 ms    6.87 ms   35.27 ms   38.50 ms       4791
+die 1 (same card): host to device                 2.28 ms    2.30 ms   34.23 ms   37.66 ms       2081
+die 1 (same card): device to host                 1.10 ms    1.10 ms   35.91 ms   37.84 ms       2220
+die 2 (other card): host to device                0.97 ms    0.98 ms   35.07 ms   38.00 ms       2031
+die 2 (other card): device to host                0.97 ms    0.99 ms   34.93 ms   38.02 ms       2212
+die 0: host to device, again                      1.66 ms    1.71 ms   35.97 ms   40.31 ms       2125
+nothing again                                     0.98 ms    1.00 ms   35.30 ms   37.42 ms          0

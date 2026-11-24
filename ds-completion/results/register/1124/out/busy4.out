@@ -1,0 +1,6 @@
+# ./busy_die $M3 2 (die 0 copying; locks for dies 0 and 1, plain and with the loader's 0.5 ms pauses); fault-filled (46 GiB). A later variant of the probe locks for dies 0/2 and 1/3: numbers in the report. Commit c6c42fb; sclk 6; 2026-11-24 (booted 08:26). Probes and build lines: ../README.txt; the report: docs/registration-and-stalls.md.
+die 0 copying (host-to-device loop)    no lock running: the busy loop ran 13 times in 0.25 s
+die 0 copying (host-to-device loop)    lock for die 0:  0.40 s =  16.1 GB/s (in the kernel 0.14 s, waiting 0.26 s); the busy loop ran 19 times meanwhile
+die 0 copying (host-to-device loop)    lock for die 1:  0.39 s =  16.6 GB/s (in the kernel 0.13 s, waiting 0.26 s); the busy loop ran 19 times meanwhile
+die 0 copying (host-to-device loop)    lock for die 0 with the loader's 0.5 ms pauses:  0.46 s =  14.1 GB/s (in the kernel 0.15 s, waiting 0.31 s); the busy loop ran 22 times meanwhile
+die 0 copying (host-to-device loop)    lock for die 1 with the loader's 0.5 ms pauses:  0.45 s =  14.3 GB/s (in the kernel 0.13 s, waiting 0.32 s); the busy loop ran 23 times meanwhile

@@ -1,0 +1,10 @@
+# ./lock_copy $M4 200; fault-filled (44 GiB by fill_faults). Commit c6c42fb; sclk 6; 2026-11-24 (booted 08:26). Probes and build lines: ../README.txt; the report: docs/registration-and-stalls.md.
+# 200 experts of 18.8 MB per die per case
+1 die: lock per expert + copy                   161 loads/s =  3.02 GB/s; cpu 3.45 ms per load, of it the lock 3.21 ms (wall); bytes equal
+1 die: the same experts again, copy only        630 loads/s = 11.85 GB/s; cpu 0.63 ms per load, of it the lock 0.00 ms (wall); bytes equal
+4 dies at once: lock per expert + copy          239 loads/s =  4.50 GB/s; cpu 6.90 ms per load, of it the lock 11.01 ms (wall); bytes equal
+4 dies at once: again, copy only               1307 loads/s = 24.60 GB/s; cpu 0.67 ms per load, of it the lock 0.00 ms (wall); bytes equal
+1 die: lock per expert + copy                   206 loads/s =  3.87 GB/s; cpu 3.52 ms per load, of it the lock 3.28 ms (wall); bytes equal
+1 die: the same experts again, copy only        677 loads/s = 12.73 GB/s; cpu 0.63 ms per load, of it the lock 0.00 ms (wall); bytes equal
+4 dies at once: lock per expert + copy          304 loads/s =  5.72 GB/s; cpu 6.75 ms per load, of it the lock 10.90 ms (wall); bytes equal
+4 dies at once: again, copy only               1336 loads/s = 25.13 GB/s; cpu 0.67 ms per load, of it the lock 0.00 ms (wall); bytes equal

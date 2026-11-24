@@ -115,6 +115,11 @@ segfault at a loader thread's first allocation), which may be one fault of concu
 allocation from the loader threads. B changes that code, so the test of it (stages created one
 at a time, many starts) belongs before B.
 
+**After step 201** (`docs/registration-and-stalls.md`): the registration is not needed for correctness and holds 330-540 MB of
+page tables on every die, die 0 included. Before A or C2: the engine measured with pinned-only loads (chat, code, a long
+prompt). If the registration stays: below HIP, for dies 1-3 (~10-31 s instead of ~39-100, extrapolated). The reserve of
+0.75 GB per die is mostly those page tables and stays.
+
 ## The testing process (2026-11-22)
 
 The current state, test by test, with terms, needs and times: [testing.md](testing.md) (step 184).
@@ -670,6 +675,9 @@ Step 199: the slow registration is the page cache's layout: filled by the engine
 Step 200: the load studied: 12.9 s (the bus allows ~5), then 75-285 s of registration the cache waits for; huge pages register at 9.7 GB/s.
 Proposed: cache loads at once by the copying path; the upload at the bus rate; the registration short. The person decides.
 Then: written up as item 36, "The load"; the person tests by hand first.
+Step 201: the registration and the stalls studied (`docs/registration-and-stalls.md`): page tables of 330-540 MB per die; HIP's per-device locks; a path below HIP
+(lock for dies 1-3, ROCr's copy) ~3x faster in a probe; loads into die 0 hold its kernels up every ~93 us (cause open), loads into die 1 cost it ~6%.
+To decide: pinned-only loads measured first; die 1 last for loads.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front

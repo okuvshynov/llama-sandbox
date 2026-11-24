@@ -1,0 +1,34 @@
+# the engine's stderr under rocprofv3 (--kernel-trace --memory-copy-trace), the scratch build of ../scratch-build.diff, DS_HOME_ADAPT=1; cpp-matrix, --chat -n 150, --cache-wait. Profiled: not a speed measurement. Commit c6c42fb; sclk 6; 2026-11-24 (booted 08:26). Probes and build lines: ../README.txt; the report: docs/registration-and-stalls.md.
+# mapped 289 GB of CPU experts in 1.1 s
+# runtime: 6.41 GiB of fp8 weights on GPU 0 (80 matrices with padded rows)
+# runtime: 1.75 GiB of small weights on GPU 0
+# dspark: 3 layers, block 5, 128 experts top-3, targets 37 38 39; 0.5 GB on GPU 0, its routed experts in the expert pool
+# runtime: 6097 experts (39.7% of the loaded layers' pairs) on GPUs (0: 802, 1: 1765, 2: 1765, 3: 1765), loaded in 6.4 s
+# expert loader: 288.8 GB of expert tensors registered in 52.0 s (direct loads from now)
+# expert cache: up to 800 loads/s, rebalance every 8 tokens over the last 256
+# GPU memory (GB; the driver's used memory after each startup phase; expert slot = 18.8 MB):
+#   phase                                                           GPU 0  GPU 1  GPU 2  GPU 3
+#   context, other processes                                         0.22   0.07   0.07   0.07
+#   dense fp8 weights                                                6.88   0.00   0.00   0.00
+#   small weights (rotary, embeddings, head, norms, ...)             1.92   0.00   0.00   0.00
+#   activations and scratch (sized for 512-token chunks)             0.83   0.00   0.00   0.00
+#   sequence state: window, compressed KV, indexer keys (--max-ctx)   0.50   0.00   0.00   0.00
+#   draft (DSpark)                                                   0.79   0.00   0.00   0.00
+#   expert path buffers (per die: scratch, staging)                  0.13   0.32   0.32   0.32
+#   expert slots                                                    22.31  33.20  33.20  33.20
+#   cache and loader staging, the rest                               0.00   0.00   0.00   0.00
+#   free                                                             0.76   0.76   0.76   0.76
+#   total                                                           34.34  34.34  34.34  34.34
+# loaded in 65.6 s; prompt 29 tokens; fake-quant on; 16 threads
+
+# drafts verified per step: 0: 0 1: 2 2: 7 3: 5 4: 8 5: 14 (of the 0s, 0 plain steps without a draft); verify cost fit 59.7 + 10.5 n ms
+# speculative: 36 verify steps, 3.14 drafts accepted per step, 4.17 tokens per step; draft 12.0 ms per step
+# routed experts: 79.5% on GPUs (37783 of 47520)
+# prompt: 29 tokens in 0.87 s = 33.34 t/s; generation: 150 tokens in 3.98 s = 37.71 t/s
+# short forwards: 93 of 4440 (die, layer) results needed a second copy (3 rows per token in the first)
+# expert cache: 17 rebalances, 2990 swaps planned, 2661 loads started, 2568 published
+# expert loader: 4308 pieces unregistered in 0.0 s
+[0;31mE20261124 12:33:38.866214 134498213681408 output_file.cpp:102] Opened result file: /tmp/claude-1000/-home-oleksandr-projects-llama-sandbox-ds-completion/9958e636-ead0-413f-919d-4d4d616c1553/scratchpad/prof/home_agent_info.csv
+[m[0;31mE20261124 12:33:40.508797 134498213681408 output_file.cpp:102] Opened result file: /tmp/claude-1000/-home-oleksandr-projects-llama-sandbox-ds-completion/9958e636-ead0-413f-919d-4d4d616c1553/scratchpad/prof/home_kernel_trace.csv
+[m[0;31mE20261124 12:33:40.695028 134498213681408 output_file.cpp:102] Opened result file: /tmp/claude-1000/-home-oleksandr-projects-llama-sandbox-ds-completion/9958e636-ead0-413f-919d-4d4d616c1553/scratchpad/prof/home_memory_copy_trace.csv
+[m

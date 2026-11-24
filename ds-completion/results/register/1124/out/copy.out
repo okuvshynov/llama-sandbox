@@ -1,0 +1,21 @@
+# LD_PRELOAD=shim.so ./reg_copy $M4; cat-filled. Commit c6c42fb; sclk 6; 2026-11-24 (booted 08:26). Probes and build lines: ../README.txt; the report: docs/registration-and-stalls.md.
+# 4 GPUs; 6 GiB per case, 64 MB pieces
+lock: one call, GPU 0 alone                           0.11 s =  59.03 GB/s (cpu 0.09 s)
+lock: one call, GPU 1 alone                           0.07 s =  86.65 GB/s (cpu 0.06 s)
+lock: one call, GPU 2 alone                           0.04 s = 162.04 GB/s (cpu 0.03 s)
+lock: one call, GPU 3 alone                           0.04 s = 153.94 GB/s (cpu 0.03 s)
+lock: one call, 4 agents                              0.26 s =  24.65 GB/s (cpu 0.22 s)
+lock: one call, GPUs 1-3                              0.21 s =  30.47 GB/s (cpu 0.17 s)
+lock: 4 calls of 1 agent on the same piece (HIP's)    0.80 s =   8.00 GB/s (cpu 0.67 s)
+hipHostRegister                                       0.90 s =   7.16 GB/s (cpu 0.74 s)
+lock: one call, 4 agents (for the copies below)       0.25 s =  25.52 GB/s (cpu 0.20 s)
+copy registered with HIP                  rep 0   0.17 s = 12.93 GB/s, cpu 0.16 s = 1.43 ms per 18.8 MB
+copy registered with HIP                  rep 1   0.16 s = 13.09 GB/s, cpu 0.16 s = 1.42 ms per 18.8 MB
+copy locked with hsa_amd_memory_lock      rep 0   0.38 s =  5.62 GB/s, cpu 0.28 s = 2.44 ms per 18.8 MB
+copy locked with hsa_amd_memory_lock      rep 1   0.17 s = 12.65 GB/s, cpu 0.17 s = 1.53 ms per 18.8 MB
+copy pageable (the file mapping as it is) rep 0   0.32 s =  6.64 GB/s, cpu 0.25 s = 2.16 ms per 18.8 MB
+copy pageable (the file mapping as it is) rep 1   0.17 s = 12.64 GB/s, cpu 0.18 s = 1.56 ms per 18.8 MB
+copy through a pinned buffer (memcpy first) rep 0   0.40 s =  5.42 GB/s, cpu 0.41 s = 3.56 ms per 18.8 MB
+copy through a pinned buffer (memcpy first) rep 1   0.40 s =  5.42 GB/s, cpu 0.41 s = 3.56 ms per 18.8 MB
+# shim: hsa_amd_memory_lock 1056 calls, 66.00 GiB, 1.79 s; lock_to_pool 2434 calls, 32.01 GiB, 1.25 s; agents passed in total 4258
+# a chunk copied from the hsa-locked memory read back: equal

@@ -1,0 +1,24 @@
+# ./reg_flags $M4 (step 189's probe), then the same with LD_PRELOAD=shim.so, HIP_VISIBLE_DEVICES=0, ROCR_VISIBLE_DEVICES=0; cat-filled. Commit c6c42fb; sclk 6; 2026-11-24 (booted 08:26). Probes and build lines: ../README.txt; the report: docs/registration-and-stalls.md.
+== reg_flags, 4 devices
+read-only | portable (the loader's)     0.87 s = 7.40 GB/s; cpu user 0.00 s, system 0.70 s
+read-only                               0.62 s = 10.47 GB/s; cpu user 0.00 s, system 0.50 s
+portable                                0.77 s = 8.41 GB/s; cpu user 0.01 s, system 0.63 s
+default (0)                             0.72 s = 9.00 GB/s; cpu user 0.00 s, system 0.56 s
+== with shim
+read-only | portable (the loader's)     0.85 s = 7.54 GB/s; cpu user 0.00 s, system 0.69 s
+read-only                               0.60 s = 10.79 GB/s; cpu user 0.00 s, system 0.49 s
+portable                                0.79 s = 8.19 GB/s; cpu user 0.01 s, system 0.65 s
+default (0)                             0.74 s = 8.66 GB/s; cpu user 0.00 s, system 0.60 s
+# shim: hsa_amd_memory_lock 0 calls, 0.00 GiB, 0.00 s; lock_to_pool 1536 calls, 96.00 GiB, 2.97 s; agents passed in total 1536
+== HIP_VISIBLE_DEVICES=0
+read-only | portable (the loader's)     0.07 s = 91.88 GB/s; cpu user 0.00 s, system 0.06 s
+read-only                               0.04 s = 173.97 GB/s; cpu user 0.00 s, system 0.03 s
+portable                                0.04 s = 165.40 GB/s; cpu user 0.00 s, system 0.03 s
+default (0)                             0.04 s = 149.05 GB/s; cpu user 0.00 s, system 0.03 s
+# shim: hsa_amd_memory_lock 0 calls, 0.00 GiB, 0.00 s; lock_to_pool 384 calls, 24.00 GiB, 0.19 s; agents passed in total 384
+== ROCR_VISIBLE_DEVICES=0
+read-only | portable (the loader's)     0.05 s = 121.84 GB/s; cpu user 0.00 s, system 0.04 s
+read-only                               0.04 s = 175.94 GB/s; cpu user 0.00 s, system 0.03 s
+portable                                0.04 s = 156.87 GB/s; cpu user 0.00 s, system 0.03 s
+default (0)                             0.05 s = 141.86 GB/s; cpu user 0.00 s, system 0.04 s
+# shim: hsa_amd_memory_lock 0 calls, 0.00 GiB, 0.00 s; lock_to_pool 384 calls, 24.00 GiB, 0.17 s; agents passed in total 384

@@ -1,0 +1,54 @@
+# LD_PRELOAD=shim.so ./reg_pre $M4; cat-filled. Commit c6c42fb; sclk 6; 2026-11-24 (booted 08:26). Probes and build lines: ../README.txt; the report: docs/registration-and-stalls.md.
+# page cache, the file read sequentially after boot
+ A. hipHostRegister alone (today's loader)
+  hipHostRegister                                 0.86 s =   7.51 GB/s (cpu 0.70 s)
+    copy to die 0: 12.97 GB/s, cpu 1.45 ms per 18.8 MB
+    copy to die 1: 12.92 GB/s, cpu 1.44 ms per 18.8 MB
+    copy to die 2: 13.00 GB/s, cpu 1.44 ms per 18.8 MB
+    copy to die 3: 13.00 GB/s, cpu 1.44 ms per 18.8 MB
+  hipHostUnregister                               0.00 s = 20147.67 GB/s (cpu 0.00 s)
+ B. one hsa_amd_memory_lock for the 4 GPUs, then hipHostRegister
+  hsa_amd_memory_lock, 4 agents                   0.26 s =  24.83 GB/s (cpu 0.20 s)
+  hipHostRegister after it                        0.18 s =  34.98 GB/s (cpu 0.14 s)
+    copy to die 0: 13.10 GB/s, cpu 1.44 ms per 18.8 MB
+    copy to die 1: 13.10 GB/s, cpu 1.44 ms per 18.8 MB
+    copy to die 2: 13.09 GB/s, cpu 1.44 ms per 18.8 MB
+    copy to die 3: 13.10 GB/s, cpu 1.44 ms per 18.8 MB
+  hipHostUnregister                               0.00 s = 23116.99 GB/s (cpu 0.00 s)
+  hsa_amd_memory_unlock                           0.00 s = 539634.66 GB/s (cpu 0.00 s)
+ C. one hsa_amd_memory_lock for all agents (NULL, 0), then hipHostRegister
+  hsa_amd_memory_lock, all agents                 0.19 s =  33.25 GB/s (cpu 0.15 s)
+  hipHostRegister after it                        0.20 s =  31.49 GB/s (cpu 0.15 s)
+    copy to die 0: 13.10 GB/s, cpu 1.44 ms per 18.8 MB
+    copy to die 1: 13.12 GB/s, cpu 1.44 ms per 18.8 MB
+    copy to die 2: 13.09 GB/s, cpu 1.44 ms per 18.8 MB
+    copy to die 3: 13.08 GB/s, cpu 1.42 ms per 18.8 MB
+  hipHostUnregister                               0.00 s = 27257.41 GB/s (cpu 0.00 s)
+  hsa_amd_memory_unlock                           0.00 s = 590284.14 GB/s (cpu 0.00 s)
+# anonymous 4 KiB pages touched in random order (scattered)
+ A. hipHostRegister alone (today's loader)
+  hipHostRegister                                 1.71 s =   3.76 GB/s (cpu 1.13 s)
+    copy to die 0: 13.07 GB/s, cpu 1.44 ms per 18.8 MB
+    copy to die 1: 13.07 GB/s, cpu 1.44 ms per 18.8 MB
+    copy to die 2: 13.06 GB/s, cpu 1.44 ms per 18.8 MB
+    copy to die 3: 13.06 GB/s, cpu 1.43 ms per 18.8 MB
+  hipHostUnregister                               0.00 s = 26848.44 GB/s (cpu 0.00 s)
+ B. one hsa_amd_memory_lock for the 4 GPUs, then hipHostRegister
+  hsa_amd_memory_lock, 4 agents                   0.73 s =   8.79 GB/s (cpu 0.44 s)
+  hipHostRegister after it                        0.58 s =  11.05 GB/s (cpu 0.41 s)
+    copy to die 0: 13.07 GB/s, cpu 1.44 ms per 18.8 MB
+    copy to die 1: 13.07 GB/s, cpu 1.44 ms per 18.8 MB
+    copy to die 2: 13.07 GB/s, cpu 1.44 ms per 18.8 MB
+    copy to die 3: 13.07 GB/s, cpu 1.43 ms per 18.8 MB
+  hipHostUnregister                               0.00 s = 24548.11 GB/s (cpu 0.00 s)
+  hsa_amd_memory_unlock                           0.00 s = 455155.84 GB/s (cpu 0.00 s)
+ C. one hsa_amd_memory_lock for all agents (NULL, 0), then hipHostRegister
+  hsa_amd_memory_lock, all agents                 0.70 s =   9.16 GB/s (cpu 0.41 s)
+  hipHostRegister after it                        0.53 s =  12.21 GB/s (cpu 0.34 s)
+    copy to die 0: 13.07 GB/s, cpu 1.44 ms per 18.8 MB
+    copy to die 1: 13.06 GB/s, cpu 1.44 ms per 18.8 MB
+    copy to die 2: 13.07 GB/s, cpu 1.44 ms per 18.8 MB
+    copy to die 3: 13.06 GB/s, cpu 1.44 ms per 18.8 MB
+  hipHostUnregister                               0.00 s = 19559.13 GB/s (cpu 0.00 s)
+  hsa_amd_memory_unlock                           0.00 s = 529170.09 GB/s (cpu 0.00 s)
+# shim: hsa_amd_memory_lock 384 calls, 24.00 GiB, 1.89 s; lock_to_pool 2304 calls, 144.00 GiB, 4.06 s; agents passed in total 3072

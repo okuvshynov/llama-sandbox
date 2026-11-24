@@ -1,0 +1,25 @@
+# ./reg_hsa $M4 <piece MB> for 4, 64, 1024, 6144, after ./fill_faults $M4 44: the page cache is FAULT-FILLED here, the rows' "read by cat" labels are stale. Commit c6c42fb; sclk 6; 2026-11-24 (booted 08:26). Probes and build lines: ../README.txt; the report: docs/registration-and-stalls.md.
+# 4 GPUs; 6 GiB per case in 4 MB pieces
+page cache (file read by cat)                1 GPU   lock  0.40 s = 16.30 GB/s (sys 0.22 s, waiting 0.18 s); unlock 0.00 s
+page cache, a second region                  1 GPU   lock  0.39 s = 16.62 GB/s (sys 0.22 s, waiting 0.17 s); unlock 0.00 s
+page cache                                   2 GPU   lock  0.71 s =  9.03 GB/s (sys 0.36 s, waiting 0.35 s); unlock 0.00 s
+page cache                                   4 GPU   lock  1.55 s =  4.15 GB/s (sys 0.76 s, waiting 0.79 s); unlock 0.00 s
+page cache, all agents (as HIP)              4 GPU+  lock  1.50 s =  4.29 GB/s (sys 0.75 s, waiting 0.75 s); unlock 0.00 s
+# 4 GPUs; 6 GiB per case in 64 MB pieces
+page cache (file read by cat)                1 GPU   lock  0.24 s = 27.09 GB/s (sys 0.12 s, waiting 0.12 s); unlock 0.00 s
+page cache, a second region                  1 GPU   lock  0.23 s = 28.26 GB/s (sys 0.12 s, waiting 0.11 s); unlock 0.00 s
+page cache                                   2 GPU   lock  0.47 s = 13.83 GB/s (sys 0.24 s, waiting 0.22 s); unlock 0.00 s
+page cache                                   4 GPU   lock  0.91 s =  7.11 GB/s (sys 0.43 s, waiting 0.47 s); unlock 0.00 s
+page cache, all agents (as HIP)              4 GPU+  lock  0.89 s =  7.22 GB/s (sys 0.43 s, waiting 0.46 s); unlock 0.00 s
+# 4 GPUs; 6 GiB per case in 1024 MB pieces
+page cache (file read by cat)                1 GPU   lock  0.23 s = 27.49 GB/s (sys 0.11 s, waiting 0.12 s); unlock 0.00 s
+page cache, a second region                  1 GPU   lock  0.22 s = 29.02 GB/s (sys 0.10 s, waiting 0.12 s); unlock 0.00 s
+page cache                                   2 GPU   lock  0.44 s = 14.60 GB/s (sys 0.20 s, waiting 0.24 s); unlock 0.00 s
+page cache                                   4 GPU   lock  0.85 s =  7.60 GB/s (sys 0.37 s, waiting 0.48 s); unlock 0.00 s
+page cache, all agents (as HIP)              4 GPU+  lock  0.84 s =  7.71 GB/s (sys 0.37 s, waiting 0.46 s); unlock 0.00 s
+# 4 GPUs; 6 GiB per case in 6144 MB pieces
+page cache (file read by cat)                1 GPU   lock  0.23 s = 28.33 GB/s (sys 0.10 s, waiting 0.12 s); unlock 0.00 s
+page cache, a second region                  1 GPU   lock  0.22 s = 28.81 GB/s (sys 0.11 s, waiting 0.11 s); unlock 0.00 s
+page cache                                   2 GPU   lock  0.43 s = 14.82 GB/s (sys 0.20 s, waiting 0.23 s); unlock 0.00 s
+page cache                                   4 GPU   lock  0.84 s =  7.68 GB/s (sys 0.36 s, waiting 0.48 s); unlock 0.00 s
+page cache, all agents (as HIP)              4 GPU+  lock  0.82 s =  7.84 GB/s (sys 0.36 s, waiting 0.46 s); unlock 0.00 s
