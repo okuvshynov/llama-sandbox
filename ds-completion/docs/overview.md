@@ -364,6 +364,7 @@ Also the product's: `scripts/serve.sh` and `scripts/chat.sh` (the two ways to st
 |---|---|
 | `tools/ds_inspect.cpp` | load the model, or some layers, through the real loader and show what it found |
 | `tools/bench_*` | benchmarks of each kernel and of the loader, CPU and GPU (the Makefile knows which need `HIP=1`) |
+| `tools/reg_probe.cpp` | how fast the expert tensors would register with the GPUs in this state of the page cache, from a sample, per shard (step 204); `scripts/model_cache.py` reads it |
 | `scripts/` | the tools still in use ([scripts/README.md](../scripts/README.md)): the checks as fixed runs (`check.py`, step 186), the runner of a matrix of runs (`run_matrix.py`) and the reader of their records (`records.py`; README steps 128-129), the chat launcher (`chat.sh`), the held-out measurement (`spec-measure.sh`), the trace tools, `route_stats.py`, the Mac Pro's fans and GPU clock (`fans_full.sh`, `set_vega_freq.sh`). A script written for one step lies with its results under `results/` (README step 130) |
 | `docs/testing.md` | the tests as they are: terms, each test's target, needs and time (step 184) |
 | `docs/rocprof.md` | the GPU side under AMD's `rocprofv3`: how to run it, its files, how to read them (README step 140) |

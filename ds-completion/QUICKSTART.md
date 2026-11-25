@@ -136,7 +136,11 @@ keeps that out of a timed run. It also decides how long every start with the cac
 expert tensors: 75 s when the files came into the cache by this sequential read, up to 285 s when
 the engine's own page faults brought them in (README step 199; then drop them first, a `cat` of
 cached files moves nothing:
-`python3 -c "import os,sys; [os.posix_fadvise(os.open(f,0),0,0,os.POSIX_FADV_DONTNEED) for f in sys.argv[1:]]" ~/llms/UD-Q8_K_XL/*.gguf`). After a reboot too: until the engram table is cached, each new
+`python3 -c "import os,sys; [os.posix_fadvise(os.open(f,0),0,0,os.POSIX_FADV_DONTNEED) for f in sys.argv[1:]]" ~/llms/UD-Q8_K_XL/*.gguf`).
+`scripts/model_cache.py` does both (README step 204): it reads what is not cached, measures in a
+few seconds how fast the expert tensors would register (`--status`: only that), and reads again
+a shard that registers below 2 GB/s; `scripts/check.py` runs it first. A read right after a boot
+gives the fastest registration (38 s); a second read gives 75-95 s. After a reboot too: until the engram table is cached, each new
 text reads its rows from disk and runs ~12% slower once (README step 117; `--record` shows it
 as `read_bytes`).
 

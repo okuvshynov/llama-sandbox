@@ -28,7 +28,10 @@ What says where a difference is (ds-test's per-layer table, traces) is not part 
 failed check names the command to run next.
 
 A run is a fixed list: there is nothing to choose. It first builds everything (make, make HIP=1:
-a stale program is a wrong verdict), then runs each check and prints one line per check:
+a stale program is a wrong verdict), then, for the runs with the model, reads into the page cache
+what is not there and reads again a shard whose pages would register slowly with the GPUs
+(scripts/model_cache.py, README step 204: a preparation, not a check), then runs each check and
+prints one line per check:
 
   ok    <name>  <seconds>
   FAIL  <name>  <seconds>   and where its output is, and what to run next
@@ -45,6 +48,8 @@ import sys
 import time
 
 import hashlib
+
+import model_cache
 
 HOME = os.path.expanduser('~')
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -104,6 +109,7 @@ COMPLETE = DEFAULT + [
      [MODEL, F8], 'the logits check on readme1100 (the same chunks); then the prompt cut shorter'),
 ] + SPEED
 RUNS = {'unit': UNIT, 'default': DEFAULT, 'speed': SPEED, 'complete': COMPLETE}
+WAITS = {'default': 1, 'speed': 16, 'complete': 69}  # the starts of a run that wait for the registration of the expert tensors
 LIVE = ('outputs_check.py', 'speed_check.py', 'requests_test.py', 'sessions_check.py', 'matrix_check.py')  # long: their lines are shown as they come
 STORING = ('outputs_check.py', 'speed_check.py')  # the checks that keep their own expectation and take --store
 
@@ -145,6 +151,12 @@ def main():
         if rc != 0:
             print('FAILED (the build: no check was run)')
             return 1
+
+    if run in WAITS and os.path.exists(MODEL):  # the model in the page cache, and in a state that registers fast (step 204)
+        t0 = time.time()
+        print('..    the model\'s files in the page cache (scripts/model_cache.py)', flush=True)
+        model_cache.prepare(WAITS[run], MODEL, lambda s: print('      | ' + s, flush=True))
+        print(f'ok    the model\'s files in the page cache  {time.time() - t0:.1f} s', flush=True)
 
     failed = 0
     want, stored = expected(), {}

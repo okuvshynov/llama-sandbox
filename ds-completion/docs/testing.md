@@ -311,6 +311,15 @@ change. A few fixed runs, each one command with one verdict and an exit code:
 | complete | `scripts/check.py complete` | overnight, and before anything is called done | `default`; the logits at 20,000 tokens; the request test with and without speculation; six sessions and ten single runs on their conversations; the three sampling matrices; a 2,731-token prompt from a file; `speed` (step 190) | ~4 h estimated; the first whole run 6 h 43 min, in a boot where the registration took 285 s per engine start (step 198) |
 | localizers | by hand | when a verdict failed | section 3.6's "where" column | |
 
+Before the checks of a run with the model, `check.py` prepares the page cache
+(`scripts/model_cache.py`, step 204): what is not cached is read sequentially, a probe of 6 s
+(`bin-hip/reg-probe`) says how long the expert tensors would take to register, and a shard that
+registers below 2 GB/s is dropped and read again when the run's starts (1, 16, 69) would wait
+longer for it than the reading takes. This keeps a run out of step 198's state, where every start
+waited 285 s. It is a preparation without a verdict. Times below are from boots where a start
+waited 105-140 s; right after a boot with the model read once, a start waits ~40-55 s and
+`default` took 259 s.
+
 `check.py` builds first (`make`, `make HIP=1`: a stale program is a wrong verdict), prints a
 line when a check starts and, for the checks that take minutes, their own lines as they come
 (indented), then one line per check with its verdict and time, keeps every check's output under `data/check/`, and for a failed check prints

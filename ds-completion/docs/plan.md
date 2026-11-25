@@ -102,7 +102,7 @@ on page-cache pages by their layout, 4.8 on our own 4 KiB pages, 9.7 on 2 MB hug
 |---|---|---|---|
 | A | The cache's loads from the first token: the copying path for an expert whose memory is not registered yet, the direct path once it is (the loader already knows per piece) | no correctness check waits for the registration: 47 of `complete`'s 63 starts go from 88-298 s to ~13 s | `default`; `speed` before and after with `--cache-wait` kept there; the speed of the first 75 s of a process measured, since the copying path costs the CPU expert kernel (step 30: noticeable at 400 loads/s; a 300-token run starts ~630/s) |
 | B | The upload at the bus rate: two threads per die or direct transfers, and the dense weights to die 0 while experts go to the others | "loaded in" 12.9 -> ~6 s | `default`; the load's phases timed again (`results/register/ts.py`); the bus rate measured again at sclk 6 first |
-| C1 | The registration short by the page cache: a script that drops the model's files from the cache and reads them back sequentially (3 min, no root), run by `check.py speed` and `complete` at their start; one line from the engine when it registers below ~2 GB/s | 285 -> 75 s per start whatever filled the cache | one start before and after |
+| C1 (done, step 204: `scripts/model_cache.py`, by shard, only below 2 GB/s; the engine's own line is not done) | The registration short by the page cache: a script that drops the model's files from the cache and reads them back sequentially (3 min, no root), run by `check.py speed` and `complete` at their start; one line from the engine when it registers below ~2 GB/s | 285 -> 75 s per start whatever filled the cache | one start before and after |
 | C2 | The same by a copy that outlives the process: the experts once per boot in shared memory on huge pages | ~30 s; needs root once per boot (`shmem_enabled`), a second loader path, and the logits checks on it | only if 75 s is still too long after A |
 | D | Generating before the upload is over: the placement as the cache's first target, the CPU serving what has not arrived | the first token at ~3 s instead of ~6 | left unless wanted: ~4 s for the most code touched |
 
@@ -166,6 +166,21 @@ registration (loads before it is complete; step 189) and with it `speed`'s 36 mi
 repeated runs (the held-out greedy runs appear in `speed` and in a sampling matrix; a session and
 its ten single runs); the draft against the reference as a check with a verdict; the code
 findings of step 182's review.
+
+**The second round (the person, 2026-11-25).** Keep the four runs and all they cover; make each
+faster and a check easier to add. Reviewed: `complete` starts the engine 69 times with
+`--cache-wait` (5.7 of step 198's 6.7 hours are those starts), and what varies between most of
+those runs can vary per request. In order:
+
+| | step | state |
+|---|---|---|
+| 1 | no start at the slow registration rate: the page cache prepared before the checks | done, step 204 |
+| 2 | many checks on one engine: a library for a `--requests` engine (`tests/engine.py`) and a table of cases (configuration, request, prompt, the key of the expected ids); `check.py` starts each configuration once. Six configurations cover today's runs: the fastest one, the same with `--spec-n 5`, the plain loop on two placements and with the cache, and the `-i` sessions. Moved one at a time: the held-out sampling matrix first (its hashes are already checked by the requests test; 16 starts), then the other matrices and the ten single runs. Two or three fresh runs stay for the command line's `--temp`, `--top-p`, `--seed` and plain `-p` | next |
+| 3 | `speed` on one engine, with a request that puts the cache back to the placement: to be shown equal to fresh processes within the 2% first | idea |
+| 4 | loads from the first token (item 36, A): `default` ~5.5 -> ~3.7 min | planned with item 36 |
+| 5 | a check of many starts and exits, for the two crashes of step 198, which fewer starts would meet less often | later (the person) |
+
+Not worth it for the checks: the model on huge pages (item 36, C2). After step 2 about 11 starts wait, and the checks would run on pages the product does not use by default.
 
 **A rule from the description** (step 185; testing.md 3.6): a tier runs verdicts (bytes, hashes, a test's
 exit code); what says where a difference is (the per-layer table, per token, the traces) runs
@@ -680,6 +695,7 @@ Step 201: the registration and the stalls studied (`docs/registration-and-stalls
 To decide: pinned-only loads measured first; die 1 last for loads.
 Step 202: from the kernel: the registration is 854,000 page-table jobs on the copy engine's queue (one per 75 us); the stalls show nothing on the host (no driver work, no interrupt inside a held-up kernel) and do not depend on the copy's piece size.
 Step 203: measured for this item: pinned-only loads -6.6% on the held-out prompts (nothing on the long prompt; mechanism open), no loads before the registration ends -34.2%, so loads through the pinned buffer until the registration is done are worth having; the reserve at 0.3 GB without registration: no gain today; the model on 2 MB pages of the hugetlb pool registers in 22-37 s with page tables near zero (474 GiB reserved after a boot: untried). Next: why pinned loads cost what they do.
+Step 204: C1 as `scripts/model_cache.py` with `bin-hip/reg-probe`, called by `check.py`: what is not cached is read, a shard below 2 GB/s is read again. A read right after a boot registers at 6-7.6 GB/s (the engine: 37.8 s); a second read gives 3-4 GB/s and does not give a boot's rate back.
 
 **Triage (2026-11-07, after README step 90).** A 6-token code step (~89 ms traced): die 0 waits
 ~25 ms for the CPU's experts (the part the GPU clock does not touch, step 90), die 0's dense front

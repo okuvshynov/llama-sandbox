@@ -7671,3 +7671,56 @@ Not tried: reserving 474 GiB after a boot, and a shard with tensors in the pool.
 Decided by the person: understanding before percent. Next, the mechanism of the pinned loads'
 cost (the CPU expert call by phase, the memory controller's counters), since a larger model
 may leave no choice but pinned loads.
+
+## Step 204: the model's page cache prepared before the checks
+
+The first change of a round on the testing process (plan item 35; the person, 2026-11-25:
+keep the four runs and their coverage, make each faster and a check easier to add). Reviewed
+first: `complete` starts the engine 69 times with `--cache-wait`, and every such start waits
+for the registration of the expert tensors: 5.7 of the 6.7 hours of step 198. Two changes were
+chosen to begin with: the registration never at its slow rate (this step, C1 of plan item 36),
+and many checks on one engine (the steps after it).
+
+**What was built.**
+
+- `tools/reg_probe.cpp` (`bin-hip/reg-probe <model>`): registers a sample of what the loader
+  registers (the same tensors, 64 MB pieces and flags; every k-th piece, 4 GiB in all) and
+  prints a rate per shard and the seconds the whole registration would take. 6 s.
+- `scripts/model_cache.py`: reads into the page cache what is not there (one file after
+  another, sequentially), runs the probe, and drops and reads again a shard that registers
+  below 2 GB/s, when the run's starts would wait longer for it than the reading takes
+  (`--waits N`). `--status` only looks.
+- `scripts/check.py default`, `speed` and `complete` call it after the build, with 1, 16 and
+  69 starts. It is a preparation: it prints its lines and has no verdict.
+
+**Measured** (`results/register/1125/cache-prepare.txt`), in a boot of 20 minutes:
+
+- The page cache empty: 474 GiB read in 160 s (3.2 GB/s), then the probe: 6.0-6.4 GB/s by
+  shard, 46 s for the registration.
+- The engine right after it: "288.8 GB of expert tensors registered in 37.8 s", 7.6 GB/s. The
+  fastest in any stored result (75.1 s was, step 199). The probe reads ~25% low here: it
+  registers scattered pieces, the engine consecutive ones. In step 199's slow boot the two
+  agreed at 1.0 GB/s.
+- One shard brought in by page faults (16 threads, random blocks): 3.1 GB/s. Not step 199's
+  1.0: here the faults filled memory that was free and whole.
+- **A drop and a second read do not give back a boot's rate.** A first version of the rule
+  read again any shard slower than the boot's best. It took the fault-filled shard (3.4 -> 4.1
+  GB/s) and, on the probe's scatter (6.2 against 6.5), a good one: 6.2 -> 3.1 GB/s. So a
+  second read gives 3-4 GB/s whatever the shard had (step 199: 4.2, and 3.85 for the model),
+  and only a read right after a boot gives 6 and more. The rule now acts below 2 GB/s only and
+  counts its gain against 3 GB/s. The state it is for (1 GB/s) was not made again today.
+- `scripts/check.py default` with it: the preparation 6 s, "ready" after 68 s (the probe said
+  59 s of registration), 259 s in all against ~5.5 min in the boots before.
+
+**Also found by that run:** the server test failed once in a log line check. Two threads of
+`server/ds_server.py` wrote log lines at the same moment and the lines mixed, because
+`print` writes its arguments one by one. `log()` now writes a line in one call. It is rare
+(1 of the 19 runs kept in `data/check/`; 6 of 6 pass before and after the change), so the
+runs do not show the fix.
+
+**What it means for the times.** In step 198's state every start waited 285 s; with the rule
+a slow shard is read again and a start waits ~75-95 s. Right after a boot, with nothing
+cached, the read gives ~40-55 s. `complete`'s 69 starts: 5.5 h, ~1.7 h, ~1 h of waiting.
+
+Next: the checks on one engine (a library for a `--requests` engine and a table of cases),
+the held-out sampling matrix first.

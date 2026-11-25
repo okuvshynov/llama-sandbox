@@ -56,7 +56,7 @@ ifeq ($(HIP),1)
 PRODUCT += $(BIN)/ds-completion
 TESTS  += $(BIN)/ds-test $(BIN)/test-topk
 TOOLS  += $(BIN)/bench-fp8 $(BIN)/bench-kernels $(BIN)/bench-fp4-moe $(BIN)/bench-expert-pool $(BIN)/bench-expert-load \
-          $(BIN)/bench-register $(BIN)/bench-launch $(BIN)/bench-loader-exit $(BIN)/bench-row-stride $(BIN)/bench-wave-slots
+          $(BIN)/bench-register $(BIN)/reg-probe $(BIN)/bench-launch $(BIN)/bench-loader-exit $(BIN)/bench-row-stride $(BIN)/bench-wave-slots
 endif
 
 all: product tests tools
@@ -113,6 +113,10 @@ $(BIN)/bench-launch: tools/bench_launch.cpp
 $(BIN)/bench-register: tools/bench_register.cpp
 	@mkdir -p $(BIN)
 	$(HIPCC) $(HIPFLAGS) -o $@ tools/bench_register.cpp
+
+$(BIN)/reg-probe: tools/reg_probe.cpp src/model.cpp src/model.h
+	@mkdir -p $(BIN)
+	$(CXX) $(CXXFLAGS) $(RT_FLAGS) -o $@ tools/reg_probe.cpp src/model.cpp -L$(ROCM)/lib -Wl,-rpath,$(ROCM)/lib -lamdhip64 $(LDLIBS)
 
 $(BIN)/test-topk: tests/test_topk.cpp src/kernels.hip src/kernels.h
 	@mkdir -p $(BIN)

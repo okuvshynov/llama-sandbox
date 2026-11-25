@@ -52,7 +52,9 @@ class BadRequest(Exception):
 
 
 def log(*a):
-    print(f'# server {time.strftime("%Y-%m-%d %H:%M:%S")}:', *a, file=sys.stderr, flush=True)
+    # one write per line: print() writes its arguments one by one, and two threads' lines then mix (README step 204)
+    sys.stderr.write(f'# server {time.strftime("%Y-%m-%d %H:%M:%S")}: ' + ' '.join(str(x) for x in a) + '\n')
+    sys.stderr.flush()
 
 
 # One line of --log (README step 166): a request to POST /v1/messages as one JSON object. Every

@@ -1,0 +1,117 @@
+# The model's page cache prepared before the checks: scripts/model_cache.py and bin-hip/reg-probe (README step 204).
+# Commit 9aef478 + this step's change (the commit that adds this file); sclk 6 (manual, all four cards); 2026-11-25;
+# booted 09:06, nothing run before section 1. $M = ~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf
+#
+# 1. python3 scripts/model_cache.py --waits 69      (the page cache empty after the boot: one sequential read, then the probe)
+0 of 473 GiB of the model in the page cache; not whole: 9 of 9 files
+reading DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf (0.0 GB)
+  0.0 GB in 0 s = 0.26 GB/s
+reading DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00002-of-00009.gguf (50.5 GB)
+  50.5 GB in 16 s = 3.19 GB/s
+reading DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00003-of-00009.gguf (50.5 GB)
+  50.5 GB in 16 s = 3.25 GB/s
+reading DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00004-of-00009.gguf (50.5 GB)
+  50.5 GB in 16 s = 3.23 GB/s
+reading DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00005-of-00009.gguf (50.5 GB)
+  50.5 GB in 16 s = 3.24 GB/s
+reading DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00006-of-00009.gguf (50.5 GB)
+  50.5 GB in 16 s = 3.19 GB/s
+reading DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00007-of-00009.gguf (36.1 GB)
+  36.1 GB in 11 s = 3.24 GB/s
+reading DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00008-of-00009.gguf (202.8 GB)
+  202.8 GB in 63 s = 3.24 GB/s
+reading DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00009-of-00009.gguf (16.8 GB)
+  16.8 GB in 5 s = 3.29 GB/s
+registering the expert tensors would take 46 s (6.3, 6.0, 6.0, 6.2, 6.4, 6.4 GB/s by shard)
+
+real	2m40.440s
+user	0m0.638s
+sys	2m23.697s
+#
+# 2. One engine start right after it, for the probe's number against the engine's own:
+#    bin-hip/ds-completion -m $M --rt ~/llms/ds-1017-fp8/dense-fp8.gguf --placement placements/study30.txt --dspark <draft> --spec --canon
+#        --cache-loads 800 --cache-period 8 --cache-wait -p "What is the difference between TCP and UDP?" -n 100       (its stderr)
+# runtime: 6097 experts (39.7% of the loaded layers' pairs) on GPUs (0: 802, 1: 1765, 2: 1765, 3: 1765), loaded in 12.7 s
+# expert loader: 288.8 GB of expert tensors registered in 37.8 s (direct loads from now)
+# loaded in 64.4 s; prompt 10 tokens; fake-quant on; 16 threads
+# expert loader: 4308 pieces unregistered in 0.0 s
+#    then  bin-hip/reg-probe $M
+shard 6.16 50.5 .../DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00002-of-00009.gguf
+shard 6.01 50.5 .../DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00003-of-00009.gguf
+shard 5.47 50.5 .../DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00004-of-00009.gguf
+shard 6.21 50.5 .../DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00005-of-00009.gguf
+shard 6.28 50.5 .../DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00006-of-00009.gguf
+shard 6.41 36.1 .../DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00007-of-00009.gguf
+rate 6.06 expert_gb 288.8 seconds 48
+#    The engine: 37.8 s (7.6 GB/s), the fastest registration in any stored result (75.1 s was, step 199; 24.7 s in older
+#    results is of fewer tensors). The probe: 46-48 s. It registers scattered pieces, the engine consecutive ones: the
+#    probe reads ~25% low here. In step 199's slow boot the two agreed (probes 0.93-1.06 GB/s, the engine 1.01).
+#
+# 3. One shard brought in by page faults (results/register/1124/fill_faults.cpp: the file dropped, then 16 threads
+#    reading 6.27 MB blocks in random order), then  model_cache.py --waits 1  (which reads the shard's last 70 MB)
+# 8047 blocks of 6.27 MB = 47.0 GiB by page faults, 16 threads, 14.1 s = 3.57 GB/s
+473 of 473 GiB of the model in the page cache; not whole: 1 of 9 files
+reading DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00004-of-00009.gguf (50.5 GB)
+  50.5 GB in 7 s = 7.37 GB/s
+registering the expert tensors would take 54 s (6.2, 5.9, 3.1, 6.3, 6.3, 6.5 GB/s by shard)
+#    Shard 4: 5.5-6.2 -> 3.1 GB/s. Not the 1.0 of step 199: there the faults came over hours of checks in a boot long
+#    in use; here into memory that was free and whole.
+#
+# 4. A first version read again every shard slower than the boot's best one, when the starts' waiting paid for it.
+#    With --waits 69 it took shard 3 (6.2 against 6.5 GB/s: the probe's scatter) and shard 4:
+473 of 473 GiB of the model in the page cache
+registering the expert tensors would take 53 s (6.4, 6.2, 3.4, 6.5, 6.3, 6.4 GB/s by shard)
+2 shards register slowly (their pages came by page faults, README step 199): dropped from the page cache and read again
+reading DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00003-of-00009.gguf (50.5 GB)
+  50.5 GB in 16 s = 3.18 GB/s
+reading DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00004-of-00009.gguf (50.5 GB)
+  50.5 GB in 15 s = 3.34 GB/s
+now registering would take 58 s (6.4, 3.1, 4.1, 6.3, 6.3, 6.4 GB/s by shard)
+#    Shard 4: 3.4 -> 4.1 GB/s. Shard 3: 6.2 -> 3.1 GB/s: read again it lost the boot's rate. So a drop and a second
+#    read give 3-4 GB/s (step 199: 4.2 for one shard, 3.85 for the model), whatever the shard had before; only a read
+#    right after a boot gives 6 and more. The rule now: only a shard below 2 GB/s is read again, and its gain is
+#    counted against 3 GB/s. With it, the same state and --waits 69:
+473 of 473 GiB of the model in the page cache
+registering the expert tensors would take 59 s (6.1, 3.1, 4.1, 6.3, 6.3, 6.3 GB/s by shard)
+#    (nothing read.) The state of step 199 (1 GB/s) was not made again today: the rule's action ran only in the first
+#    version above.
+#
+# 5. scripts/check.py default  with the preparation in it (its lines, the long check's own lines left out):
+# scripts/check.py default; commit 9aef478+changes; sclk 6,6,6,6; 2026-11-25 09:36; outputs in data/check/default-20261125-093624/
+ok    build: make  0.0 s
+ok    build: make HIP=1  0.0 s
+..    the model's files in the page cache (scripts/model_cache.py)
+      | 473 of 473 GiB of the model in the page cache
+      | registering the expert tensors would take 59 s (6.2, 3.1, 4.1, 6.2, 6.3, 6.4 GB/s by shard)
+ok    the model's files in the page cache  6.1 s
+..    fakequant: the rounding ops against the reference's, bit for bit
+ok    fakequant: the rounding ops against the reference's, bit for bit  0.0 s
+..    sampler: temperature, top-p, one seed one sequence
+ok    sampler: temperature, top-p, one seed one sequence  19.0 s
+..    top-k: the selection kernels against torch and the reference
+ok    top-k: the selection kernels against torch and the reference  2.4 s
+..    kernels: M tokens per launch against one, bit for bit
+ok    kernels: M tokens per launch against one, bit for bit  0.8 s
+..    server: ds_server.py against a fake engine
+FAIL  server: ds_server.py against a fake engine  8.1 s
+      exit code 1
+      output: data/check/default-20261125-093624/05-server.txt
+      next: its output names the check; server/ds_server.py
+..    logits, the runtime, hello-fp32
+ok    logits, the runtime, hello-fp32  4.8 s
+..    logits, the runtime, readme200
+ok    logits, the runtime, readme200  12.2 s
+..    logits, the runtime, readme1100
+ok    logits, the runtime, readme1100  34.8 s
+..    outputs: the product in one load, and one session  (09:37; its lines follow, all of its output: data/check/default-20261125-093624/09-outputs.txt)
+      | # "ready" after 68 s
+      | # held-out greedy in this process: mean 45.5 t/s (34.2 to 60.0); 150 s with the load
+ok    outputs: the product in one load, and one session  170.4 s
+FAILED: 1 of 9 checks (259 s)
+#    "ready" after 68 s: ~13 s of load and ~55 s of registration, the probe said 59. default in 259 s (~5.5 min before:
+#    this boot registers faster).
+#    The failed check is not this step's subject: two threads of server/ds_server.py wrote their log lines at once and
+#    the lines mixed (data/check/.../05-server.txt: "# server 2026-11-25 09:37:00:# server 2026-11-25 09:37:00:  request 11: ...
+#    request 10: cancelled ..."). log() printed its arguments one by one; it now writes a line in one call.
+#    tests/test_server.py six times after the change: 6 of 6 pass; six times before it: 6 of 6 too (the mix is rare:
+#    once in the 19 runs of check.py kept in data/check/), so the runs do not show the fix; the single write does.
