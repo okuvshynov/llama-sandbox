@@ -7913,3 +7913,24 @@ whole.
 Next: `tests/requests_test.py` on `tests/engine.py` (it starts the `full` engine and the plain
 one again for what the cases now hold: the held-out prompts greedy and sampled against single
 runs); then the whole of `complete` once, overnight.
+
+## Step 209: the request test on `tests/engine.py`
+
+The last of the copies step 205 named. `tests/requests_test.py` had its own paths, prompt
+rendering, hash, reading of the held-out prompts and engine command line; it now imports them
+from `tests/engine.py`, and its two engines are the configurations `full` and, with `--no-spec`,
+`plain-cache`. 28 lines out, 6 in; no check changed.
+
+It stays a program of its own and not cases: it is one scenario in which the order is the
+check (errors, cancels by a signal, a saved point set by one request and used by the next,
+then "the single run's reply after all that"), and it reads the engine's stderr. Its held-out
+replies repeat cases on purpose: they are sent between the errors and the cancels.
+
+**Measured:** `python3 tests/requests_test.py`: 67 checks, all passed, 10 min 24 s (67 in the
+stored run, `results/requests/requests_test.txt`); `--no-spec`: 67, all passed, 11 min 10 s;
+`--headers-only`: passed. No results file: the outputs say what the stored ones say.
+
+Where the round's second part stands: every reply that `complete` compared with a stored one in
+a process of its own is a case, except what is kept on purpose (the six sessions, the speed
+check's 16 runs, two sampled runs and the long prompt for the command line). Starts that wait
+for the registration: 69 -> 28. Still to do: `complete` whole, once, for its new time.

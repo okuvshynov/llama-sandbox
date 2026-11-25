@@ -28,27 +28,11 @@ import sys
 import tempfile
 import time
 
-HOME = os.path.expanduser('~')
-M = HOME + '/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf'
-F8 = HOME + '/llms/ds-1017-fp8/dense-fp8.gguf'
-D = HOME + '/llms/dspark/dspark-DeepSeek-V4.1-Flash-1017-BF16.gguf'
-BOS = '<｜begin▁of▁sentence｜>'
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import engine  # noqa: E402
+from engine import BOS, F8, HOME, M, fnv1a64_ids, render  # noqa: E402  (what the checks on a --requests engine share, step 205)
+
 S1 = 'temp=1 top_p=0.95 seed=1'
-
-
-def render(mode, user):
-    if mode == 'think':
-        return (BOS + '<｜System｜>Reasoning Effort: 75 (range 1-100, the higher the value, the more thorough the reasoning)\n\n'
-                + '<｜User｜>' + user + '<｜Assistant｜><think>')
-    return BOS + '<｜User｜>' + user + '<｜Assistant｜></think>'
-
-
-def fnv1a64_ids(ids):
-    h = 0xcbf29ce484222325
-    for i in ids:
-        for b in range(4):
-            h = ((h ^ ((i >> (8 * b)) & 0xff)) * 0x100000001b3) & 0xffffffffffffffff
-    return 'fnv1a64:%016x' % h
 
 
 def headers(check):
@@ -93,10 +77,7 @@ def main():
         headers(check_h)
         print('FAILED' if failed else 'all checks passed')
         return 1 if failed else 0
-    prompts = {}
-    for l in open('results/spec-heldout/prompts.txt', encoding='utf-8'):
-        name, mode, n, text = l.rstrip('\n').split('|', 3)
-        prompts[name] = (mode, int(n), text)
+    prompts = engine.heldout()
     greedy = {}
     for l in open('results/record/reference/heldout-output.tsv'):
         r = l.rstrip('\n').split('\t')
@@ -104,10 +85,7 @@ def main():
             greedy[r[0]] = r[4]
     sampled = {p: json.load(open(f'results/sampler/spec-heldout/s1-{p}-1.json'))['output']['hash'] for p in prompts}
 
-    cmd = ['bin-hip/ds-completion', '-m', M, '--rt', F8, '--placement', 'placements/study30.txt', '--canon',
-           '--cache-loads', '800', '--cache-period', '8', '--cache-wait', '--requests']
-    if spec:
-        cmd += ['--dspark', D, '--spec']
+    cmd = engine.CONFIGS['full' if spec else 'plain-cache'] + ['--requests']  # (the fastest settings; --no-spec: the plain loop with the cache)
     print('# engine: ' + ' '.join(c.replace(HOME, '~') for c in cmd), flush=True)
     t0 = time.time()
     err = tempfile.NamedTemporaryFile(prefix='requests_test-', suffix='.err')  # the engine's own lines (step 164 reads them)
