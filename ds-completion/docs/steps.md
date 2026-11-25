@@ -7766,6 +7766,58 @@ five of the eight prompts. The other three stay, in `results/sampler/step151/spe
 other checks are untouched. Its starts that wait for the registration: 69 -> 54.
 
 `tests/outputs_check.py` and `tests/requests_test.py` still carry their own copies of what
-`tests/engine.py` has. Next: `outputs`' requests as cases of `default`, so that `complete`
+`tests/engine.py` has (the first until step 206). Next: `outputs`' requests as cases of `default`, so that `complete`
 starts the `full` engine once for both; then the other two sampling matrices and the ten
 single runs of the sessions check.
+
+## Step 206: the outputs check's requests as cases of `default`
+
+The second move of step 205's table. `tests/outputs_check.py` (step 188) started an engine with
+the fastest settings and sent it twelve requests; `tests/cases_check.py complete` started the
+same engine again for its eight. Now the twelve are cases of the `default` run, and `complete`
+runs its cases on that one engine.
+
+**What changed.**
+
+- A case got two more things it can say (`tests/cases_check.py`, `case()`). A reference is now
+  any function that gives the hash a reply must have: the project's reference for a greedy
+  held-out reply (`results/record/reference/heldout-output.tsv`), a stored single run's record
+  (step 205), or another case's reply in the same run, whole or its first ids. And conditions on
+  the reply's `prompt` and `end` lines: `stop=length`, `how=continue`, `kept>0`. Prompts: a
+  held-out one (with its own `n` or another), one chat turn, or "the prompt of that case, its
+  reply in this run, and a next user turn".
+- `default`'s 14 cases, all on the configuration `full`: the eight held-out prompts greedy (the
+  reference's hashes); two sampled (the single runs'; these two were step 205's cases of
+  `complete` and moved to `default`); geometry with `n=5` (the first five ids of its full
+  reply, `stop=length`); a chat turn; a second turn that goes on from the kept context
+  (`how=continue`, `kept>0`); the same on an empty context (`keep=0`: `how=empty`, `kept=0`,
+  the reply of the one before). `complete` adds the other six prompts sampled: 20 cases.
+- `tests/outputs_check.py` keeps what a request cannot be: the one interactive session (`-i`) in
+  a fresh process, against `results/chat/think/th20.out`. It is a check of its own in
+  `scripts/check.py` ("session"), after "cases".
+- The expected ids moved from `tests/data/outputs/expected.json` to
+  `tests/data/cases/expected.json` under the cases' keys, by a script and not by `--store`: the
+  two sampled replies were already there from step 205 and are equal in both files; `n5` and
+  the empty-context turn, which the old check compared only within a run, are stored as what
+  they must equal.
+
+**Measured** (`results/dist/cases-default.txt`):
+
+- `tests/cases_check.py complete`: 20 of 20 cases pass against the ids the old check stored;
+  3 min 13 s, of it 68 s the start.
+- `scripts/check.py default`: all checks passed, 256 s (259 s at step 204 with the old check):
+  the same one start, so no faster. The cases 149 s, the session 20 s.
+- That it fails when it should: with three stored ids changed by one, exactly those three cases
+  fail and each names the token ("differs from what is expected at token 2 of 345 (got 3287,
+  expected 3288)"). The two cases whose reference is another reply of the run (`n5`, the
+  empty-context turn) are also held to their stored ids, as the others.
+
+What it gives: `complete` starts the `full` engine once where it started it twice (53 starts
+that wait, from 54; about two minutes), and the table now carries every kind of thing the old
+check did, so the checks to come need no new machinery for references or conditions. Not run:
+`complete` whole; a condition that fails on a live reply (`holds()` was tried on values by
+hand).
+
+Next: the two sampling matrices on three prompts (`results/sampler/step151/spec.matrix`,
+`results/sampler/plain.matrix`; 33 processes), which need configurations beside `full`:
+`--spec-n 5`, the plain loop, the plain loop on another placement, the plain loop with the cache.

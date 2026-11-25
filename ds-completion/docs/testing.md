@@ -307,15 +307,15 @@ change. A few fixed runs, each one command with one verdict and an exit code:
 | run | command | when | contents | time |
 |---|---|---|---|---|
 | unit | `scripts/check.py unit` | after every change | everything of 3.1: no model files | 30 s (47 s with a build) |
-| default | `scripts/check.py default` | after every change | `unit`; the logits of the runtime at 12, 202 and 1,102 tokens, each file's sha256 against `tests/data/e2e/expected.txt` (step 187); the product's outputs: one engine with the fastest settings takes the held-out prompts, two sampled, a second turn, and one fresh session, every reply's token ids against `tests/data/outputs/expected.json` (step 188) | ~5.5 min |
+| default | `scripts/check.py default` | after every change | `unit`; the logits of the runtime at 12, 202 and 1,102 tokens, each file's sha256 against `tests/data/e2e/expected.txt` (step 187); the product's outputs: one engine with the fastest settings takes the held-out prompts, two sampled, a short `n` and a second turn as 14 cases of `tests/cases_check.py default`, every reply's token ids against `tests/data/cases/expected.json`; then one session in a fresh process, `tests/outputs_check.py` (step 188; cases since step 206) | ~5.5 min |
 | speed | `scripts/check.py speed` | a change about speed | the eight held-out prompts, each in a fresh process with the fastest settings, twice; the second repeat's mean against `tests/data/speed/baseline.tsv`: slower by more than 2% fails, within 2% is "the same", faster says so. Also: every output the stored bytes, the clock level the baseline's, the second repeat not reading from storage (step 190) | 36 min |
-| complete | `scripts/check.py complete` | overnight, and before anything is called done | `default`; the logits at 20,000 tokens; the request test with and without speculation; six sessions and ten single runs on their conversations; two sampling matrices and the cases of `tests/cases_check.py` (the held-out prompts sampled: a third matrix until step 205); a 2,731-token prompt from a file; `speed` (step 190) | ~4 h estimated; the first whole run 6 h 43 min, in a boot where the registration took 285 s per engine start (step 198) |
+| complete | `scripts/check.py complete` | overnight, and before anything is called done | `default`; the logits at 20,000 tokens; the request test with and without speculation; six sessions and ten single runs on their conversations; two sampling matrices; six more cases on `default`'s engine (the other held-out prompts sampled: a third matrix until step 205); a 2,731-token prompt from a file; `speed` (step 190) | ~4 h estimated; the first whole run 6 h 43 min, in a boot where the registration took 285 s per engine start (step 198) |
 | localizers | by hand | when a verdict failed | section 3.6's "where" column | |
 
 Before the checks of a run with the model, `check.py` prepares the page cache
 (`scripts/model_cache.py`, step 204): what is not cached is read sequentially, a probe of 6 s
 (`bin-hip/reg-probe`) says how long the expert tensors would take to register, and a shard that
-registers below 2 GB/s is dropped and read again when the run's starts (1, 16, 69) would wait
+registers below 2 GB/s is dropped and read again when the run's starts (1, 16, 53) would wait
 longer for it than the reading takes. This keeps a run out of step 198's state, where every start
 waited 285 s. It is a preparation without a verdict. Times below are from boots where a start
 waited 105-140 s; right after a boot with the model read once, a start waits ~40-55 s and
@@ -327,9 +327,14 @@ fields, a prompt, and where there is one the stored record of a single run as it
 The cases of one configuration share one engine; a configuration (`tests/engine.py`) is what a
 request cannot change: the placement, the cache, the draft and speculation. Expected ids are in
 `tests/data/cases/expected.json`, written by `--store`, which refuses a reply that is not its
-reference's. The first cases are the held-out prompts sampled, in `complete`; the checks written
-before it (`outputs`, the request test, the matrices, the sessions) move into the table one at a
-time (plan.md, "The testing process", the second round).
+reference's. A reference is the project's stored hash for a greedy held-out reply, the stored
+record of a single run, or another case's reply in the same run (a short `n` against the full
+reply; a second turn on an empty context against the one that went on from the kept context);
+a case can also put conditions on the reply's `prompt` and `end` lines (`stop=length`,
+`how=continue`, `kept>0`). `default` has 14 cases (what `tests/outputs_check.py` sent to an
+engine of its own until step 206), `complete` six more on the same engine (the held-out prompts
+sampled, step 205). The checks written before the table (the request test, the matrices, the
+sessions) move into it one at a time (plan.md, "The testing process", the second round).
 
 `check.py` builds first (`make`, `make HIP=1`: a stale program is a wrong verdict), prints a
 line when a check starts and, for the checks that take minutes, their own lines as they come

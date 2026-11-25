@@ -9,16 +9,15 @@
 
 default has two halves after unit. The arithmetic (README step 187): the runtime's logits on
 golden token sequences (12, 202 and 1,102 tokens; tests/data/e2e/), each file's sha256 against tests/data/e2e/expected.txt. And what stands around the arithmetic in the
-product (step 188; tests/outputs_check.py): one engine with the fastest settings takes the
-held-out prompts, sampled ones and a second turn, then one fresh interactive session; every
-reply's token ids against tests/data/outputs/expected.json.
+product (steps 188, 205-206; tests/cases_check.py default): one engine with the fastest settings
+takes the held-out prompts, sampled ones and a second turn, every reply's token ids against
+tests/data/cases/expected.json; then one interactive session in a fresh process (tests/outputs_check.py).
 speed (step 190; tests/speed_check.py) is the measurement the documents quote: each held-out
 prompt in a fresh process, twice, the second repeat's mean against tests/data/speed/baseline.tsv.
 complete (step 190) adds what default leaves out: the logits at 20,000 tokens;
 the request test in both modes; six sessions and ten single runs on their
-conversations; two sampling matrices; the cases of tests/cases_check.py (step 205: replies on one
-engine per configuration, against stored ids; the held-out prompts sampled, a third matrix until
-then); a 2,731-token prompt from a file.
+conversations; two sampling matrices; more cases on default's engine (step 205: the other six
+held-out prompts sampled; a third matrix until then); a 2,731-token prompt from a file.
 (Until step 193 default and complete also ran a second implementation, the CPU reference path,
 removed in steps 192-194.)
 Not in any run: what has no verdict (the per-layer tables, the draft against the reference,
@@ -86,17 +85,25 @@ UNIT = [
     ('server: ds_server.py against a fake engine', [sys.executable, 'tests/test_server.py'], [ENCODING],
      'its output names the check; server/ds_server.py'),
 ]
-DEFAULT = UNIT + [
-    logits('hello-fp32'), logits('readme200'), logits('readme1100'),
-    ('outputs: the product in one load, and one session', [sys.executable, 'tests/outputs_check.py'], [MODEL, F8, DRAFT],
-     'its output names the reply and the first token that differs, and says how to narrow it down'),
-]
 PY = sys.executable
 FULL = [MODEL, F8, DRAFT]
+LOGITS = [logits('hello-fp32'), logits('readme200'), logits('readme1100')]
+
+
+def cases(run):
+    """tests/cases_check.py: complete's run has default's cases too, on the same engines"""
+    what = {'default': 'the held-out prompts, sampled ones, a second turn', 'complete': 'default\'s, and the held-out prompts sampled'}[run]
+    return (f'cases: replies on one engine per configuration ({what})', [PY, 'tests/cases_check.py', run], FULL,
+            'its output names the case and the first token that differs, and says how to narrow it down')
+
+
+SESSION = ('session: one interactive session in a fresh process', [PY, 'tests/outputs_check.py'], FULL,
+           'its output says where what the session printed is, and the command')
+DEFAULT = UNIT + LOGITS + [cases('default'), SESSION]
 SPEED = [('speed: the held-out prompts in fresh processes, twice', [PY, 'tests/speed_check.py'], FULL,
           'its output has each prompt against the baseline and says how to look further')]
 PROD = ['bin-hip/ds-completion', '-m', MODEL, '--rt', F8, '--placement', 'placements/study30.txt', '--canon']
-COMPLETE = DEFAULT + [
+COMPLETE = UNIT + LOGITS + [cases('complete'), SESSION] + [
     logits('readme20k-s'),
     ('requests: the protocol on one engine, with speculation', [PY, 'tests/requests_test.py'], FULL, 'its output names the check; docs/requests.md'),
     ('requests: the same in the plain loop', [PY, 'tests/requests_test.py', '--no-spec'], [MODEL, F8], 'its output names the check'),
@@ -105,16 +112,14 @@ COMPLETE = DEFAULT + [
      [PY, 'tests/matrix_check.py', 'results/sampler/plain.matrix', 'results/sampler/plain', '--prompts', 'tcp-udp,cpp-matrix,geometry'], [MODEL, F8], 'its output names the run'),
     ('sampling: with speculation, seeds and fixed draft lengths',
      [PY, 'tests/matrix_check.py', 'results/sampler/step151/spec.matrix', 'results/sampler/step151/spec', '--prompts', 'tcp-udp,cpp-matrix,geometry'], FULL, 'its output names the run'),
-    # (until step 205 a matrix of 16 processes: results/sampler/spec-heldout.matrix; its greedy half is outputs' and speed's)
-    ('cases: replies on one engine per configuration (the held-out prompts sampled, with speculation)',
-     [PY, 'tests/cases_check.py', 'complete'], FULL, 'its output names the case and the first token that differs, and says how to narrow it down'),
+    # (until step 205 a matrix of 16 processes, results/sampler/spec-heldout.matrix, was here: its sampled half is cases', its greedy half cases' and speed's)
     ('a long prompt from a file: 2,731 tokens in chunks of 512', [PY, 'tests/record_check.py', 'fnv1a64:df516e7200ad14c8'] + PROD + ['-f', 'tests/data/long-prompt.txt', '-n', '40'],
      [MODEL, F8], 'the logits check on readme1100 (the same chunks); then the prompt cut shorter'),
 ] + SPEED
 RUNS = {'unit': UNIT, 'default': DEFAULT, 'speed': SPEED, 'complete': COMPLETE}
-WAITS = {'default': 1, 'speed': 16, 'complete': 54}  # the starts of a run that wait for the registration of the expert tensors
+WAITS = {'default': 1, 'speed': 16, 'complete': 53}  # the starts of a run that wait for the registration of the expert tensors
 LIVE = ('outputs_check.py', 'speed_check.py', 'requests_test.py', 'sessions_check.py', 'matrix_check.py', 'cases_check.py')  # long: their lines are shown as they come
-STORING = ('outputs_check.py', 'speed_check.py', 'cases_check.py')  # the checks that keep their own expectation and take --store
+STORING = ('speed_check.py', 'cases_check.py')  # the checks that keep their own expectation and take --store
 
 
 def expected():
