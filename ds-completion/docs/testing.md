@@ -159,6 +159,7 @@ without experts on GPUs ~9 s.
 | sampling, plain loop: `results/sampler/plain.matrix` on 3 prompts | one seed gives one output across repeats, placements and the cache | the stored records' `output.hash` | M, F8, GPU | 18 runs, 15 min (step 181) | by hand |
 | sampling with speculation: `results/sampler/step151/spec.matrix` on 3 prompts | the speculative loop draws what the plain loop draws; fixed draft lengths | step 151's records | M, F8, D, GPU | 15 runs, 38 min (step 181) | by hand |
 | the same on the held-out prompts: `results/sampler/spec-heldout.matrix` | greedy and one seed on all eight | step 151's records | as above | 16 runs, 41 min (step 181) | by hand |
+| since step 205, in its place in `complete`: `python3 tests/cases_check.py complete` | the eight held-out prompts sampled with one seed, as eight requests to one engine with the fastest settings | the ids stored in `tests/data/cases/expected.json`, whose hashes are step 151's records' (single runs) | as above | 2 min 14 s, 69 s of it the start (step 205) | auto |
 
 ### 3.4 The request protocol and the server
 
@@ -308,7 +309,7 @@ change. A few fixed runs, each one command with one verdict and an exit code:
 | unit | `scripts/check.py unit` | after every change | everything of 3.1: no model files | 30 s (47 s with a build) |
 | default | `scripts/check.py default` | after every change | `unit`; the logits of the runtime at 12, 202 and 1,102 tokens, each file's sha256 against `tests/data/e2e/expected.txt` (step 187); the product's outputs: one engine with the fastest settings takes the held-out prompts, two sampled, a second turn, and one fresh session, every reply's token ids against `tests/data/outputs/expected.json` (step 188) | ~5.5 min |
 | speed | `scripts/check.py speed` | a change about speed | the eight held-out prompts, each in a fresh process with the fastest settings, twice; the second repeat's mean against `tests/data/speed/baseline.tsv`: slower by more than 2% fails, within 2% is "the same", faster says so. Also: every output the stored bytes, the clock level the baseline's, the second repeat not reading from storage (step 190) | 36 min |
-| complete | `scripts/check.py complete` | overnight, and before anything is called done | `default`; the logits at 20,000 tokens; the request test with and without speculation; six sessions and ten single runs on their conversations; the three sampling matrices; a 2,731-token prompt from a file; `speed` (step 190) | ~4 h estimated; the first whole run 6 h 43 min, in a boot where the registration took 285 s per engine start (step 198) |
+| complete | `scripts/check.py complete` | overnight, and before anything is called done | `default`; the logits at 20,000 tokens; the request test with and without speculation; six sessions and ten single runs on their conversations; two sampling matrices and the cases of `tests/cases_check.py` (the held-out prompts sampled: a third matrix until step 205); a 2,731-token prompt from a file; `speed` (step 190) | ~4 h estimated; the first whole run 6 h 43 min, in a boot where the registration took 285 s per engine start (step 198) |
 | localizers | by hand | when a verdict failed | section 3.6's "where" column | |
 
 Before the checks of a run with the model, `check.py` prepares the page cache
@@ -319,6 +320,16 @@ longer for it than the reading takes. This keeps a run out of step 198's state, 
 waited 285 s. It is a preparation without a verdict. Times below are from boots where a start
 waited 105-140 s; right after a boot with the model read once, a start waits ~40-55 s and
 `default` took 259 s.
+
+**Cases** (step 205). A check that needs a reply of the product need not start a process: it is
+a line in the table of `tests/cases_check.py` (a run, a configuration, a key, the request's
+fields, a prompt, and where there is one the stored record of a single run as its reference).
+The cases of one configuration share one engine; a configuration (`tests/engine.py`) is what a
+request cannot change: the placement, the cache, the draft and speculation. Expected ids are in
+`tests/data/cases/expected.json`, written by `--store`, which refuses a reply that is not its
+reference's. The first cases are the held-out prompts sampled, in `complete`; the checks written
+before it (`outputs`, the request test, the matrices, the sessions) move into the table one at a
+time (plan.md, "The testing process", the second round).
 
 `check.py` builds first (`make`, `make HIP=1`: a stale program is a wrong verdict), prints a
 line when a check starts and, for the checks that take minutes, their own lines as they come

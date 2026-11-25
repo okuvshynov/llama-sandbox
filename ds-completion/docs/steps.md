@@ -7724,3 +7724,48 @@ cached, the read gives ~40-55 s. `complete`'s 69 starts: 5.5 h, ~1.7 h, ~1 h of 
 
 Next: the checks on one engine (a library for a `--requests` engine and a table of cases),
 the held-out sampling matrix first.
+
+## Step 205: checks as cases on one engine; the held-out sampling matrix first
+
+The second change of the round (step 204 has the review). A process per check is 13 s of load
+and 40-285 s of registration for ~10 s of generation, and most of what the matrices vary
+between runs can vary between requests of one engine: `n`, the temperature, top-p, the seed.
+What cannot: the placement, the cache, the draft and speculation, `--spec-n`.
+
+**What was built.**
+
+- `tests/engine.py`: what checks on a `--requests` engine share. The files' paths; `CONFIGS`,
+  the named configurations (what a request cannot change; one so far, `full`: the fastest
+  settings); `Engine` (start, `request()`, `close()`; the engine's own lines kept in a file);
+  the held-out prompts and their rendering; the hash of a reply's ids.
+- `tests/cases_check.py default|complete [--store]`: a table `CASES` of (run, configuration,
+  key, request fields, prompt, reference). All cases of a configuration go to one engine. A
+  reply must be the ids stored under its key in `tests/data/cases/expected.json` (ids, so a
+  failure names the first token that differs), and, where the case names a reference, hash to
+  the `output.hash` of a stored record of a single run in a fresh process. `--store` refuses a
+  reply that is not its reference's. An engine that dies fails its case and is started again
+  for the next; an engine must exit with code 0.
+- The first cases: the eight held-out prompts sampled (temperature 1, top-p 0.95, seed 1) with
+  speculation and the cache, their references the records of step 151. In `scripts/check.py
+  complete` they take the place of the matrix `results/sampler/spec-heldout.matrix` (16
+  processes). Its eight greedy runs are not made cases: `outputs` (in `default`, so in
+  `complete`) and `speed` run the same prompts with the same settings.
+
+**Measured** (`results/dist/cases-first.txt`):
+
+- The eight replies hash to the eight single runs' records. 2 min 14 s, of it 69 s the start;
+  the matrix took 41 min at step 181 and 84 min in step 198's boot.
+- That it fails when it should: with one stored id changed and the engine killed during the
+  second case, the case in flight failed ("the engine ... is gone (exit code -9)"), the engine
+  was started again, the other cases ran, and the changed id was named ("differs from what is
+  expected at token 17 of 300").
+
+**What `complete` no longer has:** sampled runs with speculation in a process of their own on
+five of the eight prompts. The other three stay, in `results/sampler/step151/spec.matrix`
+(with the flags on the command line). `complete` as a whole was not run with the change; its
+other checks are untouched. Its starts that wait for the registration: 69 -> 54.
+
+`tests/outputs_check.py` and `tests/requests_test.py` still carry their own copies of what
+`tests/engine.py` has. Next: `outputs`' requests as cases of `default`, so that `complete`
+starts the `full` engine once for both; then the other two sampling matrices and the ten
+single runs of the sessions check.

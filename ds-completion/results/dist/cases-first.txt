@@ -1,0 +1,55 @@
+# tests/cases_check.py: the held-out prompts sampled, as eight requests to one engine (README step 205).
+# Commit 9aef478 + steps 204 and 205's changes (the commit that adds this file); sclk 6 (manual, all four cards);
+# 2026-11-25, booted 09:06 (the model read once after the boot: the registration takes ~55 s, step 204).
+# Lines are cut at 200 characters (the engine's command line).
+#
+# 1. python3 tests/cases_check.py complete --store      (nothing stored before it; 2 min 14 s)
+# engine "full": bin-hip/ds-completion -m ~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf --rt ~/llms/ds-1017-fp8/dense-fp8.gguf --canon --placement placements/study30.txt --
+# its own lines: data/check/cases-complete-20261125-094624/full-1.err
+# ready after 69 s
+ok    full/s1/tcp-udp          300 tokens fnv1a64:92a19b9a44f4e8f7;  41.7 t/s, the single run's
+ok    full/s1/py-lru           300 tokens fnv1a64:158f3a7a894199fd;  43.5 t/s, the single run's
+ok    full/s1/cpp-matrix       300 tokens fnv1a64:3426536c97f68ad8;  54.6 t/s, the single run's
+ok    full/s1/sql-report       300 tokens fnv1a64:3ac0568b4b753305;  46.1 t/s, the single run's
+ok    full/s1/geometry         342 tokens fnv1a64:b3408ba7088ec36e;  51.6 t/s, the single run's
+ok    full/s1/zh-travel        300 tokens fnv1a64:0f178da0c1f4fd5a;  35.0 t/s, the single run's
+ok    full/s1/ja-email         300 tokens fnv1a64:1d0f3b7a2e9f64fb;  35.7 t/s, the single run's
+ok    full/s1/summary-json      98 tokens fnv1a64:963abaf982b15a33;  39.6 t/s, the single run's
+ok    the engine "full" exits with code 0 when its input ends
+# tests/data/cases/expected.json written: 8 replies, 8 new or changed (full/s1/tcp-udp, full/s1/py-lru, full/s1/cpp-matrix, full/s1/sql-report, full/s1/geometry, full/s1/zh-travel, full/s1/ja-email, f
+all checks passed
+#    Each hash is the output.hash of results/sampler/step151/spec-heldout/s1-<prompt>-1.json: a process of its own
+#    per prompt, with --temp 1 --top-p 0.95 --seed 1 on the command line (step 151). tcp-udp and cpp-matrix are also
+#    tests/outputs_check.py's sampled replies (tests/data/outputs/expected.json): the same hashes.
+#
+# 2. python3 tests/cases_check.py complete      (2 min 15 s; the matrix it replaces in `complete`: 16 processes,
+#    41 min at step 181, 84 min in step 198's boot)
+# ready after 69 s
+ok    full/s1/tcp-udp          300 tokens fnv1a64:92a19b9a44f4e8f7;  41.5 t/s, the single run's
+ok    full/s1/py-lru           300 tokens fnv1a64:158f3a7a894199fd;  44.0 t/s, the single run's
+ok    full/s1/cpp-matrix       300 tokens fnv1a64:3426536c97f68ad8;  53.4 t/s, the single run's
+ok    full/s1/sql-report       300 tokens fnv1a64:3ac0568b4b753305;  45.4 t/s, the single run's
+ok    full/s1/geometry         342 tokens fnv1a64:b3408ba7088ec36e;  51.7 t/s, the single run's
+ok    full/s1/zh-travel        300 tokens fnv1a64:0f178da0c1f4fd5a;  35.1 t/s, the single run's
+ok    full/s1/ja-email         300 tokens fnv1a64:1d0f3b7a2e9f64fb;  35.8 t/s, the single run's
+ok    full/s1/summary-json      98 tokens fnv1a64:963abaf982b15a33;  39.9 t/s, the single run's
+ok    the engine "full" exits with code 0 when its input ends
+all checks passed
+#
+# 3. That it fails when it should. In tests/data/cases/expected.json token 17 of full/s1/cpp-matrix raised by one, and
+#    the engine killed (SIGKILL) 80 s after the start, during the second case; then the file put back.
+# ready after 69 s
+ok    full/s1/tcp-udp          300 tokens fnv1a64:92a19b9a44f4e8f7;  42.0 t/s, the single run's
+FAIL  full/s1/py-lru: no reply: the engine said "(closed)" and is gone (exit code -9)
+# engine "full" again: bin-hip/ds-completion -m ~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf --rt ~/llms/ds-1017-fp8/dense-fp8.gguf --canon --placement placements/study30.
+# ready after 69 s
+FAIL  full/s1/cpp-matrix       300 tokens fnv1a64:3426536c97f68ad8;  50.6 t/s: differs from what is expected at token 17 of 300 (got 8452, expected 8453)
+ok    full/s1/sql-report       300 tokens fnv1a64:3ac0568b4b753305;  44.4 t/s, the single run's
+ok    full/s1/geometry         342 tokens fnv1a64:b3408ba7088ec36e;  52.0 t/s, the single run's
+ok    full/s1/zh-travel        300 tokens fnv1a64:0f178da0c1f4fd5a;  35.6 t/s, the single run's
+ok    full/s1/ja-email         300 tokens fnv1a64:1d0f3b7a2e9f64fb;  35.8 t/s, the single run's
+ok    full/s1/summary-json      98 tokens fnv1a64:963abaf982b15a33;  39.9 t/s, the single run's
+ok    the engine "full" exits with code 0 when its input ends
+FAILED
+#    The case in flight fails and says the engine is gone; the engine is started again and the other cases run; the
+#    changed id is found and named. (py-lru was not run again: a case whose engine died has failed.)

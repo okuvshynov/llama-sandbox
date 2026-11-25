@@ -353,6 +353,7 @@ Also the product's: `scripts/serve.sh` and `scripts/chat.sh` (the two ways to st
 | `tests/test_fakequant.cpp`, `tests/test_topk.cpp` | the host rounding functions (`src/fakequant.cpp`) and the indexer's selection against the reference's, bit for bit |
 | `tests/data/e2e/`, `tests/data/fq/` | what the checks compare with, in git: golden sets cut to tokens and logits with the expected hashes (`ref/trim_golden.py`, step 187); the rounding test's vectors; `tests/data/outputs/expected.json`, the expected token ids of `tests/outputs_check.py` (step 188); `tests/data/speed/baseline.tsv` |
 | `tests/*_check.py` | the checks `scripts/check.py` runs that are more than one command: the product's outputs in one load (`outputs_check.py`), tokens per second (`speed_check.py`), sessions (`sessions_check.py`), a matrix against stored records (`matrix_check.py`), one run against a hash (`record_check.py`) (steps 188, 190) |
+| `tests/engine.py`, `tests/cases_check.py`, `tests/data/cases/` | checks as a table of cases: one `--requests` engine per configuration takes the cases one after another, each reply against stored token ids (step 205); `engine.py` is what such checks share |
 | `ref/` | the Python reference, golden export, weight checks, logits comparison |
 
 `tests/test_server.py` with `tests/fake_engine.py` (the front without a model) and
