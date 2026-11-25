@@ -2,7 +2,7 @@
 """Replies of the product against stored token ids, as a table of cases; one engine per
 configuration (README steps 205, 206).
 
-  python3 tests/cases_check.py default|complete [--store] [--out DIR]        exit code 1 if a case fails
+  python3 tests/cases_check.py default|complete [--store] [--only KEY-PREFIX] [--out DIR]        exit code 1 if a case fails
 
 The logits checks (ds-test --e2e) cover the arithmetic. This covers what stands around it in the
 product: prompt chunks, speculative decoding with the draft, the adaptive expert cache, sampling,
@@ -29,7 +29,8 @@ Speeds are printed: one process per configuration, each reply after the others. 
 this check's own earlier runs, not with the documents' numbers.
 
 To add a check: a line in CASES (and, for settings a request cannot carry, a configuration in
-tests/engine.py), then --store once and a look at what was stored.
+tests/engine.py), then --store once and a look at what was stored
+(--only full/single: the cases whose keys start so, e.g. the new ones alone).
 """
 import collections
 import json
@@ -39,23 +40,26 @@ import sys
 import time
 
 import engine
+import sessions_check
 from engine import ROOT
 
 EXPECTED = 'tests/data/cases/expected.json'
 S1 = 'temp=1 top_p=0.95 seed=1'
 GREEDY_TSV = 'results/record/reference/heldout-output.tsv'  # the project's reference: plain greedy decoding on a fixed placement
 
-Case = collections.namedtuple('Case', 'run config key prompt fields ref expect')
+Case = collections.namedtuple('Case', 'run config key prompt fields ref expect text')
 
 
-def case(run, config, key, prompt, fields='', ref=None, expect=()):
+def case(run, config, key, prompt, fields='', ref=None, expect=(), text=None):
     """prompt: ('heldout', name[, n]): that held-out prompt, rendered, with its own n or the one given;
                ('chat', user text, n): one user turn, rendered as --chat does;
-               ('after', key, user text, n): the prompt of the case `key`, its reply in this run, and a next user turn.
+               ('after', key, user text, n): the prompt of the case `key`, its reply in this run, and a next user turn;
+               ('file', path, n): the file's text after BOS, as -f gives it to the engine.
     fields: the request's fields after n= ("temp=1 seed=1", "keep=0").
     ref: a reference, a function (want, got) -> (the hash the reply's ids must have, whose it is); see below.
-    expect: conditions on the fields of the reply's "prompt" and "end" lines: 'stop=length', 'kept>0', 'how=continue'."""
-    return Case(run, config, key, prompt, fields, ref, tuple(expect))
+    expect: conditions on the fields of the reply's "prompt" and "end" lines: 'stop=length', 'kept>0', 'how=continue'.
+    text: a check of the reply's bytes, a function (bytes) -> (bool, what they must be); see session_reply."""
+    return Case(run, config, key, prompt, fields, ref, tuple(expect), text)
 
 
 # References: what ties a reply of the long engine to something outside this check's own stored ids.
@@ -79,6 +83,11 @@ def same_as(key, first=None):
     """the reply of another case in this run (its first `first` ids)"""
     return lambda want, got: (engine.fnv1a64_ids(got[key][:first]) if key in got else None,
                               (f'the first {first} ids of ' if first else '') + f'the reply of "{key}" in this run')
+
+
+def session_reply(stored, k):
+    """the reply's bytes are reply k of a stored interactive session (tests/sessions_check.py runs the sessions)"""
+    return lambda new: (sessions_check.is_reply(new, open(stored, 'rb').read(), k), f'reply {k} of the session {stored}')
 
 
 CASES = []
@@ -115,6 +124,14 @@ for _config, _key, _fields, _record in [
     for _name in ('tcp-udp', 'cpp-matrix', 'geometry'):
         CASES.append(case('complete', _config, f'{_config}/{_key}/{_name}', ('heldout', _name), _fields,
                           ref=record_hash(f'{_record}-{_name}-1.json') if _record else greedy_reference(_name)))
+# complete: a session's reply k is the reply to the conversation before it as one prompt (steps 108-109;
+# until step 208 ten processes with -f, tests/sessions_check.py's second half). The prompts are the stored
+# conversations, raw; the replies' bytes must be those the six sessions printed, which that check still runs.
+_T = 'results/chat/think'
+for _tag, _file, _n, _stored, _k in (
+        [('chat200', 'results/chat/whole.txt', 200, 'results/chat/session.out', 3), ('chat12', 'results/chat/whole-n12.txt', 12, 'results/chat/session-n12.out', 3)]
+        + [(t, f'{_T}/{t}-ref{k}.txt', n, f'{_T}/{t}.out', k) for k in (2, 3) for t, n in (('th', 600), ('th20', 20), ('th45', 45), ('long', 2500))]):
+    CASES.append(case('complete', 'full', f'full/single/{_tag}-{_k}', ('file', _file, _n), text=session_reply(_stored, _k)))
 assert len({c.key for c in CASES}) == len(CASES), 'two cases with one key'
 assert all(c.config in engine.CONFIGS for c in CASES)
 
@@ -142,7 +159,8 @@ def main():
     os.chdir(ROOT)
     out = a[a.index('--out') + 1] if '--out' in a else f'data/check/cases-{a[0]}-{time.strftime("%Y%m%d-%H%M%S")}'
     os.makedirs(out, exist_ok=True)
-    cases = [c for c in CASES if c.run in runs]
+    only = a[a.index('--only') + 1] if '--only' in a else ''
+    cases = [c for c in CASES if c.run in runs and c.key.startswith(only)]
     prompts = engine.heldout()
     want = json.load(open(EXPECTED)) if os.path.exists(EXPECTED) else {}
     got, said, failed = {}, {}, 0  # said: {key: (the prompt's text, the reply's text)}, for the cases that go on from one
@@ -159,6 +177,8 @@ def main():
             if c.prompt[0] == 'heldout':
                 mode, n, text = prompts[c.prompt[1]]
                 n, text = (c.prompt[2] if len(c.prompt) > 2 else n), engine.render(mode, text)
+            elif c.prompt[0] == 'file':
+                n, text = c.prompt[2], engine.BOS + open(c.prompt[1], encoding='utf-8').read()
             elif c.prompt[0] == 'chat':
                 n, text = c.prompt[2], engine.render('chat', c.prompt[1])
             else:
@@ -195,7 +215,15 @@ def main():
                 if h != ref:  # (not stored either: --store keeps the old ids)
                     check(False, f'{what}: not {ref}, {whose}' + (f'; it differs from the stored ids at token {first_difference(r.ids, w)} of {len(w)}' if w else ''))
                     continue
+            if c.text is not None:
+                ok, whose_text = c.text(r.text)
+                if not ok:
+                    open(f'{out}/{key.replace("/", "-")}.out', 'wb').write(r.text)
+                    check(False, f'{what}: its bytes are not {whose_text}; what it gave: {out}/{key.replace("/", "-")}.out')
+                    continue
             got[key] = r.ids
+            if c.text is not None:
+                what += f'; the bytes of {whose_text}'
             conds = [holds(e, dict(r.prompt, **r.end)) for e in c.expect]
             if not all(ok for ok, _ in conds):
                 check(False, f'{what}: expected {", ".join(c.expect)}; the reply has {", ".join(h for _, h in conds)}')

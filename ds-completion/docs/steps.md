@@ -7870,3 +7870,46 @@ whole. No new negative control: the comparison is step 206's code, which was sho
 Next: the ten single runs of `tests/sessions_check.py` ("a session's reply k equals a single run
 on the conversation before it"), which are greedy runs on the `full` settings with a prompt from
 a file; then `tests/requests_test.py` on `tests/engine.py`.
+
+## Step 208: the sessions check's ten single runs as cases
+
+The fourth move into the table. `tests/sessions_check.py` ran six interactive sessions and then
+ten processes with `-f`: the conversation before a reply as one raw prompt, which must print
+that reply ("a session's reply k equals a single run on the conversation before it", steps
+108-109). Ten starts that wait for the registration, 24 min at step 181.
+
+**What changed.**
+
+- A case can check its reply's bytes (`text=`), beside its ids: `session_reply(stored, k)` says
+  they are reply k of a stored session's file. And a prompt can be a file (`('file', path, n)`):
+  its text after BOS, as `-f` gives it to the engine.
+- Ten cases of `complete` on `full`, `full/single/<session>-<k>`, on the stored conversations
+  (`results/chat/whole*.txt`, `results/chat/think/<tag>-ref<k>.txt`); replies of 12 to 2,500
+  tokens. `complete` has 57 cases.
+- `tests/sessions_check.py` keeps the six sessions (its `is_reply()` is what the cases use).
+- `tests/cases_check.py --only KEY-PREFIX` runs the cases whose keys start so: new cases alone.
+
+**Measured** (`results/dist/cases-singles.txt`):
+
+- The ten cases alone, `--only full/single --store`: ten of ten are the sessions' replies byte
+  for byte; 3 min 4 s, of it 69 s the start. On the engine `complete` starts anyway they add
+  about 2 min where the ten processes took 24.
+- The first try failed nine of ten, and that is this step's negative control, though not a
+  planned one: my case sent the file's text without BOS, which the command line puts before it
+  (`apps/ds_completion.cpp`, raw mode). The nine replies differed from the sessions' and were
+  refused by `--store`. The tenth passed: at `-n 12` the reply was the same twelve tokens without
+  BOS. So that one case would not notice a missing BOS; the 200-token case of the same
+  conversation does.
+- `tests/cases_check.py complete`: 57 of 57, 13 min 7 s (`full` 343 s for 36 cases).
+- `tests/sessions_check.py` with the six sessions: six of six, 9 min 42 s (45 min with
+  the ten runs at step 190's estimate).
+
+`complete`'s starts that wait for the registration: 38 -> 28 (69 at the start of the round).
+
+**What `complete` no longer has:** the path from `-f` to the prompt, ten times. It keeps it
+once: the long prompt from a file (2,731 tokens, `tests/record_check.py`). Not run: `complete`
+whole.
+
+Next: `tests/requests_test.py` on `tests/engine.py` (it starts the `full` engine and the plain
+one again for what the cases now hold: the held-out prompts greedy and sampled against single
+runs); then the whole of `complete` once, overnight.

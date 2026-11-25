@@ -161,6 +161,7 @@ without experts on GPUs ~9 s.
 | the same on the held-out prompts: `results/sampler/spec-heldout.matrix` | greedy and one seed on all eight | step 151's records | as above | 16 runs, 41 min (step 181) | by hand |
 | since step 205, in its place in `complete`: `python3 tests/cases_check.py complete` | the eight held-out prompts sampled with one seed, as eight requests to one engine with the fastest settings | the ids stored in `tests/data/cases/expected.json`, whose hashes are step 151's records' (single runs) | as above | 2 min 14 s, 69 s of it the start (step 205) | auto |
 | since step 207, in place of the two 3-prompt matrices in `complete`: 27 more cases of `tests/cases_check.py complete`, and two runs by `tests/record_check.py` | one seed gives one reply across the plain loop, two placements, the cache, speculation and `--spec-n 5`; another seed and top-p 1 in both loops; the command line's `--temp`, `--top-p`, `--seed` (the two runs) | the ids in `tests/data/cases/expected.json`, whose hashes are the matrices' stored records' | M, F8, D, GPU | ~8 min of cases on five engines and 2 min of runs (step 207) | auto |
+| since step 208, in place of the ten `-f` runs in `complete`: ten more cases, `full/single/...` | a session's reply k equals the reply to the conversation before it as one prompt | the bytes of the session's stored reply, and the ids in `tests/data/cases/expected.json` | M, F8, D, GPU | ~2 min on `default`'s engine (step 208) | auto |
 
 ### 3.4 The request protocol and the server
 
@@ -310,13 +311,13 @@ change. A few fixed runs, each one command with one verdict and an exit code:
 | unit | `scripts/check.py unit` | after every change | everything of 3.1: no model files | 30 s (47 s with a build) |
 | default | `scripts/check.py default` | after every change | `unit`; the logits of the runtime at 12, 202 and 1,102 tokens, each file's sha256 against `tests/data/e2e/expected.txt` (step 187); the product's outputs: one engine with the fastest settings takes the held-out prompts, two sampled, a short `n` and a second turn as 14 cases of `tests/cases_check.py default`, every reply's token ids against `tests/data/cases/expected.json`; then one session in a fresh process, `tests/outputs_check.py` (step 188; cases since step 206) | ~5.5 min |
 | speed | `scripts/check.py speed` | a change about speed | the eight held-out prompts, each in a fresh process with the fastest settings, twice; the second repeat's mean against `tests/data/speed/baseline.tsv`: slower by more than 2% fails, within 2% is "the same", faster says so. Also: every output the stored bytes, the clock level the baseline's, the second repeat not reading from storage (step 190) | 36 min |
-| complete | `scripts/check.py complete` | overnight, and before anything is called done | `default`; the logits at 20,000 tokens; the request test with and without speculation; six sessions and ten single runs on their conversations; 33 more cases (the other held-out prompts sampled on `default`'s engine; sampling across the plain loop, placements, the cache, speculation and `--spec-n 5` on that engine and four more: three matrices of 49 processes until steps 205 and 207); two sampled runs with the flags on the command line; a 2,731-token prompt from a file; `speed` (step 190) | ~4 h estimated; the first whole run 6 h 43 min, in a boot where the registration took 285 s per engine start (step 198) |
+| complete | `scripts/check.py complete` | overnight, and before anything is called done | `default`; the logits at 20,000 tokens; the request test with and without speculation; six sessions; 43 more cases (their conversations as single prompts, ten cases, ten processes until step 208; the other held-out prompts sampled on `default`'s engine; sampling across the plain loop, placements, the cache, speculation and `--spec-n 5` on that engine and four more: three matrices of 49 processes until steps 205 and 207); two sampled runs with the flags on the command line; a 2,731-token prompt from a file; `speed` (step 190) | ~4 h estimated; the first whole run 6 h 43 min, in a boot where the registration took 285 s per engine start (step 198) |
 | localizers | by hand | when a verdict failed | section 3.6's "where" column | |
 
 Before the checks of a run with the model, `check.py` prepares the page cache
 (`scripts/model_cache.py`, step 204): what is not cached is read sequentially, a probe of 6 s
 (`bin-hip/reg-probe`) says how long the expert tensors would take to register, and a shard that
-registers below 2 GB/s is dropped and read again when the run's starts (1, 16, 38) would wait
+registers below 2 GB/s is dropped and read again when the run's starts (1, 16, 28) would wait
 longer for it than the reading takes. This keeps a run out of step 198's state, where every start
 waited 285 s. It is a preparation without a verdict. Times below are from boots where a start
 waited 105-140 s; right after a boot with the model read once, a start waits ~40-55 s and
@@ -333,10 +334,14 @@ record of a single run, or another case's reply in the same run (a short `n` aga
 reply; a second turn on an empty context against the one that went on from the kept context);
 a case can also put conditions on the reply's `prompt` and `end` lines (`stop=length`,
 `how=continue`, `kept>0`). `default` has 14 cases (what `tests/outputs_check.py` sent to an
-engine of its own until step 206), `complete` 33 more: six on the same engine (the held-out
+engine of its own until step 206), `complete` 43 more: six on the same engine (the held-out
 prompts sampled, step 205) and 27 from the two 3-prompt sampling matrices, on five engines
-(step 207: `spec-n5`, `plain`, `plain-oracle`, `plain-cache` beside `full`; 11 min 20 s for all
-47). The checks written before the table (the request test, the sessions) move into it one at a time (plan.md, "The testing process", the second round).
+(step 207: `spec-n5`, `plain`, `plain-oracle`, `plain-cache` beside `full`), and ten whose
+prompt is a stored conversation and whose reply's bytes must be a stored session's reply (step
+208); 13 min 7 s for all 57. `--only KEY-PREFIX` runs a part of the table. What stays outside
+it: the request test (the protocol itself), the six sessions (`-i`),
+the speed check and the runs kept as processes for the command line (plan.md, "The testing
+process", the second round).
 
 `check.py` builds first (`make`, `make HIP=1`: a stale program is a wrong verdict), prints a
 line when a check starts and, for the checks that take minutes, their own lines as they come

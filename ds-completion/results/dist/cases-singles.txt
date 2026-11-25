@@ -1,0 +1,151 @@
+# tests/cases_check.py with the ten single runs of tests/sessions_check.py as cases (README step 208).
+# Commit 6a7383f + step 208's changes (the commit that adds this file); sclk 6 (manual, all four cards);
+# 2026-11-25, booted 09:06 (the registration takes ~55 s in this boot, step 204).
+# Lines are cut at 200 characters.
+#
+# 1. The first try: python3 tests/cases_check.py complete --only full/single --store, with the prompt sent as the file's
+#    text WITHOUT the BOS the command line puts before it (my mistake). Nine of ten replies are not the sessions', nothing
+#    was stored; the 12-token one passes all the same. The file of this run was written over by the next: these are its
+#    verdict lines as the session showed them (the paths of the kept outputs left out).
+FAIL  full/single/chat200-3      200 tokens fnv1a64:3106fd0428a350c1;  44.2 t/s: its bytes are not reply 3 of the session results/chat/session.out
+ok    full/single/chat12-3        12 tokens fnv1a64:1fc249f7bd266b27;  72.2 t/s; the bytes of reply 3 of the session results/chat/session-n12.out
+FAIL  full/single/th-2            55 tokens fnv1a64:32d5cd3acae8853a;  36.2 t/s: its bytes are not reply 2 of the session results/chat/think/th.out
+FAIL  full/single/th20-2          20 tokens fnv1a64:97d684d67de09047;  43.3 t/s: its bytes are not reply 2 of the session results/chat/think/th20.out
+FAIL  full/single/th45-2          45 tokens fnv1a64:dd9124a3591bcf97;  39.6 t/s: its bytes are not reply 2 of the session results/chat/think/th45.out
+FAIL  full/single/long-2         2500 tokens fnv1a64:96161c63ff993a04;  42.2 t/s: its bytes are not reply 2 of the session results/chat/think/long.out
+FAIL  full/single/th-3            66 tokens fnv1a64:61d1210efc5e0d26;  36.5 t/s: its bytes are not reply 3 of the session results/chat/think/th.out
+FAIL  full/single/th20-3          20 tokens fnv1a64:bc2978db8c812c97;  46.2 t/s: its bytes are not reply 3 of the session results/chat/think/th20.out
+FAIL  full/single/th45-3          45 tokens fnv1a64:ee4e28fe4f2853ff;  40.6 t/s: its bytes are not reply 3 of the session results/chat/think/th45.out
+FAIL  full/single/long-3         245 tokens fnv1a64:7cfb625423e99735;  39.3 t/s: its bytes are not reply 3 of the session results/chat/think/long.out
+FAILED
+#
+# 2. The same command with BOS before the file's text (3 min 4 s)
+# engine "full": bin-hip/ds-completion -m ~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf --rt ~/llms/ds-1017-fp8/dense-fp8.gguf --canon --placement placements/study30.txt --
+# its own lines: data/check/cases-complete-20261125-114148/full-1.err
+# ready after 69 s
+ok    full/single/chat200-3      200 tokens fnv1a64:ad7fa7a2a96e6873;  48.0 t/s; the bytes of reply 3 of the session results/chat/session.out
+ok    full/single/chat12-3        12 tokens fnv1a64:1fc249f7bd266b27;  76.3 t/s; the bytes of reply 3 of the session results/chat/session-n12.out
+ok    full/single/th-2            72 tokens fnv1a64:9dee10dce8a20caf;  41.6 t/s; the bytes of reply 2 of the session results/chat/think/th.out
+ok    full/single/th20-2          20 tokens fnv1a64:da9a808f22ea5c8b;  42.1 t/s; the bytes of reply 2 of the session results/chat/think/th20.out
+ok    full/single/th45-2          45 tokens fnv1a64:3b95126fbd40f53a;  40.2 t/s; the bytes of reply 2 of the session results/chat/think/th45.out
+ok    full/single/long-2         2500 tokens fnv1a64:f8afc21401b3c32b;  41.7 t/s; the bytes of reply 2 of the session results/chat/think/long.out
+ok    full/single/th-3            67 tokens fnv1a64:cecbe8b7314ae0f0;  47.3 t/s; the bytes of reply 3 of the session results/chat/think/th.out
+ok    full/single/th20-3          20 tokens fnv1a64:c30d1799f011e345;  40.1 t/s; the bytes of reply 3 of the session results/chat/think/th20.out
+ok    full/single/th45-3          45 tokens fnv1a64:ee57c0ca41040264;  45.1 t/s; the bytes of reply 3 of the session results/chat/think/th45.out
+ok    full/single/long-3         764 tokens fnv1a64:d6e67e27ea5c2e22;  40.0 t/s; the bytes of reply 3 of the session results/chat/think/long.out
+ok    the engine "full" exits with code 0 when its input ends
+# engine "full": the 3 replies of 90 tokens and more: mean 43.2 t/s (40.0 to 48.0); 184 s with 1 start. Each reply after the others in one process:
+#   it compares with this check's earlier runs, not with the documents' numbers (tests/speed_check.py measures those)
+# tests/data/cases/expected.json written: 57 replies, 10 new or changed (full/single/chat200-3, full/single/chat12-3, full/single/th-2, full/single/th20-2, full/single/th45-2, full/single/long-2, full
+all checks passed
+
+real	3m3.794s
+user	23m29.072s
+sys	1m3.547s
+#
+# 3. python3 tests/cases_check.py complete      (57 cases, five engines; 13 min 7 s)
+# engine "full": bin-hip/ds-completion -m ~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf --rt ~/llms/ds-1017-fp8/dense-fp8.gguf --canon --placement placements/study30.txt --
+# its own lines: data/check/cases-complete-20261125-114510/full-1.err
+# ready after 67 s
+ok    full/greedy/tcp-udp        300 tokens fnv1a64:e84010b498310b61;  38.9 t/s; the reference's
+ok    full/greedy/py-lru         300 tokens fnv1a64:ccdf68228376b5ca;  46.9 t/s; the reference's
+ok    full/greedy/cpp-matrix     300 tokens fnv1a64:55214691a828a176;  60.1 t/s; the reference's
+ok    full/greedy/sql-report     300 tokens fnv1a64:f316e2fad109b2e0;  50.4 t/s; the reference's
+ok    full/greedy/geometry       345 tokens fnv1a64:39009bbaad3bdfec;  54.7 t/s; the reference's
+ok    full/greedy/zh-travel      300 tokens fnv1a64:6fa28c9df3b39c7c;  34.2 t/s; the reference's
+ok    full/greedy/ja-email       300 tokens fnv1a64:cb2c332218b24ed0;  37.8 t/s; the reference's
+ok    full/greedy/summary-json    98 tokens fnv1a64:963abaf982b15a33;  41.5 t/s; the reference's
+ok    full/s1/tcp-udp            300 tokens fnv1a64:92a19b9a44f4e8f7;  41.5 t/s; the single run's
+ok    full/s1/py-lru             300 tokens fnv1a64:158f3a7a894199fd;  44.2 t/s; the single run's
+ok    full/s1/cpp-matrix         300 tokens fnv1a64:3426536c97f68ad8;  54.4 t/s; the single run's
+ok    full/s1/sql-report         300 tokens fnv1a64:3ac0568b4b753305;  44.4 t/s; the single run's
+ok    full/s1/geometry           342 tokens fnv1a64:b3408ba7088ec36e;  51.5 t/s; the single run's
+ok    full/s1/zh-travel          300 tokens fnv1a64:0f178da0c1f4fd5a;  35.0 t/s; the single run's
+ok    full/s1/ja-email           300 tokens fnv1a64:1d0f3b7a2e9f64fb;  35.8 t/s; the single run's
+ok    full/s1/summary-json        98 tokens fnv1a64:963abaf982b15a33;  40.0 t/s; the single run's
+ok    full/n5/geometry             5 tokens fnv1a64:c009f7e944566ed8;  41.4 t/s, stop=length; the first 5 ids of the reply of "full/greedy/geometry" in this run
+ok    full/turn/first              6 tokens fnv1a64:1822063ec0fb7b5a;  18.2 t/s
+ok    full/turn/second             6 tokens fnv1a64:9a660c3c90028189;  42.5 t/s, how=continue, kept=18
+ok    full/turn/second-empty       6 tokens fnv1a64:9a660c3c90028189;  50.9 t/s, how=empty, kept=0; the reply of "full/turn/second" in this run
+ok    full/s2/tcp-udp            300 tokens fnv1a64:9e776ec227e78107;  40.4 t/s; the single run's
+ok    full/s2/cpp-matrix         300 tokens fnv1a64:4af3e9a39dbc0691;  50.6 t/s; the single run's
+ok    full/s2/geometry           315 tokens fnv1a64:920b5ca535d61937;  51.8 t/s; the single run's
+ok    full/s1-p1/tcp-udp         300 tokens fnv1a64:5783a53592ae1298;  38.4 t/s; the single run's
+ok    full/s1-p1/cpp-matrix      300 tokens fnv1a64:a514684e2aeb51a8;  49.8 t/s; the single run's
+ok    full/s1-p1/geometry        325 tokens fnv1a64:10e796c1452d8e89;  47.7 t/s; the single run's
+ok    full/single/chat200-3      200 tokens fnv1a64:ad7fa7a2a96e6873;  49.2 t/s; the bytes of reply 3 of the session results/chat/session.out
+ok    full/single/chat12-3        12 tokens fnv1a64:1fc249f7bd266b27;  76.6 t/s; the bytes of reply 3 of the session results/chat/session-n12.out
+ok    full/single/th-2            72 tokens fnv1a64:9dee10dce8a20caf;  41.5 t/s; the bytes of reply 2 of the session results/chat/think/th.out
+ok    full/single/th20-2          20 tokens fnv1a64:da9a808f22ea5c8b;  41.9 t/s; the bytes of reply 2 of the session results/chat/think/th20.out
+ok    full/single/th45-2          45 tokens fnv1a64:3b95126fbd40f53a;  39.9 t/s; the bytes of reply 2 of the session results/chat/think/th45.out
+ok    full/single/long-2         2500 tokens fnv1a64:f8afc21401b3c32b;  41.5 t/s; the bytes of reply 2 of the session results/chat/think/long.out
+ok    full/single/th-3            67 tokens fnv1a64:cecbe8b7314ae0f0;  47.4 t/s; the bytes of reply 3 of the session results/chat/think/th.out
+ok    full/single/th20-3          20 tokens fnv1a64:c30d1799f011e345;  39.8 t/s; the bytes of reply 3 of the session results/chat/think/th20.out
+ok    full/single/th45-3          45 tokens fnv1a64:ee57c0ca41040264;  44.9 t/s; the bytes of reply 3 of the session results/chat/think/th45.out
+ok    full/single/long-3         764 tokens fnv1a64:d6e67e27ea5c2e22;  39.7 t/s; the bytes of reply 3 of the session results/chat/think/long.out
+ok    the engine "full" exits with code 0 when its input ends
+# engine "full": the 25 replies of 90 tokens and more: mean 44.8 t/s (34.2 to 60.1); 343 s with 1 start. Each reply after the others in one process:
+#   it compares with this check's earlier runs, not with the documents' numbers (tests/speed_check.py measures those)
+# engine "spec-n5": bin-hip/ds-completion -m ~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf --rt ~/llms/ds-1017-fp8/dense-fp8.gguf --canon --placement placements/study30.txt
+# its own lines: data/check/cases-complete-20261125-114510/spec-n5-1.err
+# ready after 67 s
+ok    spec-n5/s1/tcp-udp         300 tokens fnv1a64:92a19b9a44f4e8f7;  37.9 t/s; the single run's
+ok    spec-n5/s1/cpp-matrix      300 tokens fnv1a64:3426536c97f68ad8;  49.5 t/s; the single run's
+ok    spec-n5/s1/geometry        342 tokens fnv1a64:b3408ba7088ec36e;  50.5 t/s; the single run's
+ok    the engine "spec-n5" exits with code 0 when its input ends
+# engine "spec-n5": the 3 replies of 90 tokens and more: mean 46.0 t/s (37.9 to 50.5); 98 s with 1 start. Each reply after the others in one process:
+#   it compares with this check's earlier runs, not with the documents' numbers (tests/speed_check.py measures those)
+# engine "plain": bin-hip/ds-completion -m ~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf --rt ~/llms/ds-1017-fp8/dense-fp8.gguf --canon --placement placements/study30.txt -
+# its own lines: data/check/cases-complete-20261125-114510/plain-1.err
+# ready after 10 s
+ok    plain/greedy/tcp-udp       300 tokens fnv1a64:e84010b498310b61;  25.3 t/s; the reference's
+ok    plain/greedy/cpp-matrix    300 tokens fnv1a64:55214691a828a176;  22.9 t/s; the reference's
+ok    plain/greedy/geometry      345 tokens fnv1a64:39009bbaad3bdfec;  24.4 t/s; the reference's
+ok    plain/s1/tcp-udp           300 tokens fnv1a64:92a19b9a44f4e8f7;  24.2 t/s; the single run's
+ok    plain/s1/cpp-matrix        300 tokens fnv1a64:3426536c97f68ad8;  22.6 t/s; the single run's
+ok    plain/s1/geometry          342 tokens fnv1a64:b3408ba7088ec36e;  24.1 t/s; the single run's
+ok    plain/s2/tcp-udp           300 tokens fnv1a64:9e776ec227e78107;  24.6 t/s; the single run's
+ok    plain/s2/cpp-matrix        300 tokens fnv1a64:4af3e9a39dbc0691;  22.6 t/s; the single run's
+ok    plain/s2/geometry          315 tokens fnv1a64:920b5ca535d61937;  24.0 t/s; the single run's
+ok    plain/s1-p1/tcp-udp        300 tokens fnv1a64:5783a53592ae1298;  24.9 t/s; the single run's
+ok    plain/s1-p1/cpp-matrix     300 tokens fnv1a64:a514684e2aeb51a8;  22.4 t/s; the single run's
+ok    plain/s1-p1/geometry       325 tokens fnv1a64:10e796c1452d8e89;  24.3 t/s; the single run's
+ok    the engine "plain" exits with code 0 when its input ends
+# engine "plain": the 12 replies of 90 tokens and more: mean 23.9 t/s (22.4 to 25.3); 178 s with 1 start. Each reply after the others in one process:
+#   it compares with this check's earlier runs, not with the documents' numbers (tests/speed_check.py measures those)
+# engine "plain-oracle": bin-hip/ds-completion -m ~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf --rt ~/llms/ds-1017-fp8/dense-fp8.gguf --canon --placement placements/oracle
+# its own lines: data/check/cases-complete-20261125-114510/plain-oracle-1.err
+# ready after 10 s
+ok    plain-oracle/s1/tcp-udp    300 tokens fnv1a64:92a19b9a44f4e8f7;  27.0 t/s; the single run's
+ok    plain-oracle/s1/cpp-matrix 300 tokens fnv1a64:3426536c97f68ad8;  18.5 t/s; the single run's
+ok    plain-oracle/s1/geometry   342 tokens fnv1a64:b3408ba7088ec36e;  17.9 t/s; the single run's
+ok    the engine "plain-oracle" exits with code 0 when its input ends
+# engine "plain-oracle": the 3 replies of 90 tokens and more: mean 21.2 t/s (17.9 to 27.0); 62 s with 1 start. Each reply after the others in one process:
+#   it compares with this check's earlier runs, not with the documents' numbers (tests/speed_check.py measures those)
+# engine "plain-cache": bin-hip/ds-completion -m ~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf --rt ~/llms/ds-1017-fp8/dense-fp8.gguf --canon --placement placements/study30
+# its own lines: data/check/cases-complete-20261125-114510/plain-cache-1.err
+# ready after 64 s
+ok    plain-cache/s1/tcp-udp     300 tokens fnv1a64:92a19b9a44f4e8f7;  29.2 t/s; the single run's
+ok    plain-cache/s1/cpp-matrix  300 tokens fnv1a64:3426536c97f68ad8;  28.6 t/s; the single run's
+ok    plain-cache/s1/geometry    342 tokens fnv1a64:b3408ba7088ec36e;  29.5 t/s; the single run's
+ok    the engine "plain-cache" exits with code 0 when its input ends
+# engine "plain-cache": the 3 replies of 90 tokens and more: mean 29.1 t/s (28.6 to 29.5); 106 s with 1 start. Each reply after the others in one process:
+#   it compares with this check's earlier runs, not with the documents' numbers (tests/speed_check.py measures those)
+all checks passed
+
+real	13m7.184s
+user	133m52.500s
+sys	3m53.528s
+#
+# 4. python3 tests/sessions_check.py      (the six sessions it keeps; 9 min 42 s)
+ok    session chat200: chat.sh -n 200: the bytes of results/chat/session.out (82 s)
+ok    session chat12: chat.sh -n 12: the bytes of results/chat/session-n12.out (76 s)
+ok    session th: chat.sh --think --think-show all --effort 75 -n 600: the bytes of results/chat/think/th.out (81 s)
+ok    session th20: chat.sh --think --think-show all --effort 75 -n 20: the bytes of results/chat/think/th20.out (78 s)
+ok    session th45: chat.sh --think --think-show all --effort 75 -n 45: the bytes of results/chat/think/th45.out (79 s)
+ok    session long: chat.sh --think --think-show all --effort max -n 2500: the bytes of results/chat/think/long.out (187 s)
+all checks passed
+
+real	9m42.314s
+user	33m31.826s
+sys	5m43.877s

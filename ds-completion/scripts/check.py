@@ -15,10 +15,10 @@ tests/data/cases/expected.json; then one interactive session in a fresh process 
 speed (step 190; tests/speed_check.py) is the measurement the documents quote: each held-out
 prompt in a fresh process, twice, the second repeat's mean against tests/data/speed/baseline.tsv.
 complete (step 190) adds what default leaves out: the logits at 20,000 tokens;
-the request test in both modes; six sessions and ten single runs on their
-conversations; more cases (steps 205, 207: the other six held-out prompts sampled on default's
-engine; sampling across the loops, on that engine and four more; three matrices of 49 processes
-until then); two sampled runs with the flags on the command line; a 2,731-token prompt from a file.
+the request test in both modes; six sessions; more cases (steps 205, 207, 208: on default's
+engine the other six held-out prompts sampled and the sessions' conversations as single prompts;
+sampling across the loops, on that engine and four more; three matrices and ten single runs, 59
+processes, until then); two sampled runs with the flags on the command line; a 2,731-token prompt from a file.
 (Until step 193 default and complete also ran a second implementation, the CPU reference path,
 removed in steps 192-194.)
 Not in any run: what has no verdict (the per-layer tables, the draft against the reference,
@@ -93,7 +93,7 @@ LOGITS = [logits('hello-fp32'), logits('readme200'), logits('readme1100')]
 
 def cases(run):
     """tests/cases_check.py: complete's run has default's cases too, on the same engines"""
-    what = {'default': 'the held-out prompts, sampled ones, a second turn', 'complete': 'default\'s, the held-out prompts sampled, sampling across the loops'}[run]
+    what = {'default': 'the held-out prompts, sampled ones, a second turn', 'complete': 'default\'s, the held-out prompts sampled, sampling across the loops, the sessions\' conversations as single prompts'}[run]
     return (f'cases: replies on one engine per configuration ({what})', [PY, 'tests/cases_check.py', run], FULL,
             'its output names the case and the first token that differs, and says how to narrow it down')
 
@@ -109,7 +109,7 @@ COMPLETE = UNIT + LOGITS + [cases('complete'), SESSION] + [
     logits('readme20k-s'),
     ('requests: the protocol on one engine, with speculation', [PY, 'tests/requests_test.py'], FULL, 'its output names the check; docs/requests.md'),
     ('requests: the same in the plain loop', [PY, 'tests/requests_test.py', '--no-spec'], [MODEL, F8], 'its output names the check'),
-    ('sessions: six sessions and ten single runs on their conversations', [PY, 'tests/sessions_check.py'], FULL, 'its output names the session or run and where what it printed is'),
+    ('sessions: six interactive sessions', [PY, 'tests/sessions_check.py'], FULL, 'its output names the session and where what it printed is'),
     # (until step 207 two matrices of 33 processes were here, results/sampler/plain.matrix and step151/spec.matrix: now cases.
     #  Two of their runs stay as processes: what a request does not pass through is the command line's --temp, --top-p, --seed and -p)
     ('a sampled run from the command line, with speculation and the cache', [PY, 'tests/record_check.py', 'fnv1a64:92a19b9a44f4e8f7'] + PROD + CACHE + ['--dspark', DRAFT, '--spec',
@@ -123,7 +123,7 @@ COMPLETE = UNIT + LOGITS + [cases('complete'), SESSION] + [
      [MODEL, F8], 'the logits check on readme1100 (the same chunks); then the prompt cut shorter'),
 ] + SPEED
 RUNS = {'unit': UNIT, 'default': DEFAULT, 'speed': SPEED, 'complete': COMPLETE}
-WAITS = {'default': 1, 'speed': 16, 'complete': 38}  # the starts of a run that wait for the registration of the expert tensors
+WAITS = {'default': 1, 'speed': 16, 'complete': 28}  # the starts of a run that wait for the registration of the expert tensors
 LIVE = ('outputs_check.py', 'speed_check.py', 'requests_test.py', 'sessions_check.py', 'matrix_check.py', 'cases_check.py')  # long: their lines are shown as they come
 STORING = ('speed_check.py', 'cases_check.py')  # the checks that keep their own expectation and take --store
 
