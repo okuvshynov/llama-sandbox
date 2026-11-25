@@ -16,8 +16,9 @@ speed (step 190; tests/speed_check.py) is the measurement the documents quote: e
 prompt in a fresh process, twice, the second repeat's mean against tests/data/speed/baseline.tsv.
 complete (step 190) adds what default leaves out: the logits at 20,000 tokens;
 the request test in both modes; six sessions and ten single runs on their
-conversations; two sampling matrices; more cases on default's engine (step 205: the other six
-held-out prompts sampled; a third matrix until then); a 2,731-token prompt from a file.
+conversations; more cases (steps 205, 207: the other six held-out prompts sampled on default's
+engine; sampling across the loops, on that engine and four more; three matrices of 49 processes
+until then); two sampled runs with the flags on the command line; a 2,731-token prompt from a file.
 (Until step 193 default and complete also ran a second implementation, the CPU reference path,
 removed in steps 192-194.)
 Not in any run: what has no verdict (the per-layer tables, the draft against the reference,
@@ -92,7 +93,7 @@ LOGITS = [logits('hello-fp32'), logits('readme200'), logits('readme1100')]
 
 def cases(run):
     """tests/cases_check.py: complete's run has default's cases too, on the same engines"""
-    what = {'default': 'the held-out prompts, sampled ones, a second turn', 'complete': 'default\'s, and the held-out prompts sampled'}[run]
+    what = {'default': 'the held-out prompts, sampled ones, a second turn', 'complete': 'default\'s, the held-out prompts sampled, sampling across the loops'}[run]
     return (f'cases: replies on one engine per configuration ({what})', [PY, 'tests/cases_check.py', run], FULL,
             'its output names the case and the first token that differs, and says how to narrow it down')
 
@@ -103,21 +104,26 @@ DEFAULT = UNIT + LOGITS + [cases('default'), SESSION]
 SPEED = [('speed: the held-out prompts in fresh processes, twice', [PY, 'tests/speed_check.py'], FULL,
           'its output has each prompt against the baseline and says how to look further')]
 PROD = ['bin-hip/ds-completion', '-m', MODEL, '--rt', F8, '--placement', 'placements/study30.txt', '--canon']
+CACHE = ['--cache-loads', '800', '--cache-period', '8', '--cache-wait']
 COMPLETE = UNIT + LOGITS + [cases('complete'), SESSION] + [
     logits('readme20k-s'),
     ('requests: the protocol on one engine, with speculation', [PY, 'tests/requests_test.py'], FULL, 'its output names the check; docs/requests.md'),
     ('requests: the same in the plain loop', [PY, 'tests/requests_test.py', '--no-spec'], [MODEL, F8], 'its output names the check'),
     ('sessions: six sessions and ten single runs on their conversations', [PY, 'tests/sessions_check.py'], FULL, 'its output names the session or run and where what it printed is'),
-    ('sampling: the plain loop, one seed across repeats, placements and the cache',
-     [PY, 'tests/matrix_check.py', 'results/sampler/plain.matrix', 'results/sampler/plain', '--prompts', 'tcp-udp,cpp-matrix,geometry'], [MODEL, F8], 'its output names the run'),
-    ('sampling: with speculation, seeds and fixed draft lengths',
-     [PY, 'tests/matrix_check.py', 'results/sampler/step151/spec.matrix', 'results/sampler/step151/spec', '--prompts', 'tcp-udp,cpp-matrix,geometry'], FULL, 'its output names the run'),
+    # (until step 207 two matrices of 33 processes were here, results/sampler/plain.matrix and step151/spec.matrix: now cases.
+    #  Two of their runs stay as processes: what a request does not pass through is the command line's --temp, --top-p, --seed and -p)
+    ('a sampled run from the command line, with speculation and the cache', [PY, 'tests/record_check.py', 'fnv1a64:92a19b9a44f4e8f7'] + PROD + CACHE + ['--dspark', DRAFT, '--spec',
+     '--chat', '-p', 'What are the differences between TCP and UDP, and when would you choose each?', '-n', '300', '--temp', '1', '--top-p', '0.95', '--seed', '1'],
+     FULL, 'the case full/s1/tcp-udp of tests/cases_check.py (the same reply by a request): if it passes, the difference is in the command line\'s path'),
+    ('a sampled run from the command line, the plain loop, top-p 1', [PY, 'tests/record_check.py', 'fnv1a64:10e796c1452d8e89'] + PROD + [
+     '--think', '-p', 'A triangle has sides 13, 14 and 15. Find its area, its inradius and its circumradius.', '-n', '500', '--temp', '1', '--seed', '1'],
+     [MODEL, F8], 'the case plain/s1-p1/geometry of tests/cases_check.py (the same reply by a request)'),
     # (until step 205 a matrix of 16 processes, results/sampler/spec-heldout.matrix, was here: its sampled half is cases', its greedy half cases' and speed's)
     ('a long prompt from a file: 2,731 tokens in chunks of 512', [PY, 'tests/record_check.py', 'fnv1a64:df516e7200ad14c8'] + PROD + ['-f', 'tests/data/long-prompt.txt', '-n', '40'],
      [MODEL, F8], 'the logits check on readme1100 (the same chunks); then the prompt cut shorter'),
 ] + SPEED
 RUNS = {'unit': UNIT, 'default': DEFAULT, 'speed': SPEED, 'complete': COMPLETE}
-WAITS = {'default': 1, 'speed': 16, 'complete': 53}  # the starts of a run that wait for the registration of the expert tensors
+WAITS = {'default': 1, 'speed': 16, 'complete': 38}  # the starts of a run that wait for the registration of the expert tensors
 LIVE = ('outputs_check.py', 'speed_check.py', 'requests_test.py', 'sessions_check.py', 'matrix_check.py', 'cases_check.py')  # long: their lines are shown as they come
 STORING = ('speed_check.py', 'cases_check.py')  # the checks that keep their own expectation and take --store
 

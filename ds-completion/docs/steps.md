@@ -7821,3 +7821,52 @@ hand).
 Next: the two sampling matrices on three prompts (`results/sampler/step151/spec.matrix`,
 `results/sampler/plain.matrix`; 33 processes), which need configurations beside `full`:
 `--spec-n 5`, the plain loop, the plain loop on another placement, the plain loop with the cache.
+
+## Step 207: the two 3-prompt sampling matrices as cases
+
+The third move into step 205's table, and the first that needs configurations beside `full`.
+`complete` ran `results/sampler/plain.matrix` (18 processes) and
+`results/sampler/step151/spec.matrix` (15 processes) on three prompts through
+`tests/matrix_check.py`: 53 min at step 181, and 18 of the 33 starts wait for the registration.
+
+**What changed.**
+
+- Four configurations in `tests/engine.py`: `spec-n5` (the fastest settings with `--spec-n 5`),
+  `plain` (the plain loop on `placements/study30.txt`), `plain-oracle` (on
+  `placements/oracle-concurrency.txt`), `plain-cache` (the plain loop with the adaptive cache).
+- 27 cases of `complete`, each on tcp-udp, cpp-matrix and geometry, each with the matrix's
+  stored record as its reference: on `full`, seed 2 and top-p 1 (6; the matrix's greedy and
+  seed-1 runs on `full` are cases since steps 205-206); on `spec-n5`, seed 1 (3); on `plain`,
+  greedy (the project's reference), seed 1, seed 2, top-p 1 (12); on `plain-oracle` and
+  `plain-cache`, seed 1 (3 each). `complete` has 47 cases on five engines.
+- `scripts/check.py complete` no longer runs the two matrices. Two of their runs stay as
+  processes, through `tests/record_check.py` with the stored hashes: seed 1 with top-p 0.95 on
+  the fastest settings (`--chat -p`), and seed 1 with top-p 1 in the plain loop (`--think -p`).
+  They are there for what no request passes through: the command line's `--temp`, `--top-p`,
+  `--seed` and `-p`.
+- `tests/matrix_check.py` and the matrix files stay, for running a matrix by hand
+  (docs/testing.md 3.3); no fixed run uses them now.
+
+**Measured** (`results/dist/cases-matrices.txt`):
+
+- `tests/cases_check.py complete --store`, then without it: 47 of 47 both times, 11 min 20 s.
+  `--store` wrote 27 new keys, each only because its hash is the matrix record's. So one seed
+  gives one reply across the plain loop, another placement, the cache, speculation and
+  `--spec-n 5`, on engines that answered other requests before (e.g. tcp-udp, seed 1:
+  `92a19b9a44f4e8f7` on all five).
+- By engine: `full` 236 s (26 cases; 68 s the start), `spec-n5` 98 s (67 s), `plain` 178 s
+  (12 cases; 10 s), `plain-oracle` 62 s (10 s), `plain-cache` 106 s (65 s). The plain engines
+  start in 10 s: without the cache nothing is registered.
+- The two fresh runs: 82 s and 28 s, both the stored hashes.
+- In `complete`: about 8 min of cases (the four new engines and six more requests on `full`)
+  and 2 min of fresh runs where the matrices took 53 min; starts that wait for the
+  registration 53 -> 38.
+
+**What `complete` no longer has:** a process of its own for 31 of the 33 runs. What a process
+checks beyond a request is the command line's sampling flags (kept, two runs) and a start from
+nothing for each setting; the references remain the single runs' records. Not run: `complete`
+whole. No new negative control: the comparison is step 206's code, which was shown to fail.
+
+Next: the ten single runs of `tests/sessions_check.py` ("a session's reply k equals a single run
+on the conversation before it"), which are greedy runs on the `full` settings with a prompt from
+a file; then `tests/requests_test.py` on `tests/engine.py`.

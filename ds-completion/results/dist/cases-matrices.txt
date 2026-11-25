@@ -1,0 +1,179 @@
+# tests/cases_check.py complete with the two 3-prompt sampling matrices as cases (README step 207): 47 cases, five engines.
+# Commit 6b7a6ed + the changes of steps 206 and 207 (the commits that follow it); sclk 6 (manual, all four cards);
+# 2026-11-25, booted 09:06 (the registration takes ~55 s in this boot, step 204).
+# Lines are cut at 200 characters.
+#
+# 1. python3 tests/cases_check.py complete --store      (27 new keys; a reply that is not its matrix record's is refused; 11 min 21 s)
+# engine "full": bin-hip/ds-completion -m ~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf --rt ~/llms/ds-1017-fp8/dense-fp8.gguf --canon --placement placements/study30.txt --
+# its own lines: data/check/cases-complete-20261125-110721/full-1.err
+# ready after 68 s
+ok    full/greedy/tcp-udp        300 tokens fnv1a64:e84010b498310b61;  38.9 t/s; the reference's
+ok    full/greedy/py-lru         300 tokens fnv1a64:ccdf68228376b5ca;  46.8 t/s; the reference's
+ok    full/greedy/cpp-matrix     300 tokens fnv1a64:55214691a828a176;  60.1 t/s; the reference's
+ok    full/greedy/sql-report     300 tokens fnv1a64:f316e2fad109b2e0;  50.5 t/s; the reference's
+ok    full/greedy/geometry       345 tokens fnv1a64:39009bbaad3bdfec;  54.6 t/s; the reference's
+ok    full/greedy/zh-travel      300 tokens fnv1a64:6fa28c9df3b39c7c;  34.2 t/s; the reference's
+ok    full/greedy/ja-email       300 tokens fnv1a64:cb2c332218b24ed0;  37.8 t/s; the reference's
+ok    full/greedy/summary-json    98 tokens fnv1a64:963abaf982b15a33;  41.1 t/s; the reference's
+ok    full/s1/tcp-udp            300 tokens fnv1a64:92a19b9a44f4e8f7;  40.5 t/s; the single run's
+ok    full/s1/py-lru             300 tokens fnv1a64:158f3a7a894199fd;  44.0 t/s; the single run's
+ok    full/s1/cpp-matrix         300 tokens fnv1a64:3426536c97f68ad8;  54.6 t/s; the single run's
+ok    full/s1/sql-report         300 tokens fnv1a64:3ac0568b4b753305;  46.0 t/s; the single run's
+ok    full/s1/geometry           342 tokens fnv1a64:b3408ba7088ec36e;  51.4 t/s; the single run's
+ok    full/s1/zh-travel          300 tokens fnv1a64:0f178da0c1f4fd5a;  35.1 t/s; the single run's
+ok    full/s1/ja-email           300 tokens fnv1a64:1d0f3b7a2e9f64fb;  37.0 t/s; the single run's
+ok    full/s1/summary-json        98 tokens fnv1a64:963abaf982b15a33;  39.9 t/s; the single run's
+ok    full/n5/geometry             5 tokens fnv1a64:c009f7e944566ed8;  41.5 t/s, stop=length; the first 5 ids of the reply of "full/greedy/geometry" in this run
+ok    full/turn/first              6 tokens fnv1a64:1822063ec0fb7b5a;  18.3 t/s
+ok    full/turn/second             6 tokens fnv1a64:9a660c3c90028189;  41.8 t/s, how=continue, kept=18
+ok    full/turn/second-empty       6 tokens fnv1a64:9a660c3c90028189;  50.8 t/s, how=empty, kept=0; the reply of "full/turn/second" in this run
+ok    full/s2/tcp-udp            300 tokens fnv1a64:9e776ec227e78107;  40.3 t/s; the single run's
+ok    full/s2/cpp-matrix         300 tokens fnv1a64:4af3e9a39dbc0691;  50.6 t/s; the single run's
+ok    full/s2/geometry           315 tokens fnv1a64:920b5ca535d61937;  51.6 t/s; the single run's
+ok    full/s1-p1/tcp-udp         300 tokens fnv1a64:5783a53592ae1298;  38.4 t/s; the single run's
+ok    full/s1-p1/cpp-matrix      300 tokens fnv1a64:a514684e2aeb51a8;  49.8 t/s; the single run's
+ok    full/s1-p1/geometry        325 tokens fnv1a64:10e796c1452d8e89;  47.7 t/s; the single run's
+ok    the engine "full" exits with code 0 when its input ends
+# engine "full": the 22 replies of 90 tokens and more: mean 45.0 t/s (34.2 to 60.1); 236 s with 1 start. One process, the cache adapting from prompt to prompt:
+#   it compares with this check's earlier runs, not with the documents' numbers (tests/speed_check.py measures those)
+# engine "spec-n5": bin-hip/ds-completion -m ~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf --rt ~/llms/ds-1017-fp8/dense-fp8.gguf --canon --placement placements/study30.txt
+# its own lines: data/check/cases-complete-20261125-110721/spec-n5-1.err
+# ready after 67 s
+ok    spec-n5/s1/tcp-udp         300 tokens fnv1a64:92a19b9a44f4e8f7;  37.9 t/s; the single run's
+ok    spec-n5/s1/cpp-matrix      300 tokens fnv1a64:3426536c97f68ad8;  49.3 t/s; the single run's
+ok    spec-n5/s1/geometry        342 tokens fnv1a64:b3408ba7088ec36e;  50.5 t/s; the single run's
+ok    the engine "spec-n5" exits with code 0 when its input ends
+# engine "spec-n5": the 3 replies of 90 tokens and more: mean 45.9 t/s (37.9 to 50.5); 98 s with 1 start. One process, the cache adapting from prompt to prompt:
+#   it compares with this check's earlier runs, not with the documents' numbers (tests/speed_check.py measures those)
+# engine "plain": bin-hip/ds-completion -m ~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf --rt ~/llms/ds-1017-fp8/dense-fp8.gguf --canon --placement placements/study30.txt -
+# its own lines: data/check/cases-complete-20261125-110721/plain-1.err
+# ready after 10 s
+ok    plain/greedy/tcp-udp       300 tokens fnv1a64:e84010b498310b61;  25.1 t/s; the reference's
+ok    plain/greedy/cpp-matrix    300 tokens fnv1a64:55214691a828a176;  22.9 t/s; the reference's
+ok    plain/greedy/geometry      345 tokens fnv1a64:39009bbaad3bdfec;  24.4 t/s; the reference's
+ok    plain/s1/tcp-udp           300 tokens fnv1a64:92a19b9a44f4e8f7;  24.1 t/s; the single run's
+ok    plain/s1/cpp-matrix        300 tokens fnv1a64:3426536c97f68ad8;  22.5 t/s; the single run's
+ok    plain/s1/geometry          342 tokens fnv1a64:b3408ba7088ec36e;  24.0 t/s; the single run's
+ok    plain/s2/tcp-udp           300 tokens fnv1a64:9e776ec227e78107;  24.5 t/s; the single run's
+ok    plain/s2/cpp-matrix        300 tokens fnv1a64:4af3e9a39dbc0691;  22.6 t/s; the single run's
+ok    plain/s2/geometry          315 tokens fnv1a64:920b5ca535d61937;  24.1 t/s; the single run's
+ok    plain/s1-p1/tcp-udp        300 tokens fnv1a64:5783a53592ae1298;  24.8 t/s; the single run's
+ok    plain/s1-p1/cpp-matrix     300 tokens fnv1a64:a514684e2aeb51a8;  22.4 t/s; the single run's
+ok    plain/s1-p1/geometry       325 tokens fnv1a64:10e796c1452d8e89;  24.2 t/s; the single run's
+ok    the engine "plain" exits with code 0 when its input ends
+# engine "plain": the 12 replies of 90 tokens and more: mean 23.8 t/s (22.4 to 25.1); 179 s with 1 start. One process, the cache adapting from prompt to prompt:
+#   it compares with this check's earlier runs, not with the documents' numbers (tests/speed_check.py measures those)
+# engine "plain-oracle": bin-hip/ds-completion -m ~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf --rt ~/llms/ds-1017-fp8/dense-fp8.gguf --canon --placement placements/oracle
+# its own lines: data/check/cases-complete-20261125-110721/plain-oracle-1.err
+# ready after 10 s
+ok    plain-oracle/s1/tcp-udp    300 tokens fnv1a64:92a19b9a44f4e8f7;  26.8 t/s; the single run's
+ok    plain-oracle/s1/cpp-matrix 300 tokens fnv1a64:3426536c97f68ad8;  18.4 t/s; the single run's
+ok    plain-oracle/s1/geometry   342 tokens fnv1a64:b3408ba7088ec36e;  17.7 t/s; the single run's
+ok    the engine "plain-oracle" exits with code 0 when its input ends
+# engine "plain-oracle": the 3 replies of 90 tokens and more: mean 21.0 t/s (17.7 to 26.8); 62 s with 1 start. One process, the cache adapting from prompt to prompt:
+#   it compares with this check's earlier runs, not with the documents' numbers (tests/speed_check.py measures those)
+# engine "plain-cache": bin-hip/ds-completion -m ~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf --rt ~/llms/ds-1017-fp8/dense-fp8.gguf --canon --placement placements/study30
+# its own lines: data/check/cases-complete-20261125-110721/plain-cache-1.err
+# ready after 65 s
+ok    plain-cache/s1/tcp-udp     300 tokens fnv1a64:92a19b9a44f4e8f7;  29.1 t/s; the single run's
+ok    plain-cache/s1/cpp-matrix  300 tokens fnv1a64:3426536c97f68ad8;  28.5 t/s; the single run's
+ok    plain-cache/s1/geometry    342 tokens fnv1a64:b3408ba7088ec36e;  29.3 t/s; the single run's
+ok    the engine "plain-cache" exits with code 0 when its input ends
+# engine "plain-cache": the 3 replies of 90 tokens and more: mean 29.0 t/s (28.5 to 29.3); 106 s with 1 start. One process, the cache adapting from prompt to prompt:
+#   it compares with this check's earlier runs, not with the documents' numbers (tests/speed_check.py measures those)
+# tests/data/cases/expected.json written: 47 replies, 27 new or changed (full/s2/tcp-udp, full/s2/cpp-matrix, full/s2/geometry, full/s1-p1/tcp-udp, full/s1-p1/cpp-matrix, full/s1-p1/geometry, spec-n5/
+all checks passed
+
+real	11m21.060s
+user	111m41.603s
+sys	3m48.503s
+#
+# 2. python3 tests/cases_check.py complete      (against what was stored; 11 min 20 s)
+# engine "full": bin-hip/ds-completion -m ~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf --rt ~/llms/ds-1017-fp8/dense-fp8.gguf --canon --placement placements/study30.txt --
+# its own lines: data/check/cases-complete-20261125-111842/full-1.err
+# ready after 67 s
+ok    full/greedy/tcp-udp        300 tokens fnv1a64:e84010b498310b61;  39.0 t/s; the reference's
+ok    full/greedy/py-lru         300 tokens fnv1a64:ccdf68228376b5ca;  46.8 t/s; the reference's
+ok    full/greedy/cpp-matrix     300 tokens fnv1a64:55214691a828a176;  60.0 t/s; the reference's
+ok    full/greedy/sql-report     300 tokens fnv1a64:f316e2fad109b2e0;  50.4 t/s; the reference's
+ok    full/greedy/geometry       345 tokens fnv1a64:39009bbaad3bdfec;  54.8 t/s; the reference's
+ok    full/greedy/zh-travel      300 tokens fnv1a64:6fa28c9df3b39c7c;  34.2 t/s; the reference's
+ok    full/greedy/ja-email       300 tokens fnv1a64:cb2c332218b24ed0;  37.7 t/s; the reference's
+ok    full/greedy/summary-json    98 tokens fnv1a64:963abaf982b15a33;  41.1 t/s; the reference's
+ok    full/s1/tcp-udp            300 tokens fnv1a64:92a19b9a44f4e8f7;  39.9 t/s; the single run's
+ok    full/s1/py-lru             300 tokens fnv1a64:158f3a7a894199fd;  43.7 t/s; the single run's
+ok    full/s1/cpp-matrix         300 tokens fnv1a64:3426536c97f68ad8;  54.1 t/s; the single run's
+ok    full/s1/sql-report         300 tokens fnv1a64:3ac0568b4b753305;  44.4 t/s; the single run's
+ok    full/s1/geometry           342 tokens fnv1a64:b3408ba7088ec36e;  52.0 t/s; the single run's
+ok    full/s1/zh-travel          300 tokens fnv1a64:0f178da0c1f4fd5a;  35.3 t/s; the single run's
+ok    full/s1/ja-email           300 tokens fnv1a64:1d0f3b7a2e9f64fb;  36.0 t/s; the single run's
+ok    full/s1/summary-json        98 tokens fnv1a64:963abaf982b15a33;  39.9 t/s; the single run's
+ok    full/n5/geometry             5 tokens fnv1a64:c009f7e944566ed8;  42.0 t/s, stop=length; the first 5 ids of the reply of "full/greedy/geometry" in this run
+ok    full/turn/first              6 tokens fnv1a64:1822063ec0fb7b5a;  18.2 t/s
+ok    full/turn/second             6 tokens fnv1a64:9a660c3c90028189;  41.7 t/s, how=continue, kept=18
+ok    full/turn/second-empty       6 tokens fnv1a64:9a660c3c90028189;  51.5 t/s, how=empty, kept=0; the reply of "full/turn/second" in this run
+ok    full/s2/tcp-udp            300 tokens fnv1a64:9e776ec227e78107;  40.3 t/s; the single run's
+ok    full/s2/cpp-matrix         300 tokens fnv1a64:4af3e9a39dbc0691;  50.4 t/s; the single run's
+ok    full/s2/geometry           315 tokens fnv1a64:920b5ca535d61937;  51.8 t/s; the single run's
+ok    full/s1-p1/tcp-udp         300 tokens fnv1a64:5783a53592ae1298;  38.5 t/s; the single run's
+ok    full/s1-p1/cpp-matrix      300 tokens fnv1a64:a514684e2aeb51a8;  49.6 t/s; the single run's
+ok    full/s1-p1/geometry        325 tokens fnv1a64:10e796c1452d8e89;  47.7 t/s; the single run's
+ok    the engine "full" exits with code 0 when its input ends
+# engine "full": the 22 replies of 90 tokens and more: mean 44.9 t/s (34.2 to 60.0); 236 s with 1 start. One process, the cache adapting from prompt to prompt:
+#   it compares with this check's earlier runs, not with the documents' numbers (tests/speed_check.py measures those)
+# engine "spec-n5": bin-hip/ds-completion -m ~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf --rt ~/llms/ds-1017-fp8/dense-fp8.gguf --canon --placement placements/study30.txt
+# its own lines: data/check/cases-complete-20261125-111842/spec-n5-1.err
+# ready after 68 s
+ok    spec-n5/s1/tcp-udp         300 tokens fnv1a64:92a19b9a44f4e8f7;  38.0 t/s; the single run's
+ok    spec-n5/s1/cpp-matrix      300 tokens fnv1a64:3426536c97f68ad8;  49.6 t/s; the single run's
+ok    spec-n5/s1/geometry        342 tokens fnv1a64:b3408ba7088ec36e;  50.6 t/s; the single run's
+ok    the engine "spec-n5" exits with code 0 when its input ends
+# engine "spec-n5": the 3 replies of 90 tokens and more: mean 46.1 t/s (38.0 to 50.6); 98 s with 1 start. One process, the cache adapting from prompt to prompt:
+#   it compares with this check's earlier runs, not with the documents' numbers (tests/speed_check.py measures those)
+# engine "plain": bin-hip/ds-completion -m ~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf --rt ~/llms/ds-1017-fp8/dense-fp8.gguf --canon --placement placements/study30.txt -
+# its own lines: data/check/cases-complete-20261125-111842/plain-1.err
+# ready after 10 s
+ok    plain/greedy/tcp-udp       300 tokens fnv1a64:e84010b498310b61;  25.3 t/s; the reference's
+ok    plain/greedy/cpp-matrix    300 tokens fnv1a64:55214691a828a176;  22.9 t/s; the reference's
+ok    plain/greedy/geometry      345 tokens fnv1a64:39009bbaad3bdfec;  24.4 t/s; the reference's
+ok    plain/s1/tcp-udp           300 tokens fnv1a64:92a19b9a44f4e8f7;  24.2 t/s; the single run's
+ok    plain/s1/cpp-matrix        300 tokens fnv1a64:3426536c97f68ad8;  22.6 t/s; the single run's
+ok    plain/s1/geometry          342 tokens fnv1a64:b3408ba7088ec36e;  24.0 t/s; the single run's
+ok    plain/s2/tcp-udp           300 tokens fnv1a64:9e776ec227e78107;  24.6 t/s; the single run's
+ok    plain/s2/cpp-matrix        300 tokens fnv1a64:4af3e9a39dbc0691;  22.7 t/s; the single run's
+ok    plain/s2/geometry          315 tokens fnv1a64:920b5ca535d61937;  24.1 t/s; the single run's
+ok    plain/s1-p1/tcp-udp        300 tokens fnv1a64:5783a53592ae1298;  24.8 t/s; the single run's
+ok    plain/s1-p1/cpp-matrix     300 tokens fnv1a64:a514684e2aeb51a8;  22.5 t/s; the single run's
+ok    plain/s1-p1/geometry       325 tokens fnv1a64:10e796c1452d8e89;  24.3 t/s; the single run's
+ok    the engine "plain" exits with code 0 when its input ends
+# engine "plain": the 12 replies of 90 tokens and more: mean 23.9 t/s (22.5 to 25.3); 178 s with 1 start. One process, the cache adapting from prompt to prompt:
+#   it compares with this check's earlier runs, not with the documents' numbers (tests/speed_check.py measures those)
+# engine "plain-oracle": bin-hip/ds-completion -m ~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf --rt ~/llms/ds-1017-fp8/dense-fp8.gguf --canon --placement placements/oracle
+# its own lines: data/check/cases-complete-20261125-111842/plain-oracle-1.err
+# ready after 10 s
+ok    plain-oracle/s1/tcp-udp    300 tokens fnv1a64:92a19b9a44f4e8f7;  26.9 t/s; the single run's
+ok    plain-oracle/s1/cpp-matrix 300 tokens fnv1a64:3426536c97f68ad8;  18.5 t/s; the single run's
+ok    plain-oracle/s1/geometry   342 tokens fnv1a64:b3408ba7088ec36e;  17.9 t/s; the single run's
+ok    the engine "plain-oracle" exits with code 0 when its input ends
+# engine "plain-oracle": the 3 replies of 90 tokens and more: mean 21.1 t/s (17.9 to 26.9); 62 s with 1 start. One process, the cache adapting from prompt to prompt:
+#   it compares with this check's earlier runs, not with the documents' numbers (tests/speed_check.py measures those)
+# engine "plain-cache": bin-hip/ds-completion -m ~/llms/UD-Q8_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf --rt ~/llms/ds-1017-fp8/dense-fp8.gguf --canon --placement placements/study30
+# its own lines: data/check/cases-complete-20261125-111842/plain-cache-1.err
+# ready after 64 s
+ok    plain-cache/s1/tcp-udp     300 tokens fnv1a64:92a19b9a44f4e8f7;  29.2 t/s; the single run's
+ok    plain-cache/s1/cpp-matrix  300 tokens fnv1a64:3426536c97f68ad8;  28.7 t/s; the single run's
+ok    plain-cache/s1/geometry    342 tokens fnv1a64:b3408ba7088ec36e;  29.5 t/s; the single run's
+ok    the engine "plain-cache" exits with code 0 when its input ends
+# engine "plain-cache": the 3 replies of 90 tokens and more: mean 29.1 t/s (28.7 to 29.5); 105 s with 1 start. One process, the cache adapting from prompt to prompt:
+#   it compares with this check's earlier runs, not with the documents' numbers (tests/speed_check.py measures those)
+all checks passed
+
+real	11m19.530s
+user	111m34.033s
+sys	3m47.042s
+#
+# 3. The two runs that stay processes in scripts/check.py complete (tests/record_check.py with the matrices' stored hashes)
+# a sampled run from the command line, with speculation and the cache
+ok    fnv1a64:92a19b9a44f4e8f7; 300 tokens, prompt 35.7 t/s, generation 41.63 t/s | exit code 0, 82 s
+# a sampled run from the command line, the plain loop, top-p 1
+ok    fnv1a64:10e796c1452d8e89; 325 tokens, prompt 48.9 t/s, generation 24.40 t/s | exit code 0, 28 s

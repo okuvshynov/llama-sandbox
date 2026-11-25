@@ -25,7 +25,7 @@ are stored, not a hash: a case that fails says which token differs first. A case
 An engine that dies takes its case with it, not the rest: it is started again for the next case.
 An engine must also exit with code 0 when its input ends.
 
-Speeds are printed: one process, the cache adapting from prompt to prompt. They compare with
+Speeds are printed: one process per configuration, each reply after the others. They compare with
 this check's own earlier runs, not with the documents' numbers.
 
 To add a check: a line in CASES (and, for settings a request cannot carry, a configuration in
@@ -100,7 +100,23 @@ CASES += [
     case('default', 'full', 'full/turn/second-empty', ('after', 'full/turn/first', 'And three secondary ones?', 4000), 'keep=0',
          ref=same_as('full/turn/second'), expect=['how=empty', 'kept=0']),
 ]
+# complete: sampling across the loops (steps 149-151; until step 207 two matrices of 33 processes,
+# results/sampler/plain.matrix and results/sampler/step151/spec.matrix, on three prompts). One seed
+# must give one reply in the plain loop, on another placement, with the cache, with speculation and with
+# fixed draft lengths; another seed and top-p 1 (the sampler's other path) are checked in both loops.
+# Each reply's reference is the matrix's stored record: a single run with the flags on the command line.
+S2, S1P1 = 'temp=1 top_p=0.95 seed=2', 'temp=1 seed=1'
+SPEC, PLAIN = 'results/sampler/step151/spec', 'results/sampler/plain'
+for _config, _key, _fields, _record in [
+        ('full', 's2', S2, SPEC + '/s2'), ('full', 's1-p1', S1P1, SPEC + '/s1-p1'),
+        ('spec-n5', 's1', S1, SPEC + '/s1-n5'),
+        ('plain', 'greedy', '', None), ('plain', 's1', S1, PLAIN + '/s1'), ('plain', 's2', S2, PLAIN + '/s2'), ('plain', 's1-p1', S1P1, PLAIN + '/s1-p1'),
+        ('plain-oracle', 's1', S1, PLAIN + '/s1-oracle'), ('plain-cache', 's1', S1, PLAIN + '/s1-cache')]:
+    for _name in ('tcp-udp', 'cpp-matrix', 'geometry'):
+        CASES.append(case('complete', _config, f'{_config}/{_key}/{_name}', ('heldout', _name), _fields,
+                          ref=record_hash(f'{_record}-{_name}-1.json') if _record else greedy_reference(_name)))
 assert len({c.key for c in CASES}) == len(CASES), 'two cases with one key'
+assert all(c.config in engine.CONFIGS for c in CASES)
 
 
 def holds(cond, fields):
@@ -198,7 +214,7 @@ def main():
             check(rc == 0, f'the engine "{config}" exits with code {rc} when its input ends')
         if tps:
             print(f'# engine "{config}": the {len(tps)} replies of 90 tokens and more: mean {sum(tps) / len(tps):.1f} t/s ({min(tps):.1f} to {max(tps):.1f}); '
-                  f'{time.time() - t0:.0f} s with {starts} start{"s" if starts > 1 else ""}. One process, the cache adapting from prompt to prompt:\n'
+                  f'{time.time() - t0:.0f} s with {starts} start{"s" if starts > 1 else ""}. Each reply after the others in one process:\n'
                   f'#   it compares with this check\'s earlier runs, not with the documents\' numbers (tests/speed_check.py measures those)', flush=True)
 
     if store and not failed:

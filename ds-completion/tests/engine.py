@@ -26,6 +26,13 @@ CACHE = ['--cache-loads', '800', '--cache-period', '8', '--cache-wait']
 CONFIGS = {
     # the fastest settings (QUICKSTART): the placement, the adaptive cache, the draft and speculation
     'full': BASE + ['--placement', 'placements/study30.txt'] + CACHE + ['--dspark', D, '--spec'],
+    # the same, every step verifying all five drafts: another sequence of steps, the same replies (step 151)
+    'spec-n5': BASE + ['--placement', 'placements/study30.txt'] + CACHE + ['--dspark', D, '--spec', '--spec-n', '5'],
+    # the plain loop, one token per step, on a fixed placement (no registration: it starts in ~13 s)
+    'plain': BASE + ['--placement', 'placements/study30.txt'],
+    # the plain loop on another fixed placement, and with the cache, which moves experts during a reply
+    'plain-oracle': BASE + ['--placement', 'placements/oracle-concurrency.txt'],
+    'plain-cache': BASE + ['--placement', 'placements/study30.txt'] + CACHE,
 }
 
 Reply = collections.namedtuple('Reply', 'ids text prompt end')  # the ids, their bytes, the fields of the "prompt" and "end" lines
